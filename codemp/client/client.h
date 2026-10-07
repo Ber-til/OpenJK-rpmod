@@ -635,6 +635,13 @@ void CL_ModelPlacer_RenderScene( const refdef_t *fd );
 void CL_ModelPlacer_Draw( void );
 
 //
+// cl_fighterassist.cpp
+//
+void CL_FighterAssist_Init( void );
+void CL_FighterAssist_Shutdown( void );
+void CL_FighterAssist_FilterCmd( usercmd_t *cmd, qboolean boost );
+
+//
 // cl_avi.c
 //
 qboolean CL_OpenAVIForWriting( const char *filename );

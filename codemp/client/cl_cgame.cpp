@@ -494,6 +494,7 @@ CL_ShutdonwCGame
 void CL_ShutdownCGame( void ) {
 	Key_SetCatcher( Key_GetCatcher( ) & ~KEYCATCH_CGAME );
 	CL_ModelPlacer_Shutdown();
+	CL_FighterAssist_Shutdown();
 
 	if ( !cls.cgameStarted )
 		return;

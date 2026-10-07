@@ -68,6 +68,7 @@ kbutton_t	in_left, in_right, in_forward, in_back;
 kbutton_t	in_lookup, in_lookdown, in_moveleft, in_moveright;
 kbutton_t	in_strafe, in_speed;
 kbutton_t	in_up, in_down;
+kbutton_t	in_vehboost;
 
 #define MAX_KBUTTONS 16
 
@@ -649,6 +650,9 @@ void IN_DownUp(void)
 		IN_KeyUp(&in_down);
 	}
 }
+void IN_VehBoostDown(void) {IN_KeyDown(&in_vehboost);}
+void IN_VehBoostUp(void) {IN_KeyUp(&in_vehboost);}
+
 void IN_LeftDown(void) {IN_KeyDown(&in_left);}
 void IN_LeftUp(void) {IN_KeyUp(&in_left);}
 void IN_RightDown(void) {IN_KeyDown(&in_right);}
@@ -1354,6 +1358,9 @@ usercmd_t CL_CreateCmd( void ) {
 	// get basic movement from joystick
 	CL_JoystickMove( &cmd );
 
+	// fighters share jump between takeoff and boost
+	CL_FighterAssist_FilterCmd( &cmd, in_vehboost.active );
+
 	// check to make sure the angles haven't wrapped
 	if ( cl.viewangles[PITCH] - oldAngles[PITCH] > 90 ) {
 		cl.viewangles[PITCH] = oldAngles[PITCH] + 90;
@@ -1651,6 +1658,8 @@ static const cmdList_t inputCmds[] =
 	{ "-moveup", NULL, IN_UpUp, NULL },
 	{ "+movedown", "Crouch", IN_DownDown, NULL },
 	{ "-movedown", NULL, IN_DownUp, NULL },
+	{ "+vehboost", "Fighter boost", IN_VehBoostDown, NULL },
+	{ "-vehboost", NULL, IN_VehBoostUp, NULL },
 	{ "+left", "Rotate camera left", IN_LeftDown, NULL },
 	{ "-left", NULL, IN_LeftUp, NULL },
 	{ "+right", "Rotate camera right", IN_RightDown, NULL },

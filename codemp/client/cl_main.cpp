@@ -2737,6 +2737,8 @@ void CL_Init( void ) {
 
 	CL_ModelPlacer_Init ();
 
+	CL_FighterAssist_Init ();
+
 	//
 	// register our variables
 	//
