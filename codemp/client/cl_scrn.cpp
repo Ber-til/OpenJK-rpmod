@@ -461,8 +461,10 @@ void SCR_DrawScreenField( stereoFrame_t stereoFrame ) {
 			UIVM_DrawConnectScreen( qtrue );
 			break;
 		case CA_ACTIVE:
+			CL_ModelPlacer_Frame();
 			CL_CGameRendering( stereoFrame );
 			SCR_DrawDemoRecording();
+			CL_ModelPlacer_Draw();
 			break;
 		}
 	}

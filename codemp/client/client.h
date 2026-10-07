@@ -617,6 +617,24 @@ void CL_Netchan_TransmitNextFragment( netchan_t *chan );
 qboolean CL_Netchan_Process( netchan_t *chan, msg_t *msg );
 
 //
+// cl_modelplacer.cpp
+//
+#define KEYCATCH_MODELPLACER	0x0010	// engine only, the model placer owns keyboard and mouse
+
+void CL_ModelPlacer_Init( void );
+void CL_ModelPlacer_Shutdown( void );
+void CL_ModelPlacer_f( void );
+qboolean CL_ModelPlacer_Active( void );
+void CL_ModelPlacer_KeyEvent( int key, qboolean down );
+void CL_ModelPlacer_CharEvent( int ch );
+void CL_ModelPlacer_MouseEvent( int dx, int dy );
+void CL_ModelPlacer_Escape( void );
+void CL_ModelPlacer_Frame( void );
+qboolean CL_ModelPlacer_FilterEntity( const refEntity_t *ent );
+void CL_ModelPlacer_RenderScene( const refdef_t *fd );
+void CL_ModelPlacer_Draw( void );
+
+//
 // cl_avi.c
 //
 qboolean CL_OpenAVIForWriting( const char *filename );

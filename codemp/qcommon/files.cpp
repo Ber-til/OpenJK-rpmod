@@ -2460,6 +2460,89 @@ char **FS_ListFiles( const char *path, const char *extension, int *numfiles ) {
 	return FS_ListFilteredFiles( path, extension, NULL, numfiles );
 }
 
+#define MAX_LIST_RECURSIVE_DEPTH 8
+
+static void FS_ListDirRecursive( const char *osPath, const char *relPath, const char *extension, int depth,
+								 void (*callback)( const char *name, void *ctx ), void *ctx ) {
+	char	**sysFiles;
+	char	subOsPath[MAX_OSPATH], subRelPath[MAX_QPATH];
+	int		numSysFiles, i;
+
+	sysFiles = Sys_ListFiles( osPath, extension, NULL, &numSysFiles, qfalse );
+	for ( i = 0; i < numSysFiles; i++ ) {
+		Com_sprintf( subRelPath, sizeof( subRelPath ), "%s/%s", relPath, sysFiles[i] );
+		callback( subRelPath, ctx );
+	}
+	Sys_FreeFileList( sysFiles );
+
+	if ( depth >= MAX_LIST_RECURSIVE_DEPTH ) {
+		return;
+	}
+
+	sysFiles = Sys_ListFiles( osPath, "/", NULL, &numSysFiles, qfalse );
+	for ( i = 0; i < numSysFiles; i++ ) {
+		if ( sysFiles[i][0] == '.' ) {
+			continue;
+		}
+		Com_sprintf( subOsPath, sizeof( subOsPath ), "%s%c%s", osPath, PATH_SEP, sysFiles[i] );
+		Com_sprintf( subRelPath, sizeof( subRelPath ), "%s/%s", relPath, sysFiles[i] );
+		FS_ListDirRecursive( subOsPath, subRelPath, extension, depth + 1, callback, ctx );
+	}
+	Sys_FreeFileList( sysFiles );
+}
+
+/*
+=================
+FS_ListFilesRecursive
+
+Calls callback with the full game path of every file below path ending in extension,
+from every pure pak and, when the server allows it, loose directories.
+Unlike FS_ListFiles there is no depth or count limit, and a file found in
+several search paths is reported once per search path.
+=================
+*/
+void FS_ListFilesRecursive( const char *path, const char *extension, void (*callback)( const char *name, void *ctx ), void *ctx ) {
+	searchpath_t	*search;
+	char			osPath[MAX_OSPATH];
+	int				pathLength, extensionLength, length, i;
+
+	if ( !fs_searchpaths ) {
+		Com_Error( ERR_FATAL, "Filesystem call made without initialization\n" );
+	}
+
+	pathLength = strlen( path );
+	extensionLength = strlen( extension );
+
+	for ( search = fs_searchpaths; search; search = search->next ) {
+		if ( search->pack ) {
+			pack_t *pak = search->pack;
+
+			if ( !FS_PakIsPure( pak ) ) {
+				continue;
+			}
+			for ( i = 0; i < pak->numfiles; i++ ) {
+				const char *name = pak->buildBuffer[i].name;
+
+				length = strlen( name );
+				if ( length <= pathLength + extensionLength || name[pathLength] != '/' ) {
+					continue;
+				}
+				if ( Q_stricmpn( name, path, pathLength ) || Q_stricmp( name + length - extensionLength, extension ) ) {
+					continue;
+				}
+				callback( name, ctx );
+			}
+		} else if ( search->dir ) {
+			// don't scan directories for files if we are pure or restricted
+			if ( fs_numServerPaks ) {
+				continue;
+			}
+			Q_strncpyz( osPath, FS_BuildOSPath( search->dir->path, search->dir->gamedir, path ), sizeof( osPath ) );
+			FS_ListDirRecursive( osPath, path, extension, 0, callback, ctx );
+		}
+	}
+}
+
 /*
 =================
 FS_FreeFileList

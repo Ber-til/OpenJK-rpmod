@@ -715,7 +715,12 @@ static qboolean CL_G2API_AttachG2Model( void *ghoul2From, int modelIndexFrom, vo
 
 static void CL_Key_SetCatcher( int catcher ) {
 	// Don't allow the ui module to close the console
-	Key_SetCatcher( catcher | ( Key_GetCatcher( ) & KEYCATCH_CONSOLE ) );
+	Key_SetCatcher( ( catcher & ~KEYCATCH_MODELPLACER ) | ( Key_GetCatcher( ) & ( KEYCATCH_CONSOLE | KEYCATCH_MODELPLACER ) ) );
+}
+
+// the model placer's catcher belongs to the engine, mods never see or clear it
+static int CL_Key_GetCatcher( void ) {
+	return Key_GetCatcher( ) & ~KEYCATCH_MODELPLACER;
 }
 
 static void UIVM_Cvar_Set( const char *var_name, const char *value ) {
@@ -957,7 +962,7 @@ intptr_t CL_UISystemCalls( intptr_t *args ) {
 		return 0;
 
 	case UI_KEY_GETCATCHER:
-		return Key_GetCatcher();
+		return CL_Key_GetCatcher();
 
 	case UI_KEY_SETCATCHER:
 		CL_Key_SetCatcher( args[1] );
@@ -1317,7 +1322,7 @@ void CL_BindUI( void ) {
 		uii.Key_IsDown							= Key_IsDown;
 		uii.Key_KeynumToStringBuf				= Key_KeynumToStringBuf;
 		uii.Key_SetBinding						= Key_SetBinding;
-		uii.Key_GetCatcher						= Key_GetCatcher;
+		uii.Key_GetCatcher						= CL_Key_GetCatcher;
 		uii.Key_GetOverstrikeMode				= Key_GetOverstrikeMode;
 		uii.Key_SetCatcher						= CL_Key_SetCatcher;
 		uii.Key_SetOverstrikeMode				= Key_SetOverstrikeMode;

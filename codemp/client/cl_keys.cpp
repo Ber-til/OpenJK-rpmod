@@ -1343,6 +1343,12 @@ void CL_KeyDownEvent( int key, unsigned time )
 			return;
 		}
 
+		// the model placer steps back a level, unless a menu is open over it
+		if ( ( Key_GetCatcher() & KEYCATCH_MODELPLACER ) && !( Key_GetCatcher() & KEYCATCH_UI ) ) {
+			CL_ModelPlacer_Escape();
+			return;
+		}
+
 		// escape always gets out of CGAME stuff
 		if ( Key_GetCatcher() & KEYCATCH_CGAME ) {
 			Key_SetCatcher( Key_GetCatcher( ) & ~KEYCATCH_CGAME );
@@ -1379,6 +1385,10 @@ void CL_KeyDownEvent( int key, unsigned time )
 	else if ( Key_GetCatcher() & KEYCATCH_UI ) {
 		if ( cls.uiStarted && !cls.cursorActive )
 			UIVM_KeyEvent( key, qtrue );
+	}
+	// model placer
+	else if ( Key_GetCatcher() & KEYCATCH_MODELPLACER ) {
+		CL_ModelPlacer_KeyEvent( key, qtrue );
 	}
 	// cgame
 	else if ( Key_GetCatcher() & KEYCATCH_CGAME ) {
@@ -1423,6 +1433,9 @@ void CL_KeyUpEvent( int key, unsigned time )
 	//
 	CL_ParseBinding( key, qfalse, time );
 
+	// always, so a key held when a menu opened over the placer doesn't stay held
+	CL_ModelPlacer_KeyEvent( key, qfalse );
+
 	if ( Key_GetCatcher( ) & KEYCATCH_UI && cls.uiStarted )
 		UIVM_KeyEvent( key, qfalse );
 	else if ( Key_GetCatcher( ) & KEYCATCH_CGAME && cls.cgameStarted )
@@ -1458,6 +1471,7 @@ void CL_CharEvent( int key ) {
 	// distribute the key down event to the appropriate handler
 		 if ( Key_GetCatcher() & KEYCATCH_CONSOLE )		Field_CharEvent( &g_consoleField, key );
 	else if ( Key_GetCatcher() & KEYCATCH_UI )			UIVM_KeyEvent( key|K_CHAR_FLAG, qtrue );
+	else if ( Key_GetCatcher() & KEYCATCH_MODELPLACER )	CL_ModelPlacer_CharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_CGAME )		CGVM_KeyEvent( key|K_CHAR_FLAG, qtrue );
 	else if ( Key_GetCatcher() & KEYCATCH_MESSAGE )		Field_CharEvent( &chatField, key );
 	else if ( cls.state == CA_DISCONNECTED )			Field_CharEvent( &g_consoleField, key );

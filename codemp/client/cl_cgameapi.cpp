@@ -314,6 +314,17 @@ void FX_FeedTrail( effectTrailArgStruct_t *a ); //FxPrimitives.cpp
 
 // wrappers and such
 
+// the model placer re-aims the main view and hides the view weapon on the way to the renderer
+static void CL_R_AddRefEntityToScene( const refEntity_t *ent ) {
+	if ( CL_ModelPlacer_FilterEntity( ent ) )
+		return;
+	re->AddRefEntityToScene( ent );
+}
+
+static void CL_R_RenderScene( const refdef_t *fd ) {
+	CL_ModelPlacer_RenderScene( fd );
+}
+
 static void CL_AddCgameCommand( const char *cmdName ) {
 	Cmd_AddCommand( cmdName, NULL );
 }
@@ -817,8 +828,13 @@ static void CL_G2API_GetSurfaceName( void *ghoul2, int surfNumber, int modelInde
 }
 
 static void CL_Key_SetCatcher( int catcher ) {
-	// Don't allow the cgame module to close the console
-	Key_SetCatcher( catcher | ( Key_GetCatcher( ) & KEYCATCH_CONSOLE ) );
+	// Don't allow the cgame module to close the console or the model placer
+	Key_SetCatcher( ( catcher & ~KEYCATCH_MODELPLACER ) | ( Key_GetCatcher( ) & ( KEYCATCH_CONSOLE | KEYCATCH_MODELPLACER ) ) );
+}
+
+// the model placer's catcher belongs to the engine, mods never see or clear it
+static int CL_Key_GetCatcher( void ) {
+	return Key_GetCatcher( ) & ~KEYCATCH_MODELPLACER;
 }
 
 static void CGVM_Cvar_Set( const char *var_name, const char *value ) {
@@ -1142,7 +1158,7 @@ intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 		return 0;
 
 	case CG_R_ADDREFENTITYTOSCENE:
-		re->AddRefEntityToScene( (const refEntity_t *)VMA(1) );
+		CL_R_AddRefEntityToScene( (const refEntity_t *)VMA(1) );
 		return 0;
 
 	case CG_R_ADDPOLYTOSCENE:
@@ -1169,7 +1185,7 @@ intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 		return 0;
 
 	case CG_R_RENDERSCENE:
-		re->RenderScene( (const refdef_t *)VMA(1) );
+		CL_R_RenderScene( (const refdef_t *)VMA(1) );
 		return 0;
 
 	case CG_R_SETCOLOR:
@@ -1252,7 +1268,7 @@ intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 		return Key_IsDown( args[1] );
 
 	case CG_KEY_GETCATCHER:
-		return Key_GetCatcher();
+		return CL_Key_GetCatcher();
 
 	case CG_KEY_SETCATCHER:
 		CL_Key_SetCatcher( args[1] );
@@ -1765,7 +1781,7 @@ void CL_BindCGame( void ) {
 		cgi.R_AddDecalToScene					= re->AddDecalToScene;
 		cgi.R_AddLightToScene					= re->AddLightToScene;
 		cgi.R_AddPolysToScene					= re->AddPolyToScene;
-		cgi.R_AddRefEntityToScene				= re->AddRefEntityToScene;
+		cgi.R_AddRefEntityToScene				= CL_R_AddRefEntityToScene;
 		cgi.R_AnyLanguage_ReadCharFromString	= re->AnyLanguage_ReadCharFromString;
 		cgi.R_AutomapElevationAdjustment		= re->AutomapElevationAdjustment;
 		cgi.R_ClearDecals						= re->ClearDecals;
@@ -1797,7 +1813,7 @@ void CL_BindCGame( void ) {
 		cgi.R_RegisterShaderNoMip				= re->RegisterShaderNoMip;
 		cgi.R_RegisterSkin						= re->RegisterSkin;
 		cgi.R_RemapShader						= re->RemapShader;
-		cgi.R_RenderScene						= re->RenderScene;
+		cgi.R_RenderScene						= CL_R_RenderScene;
 		cgi.R_SetColor							= re->SetColor;
 		cgi.R_SetLightStyle						= re->SetLightStyle;
 		cgi.R_SetRangedFog						= re->SetRangedFog;
@@ -1816,7 +1832,7 @@ void CL_BindCGame( void ) {
 		cgi.OpenUIMenu							= CL_OpenUIMenu;
 		cgi.SetClientForceAngle					= CL_SetClientForceAngle;
 		cgi.SetUserCmdValue						= _CL_SetUserCmdValue;
-		cgi.Key_GetCatcher						= Key_GetCatcher;
+		cgi.Key_GetCatcher						= CL_Key_GetCatcher;
 		cgi.Key_GetKey							= Key_GetKey;
 		cgi.Key_IsDown							= Key_IsDown;
 		cgi.Key_SetCatcher						= CL_Key_SetCatcher;
