@@ -77,7 +77,9 @@ typedef struct mpModel_s {
 	const char	*path;		// relative to MP_ROOT, no extension, e.g. "bespin/panels"
 	const char	*base;		// file name part of path
 	int			folder;
-	qboolean	failed;		// the renderer couldn't load it
+	qboolean	checked;	// the files were looked over for things the renderer can't take
+	qboolean	failed;		// the renderer couldn't load it, or wouldn't survive trying
+	const char	*error;		// why, shown in the preview
 } mpModel_t;
 
 typedef struct mpFolder_s {
@@ -217,7 +219,9 @@ static void MP_AddModel( const char *name, void *ctx ) {
 	slash = strrchr( stored, '/' );
 	mp.models[mp.numModels].path = stored;
 	mp.models[mp.numModels].base = slash ? slash + 1 : stored;
+	mp.models[mp.numModels].checked = qfalse;
 	mp.models[mp.numModels].failed = qfalse;
+	mp.models[mp.numModels].error = NULL;
 	mp.hash[h] = ++mp.numModels;
 }
 
@@ -344,6 +348,68 @@ static int MP_SelectedModel( void ) {
 	return mp.view[mp.selRow];
 }
 
+// the renderer drops the whole game (ERR_DROP) on a surface it can't draw instead of
+// failing the load, so look the file over first. NULL if it's fine or not there
+static const char *MP_CheckMD3( const char *name ) {
+	const char *error = NULL;
+	const md3Header_t *header;
+	byte *buf;
+	int len, ofs;
+
+	len = FS_ReadFile( name, (void **)&buf );
+	if ( len < 0 || !buf )
+		return NULL;
+
+	header = (const md3Header_t *)buf;
+	if ( len < (int)sizeof( md3Header_t ) || LittleLong( header->ident ) != MD3_IDENT ) {
+		FS_FreeFile( buf );
+		return NULL;	// not an md3 at all, let the renderer turn it down
+	}
+
+	ofs = LittleLong( header->ofsSurfaces );
+	for ( int i = 0; i < LittleLong( header->numSurfaces ) && !error; i++ ) {
+		const md3Surface_t *surf = (const md3Surface_t *)( buf + ofs );
+		int numVerts, numTriangles;
+
+		if ( ofs < 0 || ofs > len - (int)sizeof( md3Surface_t ) ) {
+			error = "Damaged model file";
+			break;
+		}
+		numVerts = LittleLong( surf->numVerts );
+		numTriangles = LittleLong( surf->numTriangles );
+
+		// the same tests R_LoadMD3 makes
+		if ( numVerts >= SHADER_MAX_VERTEXES ) {
+			Com_Printf( S_COLOR_YELLOW "Model placer: %s has more than %i verts on %.*s (%i)\n",
+				name, SHADER_MAX_VERTEXES - 1, MAX_QPATH, surf->name[0] ? surf->name : "a surface", numVerts );
+			error = "Too many verts on one surface";
+		} else if ( numTriangles * 3 >= SHADER_MAX_INDEXES ) {
+			Com_Printf( S_COLOR_YELLOW "Model placer: %s has more than %i triangles on %.*s (%i)\n",
+				name, SHADER_MAX_INDEXES / 3 - 1, MAX_QPATH, surf->name[0] ? surf->name : "a surface", numTriangles );
+			error = "Too many triangles on one surface";
+		} else if ( LittleLong( surf->ofsEnd ) <= 0 ) {
+			error = "Damaged model file";
+		}
+		ofs += LittleLong( surf->ofsEnd );
+	}
+
+	FS_FreeFile( buf );
+	return error;
+}
+
+// done once per model, as it first shows up in the list
+static void MP_CheckModel( mpModel_t *m ) {
+	if ( m->checked )
+		return;
+	m->checked = qtrue;
+
+	// the renderer also loads the _1 and _2 lods next to it
+	for ( int lod = 0; lod < MD3_MAX_LODS && !m->error; lod++ )
+		m->error = MP_CheckMD3( lod ? va( "%s/%s_%i%s", MP_ROOT, m->path, lod, MP_EXT ) : va( "%s/%s%s", MP_ROOT, m->path, MP_EXT ) );
+	if ( m->error )
+		m->failed = qtrue;
+}
+
 // the renderer caches models by name and drops them on map change or vid_restart,
 // so look the handle up whenever it is needed instead of keeping it
 static qhandle_t MP_RegisterModel( int index ) {
@@ -353,8 +419,10 @@ static qhandle_t MP_RegisterModel( int index ) {
 	if ( index < 0 || index >= mp.numModels )
 		return 0;
 	m = &mp.models[index];
+	MP_CheckModel( m );
 	if ( m->failed )
 		return 0;
+
 	h = re->RegisterModel( va( "%s/%s%s", MP_ROOT, m->path, MP_EXT ) );
 	if ( !h )
 		m->failed = qtrue;
@@ -435,7 +503,8 @@ static void MP_EnterPlace( int model ) {
 	qhandle_t h = MP_RegisterModel( model );
 
 	if ( !h ) {
-		Com_Printf( S_COLOR_YELLOW "Model placer: can't load %s/%s%s\n", MP_ROOT, mp.models[model].path, MP_EXT );
+		Com_Printf( S_COLOR_YELLOW "Model placer: can't load %s/%s%s%s%s\n", MP_ROOT, mp.models[model].path, MP_EXT,
+			mp.models[model].error ? ": " : "", mp.models[model].error ? mp.models[model].error : "" );
 		return;
 	}
 
@@ -1121,8 +1190,11 @@ static void MP_DrawPreview( int index ) {
 
 	MP_Box( MP_PREVIEW_X, MP_PREVIEW_Y, MP_PREVIEW_W, MP_PREVIEW_H, mpPanelLight );
 	if ( !hModel ) {
-		if ( index >= 0 )
+		if ( index >= 0 ) {
 			MP_Text( MP_PREVIEW_X + 8, MP_PREVIEW_Y + 8, "Can't load model", mpRed );
+			if ( index < mp.numModels && mp.models[index].error )
+				MP_Text( MP_PREVIEW_X + 8, MP_PREVIEW_Y + 8 + MP_ROW_H, mp.models[index].error, mpRed );
+		}
 		return;
 	}
 
@@ -1204,7 +1276,7 @@ static void MP_DrawBrowser( void ) {
 	if ( !mp.numView )
 		MP_Text( MP_MODEL_X + 4, MP_LIST_Y + 1, "No models match", mpDim );
 	for ( int i = 0; i < MP_VISIBLE_ROWS; i++ ) {
-		const mpModel_t *m;
+		mpModel_t *m;
 
 		row = mp.modelScroll + i;
 		if ( row >= mp.numView )
@@ -1215,6 +1287,7 @@ static void MP_DrawBrowser( void ) {
 			MP_Fill( MP_MODEL_X + 1, y, MP_MODEL_W - 2, MP_ROW_H, mpHighlight );
 		else if ( MP_InRect( MP_MODEL_X, y, MP_MODEL_W, MP_ROW_H ) )
 			MP_Fill( MP_MODEL_X + 1, y, MP_MODEL_W - 2, MP_ROW_H, mpHover );
+		MP_CheckModel( m );
 		MP_TextClipped( MP_MODEL_X + 4, y + 1, MP_MODEL_W - 8, mp.search[0] ? m->path : m->base, m->failed ? mpRed : mpWhite );
 	}
 
