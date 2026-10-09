@@ -316,14 +316,16 @@ void FX_FeedTrail( effectTrailArgStruct_t *a ); //FxPrimitives.cpp
 
 // the model placer re-aims the main view and hides the view weapon on the way to the renderer
 static void CL_R_AddRefEntityToScene( const refEntity_t *ent ) {
-	if ( CL_ModelPlacer_FilterEntity( ent ) )
+	if ( CL_ModelPlacer_FilterEntity( ent ) || CL_ShaderManager_FilterEntity( ent ) )
 		return;
+	CL_ShaderManager_AddEntity( ent );
 	re->AddRefEntityToScene( ent );
 }
 
 static void CL_R_RenderScene( const refdef_t *fd ) {
 	CL_NpcManager_ViewRendered( fd );
-	CL_ModelPlacer_RenderScene( fd );
+	if ( !CL_ShaderManager_RenderScene( fd ) )
+		CL_ModelPlacer_RenderScene( fd );
 }
 
 static void CL_AddCgameCommand( const char *cmdName ) {
@@ -1114,10 +1116,10 @@ intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 		return 0;
 
 	case CG_R_REGISTERMODEL:
-		return re->RegisterModel( (const char *)VMA(1) );
+		return CL_ShaderManager_RegisterModel( (const char *)VMA(1) );
 
 	case CG_R_REGISTERSKIN:
-		return re->RegisterSkin( (const char *)VMA(1) );
+		return CL_ShaderManager_RegisterSkin( (const char *)VMA(1) );
 
 	case CG_R_REGISTERSHADER:
 		return re->RegisterShader( (const char *)VMA(1) );
@@ -1329,7 +1331,7 @@ intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 		return 0;
 
 	case CG_R_REMAP_SHADER:
-		re->RemapShader( (const char *)VMA(1), (const char *)VMA(2), (const char *)VMA(3) );
+		CL_ShaderManager_RemapShader( (const char *)VMA(1), (const char *)VMA(2), (const char *)VMA(3) );
 		return 0;
 
 	case CG_R_GET_LIGHT_STYLE:
@@ -1809,11 +1811,11 @@ void CL_BindCGame( void ) {
 		cgi.R_MarkFragments						= re->MarkFragments;
 		cgi.R_ModelBounds						= re->ModelBounds;
 		cgi.R_RegisterFont						= re->RegisterFont;
-		cgi.R_RegisterModel						= re->RegisterModel;
+		cgi.R_RegisterModel						= CL_ShaderManager_RegisterModel;
 		cgi.R_RegisterShader					= re->RegisterShader;
 		cgi.R_RegisterShaderNoMip				= re->RegisterShaderNoMip;
-		cgi.R_RegisterSkin						= re->RegisterSkin;
-		cgi.R_RemapShader						= re->RemapShader;
+		cgi.R_RegisterSkin						= CL_ShaderManager_RegisterSkin;
+		cgi.R_RemapShader						= CL_ShaderManager_RemapShader;
 		cgi.R_RenderScene						= CL_R_RenderScene;
 		cgi.R_SetColor							= re->SetColor;
 		cgi.R_SetLightStyle						= re->SetLightStyle;

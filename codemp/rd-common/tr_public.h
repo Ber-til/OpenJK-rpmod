@@ -30,7 +30,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #include "../qcommon/qcommon.h"
 #include "../ghoul2/ghoul2_shared.h"
 
-#define	REF_API_VERSION 9
+#define	REF_API_VERSION 10
 
 //
 // these are the functions exported by the refresh module
@@ -243,6 +243,8 @@ typedef struct refexport_s {
 
 	struct {
 		float				(*Font_StrLenPixels)					( const char *text, const int iFontIndex, const float scale );
+		// a model's G2API_SetSkin skin and its own; the client's shader manager can't read the instance
+		void				(*G2API_GetSkins)						( CGhoul2Info_v &ghoul2, int modelIndex, qhandle_t *customSkin, qhandle_t *skin );
 	} ext;
 
 } refexport_t;

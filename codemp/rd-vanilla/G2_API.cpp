@@ -892,6 +892,16 @@ qboolean G2API_SetSkin(CGhoul2Info_v& ghoul2, int modelIndex, qhandle_t customSk
 	return qfalse;
 }
 
+void G2API_GetSkins(CGhoul2Info_v& ghoul2, int modelIndex, qhandle_t *customSkin, qhandle_t *skin)
+{
+	*customSkin = *skin = 0;
+	if (ghoul2.IsValid() && modelIndex >= 0 && modelIndex < ghoul2.size())
+	{
+		*customSkin = ghoul2[modelIndex].mCustomSkin;
+		*skin = ghoul2[modelIndex].mSkin;
+	}
+}
+
 qboolean G2API_SetShader(CGhoul2Info *ghlInfo, qhandle_t customShader)
 {
 	if (G2_SetupModelPointers(ghlInfo))

@@ -522,6 +522,7 @@ static void MP_Open( void ) {
 		return;
 	}
 	CL_NpcManager_Close();
+	CL_ShaderManager_Close();
 	if ( !mp.indexed )
 		MP_BuildIndex();
 	if ( !mp.numModels ) {

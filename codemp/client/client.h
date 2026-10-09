@@ -639,7 +639,8 @@ void CL_ModelPlacer_Draw( void );
 // cl_npcmanager.cpp
 //
 #define KEYCATCH_NPCMANAGER		0x0020	// engine only, the NPC manager owns keyboard and mouse
-#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELPLACER | KEYCATCH_NPCMANAGER )	// mods never see or clear these
+#define KEYCATCH_SHADERMANAGER	0x0040	// engine only, the shader manager owns keyboard and mouse
+#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELPLACER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER )	// mods never see or clear these
 
 void CL_NpcManager_Init( void );
 void CL_NpcManager_Shutdown( void );
@@ -653,6 +654,28 @@ void CL_NpcManager_Escape( void );
 qboolean CL_NpcManager_ServerPrint( const char *text );
 void CL_NpcManager_ViewRendered( const refdef_t *fd );
 void CL_NpcManager_Draw( void );
+
+//
+// cl_shadermanager.cpp
+//
+void CL_ShaderManager_Init( void );
+void CL_ShaderManager_Shutdown( void );
+void CL_ShaderManager_f( void );
+qhandle_t CL_ShaderManager_RegisterModel( const char *name );
+qhandle_t CL_ShaderManager_RegisterSkin( const char *name );
+void CL_ShaderManager_RemapShader( const char *oldShader, const char *newShader, const char *timeOffset );
+void CL_ShaderManager_AddEntity( const refEntity_t *ent );
+qboolean CL_ShaderManager_RenderScene( const refdef_t *fd );
+qboolean CL_ShaderManager_FilterEntity( const refEntity_t *ent );
+qboolean CL_ShaderManager_Active( void );
+void CL_ShaderManager_Close( void );
+void CL_ShaderManager_KeyEvent( int key, qboolean down );
+void CL_ShaderManager_CharEvent( int ch );
+void CL_ShaderManager_MouseEvent( int dx, int dy );
+void CL_ShaderManager_Escape( void );
+void CL_ShaderManager_Frame( void );
+void CL_ShaderManager_ServerPrint( const char *text );
+void CL_ShaderManager_Draw( void );
 
 //
 // cl_fighterassist.cpp

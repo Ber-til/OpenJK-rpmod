@@ -2737,6 +2737,7 @@ void CL_Init( void ) {
 
 	CL_ModelPlacer_Init ();
 	CL_NpcManager_Init ();
+	CL_ShaderManager_Init ();
 
 	CL_FighterAssist_Init ();
 
@@ -2875,6 +2876,7 @@ void CL_Init( void ) {
 	Cmd_AddCommand( "addFavorite", CL_AddFavorite_f, "Add server to favorites" );
 	Cmd_AddCommand( "modelplacer", CL_ModelPlacer_f, "Browse map_objects models and place them with rpmodel add" );
 	Cmd_AddCommand( "npcmanager", CL_NpcManager_f, "Spawn NPCs and manage the ones in the map with RPMod's npc command" );
+	Cmd_AddCommand( "shadermanager", CL_ShaderManager_f, "Find the shaders of what you look at" );
 	Cmd_AddCommand ("record", CL_Record_f, "Record a demo" );
 	Cmd_AddCommand ("demo", CL_PlayDemo_f, "Playback a demo" );
 	Cmd_SetCommandCompletionFunc( "demo", CL_CompleteDemoName );
@@ -2951,6 +2953,7 @@ void CL_Shutdown( void ) {
 	Cmd_RemoveCommand ("cmd");
 	Cmd_RemoveCommand ("modelplacer");
 	Cmd_RemoveCommand ("npcmanager");
+	Cmd_RemoveCommand ("shadermanager");
 	Cmd_RemoveCommand ("configstrings");
 	Cmd_RemoveCommand ("clientinfo");
 	Cmd_RemoveCommand ("snd_restart");

@@ -1335,6 +1335,7 @@ static void NM_Open( nmTab_t tab ) {
 		return;
 	}
 	CL_ModelPlacer_Close();
+	CL_ShaderManager_Close();
 	if ( !nm.indexed )
 		NM_BuildIndex();
 

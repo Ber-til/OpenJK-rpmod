@@ -665,6 +665,7 @@ refexport_t *GetRefAPI ( int apiVersion, refimport_t *rimp ) {
 	re.G2API_SetRootSurface					= G2API_SetRootSurface;
 	re.G2API_SetShader						= G2API_SetShader;
 	re.G2API_SetSkin						= G2API_SetSkin;
+	re.ext.G2API_GetSkins					= G2API_GetSkins;
 	re.G2API_SetSurfaceOnOff				= G2API_SetSurfaceOnOff;
 	re.G2API_SetTime						= G2API_SetTime;
 	re.G2API_SkinlessModel					= G2API_SkinlessModel;

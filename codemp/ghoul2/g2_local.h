@@ -267,6 +267,7 @@ qboolean	G2API_IsGhoul2InfovValid (CGhoul2Info_v& ghoul2);
 int			G2API_InitGhoul2Model(CGhoul2Info_v **ghoul2Ptr, const char *fileName, int modelIndex, qhandle_t customSkin = NULL_HANDLE, qhandle_t customShader = NULL_HANDLE, int modelFlags = 0, int lodBias = 0);
 qboolean	G2API_SetLodBias(CGhoul2Info *ghlInfo, int lodBias);
 qboolean	G2API_SetSkin(CGhoul2Info_v& ghoul2, int modelIndex, qhandle_t customSkin, qhandle_t renderSkin);
+void		G2API_GetSkins(CGhoul2Info_v& ghoul2, int modelIndex, qhandle_t *customSkin, qhandle_t *skin);
 qboolean	G2API_SetShader(CGhoul2Info *ghlInfo, qhandle_t customShader);
 qboolean	G2API_HasGhoul2ModelOnIndex(CGhoul2Info_v **ghlRemove, const int modelIndex);
 qboolean	G2API_RemoveGhoul2Model(CGhoul2Info_v **ghlRemove, const int modelIndex);

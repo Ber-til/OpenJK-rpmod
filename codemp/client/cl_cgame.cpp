@@ -412,6 +412,10 @@ rescan:
 	Cmd_TokenizeString( s );
 	cmd = Cmd_Argv(0);
 
+	// the shader manager shows the answer to its rpshader commands
+	if ( !strcmp( cmd, "print" ) )
+		CL_ShaderManager_ServerPrint( Cmd_Argv( 1 ) );
+
 	// the NPC manager reads "npc list" replies, and hides the ones it asked for
 	if ( !strcmp( cmd, "print" ) && CL_NpcManager_ServerPrint( Cmd_Argv( 1 ) ) ) {
 		Cmd_TokenizeString( "print \"\"" );
@@ -501,6 +505,7 @@ void CL_ShutdownCGame( void ) {
 	Key_SetCatcher( Key_GetCatcher( ) & ~KEYCATCH_CGAME );
 	CL_ModelPlacer_Shutdown();
 	CL_NpcManager_Shutdown();
+	CL_ShaderManager_Shutdown();
 	CL_FighterAssist_Shutdown();
 
 	if ( !cls.cgameStarted )
