@@ -52,7 +52,64 @@ cvar_t		*con_timestamps;
 #define CON_MIN_WIDTH			20
 
 
-static const conChar_t CON_WRAP = { { ColorIndex(COLOR_GREY), '\\' } };
+// RPMod's chat colours: ^0-^9, ^A-^Z and ^a-^z, indexed by code - '0' like its cgame does
+// (the codes between them are white). Its ^9 is purple, so the console's own grey has its own index
+#define CON_NUM_COLORS			( 'z' - '0' + 1 )
+#define CON_COLOR_GREY			CON_NUM_COLORS
+
+static const vec4_t rpmodColors[CON_NUM_COLORS] = {
+	{ 0.00f, 0.00f, 0.00f, 1 }, { 1.00f, 0.00f, 0.00f, 1 }, { 0.00f, 1.00f, 0.00f, 1 }, { 1.00f, 1.00f, 0.00f, 1 }, // 0-3
+	{ 0.00f, 0.00f, 1.00f, 1 }, { 0.00f, 1.00f, 1.00f, 1 }, { 1.00f, 0.00f, 1.00f, 1 }, { 1.00f, 1.00f, 1.00f, 1 }, // 4-7
+	{ 1.00f, 0.50f, 0.00f, 1 }, { 0.50f, 0.00f, 0.80f, 1 },                                                         // 8-9
+	{ 1, 1, 1, 1 }, { 1, 1, 1, 1 }, { 1, 1, 1, 1 }, { 1, 1, 1, 1 }, { 1, 1, 1, 1 }, { 1, 1, 1, 1 }, { 1, 1, 1, 1 },   // :-@
+	{ 0.59f, 0.29f, 0.00f, 1 }, { 1.00f, 0.80f, 0.64f, 1 }, { 0.00f, 0.80f, 0.80f, 1 }, { 0.00f, 0.00f, 0.50f, 1 }, // A-D
+	{ 0.31f, 0.15f, 0.51f, 1 }, { 1.00f, 0.75f, 0.80f, 1 }, { 0.00f, 0.48f, 0.65f, 1 }, { 0.00f, 0.29f, 0.33f, 1 }, // E-H
+	{ 0.97f, 0.51f, 0.47f, 1 }, { 0.00f, 0.50f, 0.50f, 1 }, { 0.50f, 0.00f, 0.00f, 1 }, { 0.64f, 0.35f, 0.32f, 1 }, // I-L
+	{ 0.25f, 0.51f, 0.43f, 1 }, { 0.50f, 0.00f, 1.00f, 1 }, { 0.75f, 0.75f, 0.75f, 1 }, { 0.21f, 0.27f, 0.31f, 1 }, // M-P
+	{ 0.40f, 0.60f, 0.80f, 1 }, { 0.89f, 0.26f, 0.20f, 1 }, { 0.77f, 0.38f, 0.06f, 1 }, { 0.85f, 0.56f, 0.35f, 1 }, // Q-T
+	{ 0.91f, 0.38f, 0.00f, 1 }, { 0.80f, 0.80f, 1.00f, 1 }, { 0.69f, 0.88f, 0.90f, 1 }, { 0.68f, 0.85f, 0.90f, 1 }, // U-X
+	{ 0.54f, 0.81f, 0.94f, 1 }, { 0.00f, 0.00f, 1.00f, 1 },                                                         // Y-Z
+	{ 1, 1, 1, 1 }, { 1, 1, 1, 1 }, { 1, 1, 1, 1 }, { 1, 1, 1, 1 }, { 1, 1, 1, 1 }, { 1, 1, 1, 1 },                   // [-`
+	{ 0.25f, 0.00f, 1.00f, 1 }, { 0.00f, 0.00f, 0.55f, 1 }, { 0.11f, 0.16f, 0.32f, 1 }, { 1.00f, 1.00f, 0.80f, 1 }, // a-d
+	{ 0.94f, 0.80f, 0.00f, 1 }, { 1.00f, 0.83f, 0.00f, 1 }, { 1.00f, 0.94f, 0.00f, 1 }, { 1.00f, 1.00f, 0.47f, 1 }, // e-h
+	{ 0.98f, 0.85f, 0.37f, 1 }, { 1.00f, 0.84f, 0.00f, 1 }, { 0.76f, 0.69f, 0.57f, 1 }, { 0.50f, 0.50f, 0.00f, 1 }, // i-l
+	{ 0.88f, 0.07f, 0.37f, 1 }, { 1.00f, 0.08f, 0.58f, 1 }, { 1.00f, 0.44f, 1.00f, 1 }, { 0.40f, 0.01f, 0.24f, 1 }, // m-p
+	{ 0.47f, 0.32f, 0.66f, 1 }, { 0.44f, 0.16f, 0.39f, 1 }, { 0.47f, 0.09f, 0.29f, 1 }, { 0.56f, 0.59f, 0.47f, 1 }, // q-t
+	{ 0.53f, 0.66f, 0.42f, 1 }, { 0.34f, 0.51f, 0.01f, 1 }, { 0.68f, 1.00f, 0.18f, 1 }, { 0.27f, 0.30f, 0.22f, 1 }, // u-x
+	{ 0.00f, 0.34f, 0.25f, 1 }, { 0.54f, 0.60f, 0.36f, 1 },                                                         // y-z
+};
+
+// only on RPMod: anywhere else ^a stays text and ^9 stays grey, as in the base game
+static qboolean Con_RPModColors( void ) {
+	return (qboolean)( FS_Initialized() && !Q_stricmp( FS_GetCurrentGameDir(), "rpmod" ) );
+}
+
+static qboolean Con_IsColorString( const char *p, qboolean rpmod ) {
+	if ( !rpmod )
+		return (qboolean)Q_IsColorString( p );
+	return (qboolean)( p[0] == Q_COLOR_ESCAPE && ( ( p[1] >= '0' && p[1] <= '9' )
+		|| ( p[1] >= 'A' && p[1] <= 'Z' ) || ( p[1] >= 'a' && p[1] <= 'z' ) ) );
+}
+
+static const float *Con_Color( int index, qboolean rpmod ) {
+	if ( index >= CON_NUM_COLORS )
+		return g_color_table[ColorIndex(COLOR_GREY)];
+	if ( index > 9 || rpmod )
+		return rpmodColors[index];
+	return g_color_table[index];
+}
+
+// the asian path hands its line to the renderer's font code, which only knows ^0-^9
+static char Con_ColorCode( int index ) {
+	if ( index >= CON_NUM_COLORS )
+		return COLOR_GREY;
+	return index > 9 ? COLOR_WHITE : (char)( '0' + index );
+}
+
+// set while /colorcodes prints: colour codes still colour the text but stay visible
+static qboolean con_showColorCodes = qfalse;
+
+static const conChar_t CON_WRAP = { { CON_COLOR_GREY, '\\' } };
 static const conChar_t CON_BLANK = { { ColorIndex(COLOR_WHITE), CON_BLANK_CHAR } };
 
 vec4_t	console_color = {0.509f, 0.609f, 0.847f, 1.0f};
@@ -167,6 +224,21 @@ void Con_MessageMode4_f (void)
 Con_Clear_f
 ================
 */
+/*
+================
+Con_ColorCodes_f
+
+Prints your name (or the given text) with its colour codes shown, each in its colour
+================
+*/
+static void Con_ColorCodes_f( void ) {
+	const char *text = Cmd_Argc() > 1 ? Cmd_ArgsFrom( 1 ) : Cvar_VariableString( "name" );
+
+	con_showColorCodes = qtrue;
+	Com_Printf( "%s\n", text );
+	con_showColorCodes = qfalse;
+}
+
 void Con_Clear_f (void) {
 	int		i;
 
@@ -515,6 +587,7 @@ void Con_Init (void) {
 	Cmd_AddCommand( "messagemode4", Con_MessageMode4_f, "Private Chat with Last Attacker" );
 	Cmd_AddCommand( "clear", Con_Clear_f, "Clear console text" );
 	Cmd_AddCommand( "condump", Con_Dump_f, "Dump console text to file" );
+	Cmd_AddCommand( "colorcodes", Con_ColorCodes_f, "Print your name, or the given text, with its colour codes shown" );
 	Cmd_SetCommandCompletionFunc( "condump", Cmd_CompleteTxtName );
 
 	//Initialize values on first print
@@ -536,6 +609,7 @@ void Con_Shutdown(void)
 	Cmd_RemoveCommand("messagemode4");
 	Cmd_RemoveCommand("clear");
 	Cmd_RemoveCommand("condump");
+	Cmd_RemoveCommand("colorcodes");
 }
 
 /*
@@ -553,7 +627,7 @@ static void Con_Linefeed (qboolean skipnotify)
 		time_t t = time( NULL );
 		struct tm *tms = localtime( &t );
 		char	timestamp[CON_TIMESTAMP_LEN + 1];
-		const unsigned char color = ColorIndex(COLOR_GREY);
+		const unsigned char color = CON_COLOR_GREY;
 
 		Com_sprintf(timestamp, sizeof(timestamp), "[%02d:%02d:%02d] ",
 			tms->tm_hour, tms->tm_min, tms->tm_sec);
@@ -616,12 +690,15 @@ void CL_ConsolePrint( const char *txt) {
 	}
 
 	color = ColorIndex(COLOR_WHITE);
+	const qboolean rpmod = Con_RPModColors();
 
 	while ( (c = (unsigned char) *txt) != 0 ) {
-		if ( Q_IsColorString( (unsigned char*) txt ) ) {
-			color = ColorIndex( *(txt+1) );
-			txt += 2;
-			continue;
+		if ( Con_IsColorString( txt, rpmod ) ) {
+			color = *(txt+1) - '0';
+			if ( !con_showColorCodes ) {
+				txt += 2;
+				continue;
+			}
 		}
 
 		txt++;
@@ -731,8 +808,9 @@ void Con_DrawNotify (void)
 	int		currentColor;
 	const char* chattext;
 
+	const qboolean rpmod = Con_RPModColors();
 	currentColor = 7;
-	re->SetColor( g_color_table[currentColor] );
+	re->SetColor( Con_Color( currentColor, rpmod ) );
 
 	int iFontIndex = cls.consoleFont;
 	float fFontScale = 1.0f;
@@ -787,7 +865,7 @@ void Con_DrawNotify (void)
 			{
 				if ( text[x].f.color != currentColor ) {
 					currentColor = text[x].f.color;
-					strcat(sTemp,va("^%i", currentColor ));
+					strcat(sTemp,va("^%c", Con_ColorCode( currentColor ) ));
 				}
 				strcat(sTemp,va("%c",text[x].f.character));
 			}
@@ -795,7 +873,7 @@ void Con_DrawNotify (void)
 			// and print...
 			//
 			re->Font_DrawString(cl_conXOffset->integer + con.xadjust * (con.xadjust + con.charWidth), con.yadjust * v, sTemp,
-				g_color_table[currentColor], iFontIndex, -1, fFontScale);
+				Con_Color( currentColor, rpmod ), iFontIndex, -1, fFontScale);
 
 			v +=  iPixelHeightToAdvance;
 		}
@@ -807,7 +885,7 @@ void Con_DrawNotify (void)
 				}
 				if ( text[x].f.color != currentColor ) {
 					currentColor = text[x].f.color;
-					re->SetColor( g_color_table[currentColor] );
+					re->SetColor( Con_Color( currentColor, rpmod ) );
 				}
 				if (!cl_conXOffset)
 				{
@@ -930,8 +1008,9 @@ void Con_DrawSolidConsole( float frac ) {
 		row--;
 	}
 
+	const qboolean rpmod = Con_RPModColors();
 	currentColor = 7;
-	re->SetColor( g_color_table[currentColor] );
+	re->SetColor( Con_Color( currentColor, rpmod ) );
 
 	int iFontIndex = cls.consoleFont;
 	float fFontScale = 1.0f;
@@ -971,14 +1050,14 @@ void Con_DrawSolidConsole( float frac ) {
 			{
 				if ( text[x].f.color != currentColor ) {
 					currentColor = text[x].f.color;
-					strcat(sTemp,va("^%i", currentColor ));
+					strcat(sTemp,va("^%c", Con_ColorCode( currentColor ) ));
 				}
 				strcat(sTemp,va("%c",text[x].f.character));
 			}
 			//
 			// and print...
 			//
-			re->Font_DrawString(con.xadjust*(con.xadjust + con.charWidth), con.yadjust * y, sTemp, g_color_table[currentColor],
+			re->Font_DrawString(con.xadjust*(con.xadjust + con.charWidth), con.yadjust * y, sTemp, Con_Color( currentColor, rpmod ),
 				iFontIndex, -1, fFontScale);
 		}
 		else
@@ -990,7 +1069,7 @@ void Con_DrawSolidConsole( float frac ) {
 
 				if ( text[x].f.color != currentColor ) {
 					currentColor = text[x].f.color;
-					re->SetColor( g_color_table[currentColor] );
+					re->SetColor( Con_Color( currentColor, rpmod ) );
 				}
 				SCR_DrawSmallChar( (x+1)*con.charWidth, y, text[x].f.character );
 			}
