@@ -625,6 +625,7 @@ void CL_ModelPlacer_Init( void );
 void CL_ModelPlacer_Shutdown( void );
 void CL_ModelPlacer_f( void );
 qboolean CL_ModelPlacer_Active( void );
+void CL_ModelPlacer_Close( void );
 void CL_ModelPlacer_KeyEvent( int key, qboolean down );
 void CL_ModelPlacer_CharEvent( int ch );
 void CL_ModelPlacer_MouseEvent( int dx, int dy );
@@ -633,6 +634,25 @@ void CL_ModelPlacer_Frame( void );
 qboolean CL_ModelPlacer_FilterEntity( const refEntity_t *ent );
 void CL_ModelPlacer_RenderScene( const refdef_t *fd );
 void CL_ModelPlacer_Draw( void );
+
+//
+// cl_npcmanager.cpp
+//
+#define KEYCATCH_NPCMANAGER		0x0020	// engine only, the NPC manager owns keyboard and mouse
+#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELPLACER | KEYCATCH_NPCMANAGER )	// mods never see or clear these
+
+void CL_NpcManager_Init( void );
+void CL_NpcManager_Shutdown( void );
+void CL_NpcManager_f( void );
+qboolean CL_NpcManager_Active( void );
+void CL_NpcManager_Close( void );
+void CL_NpcManager_KeyEvent( int key, qboolean down );
+void CL_NpcManager_CharEvent( int ch );
+void CL_NpcManager_MouseEvent( int dx, int dy );
+void CL_NpcManager_Escape( void );
+qboolean CL_NpcManager_ServerPrint( const char *text );
+void CL_NpcManager_ViewRendered( const refdef_t *fd );
+void CL_NpcManager_Draw( void );
 
 //
 // cl_fighterassist.cpp

@@ -322,6 +322,7 @@ static void CL_R_AddRefEntityToScene( const refEntity_t *ent ) {
 }
 
 static void CL_R_RenderScene( const refdef_t *fd ) {
+	CL_NpcManager_ViewRendered( fd );
 	CL_ModelPlacer_RenderScene( fd );
 }
 
@@ -828,13 +829,13 @@ static void CL_G2API_GetSurfaceName( void *ghoul2, int surfNumber, int modelInde
 }
 
 static void CL_Key_SetCatcher( int catcher ) {
-	// Don't allow the cgame module to close the console or the model placer
-	Key_SetCatcher( ( catcher & ~KEYCATCH_MODELPLACER ) | ( Key_GetCatcher( ) & ( KEYCATCH_CONSOLE | KEYCATCH_MODELPLACER ) ) );
+	// Don't allow the cgame module to close the console, the model placer or the NPC manager
+	Key_SetCatcher( ( catcher & ~KEYCATCH_ENGINETOOLS ) | ( Key_GetCatcher( ) & ( KEYCATCH_CONSOLE | KEYCATCH_ENGINETOOLS ) ) );
 }
 
-// the model placer's catcher belongs to the engine, mods never see or clear it
+// the engine tools' catchers belong to the engine, mods never see or clear them
 static int CL_Key_GetCatcher( void ) {
-	return Key_GetCatcher( ) & ~KEYCATCH_MODELPLACER;
+	return Key_GetCatcher( ) & ~KEYCATCH_ENGINETOOLS;
 }
 
 static void CGVM_Cvar_Set( const char *var_name, const char *value ) {

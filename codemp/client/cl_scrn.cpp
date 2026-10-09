@@ -465,6 +465,7 @@ void SCR_DrawScreenField( stereoFrame_t stereoFrame ) {
 			CL_CGameRendering( stereoFrame );
 			SCR_DrawDemoRecording();
 			CL_ModelPlacer_Draw();
+			CL_NpcManager_Draw();
 			break;
 		}
 	}

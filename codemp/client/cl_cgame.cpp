@@ -412,6 +412,12 @@ rescan:
 	Cmd_TokenizeString( s );
 	cmd = Cmd_Argv(0);
 
+	// the NPC manager reads "npc list" replies, and hides the ones it asked for
+	if ( !strcmp( cmd, "print" ) && CL_NpcManager_ServerPrint( Cmd_Argv( 1 ) ) ) {
+		Cmd_TokenizeString( "print \"\"" );
+		return qtrue;
+	}
+
 	if ( !strcmp( cmd, "disconnect" ) ) {
 		char strEd[MAX_STRINGED_SV_STRING];
 		CL_CheckSVStringEdRef(strEd, Cmd_Argv(1));
@@ -494,6 +500,7 @@ CL_ShutdonwCGame
 void CL_ShutdownCGame( void ) {
 	Key_SetCatcher( Key_GetCatcher( ) & ~KEYCATCH_CGAME );
 	CL_ModelPlacer_Shutdown();
+	CL_NpcManager_Shutdown();
 	CL_FighterAssist_Shutdown();
 
 	if ( !cls.cgameStarted )

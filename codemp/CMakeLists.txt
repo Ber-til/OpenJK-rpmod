@@ -438,6 +438,7 @@ if(BuildMPEngine)
 		"${MPDir}/client/cl_main.cpp"
 		"${MPDir}/client/cl_modelplacer.cpp"
 		"${MPDir}/client/cl_net_chan.cpp"
+		"${MPDir}/client/cl_npcmanager.cpp"
 		"${MPDir}/client/cl_parse.cpp"
 		"${MPDir}/client/cl_scrn.cpp"
 		"${MPDir}/client/cl_ui.cpp"

@@ -521,6 +521,7 @@ static void MP_Open( void ) {
 		Com_Printf( "Model placer: join a server first\n" );
 		return;
 	}
+	CL_NpcManager_Close();
 	if ( !mp.indexed )
 		MP_BuildIndex();
 	if ( !mp.numModels ) {
@@ -552,6 +553,11 @@ static void MP_Close( void ) {
 	mp.state = MP_OFF;
 	MP_ReleaseKeys();
 	Key_SetCatcher( Key_GetCatcher() & ~KEYCATCH_MODELPLACER );
+}
+
+void CL_ModelPlacer_Close( void ) {
+	if ( mp.state != MP_OFF )
+		MP_Close();
 }
 
 static void MP_Send( void ) {

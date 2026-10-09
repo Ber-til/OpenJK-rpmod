@@ -715,12 +715,12 @@ static qboolean CL_G2API_AttachG2Model( void *ghoul2From, int modelIndexFrom, vo
 
 static void CL_Key_SetCatcher( int catcher ) {
 	// Don't allow the ui module to close the console
-	Key_SetCatcher( ( catcher & ~KEYCATCH_MODELPLACER ) | ( Key_GetCatcher( ) & ( KEYCATCH_CONSOLE | KEYCATCH_MODELPLACER ) ) );
+	Key_SetCatcher( ( catcher & ~KEYCATCH_ENGINETOOLS ) | ( Key_GetCatcher( ) & ( KEYCATCH_CONSOLE | KEYCATCH_ENGINETOOLS ) ) );
 }
 
-// the model placer's catcher belongs to the engine, mods never see or clear it
+// the engine tools' catchers belong to the engine, mods never see or clear them
 static int CL_Key_GetCatcher( void ) {
-	return Key_GetCatcher( ) & ~KEYCATCH_MODELPLACER;
+	return Key_GetCatcher( ) & ~KEYCATCH_ENGINETOOLS;
 }
 
 static void UIVM_Cvar_Set( const char *var_name, const char *value ) {

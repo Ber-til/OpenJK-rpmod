@@ -1348,6 +1348,10 @@ void CL_KeyDownEvent( int key, unsigned time )
 			CL_ModelPlacer_Escape();
 			return;
 		}
+		if ( ( Key_GetCatcher() & KEYCATCH_NPCMANAGER ) && !( Key_GetCatcher() & KEYCATCH_UI ) ) {
+			CL_NpcManager_Escape();
+			return;
+		}
 
 		// escape always gets out of CGAME stuff
 		if ( Key_GetCatcher() & KEYCATCH_CGAME ) {
@@ -1389,6 +1393,10 @@ void CL_KeyDownEvent( int key, unsigned time )
 	// model placer
 	else if ( Key_GetCatcher() & KEYCATCH_MODELPLACER ) {
 		CL_ModelPlacer_KeyEvent( key, qtrue );
+	}
+	// NPC manager
+	else if ( Key_GetCatcher() & KEYCATCH_NPCMANAGER ) {
+		CL_NpcManager_KeyEvent( key, qtrue );
 	}
 	// cgame
 	else if ( Key_GetCatcher() & KEYCATCH_CGAME ) {
@@ -1472,6 +1480,7 @@ void CL_CharEvent( int key ) {
 		 if ( Key_GetCatcher() & KEYCATCH_CONSOLE )		Field_CharEvent( &g_consoleField, key );
 	else if ( Key_GetCatcher() & KEYCATCH_UI )			UIVM_KeyEvent( key|K_CHAR_FLAG, qtrue );
 	else if ( Key_GetCatcher() & KEYCATCH_MODELPLACER )	CL_ModelPlacer_CharEvent( key );
+	else if ( Key_GetCatcher() & KEYCATCH_NPCMANAGER )	CL_NpcManager_CharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_CGAME )		CGVM_KeyEvent( key|K_CHAR_FLAG, qtrue );
 	else if ( Key_GetCatcher() & KEYCATCH_MESSAGE )		Field_CharEvent( &chatField, key );
 	else if ( cls.state == CA_DISCONNECTED )			Field_CharEvent( &g_consoleField, key );
