@@ -564,6 +564,30 @@ SEffectTemplate *CFxScheduler::GetEffectCopy( const char *file, int *newHandle )
 // Return:
 //	the pointer to the copy
 //------------------------------------------------------
+bool CFxScheduler::GetEffectTiming( int id, int *length, int *repeatDelay )
+{
+	if ( id < 1 || id >= FX_MAX_EFFECTS || !mEffectTemplates[id].mInUse )
+	{
+		return false;
+	}
+
+	const SEffectTemplate &fx = mEffectTemplates[id];
+	float longest = 0.0f;
+
+	for ( int i = 0; i < fx.mPrimitiveCount; i++ )
+	{
+		const CPrimitiveTemplate *prim = fx.mPrimitives[i];
+
+		if ( prim && prim->mSpawnDelay.GetMax() + prim->mLife.GetMax() > longest )
+		{
+			longest = prim->mSpawnDelay.GetMax() + prim->mLife.GetMax();
+		}
+	}
+	*length = (int)longest;
+	*repeatDelay = fx.mRepeatDelay;
+	return true;
+}
+
 SEffectTemplate *CFxScheduler::GetEffectCopy( int fxHandle, int *newHandle )
 {
 	if ( fxHandle < 1 || fxHandle >= FX_MAX_EFFECTS)
@@ -814,7 +838,8 @@ void CFxScheduler::PlayEffect( int id, vec3_t origin, matrix3_t axis, const int 
 	int						modelNum = 0, boltNum = -1;
 	int						entityNum = -1;
 
-	if ( boltInfo > 0 )
+	// boltInfo is 0 for the first bolt of model 0 on entity 0, so a ghoul2 instance says it is bolted too
+	if ( boltInfo > 0 || ( boltInfo == 0 && ghoul2 ) )
 	{
 		// extract the wraith ID from the bolt info
 		modelNum	= ( boltInfo >> MODEL_SHIFT )	& MODEL_AND;

@@ -644,6 +644,7 @@ void CL_ModelPlacer_Escape( void );
 void CL_ModelPlacer_Frame( void );
 qboolean CL_ModelPlacer_FilterEntity( const refEntity_t *ent );
 void CL_ModelPlacer_RenderScene( const refdef_t *fd );
+qboolean CL_ModelPlacer_Camera( vec3_t origin, vec3_t angles );
 void CL_ModelPlacer_Draw( void );
 
 //
@@ -651,7 +652,8 @@ void CL_ModelPlacer_Draw( void );
 //
 #define KEYCATCH_NPCMANAGER		0x0020	// engine only, the NPC manager owns keyboard and mouse
 #define KEYCATCH_SHADERMANAGER	0x0040	// engine only, the shader manager owns keyboard and mouse
-#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELPLACER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER )	// mods never see or clear these
+#define KEYCATCH_EFFECTMANAGER	0x0080	// engine only, the effect manager owns keyboard and mouse
+#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELPLACER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER )	// mods never see or clear these
 
 void CL_NpcManager_Init( void );
 void CL_NpcManager_Shutdown( void );
@@ -663,6 +665,10 @@ void CL_NpcManager_CharEvent( int ch );
 void CL_NpcManager_MouseEvent( int dx, int dy );
 void CL_NpcManager_Escape( void );
 qboolean CL_NpcManager_ServerPrint( const char *text );
+void CL_NpcManager_RequestList( void );
+qboolean CL_NpcManager_Waiting( void );
+int CL_NpcManager_NumNpcs( void );
+qboolean CL_NpcManager_GetNpc( int index, int *num, const char **type, const char **name );
 void CL_NpcManager_ViewRendered( const refdef_t *fd );
 void CL_NpcManager_Draw( void );
 
@@ -687,6 +693,28 @@ void CL_ShaderManager_Escape( void );
 void CL_ShaderManager_Frame( void );
 void CL_ShaderManager_ServerPrint( const char *text );
 void CL_ShaderManager_Draw( void );
+const char *CL_ShaderManager_SkinName( qhandle_t h );
+qboolean CL_ShaderManager_Camera( vec3_t origin, vec3_t angles );
+
+//
+// cl_effectmanager.cpp
+//
+void CL_EffectManager_Init( void );
+void CL_EffectManager_Shutdown( void );
+void CL_EffectManager_f( void );
+qboolean CL_EffectManager_Active( void );
+void CL_EffectManager_Close( void );
+void CL_EffectManager_KeyEvent( int key, qboolean down );
+void CL_EffectManager_CharEvent( int ch );
+void CL_EffectManager_MouseEvent( int dx, int dy );
+void CL_EffectManager_Escape( void );
+void CL_EffectManager_Frame( void );
+void CL_EffectManager_AddEntity( const refEntity_t *ent );
+qboolean CL_EffectManager_FilterEntity( const refEntity_t *ent );
+qboolean CL_EffectManager_RenderScene( const refdef_t *fd );
+qboolean CL_EffectManager_Camera( vec3_t origin, vec3_t angles );
+qboolean CL_EffectManager_ServerPrint( const char *text );
+void CL_EffectManager_Draw( void );
 
 //
 // cl_fighterassist.cpp

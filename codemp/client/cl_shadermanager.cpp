@@ -376,6 +376,13 @@ static void SM_ParseSkinFile( const char *path, smSkin_t *skin ) {
 	FS_FreeFile( buf );
 }
 
+// the file a skin handle was registered from, NULL if cgame didn't register it
+const char *CL_ShaderManager_SkinName( qhandle_t h ) {
+	if ( h <= 0 || h >= SM_MAX_HANDLES || sm.skinNames[h].empty() )
+		return NULL;
+	return sm.skinNames[h].c_str();
+}
+
 static smSkin_t *SM_GetSkin( qhandle_t h ) {
 	smSkin_t *skin;
 	const char *name;
@@ -1395,6 +1402,7 @@ static void SM_Open( void ) {
 	}
 	CL_ModelPlacer_Close();
 	CL_NpcManager_Close();
+	CL_EffectManager_Close();
 
 	sm.font = re->RegisterFont( "arialnb" );
 	if ( !sm.font )
@@ -1657,6 +1665,15 @@ void CL_ShaderManager_AddEntity( const refEntity_t *ent ) {
 		return;
 	if ( sm.numPending < SM_MAX_ENTITIES )
 		sm.pending[sm.numPending++] = *ent;
+}
+
+// the free camera, for the effects system to cull against
+qboolean CL_ShaderManager_Camera( vec3_t origin, vec3_t angles ) {
+	if ( sm.state == SM_OFF )
+		return qfalse;
+	VectorCopy( sm.camOrg, origin );
+	VectorCopy( sm.camAng, angles );
+	return qtrue;
 }
 
 // the view weapon would float where the player stands

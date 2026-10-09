@@ -34,7 +34,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define FX_FILE_PATH	"effects"
 
 #define FX_MAX_TRACE_DIST		16384	// SOF2 uses a larger scale
-#define FX_MAX_EFFECTS				256		// how many effects the system can store
+#define FX_MAX_EFFECTS				2048	// how many effects the system can store (was 256; the effect manager previews many)
 #define FX_MAX_2DEFFECTS			64		// how many 2d effects the system can store
 #define FX_MAX_EFFECT_COMPONENTS	24		// how many primitives an effect can hold, this should be plenty
 #define FX_MAX_PRIM_NAME			32
@@ -676,6 +676,9 @@ public:
 	CPrimitiveTemplate	*GetPrimitiveCopy( SEffectTemplate *effectCopy, const char *componentName );
 
 	void	MaterialImpact(trace_t *tr, CEffect *effect);
+
+	// how long one play of an effect lasts at most, and its repeatDelay; false if it isn't loaded
+	bool	GetEffectTiming( int id, int *length, int *repeatDelay );
 };
 
 //-------------------

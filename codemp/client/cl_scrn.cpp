@@ -463,11 +463,13 @@ void SCR_DrawScreenField( stereoFrame_t stereoFrame ) {
 		case CA_ACTIVE:
 			CL_ModelPlacer_Frame();
 			CL_ShaderManager_Frame();
+			CL_EffectManager_Frame();
 			CL_CGameRendering( stereoFrame );
 			SCR_DrawDemoRecording();
 			CL_ShaderManager_Draw();
 			CL_ModelPlacer_Draw();
 			CL_NpcManager_Draw();
+			CL_EffectManager_Draw();
 			break;
 		}
 	}

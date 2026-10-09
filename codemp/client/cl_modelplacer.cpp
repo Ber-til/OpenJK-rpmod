@@ -523,6 +523,7 @@ static void MP_Open( void ) {
 	}
 	CL_NpcManager_Close();
 	CL_ShaderManager_Close();
+	CL_EffectManager_Close();
 	if ( !mp.indexed )
 		MP_BuildIndex();
 	if ( !mp.numModels ) {
@@ -1088,6 +1089,15 @@ static void MP_AddGhost( void ) {
 	}
 	for ( int i = 0; i < 12; i++ )
 		MP_AddEdge( corners[edges[i][0]], corners[edges[i][1]], color );
+}
+
+// the free camera, for the effects system to cull against
+qboolean CL_ModelPlacer_Camera( vec3_t origin, vec3_t angles ) {
+	if ( mp.state == MP_OFF )
+		return qfalse;
+	VectorCopy( mp.camOrg, origin );
+	VectorCopy( mp.camAng, angles );
+	return qtrue;
 }
 
 // every cgame entity passes through here; the view weapon would float where the player stands

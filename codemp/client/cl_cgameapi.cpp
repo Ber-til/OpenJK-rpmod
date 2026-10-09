@@ -29,6 +29,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #include "snd_ambient.h"
 #include "FXExport.h"
 #include "FxUtil.h"
+#include "FxSystem.h"
 
 extern IHeapAllocator *G2VertSpaceClient;
 extern botlib_export_t *botlib_export;
@@ -316,16 +317,36 @@ void FX_FeedTrail( effectTrailArgStruct_t *a ); //FxPrimitives.cpp
 
 // the model placer re-aims the main view and hides the view weapon on the way to the renderer
 static void CL_R_AddRefEntityToScene( const refEntity_t *ent ) {
-	if ( CL_ModelPlacer_FilterEntity( ent ) || CL_ShaderManager_FilterEntity( ent ) )
+	if ( CL_ModelPlacer_FilterEntity( ent ) || CL_ShaderManager_FilterEntity( ent ) || CL_EffectManager_FilterEntity( ent ) )
 		return;
 	CL_ShaderManager_AddEntity( ent );
+	CL_EffectManager_AddEntity( ent );
 	re->AddRefEntityToScene( ent );
 }
 
 static void CL_R_RenderScene( const refdef_t *fd ) {
 	CL_NpcManager_ViewRendered( fd );
-	if ( !CL_ShaderManager_RenderScene( fd ) )
+	if ( !CL_ShaderManager_RenderScene( fd ) && !CL_EffectManager_RenderScene( fd ) )
 		CL_ModelPlacer_RenderScene( fd );
+}
+
+// effects are culled against cgame's view; with a tool's free camera looking
+// somewhere else they would vanish, so they are culled against the camera instead
+static void CL_FX_AddScheduledEffects( qboolean portal ) {
+	refdef_t *cgameView = theFxHelper.refdef, view;
+	vec3_t origin, angles;
+
+	if ( !portal && cgameView && ( CL_ModelPlacer_Camera( origin, angles ) || CL_ShaderManager_Camera( origin, angles )
+		|| CL_EffectManager_Camera( origin, angles ) ) ) {
+		view = *cgameView;
+		VectorCopy( origin, view.vieworg );
+		AnglesToAxis( angles, view.viewaxis );
+		theFxHelper.refdef = &view;
+		FX_AddScheduledEffects( portal );
+		theFxHelper.refdef = cgameView;
+		return;
+	}
+	FX_AddScheduledEffects( portal );
 }
 
 static void CL_AddCgameCommand( const char *cmdName ) {
@@ -1408,7 +1429,7 @@ intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 		return CGFX_PlayBoltedEffectID( args[1], (float *)VMA(2), (void *)args[3], args[4], args[5], args[6], args[7], (qboolean)args[8] );
 
 	case CG_FX_ADD_SCHEDULED_EFFECTS:
-		FX_AddScheduledEffects((qboolean)args[1]);
+		CL_FX_AddScheduledEffects((qboolean)args[1]);
 		return 0;
 
 	case CG_FX_DRAW_2D_EFFECTS:
@@ -1857,7 +1878,7 @@ void CL_BindCGame( void ) {
 		cgi.FX_PlayEffectID						= FX_PlayEffectID;
 		cgi.FX_PlayEntityEffectID				= FX_PlayEntityEffectID;
 		cgi.FX_PlayBoltedEffectID				= CGFX_PlayBoltedEffectID;
-		cgi.FX_AddScheduledEffects				= FX_AddScheduledEffects;
+		cgi.FX_AddScheduledEffects				= CL_FX_AddScheduledEffects;
 		cgi.FX_InitSystem						= FX_InitSystem;
 		cgi.FX_SetRefDef						= FX_SetRefDef;
 		cgi.FX_FreeSystem						= FX_FreeSystem;

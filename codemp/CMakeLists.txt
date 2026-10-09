@@ -467,6 +467,7 @@ if(BuildMPEngine)
 		"${MPDir}/client/cl_parse.cpp"
 		"${MPDir}/client/cl_scrn.cpp"
 		"${MPDir}/client/cl_shadermanager.cpp"
+		"${MPDir}/client/cl_effectmanager.cpp"
 		"${MPDir}/client/cl_ui.cpp"
 		"${MPDir}/client/cl_uiapi.cpp"
 		"${MPDir}/client/cl_uiapi.h"

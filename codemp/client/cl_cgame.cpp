@@ -422,6 +422,12 @@ rescan:
 		return qtrue;
 	}
 
+	// the effect manager does the same with "rpeffect list"
+	if ( !strcmp( cmd, "print" ) && CL_EffectManager_ServerPrint( Cmd_Argv( 1 ) ) ) {
+		Cmd_TokenizeString( "print \"\"" );
+		return qtrue;
+	}
+
 	if ( !strcmp( cmd, "disconnect" ) ) {
 		char strEd[MAX_STRINGED_SV_STRING];
 		CL_CheckSVStringEdRef(strEd, Cmd_Argv(1));
@@ -506,6 +512,7 @@ void CL_ShutdownCGame( void ) {
 	CL_ModelPlacer_Shutdown();
 	CL_NpcManager_Shutdown();
 	CL_ShaderManager_Shutdown();
+	CL_EffectManager_Shutdown();
 	CL_FighterAssist_Shutdown();
 
 	if ( !cls.cgameStarted )

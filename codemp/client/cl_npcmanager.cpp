@@ -176,6 +176,98 @@ static const char *nmEmotes[] = {
 	"emraisehand",
 	"emsleep",
 	"emconsole",
+	"emconsolecomm",
+	"emyes",
+	"emno",
+	"emcomeon",
+	"emcomeon2",
+	"emhello",
+	"embeg",
+	"emcower",
+	"emnoisy",
+	"emwait",
+	"ematease",
+	"emhips",
+	"emreach",
+	"emreach2",
+	"emlotus",
+	"emsit",
+	"emsit2",
+	"emsit3",
+	"emsit4",
+	"emsit5",
+	"emsit6",
+	"emsit7",
+	"emsit8",
+	"emsit9",
+	"emsit10",
+	"emsit11",
+	"emsit12",
+	"emsitconsole",
+	"emliedown",
+	"emhandsignal1",
+	"emhandsignal2",
+	"emhandsignal3",
+	"emhandsignal4",
+	"emhandsignall",
+	"emhandsignalr",
+	"emgrip",
+	"emgrip2",
+	"emgrip3",
+	"emgrip4",
+	"emthrow",
+	"embutton",
+	"embutton2",
+	"emsniper",
+	"emknockback",
+	"emhurt",
+	"emgrab",
+	"emgrabbed",
+	"emheadtiltl",
+	"emshy",
+	"emshuffle",
+	"embalance",
+	"emcheer",
+	"emdeath",
+	"emdeath2",
+	"emdeath3",
+	"emdeath4",
+	"emdead",
+	"emdead2",
+	"emdead3",
+	"emdodgel",
+	"emdodger",
+	"embackflip",
+	"emsaberkick",
+	"emsaberpose",
+	"emsaberpose2",
+	"emsaberpose3",
+	"emsaberpose4",
+	"emsaberpose5",
+	"emsaberpose6",
+	"emsaberfinish",
+	"emsaberthrow",
+	"emsaberthrow2",
+	"empoint",
+	"empoint2",
+	"emwindy",
+	"emsabertaunt",
+	"emsabertaunt2",
+	"emsabertaunt3",
+	"emsabertaunt4",
+	"emsaberlock1",
+	"emsaberlock2",
+	"emcrossarms",
+	"emlift",
+	"emlift2",
+	"empose",
+	"empose2",
+	"empose3",
+	"empose4",
+	"emsalute",
+	"emlean",
+	"emgun",
+	"ematease2",
 };
 
 static const char *nmTeamArgs[] = { "0", "player", "enemy" };
@@ -793,6 +885,29 @@ static void NM_RequestList( void ) {
 	NM_Send( "npc list", qfalse );
 }
 
+// the NPC list for the other tools, read quietly
+void CL_NpcManager_RequestList( void ) {
+	if ( cls.state == CA_ACTIVE )
+		NM_RequestList();
+}
+
+qboolean CL_NpcManager_Waiting( void ) {
+	return (qboolean)( nm.listRequestTime && cls.realtime - nm.listRequestTime < NM_LIST_TIMEOUT );
+}
+
+int CL_NpcManager_NumNpcs( void ) {
+	return nm.numNpcs;
+}
+
+qboolean CL_NpcManager_GetNpc( int index, int *num, const char **type, const char **name ) {
+	if ( index < 0 || index >= nm.numNpcs )
+		return qfalse;
+	*num = nm.npcs[index].num;
+	*type = nm.npcs[index].type;
+	*name = nm.npcs[index].name;
+	return qtrue;
+}
+
 static const char *NM_BuildSpawn( void ) {
 	static char cmd[MAX_STRING_CHARS];
 	const nmType_t *t = NM_SelectedType();
@@ -1336,6 +1451,7 @@ static void NM_Open( nmTab_t tab ) {
 	}
 	CL_ModelPlacer_Close();
 	CL_ShaderManager_Close();
+	CL_EffectManager_Close();
 	if ( !nm.indexed )
 		NM_BuildIndex();
 
