@@ -134,6 +134,7 @@ typedef struct cin_cache_s {
 	int					playonwalls;
 	byte*				buf;
 	long				drawX, drawY;
+	cinVideo_t			*video;			// an mp4/webm/mkv/mov played through FFmpeg instead of a RoQ
 } cin_cache_t;
 
 static cinematics_t		cin;
@@ -1312,6 +1313,12 @@ static void RoQShutdown( void ) {
 		cinTable[currentHandle].iFile = 0;
 	}
 
+	if (cinTable[currentHandle].video) {
+		CIN_VideoClose( cinTable[currentHandle].video );
+		cinTable[currentHandle].video = NULL;
+		cinTable[currentHandle].buf = NULL;
+	}
+
 	if (cinTable[currentHandle].alterGameState) {
 		cls.state = CA_DISCONNECTED;
 		// we can't just do a vstr nextmap, because
@@ -1365,12 +1372,73 @@ Fetch and decompress the pending frame
 */
 
 
+/*
+==================
+CIN_RunVideo
+
+CIN_RunCinematic for a video FFmpeg plays
+==================
+*/
+static e_status CIN_RunVideo( int handle ) {
+	cin_cache_t	*c = &cinTable[handle];
+	int			thisTime;
+	qboolean	newFrame;
+
+	currentHandle = handle;
+
+	if ( c->playonwalls < -1 ) {
+		return c->status;
+	}
+	if ( c->alterGameState && cls.state != CA_CINEMATIC ) {
+		return c->status;
+	}
+	if ( c->status == FMV_IDLE ) {
+		return c->status;
+	}
+
+	// a video on a wall pauses while it is not drawn, like a RoQ
+	thisTime = Sys_Milliseconds()*com_timescale->value;
+	if ( c->shader && abs( thisTime - (int)c->lastTime ) > 100 ) {
+		c->startTime += thisTime - c->lastTime;
+	}
+	c->lastTime = thisTime;
+
+	if ( CIN_VideoUpdate( c->video, ( thisTime - (int)c->startTime ) / 1000.0, c->silent, &newFrame ) ) {
+		if ( newFrame ) {
+			c->dirty = qtrue;
+		}
+		return c->status;
+	}
+	if ( newFrame ) {
+		c->dirty = qtrue;
+	}
+
+	// played to the end
+	if ( c->holdAtEnd ) {
+		c->status = FMV_IDLE;
+	} else if ( c->looping ) {
+		CIN_VideoRewind( c->video );
+		c->startTime = c->lastTime = thisTime;
+		if ( !c->silent ) {
+			s_rawend = s_soundtime;
+		}
+	} else {
+		c->status = FMV_EOF;
+		RoQShutdown();
+	}
+	return c->status;
+}
+
 e_status CIN_RunCinematic (int handle)
 {
 	int	start = 0;
 	int     thisTime = 0;
 
 	if (handle < 0 || handle>= MAX_VIDEO_HANDLES || cinTable[handle].status == FMV_EOF) return FMV_EOF;
+
+	if (cinTable[handle].video) {
+		return CIN_RunVideo( handle );
+	}
 
 	if (cin.currentHandle != handle) {
 		currentHandle = handle;
@@ -1464,6 +1532,44 @@ int CIN_PlayCinematic( const char *arg, int x, int y, int w, int h, int systemBi
 	cin.currentHandle = currentHandle;
 
 	strcpy(cinTable[currentHandle].fileName, name);
+
+	// the same name as an mp4, webm, mkv or mov plays that instead
+	cinTable[currentHandle].video = CIN_VideoOpen( name );
+	if ( cinTable[currentHandle].video ) {
+		cin_cache_t *c = &cinTable[currentHandle];
+
+		CIN_SetExtents(currentHandle, x, y, w, h);
+		CIN_SetLooping(currentHandle, (qboolean)((systemBits & CIN_loop)!=0));
+
+		c->CIN_WIDTH = c->drawX = CIN_VideoWidth( c->video );
+		c->CIN_HEIGHT = c->drawY = CIN_VideoHeight( c->video );
+		c->buf = CIN_VideoBuffer( c->video );
+		c->holdAtEnd = (qboolean)((systemBits & CIN_hold) != 0);
+		c->alterGameState = (qboolean)((systemBits & CIN_system) != 0);
+		c->playonwalls = 1;
+		c->silent = (qboolean)((systemBits & CIN_silent) != 0);
+		c->shader = (qboolean)((systemBits & CIN_shader) != 0);
+		c->startTime = c->lastTime = Sys_Milliseconds()*com_timescale->value;
+		c->dirty = qtrue;
+
+		if (c->alterGameState) {
+			// close the menu
+			if ( cls.uiStarted ) {
+				UIVM_SetActiveMenu( UIMENU_NONE );
+			}
+			cls.state = CA_CINEMATIC;
+		} else {
+			c->playonwalls = cl_inGameVideo->integer;
+		}
+
+		c->status = FMV_PLAY;
+		Con_Close();
+
+		if ( !c->silent )
+			s_rawend = s_soundtime;
+
+		return currentHandle;
+	}
 
 	cinTable[currentHandle].ROQSize = 0;
 	cinTable[currentHandle].ROQSize = FS_FOpenFileRead (cinTable[currentHandle].fileName, &cinTable[currentHandle].iFile, qtrue);

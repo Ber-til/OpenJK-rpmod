@@ -580,6 +580,17 @@ void SCR_RunCinematic (void);
 void SCR_StopCinematic (void);
 int CIN_PlayCinematic( const char *arg0, int xpos, int ypos, int width, int height, int bits);
 e_status CIN_StopCinematic(int handle);
+
+// cl_cin_video.cpp
+typedef struct cinVideo_s cinVideo_t;
+cinVideo_t *CIN_VideoOpen( const char *name );
+void CIN_VideoClose( cinVideo_t *v );
+int CIN_VideoWidth( const cinVideo_t *v );
+int CIN_VideoHeight( const cinVideo_t *v );
+byte *CIN_VideoBuffer( const cinVideo_t *v );
+qboolean CIN_VideoUpdate( cinVideo_t *v, double time, qboolean silent, qboolean *newFrame );
+void CIN_VideoRewind( cinVideo_t *v );
+
 e_status CIN_RunCinematic (int handle);
 void CIN_DrawCinematic (int handle);
 void CIN_SetExtents (int handle, int x, int y, int w, int h);

@@ -411,6 +411,30 @@ if(BuildMPEngine)
 		set(MPEngineLibraries ${MPEngineLibraries} ${SDL2_LIBRARIES})
 	endif()
 
+	# mp4/webm/mkv/mov cinematics: FFmpeg's headers when building, its libraries
+	# loaded when the game runs (lib/ffmpeg on Windows, the system's elsewhere)
+	set(MPEngineFFmpegFiles "")
+	if(WIN32)
+		if(EXISTS "${OpenJKLibDir}/ffmpeg/include/libavformat/avformat.h")
+			set(MPEngineIncludeDirectories ${MPEngineIncludeDirectories} ${OpenJKLibDir}/ffmpeg/include)
+			set(MPEngineDefines ${MPEngineDefines} "USE_FFMPEG_VIDEO")
+			if(CMAKE_SIZEOF_VOID_P EQUAL 4)
+				file(GLOB MPEngineFFmpegFiles "${OpenJKLibDir}/ffmpeg/bin/x86/*.dll")
+			else()
+				file(GLOB MPEngineFFmpegFiles "${OpenJKLibDir}/ffmpeg/bin/x64/*.dll")
+			endif()
+		endif()
+	else()
+		find_package(PkgConfig QUIET)
+		if(PKG_CONFIG_FOUND)
+			pkg_check_modules(FFMPEG QUIET libavformat libavcodec libavutil libswscale libswresample)
+			if(FFMPEG_FOUND)
+				set(MPEngineIncludeDirectories ${MPEngineIncludeDirectories} ${FFMPEG_INCLUDE_DIRS})
+				set(MPEngineDefines ${MPEngineDefines} "USE_FFMPEG_VIDEO")
+			endif()
+		endif()
+	endif()
+
 	# EAX is Windows-Only (right?)
 	if(MSVC)
 		set(MPEngineEAXFiles
@@ -429,6 +453,7 @@ if(BuildMPEngine)
 		"${MPDir}/client/cl_cgameapi.cpp"
 		"${MPDir}/client/cl_cgameapi.h"
 		"${MPDir}/client/cl_cin.cpp"
+		"${MPDir}/client/cl_cin_video.cpp"
 		"${MPDir}/client/cl_console.cpp"
 		"${MPDir}/client/cl_fighterassist.cpp"
 		"${MPDir}/client/cl_input.cpp"
@@ -607,6 +632,7 @@ if(BuildMPEngine)
 			RUNTIME
 			DESTINATION ${JKAInstallDir}
 			COMPONENT ${JKAMPClientComponent})
+		set(MPEngineExtraInstallFiles ${MPEngineExtraInstallFiles} ${MPEngineFFmpegFiles})
 		if(MPEngineExtraInstallFiles)
 			install(FILES ${MPEngineExtraInstallFiles}
 				DESTINATION ${JKAInstallDir}

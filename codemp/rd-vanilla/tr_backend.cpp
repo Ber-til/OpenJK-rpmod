@@ -1238,11 +1238,8 @@ void RE_StretchRaw (int x, int y, int w, int h, int cols, int rows, const byte *
 		start = ri.Milliseconds()*ri.Cvar_VariableValue( "timescale" );
 	}
 
-	// make sure rows and cols are powers of 2
-	if ( (cols&(cols-1)) || (rows&(rows-1)) )
-	{
-		Com_Error (ERR_DROP, "Draw_StretchRaw: size not a power of 2: %i by %i", cols, rows);
-	}
+	// any size: RoQs are powers of 2, mp4/webm cinematics are whatever they were made at
+	// (1920x1080...), which every card with non-power-of-2 textures takes as it is
 
 	GL_Bind( tr.scratchImage[client] );
 

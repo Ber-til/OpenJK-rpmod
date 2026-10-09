@@ -1540,7 +1540,6 @@ Used for cinematics.
 =============
 */
 void RE_StretchRaw (int x, int y, int w, int h, int cols, int rows, const byte *data, int client, qboolean dirty) {
-	int			i, j;
 	int			start, end;
 	vec4_t quadVerts[4];
 	vec2_t texCoords[4];
@@ -1562,14 +1561,8 @@ void RE_StretchRaw (int x, int y, int w, int h, int cols, int rows, const byte *
 		start = ri.Milliseconds();
 	}
 
-	// make sure rows and cols are powers of 2
-	for ( i = 0 ; ( 1 << i ) < cols ; i++ ) {
-	}
-	for ( j = 0 ; ( 1 << j ) < rows ; j++ ) {
-	}
-	if ( ( 1 << i ) != cols || ( 1 << j ) != rows) {
-		ri.Error (ERR_DROP, "Draw_StretchRaw: size not a power of 2: %i by %i", cols, rows);
-	}
+	// any size: RoQs are powers of 2, mp4/webm cinematics are whatever they were made at
+	// (1920x1080...), which every card with non-power-of-2 textures takes as it is
 
 	RE_UploadCinematic (cols, rows, data, client, dirty);
 

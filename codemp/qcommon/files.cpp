@@ -271,6 +271,7 @@ typedef struct fileHandleData_s {
 	int			zipFileLen;
 	qboolean	zipFile;
 	char		name[MAX_ZPATH];
+	pack_t		*pak;				// the pk3 a zipFile is in
 } fileHandleData_t;
 
 static fileHandleData_t	fsh[MAX_FILE_HANDLES];
@@ -1462,6 +1463,7 @@ long FS_FOpenFileRead( const char *filename, fileHandle_t *file, qboolean unique
 						}
 						Q_strncpyz( fsh[*file].name, filename, sizeof( fsh[*file].name ) );
 						fsh[*file].zipFile = qtrue;
+						fsh[*file].pak = pak;
 
 						// set the file position in the zip file (also sets the current file info)
 						unzSetOffset(fsh[*file].handleFiles.file.z, pakFile->pos);
@@ -1785,6 +1787,46 @@ FS_Seek
 
 =================
 */
+/*
+=================
+FS_IsZipFile
+=================
+*/
+qboolean FS_IsZipFile( fileHandle_t f ) {
+	FS_AssertInitialised();
+	return fsh[f].zipFile;
+}
+
+/*
+=================
+FS_PakFileStored
+
+For a file just opened from a pk3 without compression: the pk3's path and where
+the file starts in it, so it can be read straight from there with real seeks.
+=================
+*/
+qboolean FS_PakFileStored( fileHandle_t f, char *pakPath, int pakPathSize, int *offset ) {
+	unz_file_info	info;
+	unzFile			z;
+
+	FS_AssertInitialised();
+
+	if ( !fsh[f].zipFile || !fsh[f].pak || FS_FTell( f ) != 0 )
+		return qfalse;
+
+	z = fsh[f].handleFiles.file.z;
+	if ( unzGetCurrentFileInfo( z, &info, NULL, 0, NULL, 0, NULL, 0 ) != UNZ_OK || info.compression_method != 0 )
+		return qfalse;
+
+	// where the data starts, until anything is read from it
+	*offset = (int)unzGetCurrentFileZStreamPos64( z );
+	if ( *offset <= 0 )
+		return qfalse;
+
+	Q_strncpyz( pakPath, fsh[f].pak->pakFilename, pakPathSize );
+	return qtrue;
+}
+
 int FS_Seek( fileHandle_t f, long offset, int origin ) {
 	int		_origin;
 
