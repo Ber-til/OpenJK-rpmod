@@ -119,6 +119,7 @@ typedef enum {
 	SM_F_NONE,			// typing goes to the search box
 	SM_F_SEARCH,
 	SM_F_OFFSET,
+	SM_F_PATH,			// a replacement typed in, instead of picked from the list
 	SM_NUM_FIELDS
 } smField_t;
 
@@ -262,6 +263,8 @@ static struct {
 	qboolean	viewSky;					// shaderView only holds skies, for a sky
 	smFilter_t	filter;
 	smList_t	shaderList;
+	qboolean	typingPath;					// the replacement is typed in SM_F_PATH, not picked from the list
+	char		pathShader[MAX_QPATH];		// what it is typed as, cleaned up
 	qboolean	showPreview;
 	qboolean	livePreview;
 	char		liveFrom[MAX_QPATH], liveTo[MAX_QPATH];	// remapped on this screen only
@@ -1263,7 +1266,7 @@ static bool SM_NameLess( const std::string &a, const std::string &b ) {
 
 // every shader in shaders/*.shader (where JKA keeps them, as the renderer reads), and every image a shader can be made from
 static void SM_BuildIndex( void ) {
-	static const char *dirs[] = { "textures", "models", "gfx" };
+	static const char *dirs[] = { "textures", "models", "gfx", "effects" };
 	static const char *exts[] = { ".jpg", ".tga", ".png" };
 	int start = Sys_Milliseconds(), numFiles, out = 0;
 	char **files;
@@ -1348,10 +1351,39 @@ static void SM_RebuildShaderView( void ) {
 	}
 }
 
+// the shader picked in the list, or with a path typed in, that path
 static const char *SM_HighlightedShader( void ) {
+	if ( sm.typingPath )
+		return sm.pathShader[0] ? sm.pathShader : NULL;
 	if ( sm.shaderList.sel < 0 || sm.shaderList.sel >= (int)sm.shaderView.size() )
 		return NULL;
 	return sm.shaderNames[sm.shaderView[sm.shaderList.sel]].c_str();
+}
+
+// the path box as a shader name: forward slashes, no extension, as the renderer names them
+static void SM_PathChanged( void ) {
+	COM_StripExtension( sm.fields[SM_F_PATH], sm.pathShader, sizeof( sm.pathShader ) );
+	for ( char *p = sm.pathShader; *p; p++ ) {
+		if ( *p == '\\' )
+			*p = '/';
+	}
+}
+
+// the typed path is one of the shaders or images the game has
+static qboolean SM_PathKnown( void ) {
+	std::vector<std::string>::const_iterator it;
+
+	if ( !sm.pathShader[0] )
+		return qfalse;
+	it = std::lower_bound( sm.shaderNames.begin(), sm.shaderNames.end(), std::string( sm.pathShader ), SM_NameLess );
+	return (qboolean)( it != sm.shaderNames.end() && !Q_stricmp( it->c_str(), sm.pathShader ) );
+}
+
+// where typing goes with no box clicked: the path box while typing a path, else the search
+static smField_t SM_TypingField( void ) {
+	if ( sm.focus != SM_F_NONE )
+		return sm.focus;
+	return sm.typingPath && sm.tab == SM_TAB_OBJECT ? SM_F_PATH : SM_F_SEARCH;
 }
 
 static const char *SM_SelectedOriginal( void ) {
@@ -1623,7 +1655,7 @@ static int SM_ShaderRows( void ) {
 static void SM_EditKey( int key ) {
 	smList_t *list;
 	int count, visible, delta, len;
-	smField_t f = sm.focus != SM_F_NONE ? sm.focus : SM_F_SEARCH;
+	smField_t f = SM_TypingField();
 
 	switch ( key ) {
 	case A_MOUSE1:
@@ -1655,12 +1687,16 @@ static void SM_EditKey( int key ) {
 			sm.fields[f][len - 1] = '\0';
 			if ( f == SM_F_SEARCH )
 				SM_RebuildShaderView();
+			else if ( f == SM_F_PATH )
+				SM_PathChanged();
 		}
 		return;
 	case A_DELETE:
 		sm.fields[f][0] = '\0';
 		if ( f == SM_F_SEARCH )
 			SM_RebuildShaderView();
+		else if ( f == SM_F_PATH )
+			SM_PathChanged();
 		return;
 	default:
 		break;
@@ -1726,8 +1762,11 @@ void CL_ShaderManager_CharEvent( int ch ) {
 
 	if ( sm.state != SM_EDIT || sm.looking || ch < ' ' || ch > '~' )
 		return;
-	f = sm.focus != SM_F_NONE ? sm.focus : SM_F_SEARCH;
+	f = SM_TypingField();
 	if ( f == SM_F_OFFSET && !( isdigit( ch ) || ch == '.' || ch == '-' ) )
+		return;
+	// goes on the command line as one word
+	if ( f == SM_F_PATH && ( ch == ' ' || ch == '"' || ch == ';' ) )
 		return;
 	len = strlen( sm.fields[f] );
 	if ( len < SM_FIELD_LEN - 1 ) {
@@ -1736,6 +1775,8 @@ void CL_ShaderManager_CharEvent( int ch ) {
 		if ( f == SM_F_SEARCH ) {
 			sm.shaderList.scroll = 0;
 			SM_RebuildShaderView();
+		} else if ( f == SM_F_PATH ) {
+			SM_PathChanged();
 		}
 	}
 }
@@ -2288,7 +2329,7 @@ static qboolean SM_Button( float x, float y, float w, const char *label, qboolea
 }
 
 static void SM_Field( smField_t f, float x, float y, float w, const char *placeholder ) {
-	qboolean active = (qboolean)( sm.focus == f || ( f == SM_F_SEARCH && sm.focus == SM_F_NONE ) );
+	qboolean active = (qboolean)( SM_TypingField() == f );
 
 	SM_Box( x, y, w, SM_CTRL_H, active ? smPanelFocus : smPanelLight );
 	if ( sm.fields[f][0] )
@@ -2518,31 +2559,65 @@ static void SM_DrawObjectTab( float x, float y, float w ) {
 	SM_TextClipped( x, y, w, remap ? va( S_COLOR_CYAN "Now remapped to %s", remap ) : original ? S_COLOR_GREY "Not remapped" : "", smWhite );
 	y += 16;
 
-	SM_Text( x, y + 2, "Replace with", smDim );
+	SM_Text( x, y + 2, "With", smDim );
 	{
-		static const char *labels[] = { "All", "textures", "models", "gfx" };
-		float bx = x + w - 4 * 50;
+		// the list, filtered by where the shaders are, or a path typed in; as wide as their labels, from the right
+		static const char *labels[] = { "All", "textures", "models", "gfx", "Path..." };
+		float widths[5], bx = x + w + 2;
 
-		for ( int i = 0; i < 4; i++ ) {
-			if ( SM_Button( bx + i * 50, y, 48, labels[i], (qboolean)( sm.filter == i ), qtrue ) ) {
-				sm.filter = (smFilter_t)i;
-				sm.shaderList.scroll = 0;
-				SM_RebuildShaderView();
+		for ( int i = 4; i >= 0; i-- ) {
+			widths[i] = SM_TextWidth( labels[i] ) + 8;
+			bx -= widths[i] + 2;
+		}
+		for ( int i = 0; i < 5; bx += widths[i] + 2, i++ ) {
+			const qboolean path = (qboolean)( i == 4 );
+
+			if ( !SM_Button( bx, y, widths[i], labels[i], path ? sm.typingPath : (qboolean)( !sm.typingPath && sm.filter == i ), qtrue ) )
+				continue;
+			if ( path ) {
+				sm.typingPath = qtrue;
+				sm.focus = SM_F_PATH;
+				SM_PathChanged();
+				continue;
 			}
+			sm.typingPath = qfalse;
+			sm.focus = SM_F_NONE;
+			sm.filter = (smFilter_t)i;
+			sm.shaderList.scroll = 0;
+			SM_RebuildShaderView();
 		}
 	}
 	y += 18;
-	if ( SM_IsSky( original ) != sm.viewSky )
-		SM_RebuildShaderView();
-	if ( sm.viewSky )
-		SM_Field( SM_F_SEARCH, x, y, w, va( "A sky: search %i sky shaders", (int)sm.skyShaders.size() ) );
-	else
-		SM_Field( SM_F_SEARCH, x, y, w, va( "Type to search %i shaders", (int)sm.shaderNames.size() ) );
-	y += 18;
-	clicked = SM_List( &sm.shaderList, (int)sm.shaderView.size(), x, y, w, rows, SM_DrawShaderRow );
-	if ( sm.shaderView.empty() )
-		SM_Text( x + 4, y + 1, sm.viewSky ? "No sky shaders match" : "No shaders match", smDim );
-	(void)clicked;
+	if ( sm.typingPath ) {
+		// what it's typed as, and whether the game has it
+		SM_Field( SM_F_PATH, x, y, w, "Type a shader or image path, e.g. effects/gfx/force2" );
+		y += 18;
+		SM_Box( x, y, w, rows * SM_ROW_H, smPanelLight );
+		if ( !sm.pathShader[0] ) {
+			SM_TextClipped( x + 4, y + 2, w - 8, S_COLOR_GREY "Any shader the game can load, or an image without", smWhite );
+			SM_TextClipped( x + 4, y + 2 + SM_ROW_H, w - 8, S_COLOR_GREY "its extension. Enter applies it, as from the list.", smWhite );
+		} else if ( SM_PathKnown() ) {
+			SM_TextClipped( x + 4, y + 2, w - 8, va( S_COLOR_GREEN "Found: %s", sm.pathShader ), smWhite );
+		} else {
+			SM_TextClipped( x + 4, y + 2, w - 8, S_COLOR_YELLOW "Not a shader or image in your game files", smWhite );
+			SM_TextClipped( x + 4, y + 2 + SM_ROW_H, w - 8, S_COLOR_GREY "The server may still have it; else it shows as the", smWhite );
+			SM_TextClipped( x + 4, y + 2 + SM_ROW_H * 2, w - 8, S_COLOR_GREY "default, checkered shader. Live shows it here first.", smWhite );
+		}
+		if ( original && !SM_RemapAllowed( original, sm.pathShader[0] ? sm.pathShader : original ) )
+			SM_TextClipped( x + 4, y + 2 + SM_ROW_H * 4, w - 8, S_COLOR_RED "A sky can only be remapped to another sky", smWhite );
+	} else {
+		if ( SM_IsSky( original ) != sm.viewSky )
+			SM_RebuildShaderView();
+		if ( sm.viewSky )
+			SM_Field( SM_F_SEARCH, x, y, w, va( "A sky: search %i sky shaders", (int)sm.skyShaders.size() ) );
+		else
+			SM_Field( SM_F_SEARCH, x, y, w, va( "Type to search %i shaders", (int)sm.shaderNames.size() ) );
+		y += 18;
+		clicked = SM_List( &sm.shaderList, (int)sm.shaderView.size(), x, y, w, rows, SM_DrawShaderRow );
+		if ( sm.shaderView.empty() )
+			SM_Text( x + 4, y + 1, sm.viewSky ? "No sky shaders match" : "No shaders match", smDim );
+		(void)clicked;
+	}
 	y += rows * SM_ROW_H + 4;
 	replacement = SM_HighlightedShader();
 
