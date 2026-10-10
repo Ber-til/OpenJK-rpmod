@@ -189,6 +189,7 @@ void FX_Add( bool portal )
 	SEffectList	*ef;
 
 	drawnFx = 0;
+	theFxHelper.mInPortal = portal;
 
 	int numFx = activeFx;	//but stop when there can't be any more left!
 	for ( i = 0, ef = effectList; i < MAX_EFFECTS && numFx; i++, ef++ )
@@ -219,6 +220,7 @@ void FX_Add( bool portal )
 			}
 		}
 	}
+	theFxHelper.mInPortal = false;
 
 
 	if ( fx_debug->integer && !portal)

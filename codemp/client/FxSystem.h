@@ -43,6 +43,7 @@ public:
 	bool	mTimeFrozen;
 	float	mRealTime;
 	refdef_t*	refdef;
+	bool	mInPortal;		// FX_Add is drawing the sky portal's effects, which sit elsewhere
 #ifdef _DEBUG
 	int		mMainRefs;
 	int		mMiniRefs;
@@ -174,6 +175,17 @@ public:
 
 		assert(!ent || ent->renderfx >= 0);
 #endif
+		if ( ent && ent->customShader && !mInPortal )
+		{
+			// the shader manager picks effects by what they draw
+			vec3_t mins, maxs;
+
+			VectorCopy( ent->origin, mins );
+			VectorCopy( ent->origin, maxs );
+			if ( ent->reType == RT_LINE || ent->reType == RT_ELECTRICITY || ent->reType == RT_CYLINDER )
+				AddPointToBounds( ent->oldorigin, mins, maxs );
+			CL_ShaderManager_AddEffect( ent->customShader, mins, maxs, ent->radius );
+		}
 		re->AddMiniRefEntityToScene( ent );
 	}
 	inline	void	AddLightToScene( vec3_t org, float radius, float red, float green, float blue )
@@ -192,6 +204,15 @@ public:
 
 	inline	void	AddPolyToScene( int shader, int count, polyVert_t *verts )
 	{
+		if ( shader && count > 0 && !mInPortal )
+		{
+			vec3_t mins, maxs;
+
+			ClearBounds( mins, maxs );
+			for ( int i = 0; i < count; i++ )
+				AddPointToBounds( verts[i].xyz, mins, maxs );
+			CL_ShaderManager_AddEffect( shader, mins, maxs, 0.0f );
+		}
 		re->AddPolyToScene( shader, count, verts, 1 );
 	}
 

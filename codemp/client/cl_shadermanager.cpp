@@ -34,6 +34,10 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 //
 // The model, skin and remap names come from watching cgame's register and remap
 // calls, since the renderer can't turn those handles back into names.
+//
+// Effects have no geometry to trace: the effects system reports each piece it
+// draws (sprite, line, poly...), the pieces close together are taken as one
+// effect, and the box around them is what a click finds.
 
 #include <algorithm>
 #include <map>
@@ -58,6 +62,13 @@ extern IHeapAllocator *G2VertSpaceClient;
 #define SM_MAX_HISTORY		64
 #define SM_MAX_OUTLINE		2048	// triangles of a surface worth outlining
 #define SM_FIELD_LEN		64
+#define SM_MAX_FX_BITS		4096	// effect pieces kept a frame
+#define SM_MAX_FX_GROUPS	256
+#define SM_MAX_FX_SHADERS	16		// per effect
+#define SM_FX_GAP			24.0f	// pieces whose centres come this close are one effect
+#define SM_FX_CORE			8.0f	// how much of a piece's size counts for that
+#define SM_FX_BOX			32.0f	// and for its box: glows fade out well before their edge
+#define SM_FX_WINDOW		300		// ms: a box holds what its effect covered this long, so flickering pieces don't shrink it
 
 // the manager's panel, docked on the right; the view shrinks to the left of it
 #define SM_PANEL_X			368.0f
@@ -70,7 +81,8 @@ typedef enum {
 	SM_HIT_WORLD,
 	SM_HIT_BRUSH,		// a door, mover or other brush entity
 	SM_HIT_MODEL,		// an md3
-	SM_HIT_GHOUL2
+	SM_HIT_GHOUL2,
+	SM_HIT_EFFECT		// pieces of the effects system
 } smHitKind_t;
 
 typedef struct smHit_s {
@@ -81,6 +93,7 @@ typedef struct smHit_s {
 	char		model[MAX_QPATH];		// the model, "*n" for brush entities
 	char		surface[MAX_QPATH];		// the model's surface, "" for the world
 	int			surf;					// map surface hit, world and brush entities, -1 otherwise
+	int			fx;						// effect hit, into fxGroups, -1 otherwise
 	refEntity_t	ent;					// the entity hit, all but the world
 } smHit_t;
 
@@ -146,6 +159,23 @@ typedef struct smSkin_s {
 	std::vector<std::string> surfaces, shaders;
 } smSkin_t;
 
+// one piece the effects system drew, and the pieces of one effect together
+typedef struct smFxBit_s {
+	vec3_t		coreMins, coreMaxs;		// what joins it to its neighbours
+	vec3_t		mins, maxs;				// what it covers on screen
+	qhandle_t	shader;
+} smFxBit_t;
+
+typedef struct smFxGroup_s {
+	vec3_t		coreMins, coreMaxs;
+	vec3_t		mins, maxs;				// covered in this window
+	vec3_t		prevMins, prevMaxs;		// and in the one before; the box is both
+	int			windowStart, lastSeen;
+	int			numBits;
+	int			numShaders;
+	qhandle_t	shaders[SM_MAX_FX_SHADERS];
+} smFxGroup_t;
+
 // a .glm: surface number -> name and shader
 typedef struct smGlm_s {
 	std::vector<std::string> surfaces, shaders;
@@ -184,6 +214,13 @@ static struct {
 	int			numPending;
 	refEntity_t	entities[SM_MAX_ENTITIES];
 	int			numEntities;
+	smFxBit_t	fxPending[SM_MAX_FX_BITS];
+	int			numFxPending;
+	smFxGroup_t	fxFrame[SM_MAX_FX_GROUPS];	// this frame's pieces grouped
+	int			numFxFrame;
+	smFxGroup_t	fxGroups[SM_MAX_FX_GROUPS];	// the effects, kept across frames
+	int			numFxGroups;
+	qboolean	hideEffects;		// no boxes, so clicks reach what is behind them
 
 	// the last thing found, refreshed once a frame
 	int			hitFrame;
@@ -213,6 +250,8 @@ static struct {
 	smList_t	selList;
 	int			selSurf;			// map surface to outline, -1 for none
 	char		selBModel[MAX_QPATH];	// "*n" when that surface belongs to a brush entity
+	qboolean	selFx;					// an effect, in this box when it was picked
+	vec3_t		selFxMins, selFxMaxs;
 
 	// every shader the game can find
 	qboolean	indexed;
@@ -807,6 +846,36 @@ static qboolean SM_RayBox( const vec3_t org, const vec3_t dir, const vec3_t mins
 	return qtrue;
 }
 
+static void SM_FxBox( const smFxGroup_t *g, vec3_t mins, vec3_t maxs );
+
+// how far along the ray it enters the box; -1 if it misses or starts inside
+static float SM_RayBoxEntry( const vec3_t org, const vec3_t dir, const vec3_t mins, const vec3_t maxs ) {
+	float tmin = 0.0f, tmax = SM_TRACE_DIST;
+	qboolean inside = qtrue;
+
+	for ( int i = 0; i < 3; i++ ) {
+		if ( org[i] < mins[i] || org[i] > maxs[i] )
+			inside = qfalse;
+		if ( fabsf( dir[i] ) < 1e-8f ) {
+			if ( org[i] < mins[i] || org[i] > maxs[i] )
+				return -1.0f;
+			continue;
+		}
+		float t1 = ( mins[i] - org[i] ) / dir[i], t2 = ( maxs[i] - org[i] ) / dir[i];
+
+		if ( t1 > t2 ) {
+			float tmp = t1;
+			t1 = t2;
+			t2 = tmp;
+		}
+		tmin = Q_max( tmin, t1 );
+		tmax = Q_min( tmax, t2 );
+		if ( tmin > tmax )
+			return -1.0f;
+	}
+	return inside ? -1.0f : tmin;
+}
+
 // the nearest surface of one map model, in that model's space; -1 if none
 static int SM_TraceBModel( int model, const vec3_t org, const vec3_t dir, float *best ) {
 	const smBModel_t *bm;
@@ -979,6 +1048,7 @@ static void SM_Trace( const vec3_t org, const vec3_t dir, smHit_t *hit ) {
 	memset( hit, 0, sizeof( *hit ) );
 	hit->dist = SM_TRACE_DIST;
 	hit->surf = -1;
+	hit->fx = -1;
 
 	SM_CheckMap();
 	surf = SM_TraceBModel( 0, org, dir, &hit->dist );
@@ -997,6 +1067,23 @@ static void SM_Trace( const vec3_t org, const vec3_t dir, smHit_t *hit ) {
 					SM_TraceGhoul2Entity( ent, org, dir, hit );
 			} else {
 				SM_TraceModelEntity( ent, org, dir, hit );
+			}
+		}
+	}
+
+	// an effect is see-through: its box is found before what it sits on
+	if ( sm.viewFrame == cls.framecount && !sm.hideEffects ) {
+		for ( int i = 0; i < sm.numFxGroups; i++ ) {
+			const smFxGroup_t *g = &sm.fxGroups[i];
+			vec3_t mins, maxs;
+			float d;
+
+			SM_FxBox( g, mins, maxs );
+			d = SM_RayBoxEntry( org, dir, mins, maxs );
+
+			if ( d >= 0.0f && d < hit->dist ) {
+				SM_SetHit( hit, SM_HIT_EFFECT, d, SM_ShaderName( g->shaders[0] ), NULL, NULL, NULL, -1 );
+				hit->fx = i;
 			}
 		}
 	}
@@ -1317,6 +1404,7 @@ static void SM_Select( const smHit_t *hit ) {
 	sm.selList.sel = sm.selList.scroll = 0;
 	sm.selSurf = hit->surf;
 	sm.selBModel[0] = '\0';
+	sm.selFx = qfalse;
 
 	switch ( hit->kind ) {
 	case SM_HIT_WORLD:
@@ -1389,6 +1477,22 @@ static void SM_Select( const smHit_t *hit ) {
 		break;
 	}
 
+	case SM_HIT_EFFECT: {
+		const smFxGroup_t *g;
+
+		if ( hit->fx < 0 || hit->fx >= sm.numFxGroups ) {
+			sm.haveSel = qfalse;
+			return;
+		}
+		g = &sm.fxGroups[hit->fx];
+		for ( int i = 0; i < g->numShaders; i++ )
+			SM_AddSelShader( SM_ShaderName( g->shaders[i] ) );
+		Com_sprintf( sm.selWhat, sizeof( sm.selWhat ), "Effect, %i shader%s", (int)sm.selShaders.size(), sm.selShaders.size() == 1 ? "" : "s" );
+		sm.selFx = qtrue;
+		SM_FxBox( g, sm.selFxMins, sm.selFxMaxs );
+		break;
+	}
+
 	default:
 		sm.haveSel = qfalse;
 		return;
@@ -1406,6 +1510,7 @@ static void SM_SelectShader( const char *shader ) {
 	sm.selList.sel = sm.selList.scroll = 0;
 	sm.selSurf = -1;
 	sm.selBModel[0] = '\0';
+	sm.selFx = qfalse;
 	Q_strncpyz( sm.selWhat, "From the remap list", sizeof( sm.selWhat ) );
 }
 
@@ -1606,6 +1711,8 @@ void CL_ShaderManager_KeyEvent( int key, qboolean down ) {
 			sm.click = qtrue;	// picked in Draw, where this frame's trace is
 		else if ( key == A_TAB )
 			SM_EnterEdit( SM_TAB_REMAPS );
+		else if ( key == A_CAP_F || key == A_LOW_F )
+			sm.hideEffects = (qboolean)!sm.hideEffects;
 		return;
 	}
 	if ( sm.looking && key != A_MOUSE1 )
@@ -1715,6 +1822,162 @@ void CL_ShaderManager_AddEntity( const refEntity_t *ent ) {
 		sm.pending[sm.numPending++] = *ent;
 }
 
+// a piece of an effect the effects system drew; radius is the piece's size
+void CL_ShaderManager_AddEffect( qhandle_t shader, const vec3_t mins, const vec3_t maxs, float radius ) {
+	smFxBit_t *bit;
+	float core;
+
+	if ( !sm.initialized || ( sm.state == SM_OFF && !cl_shaderCrosshair->integer ) )
+		return;
+	if ( shader <= 0 || sm.numFxPending >= SM_MAX_FX_BITS )
+		return;
+	core = Com_Clamp( 1.0f, SM_FX_CORE, radius );
+	radius = Com_Clamp( 1.0f, SM_FX_BOX, radius * 0.5f );
+	bit = &sm.fxPending[sm.numFxPending++];
+	for ( int i = 0; i < 3; i++ ) {
+		bit->coreMins[i] = mins[i] - core;
+		bit->coreMaxs[i] = maxs[i] + core;
+		bit->mins[i] = mins[i] - radius;
+		bit->maxs[i] = maxs[i] + radius;
+	}
+	bit->shader = shader;
+}
+
+static qboolean SM_BoxesTouch( const vec3_t amins, const vec3_t amaxs, const vec3_t bmins, const vec3_t bmaxs ) {
+	for ( int i = 0; i < 3; i++ ) {
+		if ( amins[i] > bmaxs[i] + SM_FX_GAP || bmins[i] > amaxs[i] + SM_FX_GAP )
+			return qfalse;
+	}
+	return qtrue;
+}
+
+static void SM_AddGroupShader( smFxGroup_t *g, qhandle_t shader ) {
+	for ( int i = 0; i < g->numShaders; i++ ) {
+		if ( g->shaders[i] == shader )
+			return;
+	}
+	if ( g->numShaders < SM_MAX_FX_SHADERS )
+		g->shaders[g->numShaders++] = shader;
+}
+
+static void SM_MergeGroup( smFxGroup_t *into, const smFxGroup_t *from ) {
+	AddPointToBounds( from->coreMins, into->coreMins, into->coreMaxs );
+	AddPointToBounds( from->coreMaxs, into->coreMins, into->coreMaxs );
+	AddPointToBounds( from->mins, into->mins, into->maxs );
+	AddPointToBounds( from->maxs, into->mins, into->maxs );
+	into->numBits += from->numBits;
+	for ( int i = 0; i < from->numShaders; i++ )
+		SM_AddGroupShader( into, from->shaders[i] );
+}
+
+// the box an effect covers on screen
+static void SM_FxBox( const smFxGroup_t *g, vec3_t mins, vec3_t maxs ) {
+	VectorCopy( g->prevMins, mins );
+	VectorCopy( g->prevMaxs, maxs );
+	if ( g->mins[0] <= g->maxs[0] ) {
+		AddPointToBounds( g->mins, mins, maxs );
+		AddPointToBounds( g->maxs, mins, maxs );
+	}
+}
+
+// this frame's groups into the effects kept from the frames before
+static void SM_KeepEffects( void ) {
+	int now = cls.realtime;
+
+	for ( int i = 0; i < sm.numFxGroups; i++ ) {
+		smFxGroup_t *g = &sm.fxGroups[i];
+
+		if ( now - g->windowStart >= SM_FX_WINDOW ) {
+			if ( g->mins[0] <= g->maxs[0] ) {
+				VectorCopy( g->mins, g->prevMins );
+				VectorCopy( g->maxs, g->prevMaxs );
+			}
+			ClearBounds( g->mins, g->maxs );
+			g->windowStart = now;
+		}
+	}
+	for ( int f = 0; f < sm.numFxFrame; f++ ) {
+		const smFxGroup_t *in = &sm.fxFrame[f];
+		smFxGroup_t *g = NULL;
+
+		for ( int i = 0; i < sm.numFxGroups && !g; i++ ) {
+			vec3_t mins, maxs;
+
+			SM_FxBox( &sm.fxGroups[i], mins, maxs );
+			if ( SM_BoxesTouch( mins, maxs, in->coreMins, in->coreMaxs ) )
+				g = &sm.fxGroups[i];
+		}
+		if ( !g ) {
+			if ( sm.numFxGroups >= SM_MAX_FX_GROUPS )
+				continue;
+			g = &sm.fxGroups[sm.numFxGroups++];
+			*g = *in;
+			VectorCopy( in->mins, g->prevMins );
+			VectorCopy( in->maxs, g->prevMaxs );
+			g->windowStart = now;
+		} else {
+			AddPointToBounds( in->coreMins, g->coreMins, g->coreMaxs );
+			AddPointToBounds( in->coreMaxs, g->coreMins, g->coreMaxs );
+			AddPointToBounds( in->mins, g->mins, g->maxs );
+			AddPointToBounds( in->maxs, g->mins, g->maxs );
+			for ( int i = 0; i < in->numShaders; i++ )
+				SM_AddGroupShader( g, in->shaders[i] );
+			g->numBits = in->numBits;
+		}
+		g->lastSeen = now;
+	}
+	// gone for a while: the effect ended
+	for ( int i = 0; i < sm.numFxGroups; ) {
+		if ( now - sm.fxGroups[i].lastSeen > SM_FX_WINDOW * 2 )
+			sm.fxGroups[i] = sm.fxGroups[--sm.numFxGroups];
+		else
+			i++;
+	}
+}
+
+// this frame's pieces, one group per effect
+static void SM_GroupEffects( const vec3_t viewOrg ) {
+	sm.numFxFrame = 0;
+	for ( int b = 0; b < sm.numFxPending; b++ ) {
+		const smFxBit_t *bit = &sm.fxPending[b];
+		smFxGroup_t piece, *g = NULL;
+
+		// screen flashes are drawn on the camera
+		if ( viewOrg[0] > bit->mins[0] && viewOrg[0] < bit->maxs[0] && viewOrg[1] > bit->mins[1] && viewOrg[1] < bit->maxs[1]
+			&& viewOrg[2] > bit->mins[2] && viewOrg[2] < bit->maxs[2] )
+			continue;
+		VectorCopy( bit->coreMins, piece.coreMins );
+		VectorCopy( bit->coreMaxs, piece.coreMaxs );
+		VectorCopy( bit->mins, piece.mins );
+		VectorCopy( bit->maxs, piece.maxs );
+		piece.numBits = 1;
+		piece.numShaders = 1;
+		piece.shaders[0] = bit->shader;
+		for ( int i = 0; i < sm.numFxFrame && !g; i++ ) {
+			if ( SM_BoxesTouch( sm.fxFrame[i].coreMins, sm.fxFrame[i].coreMaxs, piece.coreMins, piece.coreMaxs ) )
+				g = &sm.fxFrame[i];
+		}
+		if ( g )
+			SM_MergeGroup( g, &piece );
+		else if ( sm.numFxFrame < SM_MAX_FX_GROUPS )
+			sm.fxFrame[sm.numFxFrame++] = piece;
+	}
+
+	// groups that grew into each other are one effect
+	for ( int i = 0; i < sm.numFxFrame; i++ ) {
+		for ( int j = i + 1; j < sm.numFxFrame; ) {
+			if ( SM_BoxesTouch( sm.fxFrame[i].coreMins, sm.fxFrame[i].coreMaxs, sm.fxFrame[j].coreMins, sm.fxFrame[j].coreMaxs ) ) {
+				SM_MergeGroup( &sm.fxFrame[i], &sm.fxFrame[j] );
+				sm.fxFrame[j] = sm.fxFrame[--sm.numFxFrame];
+				j = i + 1;
+			} else {
+				j++;
+			}
+		}
+	}
+	SM_KeepEffects();
+}
+
 // the free camera, for the effects system to cull against
 qboolean CL_ShaderManager_Camera( vec3_t origin, vec3_t angles ) {
 	if ( sm.state == SM_OFF )
@@ -1742,6 +2005,7 @@ static void SM_KeepView( const refdef_t *view, float x, float w ) {
 	sm.viewW = w;
 	memcpy( sm.entities, sm.pending, sm.numPending * sizeof( sm.pending[0] ) );
 	sm.numEntities = sm.numPending;
+	SM_GroupEffects( view->vieworg );
 }
 
 // the camera, and with the panel open only the part of the screen left of it
@@ -1852,6 +2116,7 @@ qboolean CL_ShaderManager_RenderScene( const refdef_t *fd ) {
 
 	if ( fd->rdflags & ( RDF_NOWORLDMODEL | RDF_AUTOMAP ) ) {
 		sm.numPending = 0;
+		sm.numFxPending = 0;
 		return qfalse;
 	}
 
@@ -1859,6 +2124,7 @@ qboolean CL_ShaderManager_RenderScene( const refdef_t *fd ) {
 		if ( !( fd->rdflags & RDF_SKYBOXPORTAL ) )
 			SM_KeepView( fd, 0.0f, SCREEN_WIDTH );
 		sm.numPending = 0;
+		sm.numFxPending = 0;
 		return qfalse;
 	}
 
@@ -1868,6 +2134,7 @@ qboolean CL_ShaderManager_RenderScene( const refdef_t *fd ) {
 		// the sky portal keeps its own origin but looks the way the camera does
 		re->RenderScene( &view );
 		sm.numPending = 0;
+		sm.numFxPending = 0;
 		return qtrue;
 	}
 
@@ -1875,6 +2142,7 @@ qboolean CL_ShaderManager_RenderScene( const refdef_t *fd ) {
 	if ( sm.renderedFrame == cls.framecount ) {
 		re->RenderScene( &view );
 		sm.numPending = 0;
+		sm.numFxPending = 0;
 		return qtrue;
 	}
 	sm.renderedFrame = cls.framecount;
@@ -1892,6 +2160,7 @@ qboolean CL_ShaderManager_RenderScene( const refdef_t *fd ) {
 	SM_KeepView( &view, 0.0f, sm.state == SM_EDIT ? SM_PANEL_X : SCREEN_WIDTH );
 	re->RenderScene( &view );
 	sm.numPending = 0;
+	sm.numFxPending = 0;
 	return qtrue;
 }
 
@@ -2125,6 +2394,13 @@ static void SM_DrawReadout( float cx, float cy ) {
 		lines[numLines++] = va( S_COLOR_YELLOW "%s", sm.hit.shader[0] ? sm.hit.shader : "(no shader)" );
 		lines[numLines++] = va( S_COLOR_GREY "Brush entity %s", sm.hit.model );
 		break;
+	case SM_HIT_EFFECT: {
+		int numShaders = sm.hit.fx >= 0 && sm.hit.fx < sm.numFxGroups ? sm.fxGroups[sm.hit.fx].numShaders : 1;
+
+		lines[numLines++] = va( S_COLOR_YELLOW "%s", sm.hit.shader[0] ? sm.hit.shader : "(no shader)" );
+		lines[numLines++] = numShaders > 1 ? va( S_COLOR_GREY "Effect, %i more shaders", numShaders - 1 ) : S_COLOR_GREY "Effect";
+		break;
+	}
 	default:
 		lines[numLines++] = va( S_COLOR_YELLOW "%s", sm.hit.shader[0] ? sm.hit.shader : "(no shader)" );
 		lines[numLines++] = va( S_COLOR_GREY "%s%s%s", sm.hit.model, sm.hit.surface[0] ? "  surface " : "", sm.hit.surface );
@@ -2142,6 +2418,85 @@ static void SM_DrawReadout( float cx, float cy ) {
 	SM_Fill( x - 6, cy - 3, w + 12, h, smPanel );
 	for ( int i = 0; i < numLines; i++ )
 		SM_Text( x, cy + i * 12.0f, lines[i], smWhite );
+}
+
+// where a point lands on the virtual screen; qfalse behind the camera
+static qboolean SM_Project( const vec3_t p, float *x, float *y ) {
+	vec3_t d;
+	float fwd;
+
+	VectorSubtract( p, sm.viewOrg, d );
+	fwd = DotProduct( d, sm.viewAxis[0] );
+	if ( fwd < 1.0f )
+		return qfalse;
+	*x = sm.viewX + sm.viewW * 0.5f * ( 1.0f - DotProduct( d, sm.viewAxis[1] ) / ( fwd * tanf( DEG2RAD( sm.viewFovX * 0.5f ) ) ) );
+	*y = SCREEN_HEIGHT * 0.5f * ( 1.0f - DotProduct( d, sm.viewAxis[2] ) / ( fwd * tanf( DEG2RAD( sm.viewFovY * 0.5f ) ) ) );
+	return qtrue;
+}
+
+// can the camera see some of the box: its middle, top or bottom
+static qboolean SM_FxVisible( const vec3_t mins, const vec3_t maxs ) {
+	vec3_t p;
+	trace_t tr;
+
+	for ( int i = 0; i < 3; i++ ) {
+		p[0] = ( mins[0] + maxs[0] ) * 0.5f;
+		p[1] = ( mins[1] + maxs[1] ) * 0.5f;
+		p[2] = i == 0 ? ( mins[2] + maxs[2] ) * 0.5f : i == 1 ? maxs[2] - 1.0f : mins[2] + 1.0f;
+		CM_BoxTrace( &tr, sm.viewOrg, p, vec3_origin, vec3_origin, 0, CONTENTS_SOLID, qfalse );
+		if ( tr.fraction >= 1.0f || ( tr.endpos[0] >= mins[0] && tr.endpos[0] <= maxs[0] && tr.endpos[1] >= mins[1]
+			&& tr.endpos[1] <= maxs[1] && tr.endpos[2] >= mins[2] && tr.endpos[2] <= maxs[2] ) )
+			return qtrue;
+	}
+	return qfalse;
+}
+
+// a frame around where the box shows on screen; behind the camera or off the view draws nothing
+static void SM_DrawFxBox( const vec3_t mins, const vec3_t maxs, const float *color, float thick ) {
+	float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f, x, y;
+	vec3_t corner;
+
+	for ( int i = 0; i < 8; i++ ) {
+		corner[0] = ( i & 1 ) ? maxs[0] : mins[0];
+		corner[1] = ( i & 2 ) ? maxs[1] : mins[1];
+		corner[2] = ( i & 4 ) ? maxs[2] : mins[2];
+		if ( !SM_Project( corner, &x, &y ) )
+			return;
+		x0 = Q_min( x0, x );
+		y0 = Q_min( y0, y );
+		x1 = Q_max( x1, x );
+		y1 = Q_max( y1, y );
+	}
+	x0 = Q_max( x0, sm.viewX );
+	x1 = Q_min( x1, sm.viewX + sm.viewW );
+	y0 = Q_max( y0, 0.0f );
+	y1 = Q_min( y1, (float)SCREEN_HEIGHT );
+	if ( x1 - x0 < 2.0f || y1 - y0 < 2.0f )
+		return;
+	SM_Fill( x0, y0, x1 - x0, thick, color );
+	SM_Fill( x0, y1 - thick, x1 - x0, thick, color );
+	SM_Fill( x0, y0, thick, y1 - y0, color );
+	SM_Fill( x1 - thick, y0, thick, y1 - y0, color );
+}
+
+static void SM_DrawEffects( void ) {
+	static const vec4_t boxColor = { 0.75f, 0.5f, 1.0f, 0.45f };
+	static const vec4_t hoverColor = { 1.0f, 0.86f, 0.25f, 1.0f };
+	static const vec4_t selColor = { 0.25f, 0.86f, 1.0f, 1.0f };
+
+	if ( sm.hideEffects || sm.viewFrame != cls.framecount )
+		return;
+	for ( int i = 0; i < sm.numFxGroups; i++ ) {
+		qboolean hovered = (qboolean)( sm.hitValid && sm.hit.kind == SM_HIT_EFFECT && sm.hit.fx == i );
+		vec3_t mins, maxs;
+
+		SM_FxBox( &sm.fxGroups[i], mins, maxs );
+		// ones behind walls would only clutter; the one under the cursor shows wherever it is
+		if ( hovered || SM_FxVisible( mins, maxs ) )
+			SM_DrawFxBox( mins, maxs, hovered ? hoverColor : boxColor, hovered ? 1.5f : 1.0f );
+	}
+	if ( sm.state == SM_EDIT && sm.haveSel && sm.selFx && ( cls.realtime / 400 ) % 2 )
+		SM_DrawFxBox( sm.selFxMins, sm.selFxMaxs, selColor, 1.5f );
 }
 
 static void SM_DrawObjectTab( float x, float y, float w ) {
@@ -2302,15 +2657,21 @@ void CL_ShaderManager_Draw( void ) {
 			if ( sm.state == SM_EDIT )
 				return;
 		}
+		SM_DrawEffects();
 		SM_Fill( SCREEN_WIDTH * 0.5f - 1, SCREEN_HEIGHT * 0.5f - 6, 2, 12, smWhite );
 		SM_Fill( SCREEN_WIDTH * 0.5f - 6, SCREEN_HEIGHT * 0.5f - 1, 12, 2, smWhite );
 		if ( sm.hitValid )
 			SM_DrawReadout( SCREEN_WIDTH * 0.5f, SCREEN_HEIGHT * 0.5f + 24.0f );
 		SM_Text( 16, SCREEN_HEIGHT - 28, S_COLOR_GREY "WASD fly   Space/C up/down   Shift faster   Ctrl slower", smWhite );
-		SM_Text( 16, SCREEN_HEIGHT - 16, S_COLOR_GREY "Click: pick what's under the crosshair   Tab: remap list   Esc: close", smWhite );
+		SM_Text( 16, SCREEN_HEIGHT - 16, va( S_COLOR_GREY "Click: pick what's under the crosshair   F: effect boxes %s   Tab: remap list   Esc: close",
+			sm.hideEffects ? "(off)" : "(on)" ), smWhite );
 		return;
 	}
 
+	SM_DrawEffects();
+	// before the panel, which takes clicks in the view as picks
+	if ( SM_Button( 16, SCREEN_HEIGHT - 48, 110, sm.hideEffects ? "Effect boxes: off" : "Effect boxes: on", (qboolean)!sm.hideEffects, qtrue ) )
+		sm.hideEffects = (qboolean)!sm.hideEffects;
 	SM_DrawPanel();
 	if ( sm.hitValid )
 		SM_DrawReadout( sm.cursorX, sm.cursorY + 20.0f );
@@ -2392,6 +2753,8 @@ void CL_ShaderManager_Shutdown( void ) {
 	sm.selShaders.clear();
 	sm.haveView = qfalse;
 	sm.hitValid = qfalse;
+	sm.numFxGroups = 0;
+	sm.selFx = qfalse;
 	sm.numPending = sm.numEntities = 0;
 	sm.font = 0;
 	// the pure pk3 list can change with the next map or server, and the renderer drops its shaders

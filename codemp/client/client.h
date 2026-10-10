@@ -696,6 +696,7 @@ void CL_ShaderManager_ServerPrint( const char *text );
 void CL_ShaderManager_Draw( void );
 const char *CL_ShaderManager_SkinName( qhandle_t h );
 qboolean CL_ShaderManager_Camera( vec3_t origin, vec3_t angles );
+void CL_ShaderManager_AddEffect( qhandle_t shader, const vec3_t mins, const vec3_t maxs, float radius );
 
 //
 // cl_effectmanager.cpp
