@@ -37,6 +37,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 
 #include <algorithm>
 #include <map>
+#include <set>
 #include <vector>
 #include <string>
 #include "client.h"
@@ -216,8 +217,10 @@ static struct {
 	// every shader the game can find
 	qboolean	indexed;
 	std::vector<std::string> shaderNames;
+	std::set<std::string> skyShaders;			// the ones with skyParms, by lowercase name
 	std::map<std::string, qhandle_t> previews;	// 2D handles, by lowercase name
 	std::vector<int> shaderView;
+	qboolean	viewSky;					// shaderView only holds skies, for a sky
 	smFilter_t	filter;
 	smList_t	shaderList;
 	qboolean	showPreview;
@@ -1020,6 +1023,8 @@ static void SM_Send( const char *cmd ) {
 	SM_SetStatus( va( "Sent: %s", cmd ) );
 }
 
+static qboolean SM_RemapAllowed( const char *from, const char *to );
+
 // "rpshader remap"; record keeps what it was before, for undo
 static void SM_SendRemap( const char *from, const char *to, qboolean record ) {
 	const char *offset = sm.fields[SM_F_OFFSET], *previous;
@@ -1027,6 +1032,10 @@ static void SM_SendRemap( const char *from, const char *to, qboolean record ) {
 
 	if ( !from[0] || !to[0] )
 		return;
+	if ( !SM_RemapAllowed( from, to ) ) {
+		SM_SetStatus( S_COLOR_RED "A sky can only be remapped to another sky" );
+		return;
+	}
 	if ( record ) {
 		previous = SM_RemappedTo( from );
 		sm.undoShader.push_back( from );
@@ -1070,7 +1079,7 @@ static void SM_SetLive( const char *from, const char *to ) {
 	if ( from && to && !Q_stricmp( from, sm.liveFrom ) && !Q_stricmp( to, sm.liveTo ) )
 		return;
 	SM_ClearLive();
-	if ( !from || !to || !from[0] || !to[0] )
+	if ( !from || !to || !from[0] || !to[0] || !SM_RemapAllowed( from, to ) )
 		return;
 	re->RemapShader( from, to, sm.fields[SM_F_OFFSET][0] ? sm.fields[SM_F_OFFSET] : NULL );
 	Q_strncpyz( sm.liveFrom, from, sizeof( sm.liveFrom ) );
@@ -1123,7 +1132,9 @@ static void SM_AddImage( const char *name, void *ctx ) {
 static void SM_ParseShaderFile( const char *path ) {
 	char *buf;
 	const char *p, *token;
-	char name[MAX_QPATH];
+	char name[MAX_QPATH], key[MAX_QPATH];
+	int depth;
+	qboolean sky;
 
 	if ( FS_ReadFile( path, (void **)&buf ) <= 0 || !buf )
 		return;
@@ -1137,8 +1148,24 @@ static void SM_ParseShaderFile( const char *path ) {
 		token = COM_ParseExt( &p, qtrue );
 		if ( Q_stricmp( token, "{" ) )
 			break;
-		SkipBracedSection( &p, 1 );
+		// skip the body, noting a skyParms among its own keywords
+		sky = qfalse;
+		for ( depth = 1; depth > 0; ) {
+			token = COM_ParseExt( &p, qtrue );
+			if ( !token[0] )
+				break;
+			if ( !Q_stricmp( token, "{" ) )
+				depth++;
+			else if ( !Q_stricmp( token, "}" ) )
+				depth--;
+			else if ( depth == 1 && !Q_stricmp( token, "skyParms" ) )
+				sky = qtrue;
+		}
 		SM_AddShaderName( name );
+		if ( sky ) {
+			SM_ShaderKey( name, key, sizeof( key ) );
+			sm.skyShaders.insert( key );
+		}
 	}
 	FS_FreeFile( buf );
 }
@@ -1147,7 +1174,7 @@ static bool SM_NameLess( const std::string &a, const std::string &b ) {
 	return Q_stricmp( a.c_str(), b.c_str() ) < 0;
 }
 
-// every shader in scripts/*.shader, and every image a shader can be made from
+// every shader in shaders/*.shader (where JKA keeps them, as the renderer reads), and every image a shader can be made from
 static void SM_BuildIndex( void ) {
 	static const char *dirs[] = { "textures", "models", "gfx" };
 	static const char *exts[] = { ".jpg", ".tga", ".png" };
@@ -1155,9 +1182,10 @@ static void SM_BuildIndex( void ) {
 	char **files;
 
 	sm.shaderNames.clear();
-	files = FS_ListFiles( "scripts", ".shader", &numFiles );
+	sm.skyShaders.clear();
+	files = FS_ListFiles( "shaders", ".shader", &numFiles );
 	for ( int i = 0; i < numFiles; i++ )
-		SM_ParseShaderFile( va( "scripts/%s", files[i] ) );
+		SM_ParseShaderFile( va( "shaders/%s", files[i] ) );
 	FS_FreeFileList( files );
 	for ( size_t d = 0; d < ARRAY_LEN( dirs ); d++ ) {
 		for ( size_t e = 0; e < ARRAY_LEN( exts ); e++ )
@@ -1187,6 +1215,23 @@ static qboolean SM_ContainsNoCase( const char *haystack, const char *needle ) {
 	return qfalse;
 }
 
+// a sky's surfaces are drawn by the sky code, which needs a sky shader: remapping one to anything
+// else crashes clients without the renderer fix, so skies are only offered other skies
+static qboolean SM_IsSky( const char *name ) {
+	char key[MAX_QPATH];
+
+	if ( !name || !name[0] )
+		return qfalse;
+	SM_ShaderKey( name, key, sizeof( key ) );
+	return (qboolean)( sm.skyShaders.find( key ) != sm.skyShaders.end() );
+}
+
+static qboolean SM_RemapAllowed( const char *from, const char *to ) {
+	return (qboolean)( !SM_IsSky( from ) || SM_IsSky( to ) || !Q_stricmp( from, to ) );
+}
+
+static const char *SM_SelectedOriginal( void );
+
 static void SM_RebuildShaderView( void ) {
 	static const char *prefixes[] = { "", "textures/", "models/", "gfx/" };
 	const char *search = sm.fields[SM_F_SEARCH], *prefix = prefixes[sm.filter];
@@ -1194,11 +1239,14 @@ static void SM_RebuildShaderView( void ) {
 
 	if ( sm.shaderList.sel >= 0 && sm.shaderList.sel < (int)sm.shaderView.size() )
 		oldSel = sm.shaderView[sm.shaderList.sel];
+	sm.viewSky = SM_IsSky( SM_SelectedOriginal() );
 	sm.shaderView.clear();
 	for ( size_t i = 0; i < sm.shaderNames.size(); i++ ) {
 		const char *name = sm.shaderNames[i].c_str();
 
 		if ( prefixLen && Q_stricmpn( name, prefix, prefixLen ) )
+			continue;
+		if ( sm.viewSky && !SM_IsSky( name ) )
 			continue;
 		if ( SM_ContainsNoCase( name, search ) )
 			sm.shaderView.push_back( (int)i );
@@ -2129,11 +2177,16 @@ static void SM_DrawObjectTab( float x, float y, float w ) {
 		}
 	}
 	y += 18;
-	SM_Field( SM_F_SEARCH, x, y, w, va( "Type to search %i shaders", (int)sm.shaderNames.size() ) );
+	if ( SM_IsSky( original ) != sm.viewSky )
+		SM_RebuildShaderView();
+	if ( sm.viewSky )
+		SM_Field( SM_F_SEARCH, x, y, w, va( "A sky: search %i sky shaders", (int)sm.skyShaders.size() ) );
+	else
+		SM_Field( SM_F_SEARCH, x, y, w, va( "Type to search %i shaders", (int)sm.shaderNames.size() ) );
 	y += 18;
 	clicked = SM_List( &sm.shaderList, (int)sm.shaderView.size(), x, y, w, rows, SM_DrawShaderRow );
 	if ( sm.shaderView.empty() )
-		SM_Text( x + 4, y + 1, "No shaders match", smDim );
+		SM_Text( x + 4, y + 1, sm.viewSky ? "No sky shaders match" : "No shaders match", smDim );
 	(void)clicked;
 	y += rows * SM_ROW_H + 4;
 	replacement = SM_HighlightedShader();
@@ -2344,6 +2397,7 @@ void CL_ShaderManager_Shutdown( void ) {
 	// the pure pk3 list can change with the next map or server, and the renderer drops its shaders
 	sm.indexed = qfalse;
 	std::vector<std::string>().swap( sm.shaderNames );
+	std::set<std::string>().swap( sm.skyShaders );
 	sm.previews.clear();
 	sm.shaderView.clear();
 }
