@@ -629,24 +629,25 @@ void CL_Netchan_TransmitNextFragment( netchan_t *chan );
 qboolean CL_Netchan_Process( netchan_t *chan, msg_t *msg );
 
 //
-// cl_modelplacer.cpp
+// cl_modelmanager.cpp
 //
-#define KEYCATCH_MODELPLACER	0x0010	// engine only, the model placer owns keyboard and mouse
+#define KEYCATCH_MODELMANAGER	0x0010	// engine only, the model manager owns keyboard and mouse
 
-void CL_ModelPlacer_Init( void );
-void CL_ModelPlacer_Shutdown( void );
-void CL_ModelPlacer_f( void );
-qboolean CL_ModelPlacer_Active( void );
-void CL_ModelPlacer_Close( void );
-void CL_ModelPlacer_KeyEvent( int key, qboolean down );
-void CL_ModelPlacer_CharEvent( int ch );
-void CL_ModelPlacer_MouseEvent( int dx, int dy );
-void CL_ModelPlacer_Escape( void );
-void CL_ModelPlacer_Frame( void );
-qboolean CL_ModelPlacer_FilterEntity( const refEntity_t *ent );
-void CL_ModelPlacer_RenderScene( const refdef_t *fd );
-qboolean CL_ModelPlacer_Camera( vec3_t origin, vec3_t angles );
-void CL_ModelPlacer_Draw( void );
+void CL_ModelManager_Init( void );
+void CL_ModelManager_Shutdown( void );
+void CL_ModelManager_f( void );
+qboolean CL_ModelManager_Active( void );
+void CL_ModelManager_Close( void );
+void CL_ModelManager_KeyEvent( int key, qboolean down );
+void CL_ModelManager_CharEvent( int ch );
+void CL_ModelManager_MouseEvent( int dx, int dy );
+void CL_ModelManager_Escape( void );
+void CL_ModelManager_Frame( void );
+qboolean CL_ModelManager_FilterEntity( const refEntity_t *ent );
+void CL_ModelManager_RenderScene( const refdef_t *fd );
+qboolean CL_ModelManager_Camera( vec3_t origin, vec3_t angles );
+qboolean CL_ModelManager_ServerPrint( const char *text );
+void CL_ModelManager_Draw( void );
 
 //
 // cl_npcmanager.cpp
@@ -654,7 +655,7 @@ void CL_ModelPlacer_Draw( void );
 #define KEYCATCH_NPCMANAGER		0x0020	// engine only, the NPC manager owns keyboard and mouse
 #define KEYCATCH_SHADERMANAGER	0x0040	// engine only, the shader manager owns keyboard and mouse
 #define KEYCATCH_EFFECTMANAGER	0x0080	// engine only, the effect manager owns keyboard and mouse
-#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELPLACER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER )	// mods never see or clear these
+#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELMANAGER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER )	// mods never see or clear these
 
 void CL_NpcManager_Init( void );
 void CL_NpcManager_Shutdown( void );

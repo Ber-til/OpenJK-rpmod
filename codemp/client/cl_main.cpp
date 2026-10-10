@@ -2735,7 +2735,7 @@ void CL_Init( void ) {
 
 	CL_InitInput ();
 
-	CL_ModelPlacer_Init ();
+	CL_ModelManager_Init ();
 	CL_NpcManager_Init ();
 	CL_ShaderManager_Init ();
 	CL_EffectManager_Init ();
@@ -2876,7 +2876,8 @@ void CL_Init( void ) {
 	Cmd_AddCommand ("cmd", CL_ForwardToServer_f, "Forward command to server" );
 	Cmd_AddCommand ("globalservers", CL_GlobalServers_f, "Query the masterserver for serverlist" );
 	Cmd_AddCommand( "addFavorite", CL_AddFavorite_f, "Add server to favorites" );
-	Cmd_AddCommand( "modelplacer", CL_ModelPlacer_f, "Browse map_objects models and place them with rpmodel add" );
+	Cmd_AddCommand( "modelmanager", CL_ModelManager_f, "Place models and edit the map's ones with RPMod's rpmodel command" );
+	Cmd_AddCommand( "modelplacer", CL_ModelManager_f, "Old name of modelmanager" );
 	Cmd_AddCommand( "npcmanager", CL_NpcManager_f, "Spawn NPCs and manage the ones in the map with RPMod's npc command" );
 	Cmd_AddCommand( "shadermanager", CL_ShaderManager_f, "Find the shaders of what you look at" );
 	Cmd_AddCommand( "effectmanager", CL_EffectManager_f, "Preview effects and play them with RPMod's rpeffect command" );
@@ -2954,6 +2955,7 @@ void CL_Shutdown( void ) {
 	//CL_ShutdownUI();
 
 	Cmd_RemoveCommand ("cmd");
+	Cmd_RemoveCommand ("modelmanager");
 	Cmd_RemoveCommand ("modelplacer");
 	Cmd_RemoveCommand ("npcmanager");
 	Cmd_RemoveCommand ("shadermanager");

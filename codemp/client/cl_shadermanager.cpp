@@ -1553,7 +1553,7 @@ static void SM_Open( void ) {
 		Com_Printf( "Shader manager: join a server first\n" );
 		return;
 	}
-	CL_ModelPlacer_Close();
+	CL_ModelManager_Close();
 	CL_NpcManager_Close();
 	CL_EffectManager_Close();
 

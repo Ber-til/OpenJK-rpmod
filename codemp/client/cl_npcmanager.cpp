@@ -1489,7 +1489,7 @@ static void NM_Open( nmTab_t tab ) {
 		Com_Printf( "NPC manager: join a server first\n" );
 		return;
 	}
-	CL_ModelPlacer_Close();
+	CL_ModelManager_Close();
 	CL_ShaderManager_Close();
 	CL_EffectManager_Close();
 	if ( !nm.indexed )

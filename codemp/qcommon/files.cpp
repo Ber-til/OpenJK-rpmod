@@ -2504,8 +2504,8 @@ char **FS_ListFiles( const char *path, const char *extension, int *numfiles ) {
 
 #define MAX_LIST_RECURSIVE_DEPTH 8
 
-static void FS_ListDirRecursive( const char *osPath, const char *relPath, const char *extension, int depth,
-								 void (*callback)( const char *name, void *ctx ), void *ctx ) {
+static void FS_ListDirRecursive( const char *osPath, const char *relPath, const char *extension, int depth, const char *source,
+								 void (*callback)( const char *name, const char *source, void *ctx ), void *ctx ) {
 	char	**sysFiles;
 	char	subOsPath[MAX_OSPATH], subRelPath[MAX_QPATH];
 	int		numSysFiles, i;
@@ -2513,7 +2513,7 @@ static void FS_ListDirRecursive( const char *osPath, const char *relPath, const 
 	sysFiles = Sys_ListFiles( osPath, extension, NULL, &numSysFiles, qfalse );
 	for ( i = 0; i < numSysFiles; i++ ) {
 		Com_sprintf( subRelPath, sizeof( subRelPath ), "%s/%s", relPath, sysFiles[i] );
-		callback( subRelPath, ctx );
+		callback( subRelPath, source, ctx );
 	}
 	Sys_FreeFileList( sysFiles );
 
@@ -2528,24 +2528,26 @@ static void FS_ListDirRecursive( const char *osPath, const char *relPath, const 
 		}
 		Com_sprintf( subOsPath, sizeof( subOsPath ), "%s%c%s", osPath, PATH_SEP, sysFiles[i] );
 		Com_sprintf( subRelPath, sizeof( subRelPath ), "%s/%s", relPath, sysFiles[i] );
-		FS_ListDirRecursive( subOsPath, subRelPath, extension, depth + 1, callback, ctx );
+		FS_ListDirRecursive( subOsPath, subRelPath, extension, depth + 1, source, callback, ctx );
 	}
 	Sys_FreeFileList( sysFiles );
 }
 
 /*
 =================
-FS_ListFilesRecursive
+FS_ListFilesRecursiveFrom
 
 Calls callback with the full game path of every file below path ending in extension,
-from every pure pak and, when the server allows it, loose directories.
+from every pure pak and, when the server allows it, loose directories, and where
+it is: "gamedir/pakname.pk3", or "gamedir" for a loose file.
 Unlike FS_ListFiles there is no depth or count limit, and a file found in
-several search paths is reported once per search path.
+several search paths is reported once per search path, the one in use first.
 =================
 */
-void FS_ListFilesRecursive( const char *path, const char *extension, void (*callback)( const char *name, void *ctx ), void *ctx ) {
+void FS_ListFilesRecursiveFrom( const char *path, const char *extension,
+								void (*callback)( const char *name, const char *source, void *ctx ), void *ctx ) {
 	searchpath_t	*search;
-	char			osPath[MAX_OSPATH];
+	char			osPath[MAX_OSPATH], source[MAX_OSPATH];
 	int				pathLength, extensionLength, length, i;
 
 	if ( !fs_searchpaths ) {
@@ -2562,6 +2564,7 @@ void FS_ListFilesRecursive( const char *path, const char *extension, void (*call
 			if ( !FS_PakIsPure( pak ) ) {
 				continue;
 			}
+			Com_sprintf( source, sizeof( source ), "%s/%s.pk3", pak->pakGamename, pak->pakBasename );
 			for ( i = 0; i < pak->numfiles; i++ ) {
 				const char *name = pak->buildBuffer[i].name;
 
@@ -2572,7 +2575,7 @@ void FS_ListFilesRecursive( const char *path, const char *extension, void (*call
 				if ( Q_stricmpn( name, path, pathLength ) || Q_stricmp( name + length - extensionLength, extension ) ) {
 					continue;
 				}
-				callback( name, ctx );
+				callback( name, source, ctx );
 			}
 		} else if ( search->dir ) {
 			// don't scan directories for files if we are pure or restricted
@@ -2580,9 +2583,33 @@ void FS_ListFilesRecursive( const char *path, const char *extension, void (*call
 				continue;
 			}
 			Q_strncpyz( osPath, FS_BuildOSPath( search->dir->path, search->dir->gamedir, path ), sizeof( osPath ) );
-			FS_ListDirRecursive( osPath, path, extension, 0, callback, ctx );
+			FS_ListDirRecursive( osPath, path, extension, 0, search->dir->gamedir, callback, ctx );
 		}
 	}
+}
+
+typedef struct {
+	void	(*callback)( const char *name, void *ctx );
+	void	*ctx;
+} fsListRecursive_t;
+
+static void FS_ListRecursiveNoSource( const char *name, const char *source, void *ctx ) {
+	const fsListRecursive_t *list = (const fsListRecursive_t *)ctx;
+
+	list->callback( name, list->ctx );
+}
+
+/*
+=================
+FS_ListFilesRecursive
+
+FS_ListFilesRecursiveFrom without where the files are
+=================
+*/
+void FS_ListFilesRecursive( const char *path, const char *extension, void (*callback)( const char *name, void *ctx ), void *ctx ) {
+	fsListRecursive_t list = { callback, ctx };
+
+	FS_ListFilesRecursiveFrom( path, extension, FS_ListRecursiveNoSource, &list );
 }
 
 /*

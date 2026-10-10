@@ -1344,8 +1344,8 @@ void CL_KeyDownEvent( int key, unsigned time )
 		}
 
 		// the model placer steps back a level, unless a menu is open over it
-		if ( ( Key_GetCatcher() & KEYCATCH_MODELPLACER ) && !( Key_GetCatcher() & KEYCATCH_UI ) ) {
-			CL_ModelPlacer_Escape();
+		if ( ( Key_GetCatcher() & KEYCATCH_MODELMANAGER ) && !( Key_GetCatcher() & KEYCATCH_UI ) ) {
+			CL_ModelManager_Escape();
 			return;
 		}
 		if ( ( Key_GetCatcher() & KEYCATCH_NPCMANAGER ) && !( Key_GetCatcher() & KEYCATCH_UI ) ) {
@@ -1399,8 +1399,8 @@ void CL_KeyDownEvent( int key, unsigned time )
 			UIVM_KeyEvent( key, qtrue );
 	}
 	// model placer
-	else if ( Key_GetCatcher() & KEYCATCH_MODELPLACER ) {
-		CL_ModelPlacer_KeyEvent( key, qtrue );
+	else if ( Key_GetCatcher() & KEYCATCH_MODELMANAGER ) {
+		CL_ModelManager_KeyEvent( key, qtrue );
 	}
 	// NPC manager
 	else if ( Key_GetCatcher() & KEYCATCH_NPCMANAGER ) {
@@ -1458,7 +1458,7 @@ void CL_KeyUpEvent( int key, unsigned time )
 	CL_ParseBinding( key, qfalse, time );
 
 	// always, so a key held when a menu opened over the placer doesn't stay held
-	CL_ModelPlacer_KeyEvent( key, qfalse );
+	CL_ModelManager_KeyEvent( key, qfalse );
 	CL_NpcManager_KeyEvent( key, qfalse );
 	CL_ShaderManager_KeyEvent( key, qfalse );
 	CL_EffectManager_KeyEvent( key, qfalse );
@@ -1498,7 +1498,7 @@ void CL_CharEvent( int key ) {
 	// distribute the key down event to the appropriate handler
 		 if ( Key_GetCatcher() & KEYCATCH_CONSOLE )		Field_CharEvent( &g_consoleField, key );
 	else if ( Key_GetCatcher() & KEYCATCH_UI )			UIVM_KeyEvent( key|K_CHAR_FLAG, qtrue );
-	else if ( Key_GetCatcher() & KEYCATCH_MODELPLACER )	CL_ModelPlacer_CharEvent( key );
+	else if ( Key_GetCatcher() & KEYCATCH_MODELMANAGER )	CL_ModelManager_CharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_NPCMANAGER )	CL_NpcManager_CharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_SHADERMANAGER )	CL_ShaderManager_CharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_EFFECTMANAGER )	CL_EffectManager_CharEvent( key );

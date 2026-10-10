@@ -317,7 +317,7 @@ void FX_FeedTrail( effectTrailArgStruct_t *a ); //FxPrimitives.cpp
 
 // the model placer re-aims the main view and hides the view weapon on the way to the renderer
 static void CL_R_AddRefEntityToScene( const refEntity_t *ent ) {
-	if ( CL_ModelPlacer_FilterEntity( ent ) || CL_ShaderManager_FilterEntity( ent ) || CL_EffectManager_FilterEntity( ent )
+	if ( CL_ModelManager_FilterEntity( ent ) || CL_ShaderManager_FilterEntity( ent ) || CL_EffectManager_FilterEntity( ent )
 		|| CL_NpcManager_FilterEntity( ent ) )
 		return;
 	CL_ShaderManager_AddEntity( ent );
@@ -327,7 +327,7 @@ static void CL_R_AddRefEntityToScene( const refEntity_t *ent ) {
 
 static void CL_R_RenderScene( const refdef_t *fd ) {
 	if ( !CL_NpcManager_RenderScene( fd ) && !CL_ShaderManager_RenderScene( fd ) && !CL_EffectManager_RenderScene( fd ) )
-		CL_ModelPlacer_RenderScene( fd );
+		CL_ModelManager_RenderScene( fd );
 }
 
 // effects are culled against cgame's view; with a tool's free camera looking
@@ -336,7 +336,7 @@ static void CL_FX_AddScheduledEffects( qboolean portal ) {
 	refdef_t *cgameView = theFxHelper.refdef, view;
 	vec3_t origin, angles;
 
-	if ( !portal && cgameView && ( CL_ModelPlacer_Camera( origin, angles ) || CL_ShaderManager_Camera( origin, angles )
+	if ( !portal && cgameView && ( CL_ModelManager_Camera( origin, angles ) || CL_ShaderManager_Camera( origin, angles )
 		|| CL_EffectManager_Camera( origin, angles ) || CL_NpcManager_Camera( origin, angles ) ) ) {
 		view = *cgameView;
 		VectorCopy( origin, view.vieworg );

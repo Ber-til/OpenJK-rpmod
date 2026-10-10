@@ -589,6 +589,7 @@ char	**FS_ListFiles( const char *directory, const char *extension, int *numfiles
 // the returned files will not include any directories or /
 
 void	FS_ListFilesRecursive( const char *path, const char *extension, void (*callback)( const char *name, void *ctx ), void *ctx );
+void	FS_ListFilesRecursiveFrom( const char *path, const char *extension, void (*callback)( const char *name, const char *source, void *ctx ), void *ctx );
 // calls callback with the full game path of every file below path ending in extension, with no count or depth limit
 
 void	FS_FreeFileList( char **fileList );

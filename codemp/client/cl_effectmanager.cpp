@@ -1498,7 +1498,7 @@ static void EM_Open( void ) {
 		Com_Printf( "Effect manager: join a server first\n" );
 		return;
 	}
-	CL_ModelPlacer_Close();
+	CL_ModelManager_Close();
 	CL_NpcManager_Close();
 	CL_ShaderManager_Close();
 	if ( !em.indexed ) {

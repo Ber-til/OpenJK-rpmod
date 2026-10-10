@@ -422,6 +422,12 @@ rescan:
 		return qtrue;
 	}
 
+	// the model manager does the same with "rpmodel list"
+	if ( !strcmp( cmd, "print" ) && CL_ModelManager_ServerPrint( Cmd_Argv( 1 ) ) ) {
+		Cmd_TokenizeString( "print \"\"" );
+		return qtrue;
+	}
+
 	// the effect manager does the same with "rpeffect list"
 	if ( !strcmp( cmd, "print" ) && CL_EffectManager_ServerPrint( Cmd_Argv( 1 ) ) ) {
 		Cmd_TokenizeString( "print \"\"" );
@@ -509,7 +515,7 @@ CL_ShutdonwCGame
 */
 void CL_ShutdownCGame( void ) {
 	Key_SetCatcher( Key_GetCatcher( ) & ~KEYCATCH_CGAME );
-	CL_ModelPlacer_Shutdown();
+	CL_ModelManager_Shutdown();
 	CL_NpcManager_Shutdown();
 	CL_ShaderManager_Shutdown();
 	CL_EffectManager_Shutdown();

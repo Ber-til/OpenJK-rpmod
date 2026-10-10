@@ -969,8 +969,8 @@ void CL_MouseEvent( int dx, int dy, int time ) {
 	}
 	else if ( Key_GetCatcher( ) & KEYCATCH_UI ) {
 		UIVM_MouseEvent( dx, dy );
-	} else if ( Key_GetCatcher( ) & KEYCATCH_MODELPLACER ) {
-		CL_ModelPlacer_MouseEvent( dx, dy );
+	} else if ( Key_GetCatcher( ) & KEYCATCH_MODELMANAGER ) {
+		CL_ModelManager_MouseEvent( dx, dy );
 	} else if ( Key_GetCatcher( ) & KEYCATCH_NPCMANAGER ) {
 		CL_NpcManager_MouseEvent( dx, dy );
 	} else if ( Key_GetCatcher( ) & KEYCATCH_SHADERMANAGER ) {
