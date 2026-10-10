@@ -26,6 +26,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #include "client.h"
 #include "cl_cgameapi.h"
 #include "cl_uiapi.h"
+#include "qcommon/cm_public.h"
 #ifndef _WIN32
 #include <cmath>
 #endif
@@ -812,6 +813,7 @@ cvar_t	*cl_yawspeed;
 cvar_t	*cl_pitchspeed;
 
 cvar_t	*cl_run;
+cvar_t	*cl_crouch;
 
 cvar_t	*cl_anglespeedkey;
 
@@ -875,6 +877,27 @@ void CL_AdjustAngles( void ) {
 
 /*
 ================
+CL_AutoCrouch
+
+cl_crouch only crouches on foot: anywhere else holding down flies, swims or steers down
+================
+*/
+static qboolean CL_AutoCrouch( void ) {
+	const playerState_t *ps = &cl.snap.ps;
+
+	if ( !cl_crouch->integer || !cl.snap.valid || clc.demoplaying )
+		return qfalse;
+	if ( ps->pm_type != 0 )		// PM_NORMAL: not noclip, spectating, jetpacking or dead
+		return qfalse;
+	if ( ps->m_iVehicleNum )
+		return qfalse;
+	if ( CM_PointContents( ps->origin, 0 ) & ( CONTENTS_WATER | CONTENTS_SLIME | CONTENTS_LAVA ) )
+		return qfalse;
+	return qtrue;
+}
+
+/*
+================
 CL_KeyMove
 
 Sets the usercmd_t based on key states
@@ -911,6 +934,10 @@ void CL_KeyMove( usercmd_t *cmd ) {
 
 	up += movespeed * CL_KeyState (&in_up);
 	up -= movespeed * CL_KeyState (&in_down);
+
+	// jumping still works: holding jump stands you up for it
+	if ( up <= 0 && CL_AutoCrouch() )
+		up = -127;
 
 	forward += movespeed * CL_KeyState (&in_forward);
 	forward -= movespeed * CL_KeyState (&in_back);
