@@ -91,6 +91,9 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define MM_PREVIEW_H		236.0f
 #define MM_BUTTON_Y			384.0f
 #define MM_BUTTON_H			20.0f
+#define MM_FILTER_W			52.0f	// the All / Base / Custom buttons, right of the search box
+#define MM_FILTER_GAP		4.0f
+#define MM_SEARCH_W			( SCREEN_WIDTH - MM_FOLDER_X * 2 - MM_FILTER_COUNT * ( MM_FILTER_W + MM_FILTER_GAP ) )
 #define MM_VISIBLE_ROWS		((int)(MM_LIST_H / MM_ROW_H))
 
 typedef enum {
@@ -109,6 +112,15 @@ typedef struct mmModel_s {
 	qboolean	failed;		// the renderer couldn't load it, or wouldn't survive trying
 	const char	*error;		// why, shown in the preview
 } mmModel_t;
+
+typedef enum {
+	MM_FILTER_ALL,
+	MM_FILTER_BASE,
+	MM_FILTER_CUSTOM,
+	MM_FILTER_COUNT
+} mmFilter_t;
+
+static const char *mmFilterNames[MM_FILTER_COUNT] = { "All", "Base", "Custom" };
 
 typedef enum {
 	MM_NAMING_NONE,
@@ -230,6 +242,7 @@ static struct {
 
 	// browser
 	char		search[64];
+	mmFilter_t	filter;					// which models the folders and the search show
 	int			row;
 	qboolean	viewSaves;				// the list shows saved constructs
 	qboolean	viewStates;				// or saved states
@@ -302,6 +315,7 @@ static vec4_t mmPanelOpaque	= { 0.05f, 0.05f, 0.05f, 0.95f };	// over the help, 
 static vec4_t mmPanelLight	= { 0.15f, 0.15f, 0.15f, 0.8f };
 static vec4_t mmHighlight	= { 0.2f, 0.45f, 0.8f, 0.8f };
 static vec4_t mmHover		= { 1.0f, 1.0f, 1.0f, 0.12f };
+static vec4_t mmButtonHover	= { 0.3f, 0.3f, 0.3f, 0.85f };
 static vec4_t mmBorder		= { 0.5f, 0.5f, 0.5f, 0.8f };
 static vec4_t mmDim			= { 0.7f, 0.7f, 0.7f, 1.0f };
 static vec4_t mmAccent		= { 1.0f, 0.8f, 0.3f, 1.0f };
@@ -490,6 +504,11 @@ static int MM_AddRow( mmRowType_t type, const char *name, int first ) {
 	return mm.numRows++;
 }
 
+static qboolean MM_PassesFilter( const mmModel_t *m ) {
+	return (qboolean)( mm.filter == MM_FILTER_ALL || ( mm.filter == MM_FILTER_CUSTOM ) == ( m->custom != qfalse ) );
+}
+
+// the saves first, then the folders of the models the filter lets through
 static void MM_BuildRows( void ) {
 	int category = -1, source = -1, catRow = -1, srcRow = -1, folderRow = -1;
 
@@ -503,6 +522,9 @@ static void MM_BuildRows( void ) {
 		const mmModel_t *m = &mm.models[i];
 		int len = MM_FolderLen( m );
 
+		// base and custom are each one block, so a range stays whole
+		if ( !MM_PassesFilter( m ) )
+			continue;
 		if ( m->custom != category ) {
 			category = m->custom;
 			catRow = MM_AddRow( MM_ROW_CATEGORY, m->custom ? "Custom" : "Base", i );
@@ -527,6 +549,17 @@ static void MM_BuildRows( void ) {
 			mm.rows[srcRow].count++;
 		mm.rows[folderRow].count++;
 	}
+}
+
+static void MM_FirstFolder( void ) {
+	mm.row = 0;
+	for ( int i = 0; i < mm.numRows; i++ ) {
+		if ( mm.rows[i].type == MM_ROW_FOLDER ) {
+			mm.row = i;
+			break;
+		}
+	}
+	mm.rowScroll = mm.selRow = mm.modelScroll = 0;
 }
 
 static void MM_BuildIndex( void ) {
@@ -572,14 +605,7 @@ static void MM_BuildIndex( void ) {
 		mm.pieces[i].model = MM_FindOrAddModel( mm.pieces[i].name );
 
 	mm.indexed = qtrue;
-	mm.row = 0;
-	for ( int i = 0; i < mm.numRows; i++ ) {
-		if ( mm.rows[i].type == MM_ROW_FOLDER ) {
-			mm.row = i;
-			break;
-		}
-	}
-	mm.rowScroll = mm.selRow = mm.modelScroll = 0;
+	MM_FirstFolder();
 	Com_Printf( "Model manager: indexed %i models, %i of them custom, in %i folders (%i ms)\n",
 		mm.numListed, numCustom, mm.numRows, Sys_Milliseconds() - start );
 }
@@ -656,6 +682,8 @@ static void MM_RebuildView( void ) {
 	mm.viewSaves = mm.viewStates = qfalse;
 	if ( mm.search[0] ) {
 		for ( int i = 0; i < mm.numListed; i++ ) {
+			if ( !MM_PassesFilter( &mm.models[i] ) )
+				continue;
 			if ( MM_ContainsNoCase( mm.models[i].path, mm.search ) || MM_ContainsNoCase( mm.sources[mm.models[i].source], mm.search ) )
 				mm.view[mm.numView++] = i;
 		}
@@ -698,6 +726,21 @@ static void MM_SetRow( int row ) {
 		mm.rowScroll = mm.row;
 	else if ( mm.row >= mm.rowScroll + MM_VISIBLE_ROWS )
 		mm.rowScroll = mm.row - MM_VISIBLE_ROWS + 1;
+	MM_RebuildView();
+}
+
+static void MM_SetFilter( mmFilter_t filter ) {
+	const qboolean onSaves = (qboolean)( mm.row < mm.numRows && ( mm.rows[mm.row].type == MM_ROW_SAVED || mm.rows[mm.row].type == MM_ROW_STATES ) );
+
+	if ( filter == mm.filter )
+		return;
+	mm.filter = filter;
+	MM_BuildRows();
+	// the saves rows stay where they are, a folder may be gone
+	if ( onSaves )
+		mm.selRow = mm.modelScroll = 0;
+	else
+		MM_FirstFolder();
 	MM_RebuildView();
 }
 
@@ -2602,6 +2645,13 @@ static void MM_PlaceSelected( void ) {
 static void MM_BrowseClick( void ) {
 	int row;
 
+	for ( int i = 0; i < MM_FILTER_COUNT; i++ ) {
+		if ( MM_InRect( MM_FOLDER_X + MM_SEARCH_W + MM_FILTER_GAP + i * ( MM_FILTER_W + MM_FILTER_GAP ), MM_SEARCH_Y, MM_FILTER_W, 16 ) ) {
+			MM_SetFilter( (mmFilter_t)i );
+			return;
+		}
+	}
+
 	if ( MM_InRect( MM_FOLDER_X, MM_LIST_Y, MM_FOLDER_W, MM_LIST_H ) ) {
 		row = mm.rowScroll + (int)( ( mm.cursorY - MM_LIST_Y ) / MM_ROW_H );
 		if ( row < mm.numRows )
@@ -3526,9 +3576,18 @@ static void MM_DrawBrowser( void ) {
 		MM_Text( MM_FOLDER_X, 28, S_COLOR_GREY "Type to search everything. Enter places the model, Tab edits the map's models.", mmWhite );
 
 	// search box
-	MM_Box( MM_FOLDER_X, MM_SEARCH_Y, SCREEN_WIDTH - MM_FOLDER_X * 2, 16, mmPanelLight );
+	MM_Box( MM_FOLDER_X, MM_SEARCH_Y, MM_SEARCH_W, 16, mmPanelLight );
 	Com_sprintf( buf, sizeof( buf ), "Search: %s%s", mm.search, ( cls.realtime >> 8 ) & 1 ? "_" : "" );
 	MM_Text( MM_FOLDER_X + 4, MM_SEARCH_Y + 3, buf, mm.search[0] ? mmWhite : mmDim );
+
+	// filter bar
+	for ( int i = 0; i < MM_FILTER_COUNT; i++ ) {
+		const float bx = MM_FOLDER_X + MM_SEARCH_W + MM_FILTER_GAP + i * ( MM_FILTER_W + MM_FILTER_GAP );
+		const char *label = mmFilterNames[i];
+
+		MM_Box( bx, MM_SEARCH_Y, MM_FILTER_W, 16, i == mm.filter ? mmHighlight : MM_InRect( bx, MM_SEARCH_Y, MM_FILTER_W, 16 ) ? mmButtonHover : mmPanelLight );
+		MM_Text( bx + ( MM_FILTER_W - re->Font_StrLenPixels( label, mm.font, MM_TEXT_SCALE ) ) * 0.5f, MM_SEARCH_Y + 3, label, i == mm.filter ? mmWhite : mmDim );
+	}
 
 	MM_DrawRows();
 
