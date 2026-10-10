@@ -31,16 +31,30 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 
 #define	MAX_CMD_BUFFER	128*1024
 #define	MAX_CMD_LINE	1024
+#define	MAX_EXEC_SCRIPTS	16
 
 typedef struct cmd_s {
 	byte	*data;
 	int		maxsize;
 	int		cursize;
+	int		wait;
 } cmd_t;
 
-int			cmd_wait;
 cmd_t		cmd_text;
 byte		cmd_text_buf[MAX_CMD_BUFFER];
+
+// files exec'd from the main buffer run in a buffer of their own, so their
+// waits hold up only the rest of the file and not binds, chat and so on
+typedef struct execScript_s {
+	cmd_t		text;
+	char		name[MAX_QPATH];
+	qboolean	running;
+} execScript_t;
+
+static execScript_t	execScripts[MAX_EXEC_SCRIPTS];
+
+// the buffer being executed, which wait, exec and vstr act on
+static cmd_t	*cmd_current = &cmd_text;
 
 //=============================================================================
 
@@ -55,11 +69,11 @@ bind g "cmd use rocket ; +attack ; wait ; -attack ; cmd use blaster"
 */
 static void Cmd_Wait_f( void ) {
 	if ( Cmd_Argc() == 2 ) {
-		cmd_wait = atoi( Cmd_Argv( 1 ) );
-		if ( cmd_wait < 0 )
-			cmd_wait = 1; // ignore the argument
+		cmd_current->wait = atoi( Cmd_Argv( 1 ) );
+		if ( cmd_current->wait < 0 )
+			cmd_current->wait = 1; // ignore the argument
 	} else {
-		cmd_wait = 1;
+		cmd_current->wait = 1;
 	}
 }
 
@@ -82,6 +96,7 @@ void Cbuf_Init (void)
 	cmd_text.data = cmd_text_buf;
 	cmd_text.maxsize = MAX_CMD_BUFFER;
 	cmd_text.cursize = 0;
+	cmd_text.wait = 0;
 }
 
 /*
@@ -115,27 +130,28 @@ Adds a \n to the text
 ============
 */
 void Cbuf_InsertText( const char *text ) {
+	cmd_t	*buf = cmd_current;
 	int		len;
 	int		i;
 
 	len = strlen( text ) + 1;
-	if ( len + cmd_text.cursize > cmd_text.maxsize ) {
+	if ( len + buf->cursize > buf->maxsize ) {
 		Com_Printf( "Cbuf_InsertText overflowed\n" );
 		return;
 	}
 
 	// move the existing command text
-	for ( i = cmd_text.cursize - 1 ; i >= 0 ; i-- ) {
-		cmd_text.data[ i + len ] = cmd_text.data[ i ];
+	for ( i = buf->cursize - 1 ; i >= 0 ; i-- ) {
+		buf->data[ i + len ] = buf->data[ i ];
 	}
 
 	// copy the new text in
-	Com_Memcpy( cmd_text.data, text, len - 1 );
+	Com_Memcpy( buf->data, text, len - 1 );
 
 	// add a \n
-	cmd_text.data[ len - 1 ] = '\n';
+	buf->data[ len - 1 ] = '\n';
 
-	cmd_text.cursize += len;
+	buf->cursize += len;
 }
 
 
@@ -168,17 +184,25 @@ void Cbuf_ExecuteText (int exec_when, const char *text)
 	}
 }
 
+// makes a buffer the current one until it goes out of scope, errors included
+struct cmdCurrentScope_t {
+	cmd_t *prev;
+	cmdCurrentScope_t( cmd_t *buf ) : prev( cmd_current ) { cmd_current = buf; }
+	~cmdCurrentScope_t() { cmd_current = prev; }
+};
+
 /*
 ============
-Cbuf_Execute
+Cbuf_ExecuteBuffer
 ============
 */
-void Cbuf_Execute (void)
+static void Cbuf_ExecuteBuffer( cmd_t *buf )
 {
 	int		i;
 	char	*text;
 	char	line[MAX_CMD_LINE];
 	int		quotes;
+	cmdCurrentScope_t scope( buf );
 
 	// This will keep // style comments all on one line by not breaking on
 	// a semicolon.  It will keep /* ... */ style comments all on one line by not
@@ -186,26 +210,26 @@ void Cbuf_Execute (void)
 	qboolean in_star_comment = qfalse;
 	qboolean in_slash_comment = qfalse;
 
-	while (cmd_text.cursize)
+	while (buf->cursize)
 	{
-		if ( cmd_wait > 0 ) {
+		if ( buf->wait > 0 ) {
 			// skip out while text still remains in buffer, leaving it
 			// for next frame
-			cmd_wait--;
+			buf->wait--;
 			break;
 		}
 
 		// find a \n or ; line break or comment: // or /* */
-		text = (char *)cmd_text.data;
+		text = (char *)buf->data;
 
 		quotes = 0;
-		for (i=0 ; i< cmd_text.cursize ; i++)
+		for (i=0 ; i< buf->cursize ; i++)
 		{
 			if (text[i] == '"')
 				quotes++;
 
 			if ( !(quotes&1)) {
-				if (i < cmd_text.cursize - 1) {
+				if (i < buf->cursize - 1) {
 					if (! in_star_comment && text[i] == '/' && text[i+1] == '/')
 						in_slash_comment = qtrue;
 					else if (! in_slash_comment && text[i] == '/' && text[i+1] == '*')
@@ -239,19 +263,99 @@ void Cbuf_Execute (void)
 // this is necessary because commands (exec) can insert data at the
 // beginning of the text buffer
 
-		if (i == cmd_text.cursize)
-			cmd_text.cursize = 0;
+		if (i == buf->cursize)
+			buf->cursize = 0;
 		else
 		{
 			i++;
-			cmd_text.cursize -= i;
-			memmove (text, text+i, cmd_text.cursize);
+			buf->cursize -= i;
+			memmove (text, text+i, buf->cursize);
 		}
 
 // execute the command line
 
 		Cmd_ExecuteString (line);
 	}
+}
+
+// marks a script as running until it goes out of scope, errors included
+struct execScriptRunning_t {
+	execScript_t *script;
+	execScriptRunning_t( execScript_t *s ) : script( s ) { script->running = qtrue; }
+	~execScriptRunning_t() { script->running = qfalse; }
+};
+
+/*
+============
+Cbuf_RunScript
+
+Runs an exec'd file until it ends or waits, and frees it once it has ended
+============
+*/
+static void Cbuf_RunScript( execScript_t *script )
+{
+	// a command of the script itself may have called Cbuf_Execute
+	if ( !script->text.data || script->running )
+		return;
+
+	{
+		execScriptRunning_t running( script );
+		Cbuf_ExecuteBuffer( &script->text );
+	}
+
+	if ( !script->text.cursize ) {
+		free( script->text.data );
+		Com_Memset( script, 0, sizeof( *script ) );
+	}
+}
+
+/*
+============
+Cbuf_StartScript
+
+Gives an exec'd file a buffer of its own and runs it up to its first wait.
+Returns qfalse if there's no room for it.
+============
+*/
+static qboolean Cbuf_StartScript( const char *name, const char *text )
+{
+	execScript_t *script = NULL;
+	int len = strlen( text );
+
+	if ( len + 2 > MAX_CMD_BUFFER )
+		return qfalse;
+	for ( int i = 0; i < MAX_EXEC_SCRIPTS && !script; i++ ) {
+		if ( !execScripts[i].text.data )
+			script = &execScripts[i];
+	}
+	if ( !script )
+		return qfalse;
+
+	script->text.data = (byte *)malloc( MAX_CMD_BUFFER );
+	if ( !script->text.data )
+		return qfalse;
+	script->text.maxsize = MAX_CMD_BUFFER;
+	Com_Memcpy( script->text.data, text, len );
+	script->text.data[len] = '\n';
+	script->text.cursize = len + 1;
+	script->text.wait = 0;
+	Q_strncpyz( script->name, name, sizeof( script->name ) );
+
+	Cbuf_RunScript( script );
+	return qtrue;
+}
+
+/*
+============
+Cbuf_Execute
+============
+*/
+void Cbuf_Execute (void)
+{
+	Cbuf_ExecuteBuffer( &cmd_text );
+
+	for ( int i = 0; i < MAX_EXEC_SCRIPTS; i++ )
+		Cbuf_RunScript( &execScripts[i] );
 }
 
 
@@ -292,9 +396,65 @@ static void Cmd_Exec_f( void ) {
 	if (!quiet)
 		Com_Printf ("execing %s\n", filename);
 
-	Cbuf_InsertText (f.c);
+	// a file exec'd by another one runs in its place, so the outer one still
+	// waits for it to finish
+	if ( cmd_current != &cmd_text || !Cbuf_StartScript( filename, f.c ) )
+		Cbuf_InsertText (f.c);
 
 	FS_FreeFile (f.v);
+}
+
+/*
+===============
+Cmd_ExecList_f
+===============
+*/
+static void Cmd_ExecList_f( void ) {
+	int count = 0;
+
+	for ( int i = 0; i < MAX_EXEC_SCRIPTS; i++ ) {
+		const execScript_t *script = &execScripts[i];
+
+		if ( !script->text.data || !script->text.cursize )
+			continue;
+		Com_Printf( "%s, waiting %i more frames\n", script->name, script->text.wait );
+		count++;
+	}
+	Com_Printf( "%i exec'd file%s running\n", count, count == 1 ? "" : "s" );
+}
+
+/*
+===============
+Cmd_ExecStop_f
+===============
+*/
+static void Cmd_ExecStop_f( void ) {
+	char	filename[MAX_QPATH] = { 0 };
+	int		count = 0;
+
+	if ( Cmd_Argc() > 2 ) {
+		Com_Printf( "execstop [filename] : stop running exec'd files, or only the given one\n" );
+		return;
+	}
+	if ( Cmd_Argc() == 2 ) {
+		Q_strncpyz( filename, Cmd_Argv( 1 ), sizeof( filename ) );
+		COM_DefaultExtension( filename, sizeof( filename ), ".cfg" );
+	}
+
+	for ( int i = 0; i < MAX_EXEC_SCRIPTS; i++ ) {
+		execScript_t *script = &execScripts[i];
+
+		if ( !script->text.data || !script->text.cursize )
+			continue;
+		if ( filename[0] && Q_stricmp( script->name, filename ) )
+			continue;
+		// emptied rather than freed, as it may be the one running this
+		script->text.cursize = 0;
+		script->text.wait = 0;
+		Cbuf_RunScript( script );
+		count++;
+	}
+	Com_Printf( "Stopped %i exec'd file%s\n", count, count == 1 ? "" : "s" );
 }
 
 
@@ -988,6 +1148,9 @@ void Cmd_Init (void) {
 	Cmd_AddCommand( "execq", Cmd_Exec_f, "Execute a script file without displaying a message" );
 	Cmd_SetCommandCompletionFunc( "exec", Cmd_CompleteCfgName );
 	Cmd_SetCommandCompletionFunc( "execq", Cmd_CompleteCfgName );
+	Cmd_AddCommand( "execlist", Cmd_ExecList_f, "List the exec'd files still running" );
+	Cmd_AddCommand( "execstop", Cmd_ExecStop_f, "Stop running exec'd files, or only the given one" );
+	Cmd_SetCommandCompletionFunc( "execstop", Cmd_CompleteCfgName );
 	Cmd_AddCommand( "vstr", Cmd_Vstr_f, "Execute the value of a cvar" );
 	Cmd_SetCommandCompletionFunc( "vstr", Cvar_CompleteCvarName );
 	Cmd_AddCommand( "wait", Cmd_Wait_f, "Pause command buffer execution" );
