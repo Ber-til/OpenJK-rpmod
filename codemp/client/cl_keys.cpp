@@ -1459,6 +1459,7 @@ void CL_KeyUpEvent( int key, unsigned time )
 
 	// always, so a key held when a menu opened over the placer doesn't stay held
 	CL_ModelPlacer_KeyEvent( key, qfalse );
+	CL_NpcManager_KeyEvent( key, qfalse );
 	CL_ShaderManager_KeyEvent( key, qfalse );
 	CL_EffectManager_KeyEvent( key, qfalse );
 

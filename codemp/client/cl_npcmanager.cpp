@@ -22,6 +22,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 //
 // Spawn tab: every NPC type in ext_data/npcs/*.npc the filesystem can see, with
 // targetname, team, model, scale and a spot picked on the map, sent as "npc spawn".
+// Picking on the map flies a free camera, so the spot can be anywhere, not just in view.
 // Manage tab: the NPCs in the map, read from the server's "npc list" reply, and the
 // kill/freeze/emote/follow/dialog/tele/hologram/score commands to run on them.
 //
@@ -54,6 +55,8 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define NM_GROUND_HEIGHT	25.0f	// NPC origins sit this far above the floor
 #define NM_FRONT_DIST		96.0f	// "in front of me"
 #define NM_YAW_STEP			15
+#define NM_FLY_SPEED		400.0f	// free camera, units a second
+#define NM_LABEL_RANGE		32.0f	// a label this close to the crosshair is the one picked
 
 // layout, in 640x480
 #define NM_ROW_H			13.0f
@@ -342,10 +345,15 @@ static struct {
 	qboolean	previewSkinMissing;
 	float		previewYaw;					// added by the wheel
 
-	// picking on the map
+	// picking on the map, with a free camera
 	int			pickYaw;		// added to facing the camera
+	vec3_t		camOrg, camAng;
+	qboolean	held[MAX_KEYS];
+	int			lastFrameTime;
+	int			viewFrame;		// cls.framecount the camera last moved on
+	float		pickCursorX, pickCursorY;	// where the cursor was, back when picking ends
 
-	// the cgame's main view, last frame
+	// the main view last frame: the cgame's, or the free camera's
 	qboolean	haveView;
 	vec3_t		viewOrg;
 	matrix3_t	viewAxis;
@@ -1438,10 +1446,42 @@ static void NM_ChoosePicker( int index ) {
 	nm.picker = NM_PICKER_NONE;
 }
 
+static void NM_ReleaseKeys( void ) {
+	memset( nm.held, 0, sizeof( nm.held ) );
+}
+
+// fly from where the player looks; the crosshair in the middle is what gets picked
 static void NM_StartPick( nmPick_t pick ) {
 	nm.pick = pick;
 	nm.pickYaw = 0;
 	nm.focus = NM_F_NONE;
+	if ( nm.haveView ) {
+		VectorCopy( nm.viewOrg, nm.camOrg );
+		vectoangles( nm.viewAxis[0], nm.camAng );
+	} else {
+		VectorCopy( cl.snap.ps.origin, nm.camOrg );
+		nm.camOrg[2] += cl.snap.ps.viewheight;
+		VectorCopy( cl.viewangles, nm.camAng );
+	}
+	if ( nm.camAng[PITCH] > 180.0f )
+		nm.camAng[PITCH] -= 360.0f;
+	nm.camAng[ROLL] = 0;
+	nm.lastFrameTime = cls.realtime;
+	nm.pickCursorX = nm.cursorX;
+	nm.pickCursorY = nm.cursorY;
+	nm.cursorX = SCREEN_WIDTH * 0.5f;
+	nm.cursorY = SCREEN_HEIGHT * 0.5f;
+	NM_ReleaseKeys();
+}
+
+// back to the panel, the cursor where it was
+static void NM_EndPick( void ) {
+	if ( nm.pick == NM_PICK_NONE )
+		return;
+	nm.pick = NM_PICK_NONE;
+	nm.cursorX = nm.pickCursorX;
+	nm.cursorY = nm.pickCursorY;
+	NM_ReleaseKeys();
 }
 
 static void NM_Open( nmTab_t tab ) {
@@ -1481,6 +1521,7 @@ void CL_NpcManager_Close( void ) {
 	nm.pick = NM_PICK_NONE;
 	nm.picker = NM_PICKER_NONE;
 	nm.preview = qfalse;
+	NM_ReleaseKeys();
 	NM_PreviewFree();	// never called while drawing
 	Key_SetCatcher( Key_GetCatcher() & ~KEYCATCH_NPCMANAGER );
 }
@@ -1558,10 +1599,37 @@ MAP VIEW
 ===============================================================================
 */
 
-// the cgame's main view, as it goes to the renderer
-void CL_NpcManager_ViewRendered( const refdef_t *fd ) {
-	if ( fd->rdflags & ( RDF_NOWORLDMODEL | RDF_AUTOMAP | RDF_SKYBOXPORTAL ) )
-		return;
+static qboolean NM_Flying( void ) {
+	return (qboolean)( nm.open && nm.pick != NM_PICK_NONE && ( Key_GetCatcher() & KEYCATCH_NPCMANAGER ) );
+}
+
+static void NM_UpdateCamera( void ) {
+	vec3_t forward, right, move;
+	float dt, speed;
+
+	dt = Com_Clamp( 0.0f, 0.1f, ( cls.realtime - nm.lastFrameTime ) / 1000.0f );
+	nm.lastFrameTime = cls.realtime;
+
+	AngleVectors( nm.camAng, forward, right, NULL );
+	VectorClear( move );
+	if ( nm.held[A_CAP_W] )		VectorAdd( move, forward, move );
+	if ( nm.held[A_CAP_S] )		VectorSubtract( move, forward, move );
+	if ( nm.held[A_CAP_D] )		VectorAdd( move, right, move );
+	if ( nm.held[A_CAP_A] )		VectorSubtract( move, right, move );
+	if ( nm.held[A_SPACE] )		move[2] += 1.0f;
+	if ( nm.held[A_CAP_C] )		move[2] -= 1.0f;
+
+	if ( VectorNormalize( move ) > 0.0f ) {
+		speed = NM_FLY_SPEED;
+		if ( nm.held[A_SHIFT] || nm.held[A_SHIFT2] )
+			speed *= 3.0f;
+		if ( nm.held[A_CTRL] || nm.held[A_CTRL2] )
+			speed *= 0.25f;
+		VectorMA( nm.camOrg, speed * dt, move, nm.camOrg );
+	}
+}
+
+static void NM_KeepView( const refdef_t *fd ) {
 	VectorCopy( fd->vieworg, nm.viewOrg );
 	VectorCopy( fd->viewaxis[0], nm.viewAxis[0] );
 	VectorCopy( fd->viewaxis[1], nm.viewAxis[1] );
@@ -1569,6 +1637,59 @@ void CL_NpcManager_ViewRendered( const refdef_t *fd ) {
 	nm.fovX = fd->fov_x;
 	nm.fovY = fd->fov_y;
 	nm.haveView = qtrue;
+}
+
+// every cgame scene passes through here before reaching the renderer; qtrue if it was rendered
+qboolean CL_NpcManager_RenderScene( const refdef_t *fd ) {
+	refdef_t view;
+
+	if ( fd->rdflags & ( RDF_NOWORLDMODEL | RDF_AUTOMAP ) )
+		return qfalse;
+
+	if ( fd->rdflags & RDF_SKYBOXPORTAL ) {
+		if ( !NM_Flying() )
+			return qfalse;
+		// the sky portal keeps its own origin but looks the way the camera does
+		view = *fd;
+		AnglesToAxis( nm.camAng, view.viewaxis );
+		VectorCopy( nm.camAng, view.viewangles );
+		re->RenderScene( &view );
+		return qtrue;
+	}
+
+	if ( !NM_Flying() ) {
+		NM_KeepView( fd );
+		return qfalse;
+	}
+
+	if ( nm.viewFrame != cls.framecount ) {
+		nm.viewFrame = cls.framecount;
+		NM_UpdateCamera();
+	}
+	view = *fd;
+	VectorCopy( nm.camOrg, view.vieworg );
+	VectorCopy( nm.camAng, view.viewangles );
+	AnglesToAxis( nm.camAng, view.viewaxis );
+	view.viewContents = CM_PointContents( nm.camOrg, 0 );
+	// the snapshot's area mask is from the player's position, the camera can be anywhere
+	memset( view.areamask, 0, sizeof( view.areamask ) );
+	NM_KeepView( &view );
+	re->RenderScene( &view );
+	return qtrue;
+}
+
+// the free camera, for the effects system to cull against
+qboolean CL_NpcManager_Camera( vec3_t origin, vec3_t angles ) {
+	if ( !NM_Flying() )
+		return qfalse;
+	VectorCopy( nm.camOrg, origin );
+	VectorCopy( nm.camAng, angles );
+	return qtrue;
+}
+
+// the view weapon would float where the player stands
+qboolean CL_NpcManager_FilterEntity( const refEntity_t *ent ) {
+	return (qboolean)( NM_Flying() && ( ent->renderfx & RF_FIRST_PERSON ) );
 }
 
 static qboolean NM_Project( const vec3_t point, float *x, float *y ) {
@@ -1636,13 +1757,11 @@ static qboolean NM_IsToggleKey( int key ) {
 	return (qboolean)( VALIDSTRING( binding ) && !Q_stricmp( binding, NM_TOGGLE_CMD ) );
 }
 
-// the selected NPC by its label on the map
-static void NM_SelectAtCursor( void ) {
-	float best = 32.0f * 32.0f, x, y;
+// the NPC whose label is under the cursor, -1 = none
+static int NM_NpcAtCursor( void ) {
+	float best = NM_LABEL_RANGE * NM_LABEL_RANGE, x, y;
 	vec3_t org;
-
-	// a filter could hide it in the list
-	nm.fields[NM_F_NPC_SEARCH][0] = '\0';
+	int found = -1;
 
 	for ( int i = 0; i < nm.numNpcs; i++ ) {
 		NM_NpcOrigin( &nm.npcs[i], org );
@@ -1653,9 +1772,21 @@ static void NM_SelectAtCursor( void ) {
 		y -= nm.cursorY;
 		if ( x * x + y * y < best ) {
 			best = x * x + y * y;
-			nm.selNum = nm.npcs[i].num;
+			found = i;
 		}
 	}
+	return found;
+}
+
+// the selected NPC by its label on the map
+static void NM_SelectAtCursor( void ) {
+	int i = NM_NpcAtCursor();
+
+	if ( i < 0 )
+		return;
+	// a filter could hide it in the list
+	nm.fields[NM_F_NPC_SEARCH][0] = '\0';
+	nm.selNum = nm.npcs[i].num;
 	NM_RebuildNpcView();
 	NM_ListMove( &nm.npcList, nm.numNpcView, (int)( NM_LIST_H / NM_ROW_H ), 0 );
 }
@@ -1664,8 +1795,11 @@ static void NM_PickClick( void ) {
 	vec3_t pos;
 
 	if ( nm.pick == NM_PICK_SELECT ) {
-		NM_SelectAtCursor();
-		nm.pick = NM_PICK_NONE;
+		// a miss keeps flying, to look for it elsewhere
+		if ( NM_NpcAtCursor() >= 0 ) {
+			NM_SelectAtCursor();
+			NM_EndPick();
+		}
 		return;
 	}
 	if ( !NM_TraceCursor( pos ) )
@@ -1677,7 +1811,7 @@ static void NM_PickClick( void ) {
 	} else if ( nm.pick == NM_PICK_TELE ) {
 		NM_Teleport( pos, NM_NormalizeYaw( NM_YawToView( pos ) + nm.pickYaw ) );
 	}
-	nm.pick = NM_PICK_NONE;
+	NM_EndPick();
 }
 
 static qboolean NM_FieldAllows( nmField_t f, int ch ) {
@@ -1744,7 +1878,12 @@ void CL_NpcManager_KeyEvent( int key, qboolean down ) {
 	nmField_t f;
 	int len;
 
-	if ( !nm.open || !down )
+	if ( !nm.open )
+		return;
+	// held keys fly the camera
+	if ( key >= 0 && key < MAX_KEYS )
+		nm.held[key] = down;
+	if ( !down )
 		return;
 
 	if ( NM_IsToggleKey( key ) ) {
@@ -1758,7 +1897,7 @@ void CL_NpcManager_KeyEvent( int key, qboolean down ) {
 			NM_PickClick();
 			break;
 		case A_MOUSE2:
-			nm.pick = NM_PICK_NONE;
+			NM_EndPick();
 			break;
 		case A_MWHEELUP:
 			nm.pickYaw += NM_YAW_STEP;
@@ -1852,6 +1991,11 @@ void CL_NpcManager_CharEvent( int ch ) {
 }
 
 void CL_NpcManager_MouseEvent( int dx, int dy ) {
+	if ( nm.pick != NM_PICK_NONE ) {
+		nm.camAng[YAW] -= dx * cl_sensitivity->value * m_yaw->value;
+		nm.camAng[PITCH] = Com_Clamp( -89.0f, 89.0f, nm.camAng[PITCH] + dy * cl_sensitivity->value * m_pitch->value );
+		return;
+	}
 	nm.cursorX = Com_Clamp( 0, SCREEN_WIDTH, nm.cursorX + dx );
 	nm.cursorY = Com_Clamp( 0, SCREEN_HEIGHT, nm.cursorY + dy );
 }
@@ -1863,7 +2007,7 @@ void CL_NpcManager_Escape( void ) {
 	else if ( nm.preview )
 		NM_ClosePreview();
 	else if ( nm.pick != NM_PICK_NONE )
-		nm.pick = NM_PICK_NONE;
+		NM_EndPick();
 	else if ( nm.focus != NM_F_NONE )
 		nm.focus = NM_F_NONE;
 	else
@@ -2382,13 +2526,15 @@ static void NM_DrawPicker( void ) {
 
 // numbers and names over the NPCs in view
 static void NM_DrawLabels( void ) {
+	// picking one, the label under the crosshair lights up
+	const int hovered = nm.pick == NM_PICK_SELECT ? NM_NpcAtCursor() : -1;
 	float x, y, tw;
 	vec3_t org;
 
 	for ( int i = 0; i < nm.numNpcs; i++ ) {
 		const nmNpc_t *n = &nm.npcs[i];
 		const char *label = n->name[0] ? va( "%i %s", n->num, n->name ) : va( "%i %s", n->num, n->type );
-		qboolean sel = (qboolean)( n->num == nm.selNum );
+		qboolean sel = (qboolean)( n->num == nm.selNum || i == hovered );
 
 		NM_NpcOrigin( n, org );
 		org[2] += 40.0f;
@@ -2409,7 +2555,7 @@ static void NM_DrawPick( void ) {
 	NM_DrawLabels();
 
 	if ( nm.pick == NM_PICK_SELECT ) {
-		what = "Click an NPC's label to select it.   Right-click or Esc cancels";
+		what = "Aim at an NPC's label and click to select it.   Right-click or Esc cancels";
 	} else {
 		if ( NM_TraceCursor( pos ) && NM_Project( pos, &x, &y ) ) {
 			// where it goes and which way it will face
@@ -2424,13 +2570,19 @@ static void NM_DrawPick( void ) {
 			}
 		}
 		what = nm.pick == NM_PICK_SPAWN
-			? "Click where to spawn it.   Wheel turns it.   Right-click or Esc cancels"
-			: "Click where to teleport to.   Wheel turns it.   Right-click or Esc cancels";
+			? "Aim and click where to spawn it.   Wheel turns it.   Right-click or Esc cancels"
+			: "Aim and click where to teleport to.   Wheel turns it.   Right-click or Esc cancels";
 	}
 
-	NM_Box( 10, 10, SCREEN_WIDTH - 20, 18, nmPanel );
+	NM_Box( 10, 10, SCREEN_WIDTH - 20, 30, nmPanel );
 	NM_TextClipped( 16, 13, SCREEN_WIDTH - 32, what, nmWhite );
-	re->DrawStretchPic( nm.cursorX, nm.cursorY, 32, 32, 0, 0, 1, 1, cls.cursorShader );
+	NM_TextClipped( 16, 26, SCREEN_WIDTH - 32, S_COLOR_GREY "Mouse looks   WASD fly   Space/C up/down   Shift faster   Ctrl slower", nmWhite );
+
+	// the crosshair, what a click picks
+	NM_Fill( nm.cursorX - 8, nm.cursorY - 0.5f, 6, 1, nmWhite );
+	NM_Fill( nm.cursorX + 2, nm.cursorY - 0.5f, 6, 1, nmWhite );
+	NM_Fill( nm.cursorX - 0.5f, nm.cursorY - 8, 1, 6, nmWhite );
+	NM_Fill( nm.cursorX - 0.5f, nm.cursorY + 2, 1, 6, nmWhite );
 }
 
 // drawn over the cgame, under the UI and console

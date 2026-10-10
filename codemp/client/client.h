@@ -670,7 +670,9 @@ void CL_NpcManager_RequestList( void );
 qboolean CL_NpcManager_Waiting( void );
 int CL_NpcManager_NumNpcs( void );
 qboolean CL_NpcManager_GetNpc( int index, int *num, const char **type, const char **name );
-void CL_NpcManager_ViewRendered( const refdef_t *fd );
+qboolean CL_NpcManager_RenderScene( const refdef_t *fd );
+qboolean CL_NpcManager_Camera( vec3_t origin, vec3_t angles );
+qboolean CL_NpcManager_FilterEntity( const refEntity_t *ent );
 void CL_NpcManager_Draw( void );
 
 //
