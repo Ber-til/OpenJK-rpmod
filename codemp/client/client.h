@@ -661,6 +661,7 @@ void CL_NpcManager_Init( void );
 void CL_NpcManager_Shutdown( void );
 void CL_NpcManager_f( void );
 qboolean CL_NpcManager_Active( void );
+void CL_NpcManager_Frame( void );
 void CL_NpcManager_Close( void );
 void CL_NpcManager_KeyEvent( int key, qboolean down );
 void CL_NpcManager_CharEvent( int ch );

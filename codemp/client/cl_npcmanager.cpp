@@ -20,9 +20,12 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 
 // cl_npcmanager.cpp -- engine-side front end for RPMod's /npc command
 //
-// Spawn tab: every NPC type in ext_data/npcs/*.npc the filesystem can see, with
-// targetname, team, model, scale and a spot picked on the map, sent as "npc spawn".
-// Picking on the map flies a free camera, so the spot can be anywhere, not just in view.
+// Spawn tab: every NPC type in ext_data/npcs/*.npc the filesystem can see, Base (the
+// game's own pk3s) or Custom, with targetname, team, model, scale and a spot picked on
+// the map, sent as "npc spawn". Picking on the map flies a free camera, so the spot can
+// be anywhere, not just in view. Several can be put down there and spawned together,
+// one a second as the server's flood protection lets them through, and saved as an NPC
+// construct to put down again. The form's settings can be saved as an NPC of their own.
 // Manage tab: the NPCs in the map, read from the server's "npc list" reply, and the
 // kill/freeze/emote/follow/dialog/tele/hologram/score commands to run on them.
 //
@@ -38,11 +41,24 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define NM_TOGGLE_CMD		"npcmanager"
 #define NM_LIST_HEADER		"List of all NPCs in the map"
 
+#define NM_SAVE_DIR			"npcmanager"		// in the game folder
+#define NM_NPC_DIR			NM_SAVE_DIR "/npcs"
+#define NM_CONSTRUCT_DIR	NM_SAVE_DIR "/constructs"
+#define NM_SAVE_EXT			".cfg"
+#define NM_BASE_PAKS		BASEGAME "/assets"	// base/assets0.pk3 to assets3.pk3 are the game's own
+
 #define NM_MAX_TYPES		4096
 #define NM_MAX_SKINS		8192
 #define NM_MAX_NPCS			1024
+#define NM_MAX_FILES		1024
+#define NM_MAX_SOURCES		256
+#define NM_MAX_SAVED		512
+#define NM_MAX_PLACED		256		// put down, not spawned yet; also a construct's NPCs
+#define NM_MAX_QUEUE		512
+#define NM_CMD_LEN			256
 #define NM_POOL_SIZE		( 512 * 1024 )
 #define NM_FIELD_LEN		64
+#define NM_MESSAGE_MS		5000
 
 #define NM_LIST_TIMEOUT		2500	// ms without the list header before giving up on it
 #define NM_LIST_LINE_GAP	1500	// ms between list lines before the list is over
@@ -71,6 +87,10 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define NM_SEARCH_Y			46.0f
 #define NM_LIST_Y			66.0f
 #define NM_LIST_H			364.0f
+#define NM_TYPE_LIST_Y		( NM_LIST_Y + 20.0f )	// under the Base / Custom / Saved buttons
+#define NM_TYPE_LIST_H		( NM_LIST_H - 20.0f )
+#define NM_PLACED_Y			222.0f
+#define NM_PLACED_ROWS		7
 #define NM_BUTTON_Y			410.0f
 #define NM_PICKER_X			150.0f
 #define NM_PICKER_Y			50.0f
@@ -93,6 +113,8 @@ typedef struct nmType_s {
 	int			scale;				// percent
 	const char	*weapon;			// WP_ name, "" for none
 	const char	*saber, *saber2;	// .sab names, "" for none
+	int			source;				// where its .npc file is read from, index into sources
+	qboolean	custom;				// not from the game's own pk3s
 } nmType_t;
 
 typedef struct nmNpc_s {
@@ -116,9 +138,26 @@ typedef enum {
 typedef enum {
 	NM_PICK_NONE,
 	NM_PICK_SPAWN,		// where to spawn
+	NM_PICK_PLACE,		// where to put down what is in hand, as many times as wanted
 	NM_PICK_TELE,		// where to teleport the selection to
 	NM_PICK_SELECT		// which NPC to select
 } nmPick_t;
+
+typedef enum {
+	NM_SRC_ALL,
+	NM_SRC_BASE,
+	NM_SRC_CUSTOM,
+	NM_SRC_SAVED,		// saved NPCs and NPC constructs
+	NM_SRC_COUNT
+} nmSource_t;
+
+static const char *nmSourceLabels[NM_SRC_COUNT] = { "All", "Base", "Custom", "Saved" };
+
+typedef enum {
+	NM_SAVING_NONE,
+	NM_SAVING_NPC,			// the form's settings
+	NM_SAVING_CONSTRUCT		// the NPCs put down
+} nmSaving_t;
 
 typedef enum {
 	NM_PICKER_NONE,
@@ -155,14 +194,40 @@ typedef enum {
 	NM_F_EMOTE,
 	NM_F_DIALOG,
 	NM_F_PICKER_SEARCH,
+	NM_F_SAVE_NAME,
+	NM_F_TELE_X,		// the teleport box, in this order
+	NM_F_TELE_Y,
+	NM_F_TELE_Z,
+	NM_F_TELE_YAW,
 	NM_NUM_FIELDS
 } nmField_t;
 
 typedef enum {
 	NM_CONFIRM_NONE,
 	NM_CONFIRM_KILL,
-	NM_CONFIRM_SPAWNERS
+	NM_CONFIRM_SPAWNERS,
+	NM_CONFIRM_CLEAR
 } nmConfirm_t;
+
+// what one spawn takes: the form's, a saved NPC's, or one of a construct
+typedef struct nmSpawn_s {
+	char		type[MAX_QPATH];
+	qboolean	vehicle;
+	char		targetname[NM_FIELD_LEN];
+	nmTeam_t	team;
+	char		model[NM_FIELD_LEN];	// "" = its own
+	char		scale[NM_FIELD_LEN];	// "" = its own
+	vec3_t		pos;					// in the map; in a construct, from its middle
+	int			yaw;
+} nmSpawn_t;
+
+// a file in NM_NPC_DIR or NM_CONSTRUCT_DIR
+typedef struct nmSaved_s {
+	char		name[MAX_QPATH];
+	qboolean	construct;
+	int			count;		// a construct's NPCs
+	nmSpawn_t	npc;		// a saved NPC's settings
+} nmSaved_t;
 
 // the emotes in RPMod's help menu
 static const char *nmEmotes[] = {
@@ -299,16 +364,51 @@ static struct {
 	int			numTypes;
 	const char	*skins[NM_MAX_SKINS];
 	int			numSkins;
+	const char	*sources[NM_MAX_SOURCES];	// "gamedir/name.pk3", or "gamedir" for loose files
+	int			numSources;
+	struct {
+		const char	*file;					// in ext_data/npcs
+		int			source;					// the one in use
+	} files[NM_MAX_FILES];
+	int			numFiles;
+
+	// saved NPCs and constructs
+	nmSaved_t	saved[NM_MAX_SAVED];
+	int			numSaved;
+	char		appliedSaved[MAX_QPATH];	// the saved NPC whose settings are in the form, "" = none
+	char		formBefore[3][NM_FIELD_LEN];	// targetname, model and scale from before it
+	nmTeam_t	teamBefore;
+	char		constructShown[MAX_QPATH];	// the construct read into constructNpcs
+	nmSpawn_t	constructNpcs[NM_MAX_PLACED];
+	int			numConstructNpcs;
+	nmSaving_t	saving;						// the name box is open
+	qboolean	teleBox;					// the box to teleport to typed coordinates is open
 
 	// spawn tab
 	nmShow_t	show;
+	nmSource_t	source;
 	nmTeam_t	team;
-	int			typeView[NM_MAX_TYPES];
+	int			typeView[NM_MAX_TYPES + NM_MAX_SAVED];	// type index, or -1 - saved index
 	int			numTypeView;
 	nmList_t	typeList;
 	qboolean	havePos;		// qfalse = in front of the player
 	vec3_t		pos;
 	int			yaw;
+
+	// put down on the map, waiting for "Spawn all"
+	nmSpawn_t	placed[NM_MAX_PLACED];
+	int			numPlaced;
+	int			placedScroll;
+	// what each click puts down: the form's NPC, facing the camera, or a construct
+	nmSpawn_t	hand[NM_MAX_PLACED];
+	int			numHand;
+	qboolean	handConstruct;
+	char		handName[MAX_QPATH];
+
+	// spawns go out one at a time, as the server's flood protection lets them through
+	char		queue[NM_MAX_QUEUE][NM_CMD_LEN];
+	int			numQueue, queueTotal;
+	int			nextSend;
 
 	// manage tab
 	nmNpc_t		npcs[NM_MAX_NPCS];
@@ -360,6 +460,8 @@ static struct {
 	float		fovX, fovY;
 
 	// messages
+	char		message[MAX_STRING_CHARS];
+	int			messageTime;
 	char		lastCmd[MAX_STRING_CHARS];
 	int			sentTime;
 	char		reply[MAX_STRING_CHARS];
@@ -369,6 +471,7 @@ static struct {
 static vec4_t nmWhite		= { 1.0f, 1.0f, 1.0f, 1.0f };
 static vec4_t nmRed			= { 1.0f, 0.3f, 0.3f, 1.0f };
 static vec4_t nmPanel		= { 0.0f, 0.0f, 0.0f, 0.65f };
+static vec4_t nmPanelOpaque	= { 0.05f, 0.05f, 0.05f, 0.95f };	// a box over the panel, which would show through
 static vec4_t nmPanelLight	= { 0.15f, 0.15f, 0.15f, 0.8f };
 static vec4_t nmPanelFocus	= { 0.1f, 0.2f, 0.3f, 0.9f };
 static vec4_t nmHighlight	= { 0.2f, 0.45f, 0.8f, 0.8f };
@@ -378,6 +481,7 @@ static vec4_t nmDanger		= { 0.6f, 0.15f, 0.15f, 0.9f };
 static vec4_t nmBorder		= { 0.5f, 0.5f, 0.5f, 0.8f };
 static vec4_t nmDim			= { 0.7f, 0.7f, 0.7f, 1.0f };
 static vec4_t nmAccent		= { 1.0f, 0.8f, 0.3f, 1.0f };
+static vec4_t nmPlacedColor	= { 0.4f, 1.0f, 0.5f, 1.0f };
 
 static void NM_RequestList( void );
 
@@ -399,6 +503,57 @@ static const char *NM_PoolString( const char *s ) {
 	memcpy( out, s, len );
 	nm.poolUsed += len;
 	return out;
+}
+
+// "base/assets<digits>.pk3"; anything else people named assets_something isn't
+static qboolean NM_IsBaseSource( const char *source ) {
+	const int prefixLen = strlen( NM_BASE_PAKS );
+	const char *c = source + prefixLen;
+
+	if ( Q_stricmpn( source, NM_BASE_PAKS, prefixLen ) || !isdigit( (unsigned char)*c ) )
+		return qfalse;
+	while ( isdigit( (unsigned char)*c ) )
+		c++;
+	return (qboolean)!Q_stricmp( c, ".pk3" );
+}
+
+static int NM_SourceIndex( const char *source ) {
+	const char *stored;
+
+	for ( int i = 0; i < nm.numSources; i++ ) {
+		if ( !Q_stricmp( nm.sources[i], source ) )
+			return i;
+	}
+	if ( nm.numSources >= NM_MAX_SOURCES || !( stored = NM_PoolString( source ) ) )
+		return 0;
+	nm.sources[nm.numSources] = stored;
+	return nm.numSources++;
+}
+
+// name is a full game path, e.g. "ext_data/npcs/jedi.npc"; the first one seen is the one in use
+static void NM_AddNpcFile( const char *name, const char *source, void *ctx ) {
+	const char *file = name + strlen( "ext_data/npcs/" );
+
+	// the game only reads the folder itself
+	if ( strchr( file, '/' ) || strchr( file, '\\' ) || nm.numFiles >= NM_MAX_FILES )
+		return;
+	for ( int i = 0; i < nm.numFiles; i++ ) {
+		if ( !Q_stricmp( nm.files[i].file, file ) )
+			return;
+	}
+	nm.files[nm.numFiles].file = NM_PoolString( file );
+	nm.files[nm.numFiles].source = NM_SourceIndex( source );
+	if ( nm.files[nm.numFiles].file )
+		nm.numFiles++;
+}
+
+// 0, "unknown", if it wasn't seen
+static int NM_FileSource( const char *file ) {
+	for ( int i = 0; i < nm.numFiles; i++ ) {
+		if ( !Q_stricmp( nm.files[i].file, file ) )
+			return nm.files[i].source;
+	}
+	return 0;
 }
 
 // looks holds what NM_ParseNpcFile read besides the model
@@ -437,7 +592,7 @@ static void NM_AddToList( char *list, int size, const char *value ) {
 }
 
 // reads every block out of one .npc file, the way NPC_ParseParms finds them
-static void NM_ParseNpcFile( const char *path ) {
+static void NM_ParseNpcFile( const char *path, int source ) {
 	char *buf;
 	const char *p, *token;
 	char name[MAX_QPATH], key[64], model[MAX_QPATH], skin[MAX_QPATH];
@@ -461,6 +616,8 @@ static void NM_ParseNpcFile( const char *path ) {
 		memset( &looks, 0, sizeof( looks ) );
 		looks.rgba[0] = looks.rgba[1] = looks.rgba[2] = looks.rgba[3] = 255;
 		looks.scale = 100;
+		looks.source = source;
+		looks.custom = (qboolean)!NM_IsBaseSource( nm.sources[source] );
 		while ( 1 ) {
 			token = COM_ParseExt( &p, qtrue );
 			if ( !token[0] || !Q_stricmp( token, "}" ) )
@@ -565,10 +722,15 @@ static void NM_BuildIndex( void ) {
 	nm.poolUsed = 0;
 	nm.numTypes = 0;
 	nm.numSkins = 0;
+	nm.numSources = 0;
+	nm.numFiles = 0;
+	NM_SourceIndex( "unknown" );	// 0
 
+	// where each file is read from; the game's own list sets the order the types are taken in
+	FS_ListFilesRecursiveFrom( "ext_data/npcs", ".npc", NM_AddNpcFile, NULL );
 	files = FS_ListFiles( "ext_data/npcs", ".npc", &numFiles );
 	for ( int i = 0; i < numFiles; i++ )
-		NM_ParseNpcFile( va( "ext_data/npcs/%s", files[i] ) );
+		NM_ParseNpcFile( va( "ext_data/npcs/%s", files[i] ), NM_FileSource( files[i] ) );
 	FS_FreeFileList( files );
 	qsort( nm.types, nm.numTypes, sizeof( nm.types[0] ), NM_CompareTypes );
 
@@ -583,7 +745,13 @@ static void NM_BuildIndex( void ) {
 
 	nm.indexed = qtrue;
 	nm.typeList.sel = nm.typeList.scroll = 0;
-	Com_Printf( "NPC manager: indexed %i NPC types and %i player models (%i ms)\n", nm.numTypes, nm.numSkins, Sys_Milliseconds() - start );
+	out = 0;
+	for ( int i = 0; i < nm.numTypes; i++ ) {
+		if ( nm.types[i].custom )
+			out++;
+	}
+	Com_Printf( "NPC manager: indexed %i NPC types, %i of them custom, and %i player models (%i ms)\n",
+		nm.numTypes, out, nm.numSkins, Sys_Milliseconds() - start );
 }
 
 /*
@@ -620,10 +788,50 @@ static const char *NM_PlayerName( int clientNum ) {
 	return name;
 }
 
-static const nmType_t *NM_SelectedType( void ) {
+static void NM_Message( const char *text ) {
+	Q_strncpyz( nm.message, text, sizeof( nm.message ) );
+	nm.messageTime = cls.realtime;
+}
+
+// the type with the name; one only the server may know, as saved, stands in for a missing one
+static const nmType_t *NM_FindType( const char *name, qboolean vehicle ) {
+	static nmType_t stub;
+	static char stubName[MAX_QPATH];
+
+	for ( int i = 0; i < nm.numTypes; i++ ) {
+		if ( !Q_stricmp( nm.types[i].name, name ) )
+			return &nm.types[i];
+	}
+	Q_strncpyz( stubName, name, sizeof( stubName ) );
+	memset( &stub, 0, sizeof( stub ) );
+	stub.name = stubName;
+	stub.model = stub.surfOff = stub.surfOn = stub.weapon = stub.saber = stub.saber2 = "";
+	stub.vehicle = vehicle;
+	stub.rgba[0] = stub.rgba[1] = stub.rgba[2] = stub.rgba[3] = 255;
+	stub.scale = 100;
+	stub.custom = qtrue;
+	return &stub;
+}
+
+// the saved NPC or construct on the selected row, NULL if it's a type
+static const nmSaved_t *NM_SelectedSaved( void ) {
+	int v;
+
 	if ( nm.typeList.sel < 0 || nm.typeList.sel >= nm.numTypeView )
 		return NULL;
-	return &nm.types[nm.typeView[nm.typeList.sel]];
+	v = nm.typeView[nm.typeList.sel];
+	return v < 0 ? &nm.saved[-1 - v] : NULL;
+}
+
+// a saved NPC's type for one; NULL on a construct
+static const nmType_t *NM_SelectedType( void ) {
+	const nmSaved_t *saved = NM_SelectedSaved();
+
+	if ( nm.typeList.sel < 0 || nm.typeList.sel >= nm.numTypeView )
+		return NULL;
+	if ( !saved )
+		return &nm.types[nm.typeView[nm.typeList.sel]];
+	return saved->construct ? NULL : NM_FindType( saved->npc.type, saved->npc.vehicle );
 }
 
 static const nmNpc_t *NM_FindNpc( int num ) {
@@ -703,6 +911,10 @@ static void NM_ListMove( nmList_t *list, int count, int visible, int delta ) {
 static nmField_t NM_ActiveField( void ) {
 	if ( nm.picker != NM_PICKER_NONE )
 		return NM_F_PICKER_SEARCH;
+	if ( nm.saving != NM_SAVING_NONE )
+		return NM_F_SAVE_NAME;
+	if ( nm.teleBox )
+		return nm.focus >= NM_F_TELE_X && nm.focus <= NM_F_TELE_YAW ? nm.focus : NM_F_TELE_X;
 	if ( nm.focus != NM_F_NONE )
 		return nm.focus;
 	return nm.tab == NM_TAB_SPAWN ? NM_F_TYPE_SEARCH : NM_F_NPC_SEARCH;
@@ -716,20 +928,37 @@ VIEWS
 ===============================================================================
 */
 
+static qboolean NM_ShowPasses( qboolean vehicle ) {
+	return (qboolean)!( ( nm.show == NM_SHOW_CHARACTERS && vehicle ) || ( nm.show == NM_SHOW_VEHICLES && !vehicle ) );
+}
+
+// what was saved first, then the types the filters let through
 static void NM_RebuildTypeView( void ) {
 	const char *search = nm.fields[NM_F_TYPE_SEARCH];
 
 	nm.numTypeView = 0;
-	for ( int i = 0; i < nm.numTypes; i++ ) {
+	if ( nm.source == NM_SRC_ALL || nm.source == NM_SRC_SAVED ) {
+		for ( int i = 0; i < nm.numSaved; i++ ) {
+			const nmSaved_t *s = &nm.saved[i];
+
+			// a construct can hold both kinds
+			if ( !s->construct && !NM_ShowPasses( s->npc.vehicle ) )
+				continue;
+			if ( search[0] && !NM_ContainsNoCase( s->name, search ) && ( s->construct || !NM_ContainsNoCase( s->npc.type, search ) ) )
+				continue;
+			nm.typeView[nm.numTypeView++] = -1 - i;
+		}
+	}
+	for ( int i = 0; i < nm.numTypes && nm.source != NM_SRC_SAVED; i++ ) {
 		const nmType_t *t = &nm.types[i];
 
-		if ( ( nm.show == NM_SHOW_CHARACTERS && t->vehicle ) || ( nm.show == NM_SHOW_VEHICLES && !t->vehicle ) )
+		if ( !NM_ShowPasses( t->vehicle ) || ( nm.source == NM_SRC_BASE && t->custom ) || ( nm.source == NM_SRC_CUSTOM && !t->custom ) )
 			continue;
 		if ( search[0] && !NM_ContainsNoCase( t->name, search ) && !NM_ContainsNoCase( t->model, search ) )
 			continue;
 		nm.typeView[nm.numTypeView++] = i;
 	}
-	NM_ListClamp( &nm.typeList, nm.numTypeView, (int)( NM_LIST_H / NM_ROW_H ) );
+	NM_ListClamp( &nm.typeList, nm.numTypeView, (int)( NM_TYPE_LIST_H / NM_ROW_H ) );
 }
 
 static void NM_RebuildNpcView( void ) {
@@ -877,8 +1106,24 @@ COMMANDS
 ===============================================================================
 */
 
+// ms the server's flood protection wants between commands
+static int NM_CommandGap( void ) {
+	const char *info = cl.gameState.stringData + cl.gameState.stringOffsets[CS_SERVERINFO];
+	const char *flood = Info_ValueForKey( info, "sv_floodProtect" );
+	int value;
+
+	if ( !flood[0] )
+		return 1100;	// not told, play safe
+	value = atoi( flood );
+	if ( value <= 0 )
+		return 0;
+	return ( value == 1 ? 1000 : value ) + 100;
+}
+
 static void NM_Send( const char *cmd, qboolean echo ) {
 	CL_AddReliableCommand( cmd, qfalse );
+	// the queue waits for this one too
+	nm.nextSend = cls.realtime + NM_CommandGap();
 	if ( echo ) {
 		// the list asked for behind the user's back has no reply to show
 		nm.sentTime = cls.realtime;
@@ -888,9 +1133,42 @@ static void NM_Send( const char *cmd, qboolean echo ) {
 }
 
 static void NM_RequestList( void ) {
+	// it would take a spawn's place; read it once they're all out
+	if ( nm.numQueue ) {
+		nm.refreshTime = cls.realtime;
+		return;
+	}
 	nm.listRequestTime = cls.realtime;
 	nm.refreshTime = 0;
 	NM_Send( "npc list", qfalse );
+}
+
+// the list again once what was just sent has had time to happen, and the server takes commands
+static void NM_RefreshSoon( void ) {
+	nm.refreshTime = Q_max( cls.realtime + NM_REFRESH_DELAY, nm.nextSend );
+}
+
+static void NM_Queue( const char *cmd ) {
+	if ( nm.numQueue >= NM_MAX_QUEUE ) {
+		Com_Printf( S_COLOR_YELLOW "NPC manager: too many spawns waiting, dropped %s\n", cmd );
+		return;
+	}
+	Q_strncpyz( nm.queue[nm.numQueue++], cmd, sizeof( nm.queue[0] ) );
+	nm.queueTotal++;
+}
+
+static void NM_RunQueue( void ) {
+	if ( !nm.numQueue ) {
+		nm.queueTotal = 0;
+		return;
+	}
+	if ( cls.realtime < nm.nextSend || cls.state != CA_ACTIVE )
+		return;
+	NM_Send( nm.queue[0], qtrue );
+	nm.numQueue--;
+	memmove( nm.queue[0], nm.queue[1], nm.numQueue * sizeof( nm.queue[0] ) );
+	if ( !nm.numQueue )
+		NM_RefreshSoon();
 }
 
 // the NPC list for the other tools, read quietly
@@ -916,51 +1194,73 @@ qboolean CL_NpcManager_GetNpc( int index, int *num, const char **type, const cha
 	return qtrue;
 }
 
-static const char *NM_BuildSpawn( void ) {
+// "npc spawn" for one NPC; at its pos and yaw with atPos, else in front of the player
+static const char *NM_SpawnCommand( const nmSpawn_t *s, qboolean atPos ) {
 	static char cmd[MAX_STRING_CHARS];
-	const nmType_t *t = NM_SelectedType();
-	const char *targetname = nm.fields[NM_F_TARGETNAME], *model = nm.fields[NM_F_MODEL], *scale = nm.fields[NM_F_SCALE];
-	qboolean coords = (qboolean)( nm.havePos || scale[0] );
-	int need;
+	const nmType_t *t = NM_FindType( s->type, s->vehicle );
+	qboolean coords = (qboolean)( atPos || s->scale[0] );
+	int need, yaw;
 	vec3_t pos;
-	int yaw;
-
-	if ( !t )
-		return NULL;
 
 	// the arguments are positional, so everything before the last one given has to be there
 	if ( coords )
 		need = 3;
-	else if ( model[0] )
+	else if ( s->model[0] )
 		need = 3;
-	else if ( nm.team != NM_TEAM_DEFAULT )
+	else if ( s->team != NM_TEAM_DEFAULT )
 		need = 2;
-	else if ( targetname[0] )
+	else if ( s->targetname[0] )
 		need = 1;
 	else
 		need = 0;
 
-	Com_sprintf( cmd, sizeof( cmd ), "npc spawn %s%s", t->vehicle ? "vehicle " : "", t->name );
+	Com_sprintf( cmd, sizeof( cmd ), "npc spawn %s%s", s->vehicle ? "vehicle " : "", s->type );
 	if ( need >= 1 )
-		Q_strcat( cmd, sizeof( cmd ), va( " %s", targetname[0] ? targetname : t->name ) );
+		Q_strcat( cmd, sizeof( cmd ), va( " %s", s->targetname[0] ? s->targetname : s->type ) );
 	if ( need >= 2 )
-		Q_strcat( cmd, sizeof( cmd ), va( " %s", nmTeamArgs[nm.team] ) );
+		Q_strcat( cmd, sizeof( cmd ), va( " %s", nmTeamArgs[s->team] ) );
 	if ( need >= 3 ) {
 		// no custom model: the NPC's own, so it looks the way it would without one
-		Q_strcat( cmd, sizeof( cmd ), va( " %s", model[0] ? model : t->model[0] ? t->model : t->name ) );
+		Q_strcat( cmd, sizeof( cmd ), va( " %s", s->model[0] ? s->model : t->model[0] ? t->model : s->type ) );
 	}
 	if ( coords ) {
-		if ( nm.havePos ) {
-			VectorCopy( nm.pos, pos );
-			yaw = nm.yaw;
+		if ( atPos ) {
+			VectorCopy( s->pos, pos );
+			yaw = s->yaw;
 		} else {
 			NM_InFrontOfPlayer( pos, &yaw );
 		}
 		Q_strcat( cmd, sizeof( cmd ), va( " %i %i %i %i", (int)floorf( pos[0] + 0.5f ), (int)floorf( pos[1] + 0.5f ), (int)floorf( pos[2] + 0.5f ), yaw ) );
 	}
-	if ( scale[0] )
-		Q_strcat( cmd, sizeof( cmd ), va( " %s", scale ) );
+	if ( s->scale[0] )
+		Q_strcat( cmd, sizeof( cmd ), va( " %s", s->scale ) );
 	return cmd;
+}
+
+// the NPC the form describes, at the spot picked for it
+static qboolean NM_FormSpawn( nmSpawn_t *out ) {
+	const nmType_t *t = NM_SelectedType();
+
+	memset( out, 0, sizeof( *out ) );
+	if ( !t )
+		return qfalse;
+	Q_strncpyz( out->type, t->name, sizeof( out->type ) );
+	out->vehicle = t->vehicle;
+	Q_strncpyz( out->targetname, nm.fields[NM_F_TARGETNAME], sizeof( out->targetname ) );
+	out->team = nm.team;
+	Q_strncpyz( out->model, nm.fields[NM_F_MODEL], sizeof( out->model ) );
+	Q_strncpyz( out->scale, nm.fields[NM_F_SCALE], sizeof( out->scale ) );
+	VectorCopy( nm.pos, out->pos );
+	out->yaw = nm.yaw;
+	return qtrue;
+}
+
+static const char *NM_BuildSpawn( void ) {
+	nmSpawn_t s;
+
+	if ( !NM_FormSpawn( &s ) )
+		return NULL;
+	return NM_SpawnCommand( &s, nm.havePos );
 }
 
 static void NM_Spawn( void ) {
@@ -968,8 +1268,18 @@ static void NM_Spawn( void ) {
 
 	if ( !cmd )
 		return;
-	NM_Send( cmd, qtrue );
-	nm.refreshTime = cls.realtime + NM_REFRESH_DELAY;
+	NM_Queue( cmd );
+	NM_RunQueue();
+}
+
+static void NM_SpawnPlaced( void ) {
+	if ( !nm.numPlaced )
+		return;
+	for ( int i = 0; i < nm.numPlaced; i++ )
+		NM_Queue( NM_SpawnCommand( &nm.placed[i], qtrue ) );
+	NM_Message( va( S_COLOR_GREEN "Spawning %i NPCs, about one a second", nm.numPlaced ) );
+	nm.numPlaced = nm.placedScroll = 0;
+	NM_RunQueue();
 }
 
 /*
@@ -1385,7 +1695,7 @@ static const char *NM_ApplyTarget( qboolean allowAll ) {
 static void NM_SendManage( const char *cmd, qboolean refresh ) {
 	NM_Send( cmd, qtrue );
 	if ( refresh )
-		nm.refreshTime = cls.realtime + NM_REFRESH_DELAY;
+		NM_RefreshSoon();
 }
 
 static void NM_Teleport( const vec3_t pos, int yaw ) {
@@ -1394,6 +1704,340 @@ static void NM_Teleport( const vec3_t pos, int yaw ) {
 	if ( !target )
 		return;
 	NM_SendManage( va( "npc tele %i %i %i %i %s", (int)floorf( pos[0] + 0.5f ), (int)floorf( pos[1] + 0.5f ), (int)floorf( pos[2] + 0.5f ), yaw, target ), qtrue );
+}
+
+static void NM_SetTeleFields( const vec3_t pos, int yaw ) {
+	for ( int i = 0; i < 3; i++ )
+		Com_sprintf( nm.fields[NM_F_TELE_X + i], NM_FIELD_LEN, "%i", (int)floorf( pos[i] + 0.5f ) );
+	Com_sprintf( nm.fields[NM_F_TELE_YAW], NM_FIELD_LEN, "%i", NM_NormalizeYaw( (float)yaw ) );
+}
+
+// the box to type where to teleport to, starting from where the selected NPC is
+static void NM_OpenTeleBox( void ) {
+	const nmNpc_t *npc = NM_SelectedNpc();
+	vec3_t org;
+
+	if ( npc ) {
+		NM_NpcOrigin( npc, org );
+		NM_SetTeleFields( org, npc->yaw );
+	}
+	nm.teleBox = qtrue;
+	nm.focus = NM_F_TELE_X;
+}
+
+static void NM_TeleportToFields( void ) {
+	vec3_t pos;
+
+	for ( int i = 0; i < 3; i++ ) {
+		if ( !nm.fields[NM_F_TELE_X + i][0] ) {
+			NM_Message( S_COLOR_YELLOW "Fill in X, Y and Z" );
+			return;
+		}
+		pos[i] = (float)atof( nm.fields[NM_F_TELE_X + i] );
+	}
+	NM_Teleport( pos, NM_NormalizeYaw( (float)atof( nm.fields[NM_F_TELE_YAW] ) ) );
+	nm.teleBox = qfalse;
+	nm.focus = NM_F_NONE;
+}
+
+/*
+===============================================================================
+
+SAVED NPCS AND CONSTRUCTS
+
+Plain .cfg files in the game folder. Exec'd, the first line hands the file to the
+manager, which reads it whole; the lines after it do nothing on their own.
+
+===============================================================================
+*/
+
+static qboolean NM_SaveNameChar( int ch ) {
+	return (qboolean)( ( ch >= 'a' && ch <= 'z' ) || ( ch >= 'A' && ch <= 'Z' ) || ( ch >= '0' && ch <= '9' ) || ch == '_' || ch == '-' );
+}
+
+static const char *NM_SavePath( qboolean construct, const char *name ) {
+	return va( "%s/%s%s", construct ? NM_CONSTRUCT_DIR : NM_NPC_DIR, name, NM_SAVE_EXT );
+}
+
+static void NM_WriteLine( fileHandle_t f, const char *text ) {
+	FS_Write( text, strlen( text ), f );
+}
+
+// splits a line into words, "quoted" ones whole; the line is cut up in place
+static int NM_SplitLine( char *line, char **argv, int max ) {
+	int argc = 0;
+
+	while ( *line && argc < max ) {
+		while ( *line == ' ' || *line == '\t' )
+			line++;
+		if ( !*line )
+			break;
+		if ( *line == '"' ) {
+			argv[argc++] = ++line;
+			while ( *line && *line != '"' )
+				line++;
+		} else {
+			argv[argc++] = line;
+			while ( *line && *line != ' ' && *line != '\t' )
+				line++;
+		}
+		if ( *line )
+			*line++ = '\0';
+	}
+	return argc;
+}
+
+typedef qboolean ( *nmLineParser_t )( char **argv, int argc, void *out );
+
+// the lines of a saved file parse turns into entries of out, each size big; -1 if there's no file
+static int NM_ReadLines( const char *path, nmLineParser_t parse, void *out, size_t size, int max ) {
+	char *buf, *line, *next, *argv[16];
+	int count = 0, argc;
+
+	if ( FS_ReadFile( path, (void **)&buf ) < 0 || !buf )
+		return -1;
+	for ( line = buf; line && count < max; line = next ) {
+		next = strchr( line, '\n' );
+		if ( next )
+			*next++ = '\0';
+		for ( char *c = line; *c; c++ ) {
+			if ( *c == '\r' )
+				*c = '\0';
+		}
+		argc = NM_SplitLine( line, argv, ARRAY_LEN( argv ) );
+		if ( parse( argv, argc, (byte *)out + count * size ) )
+			count++;
+	}
+	FS_FreeFile( buf );
+	return count;
+}
+
+// the six words of a spawn: <type> <vehicle> <targetname> <team> <model> <scale>, "-" for none
+static const char *NM_SpawnArgs( const nmSpawn_t *s ) {
+	return va( "%s %i %s %s %s %s", s->type, s->vehicle ? 1 : 0, s->targetname[0] ? s->targetname : "-",
+		nmTeamArgs[s->team], s->model[0] ? s->model : "-", s->scale[0] ? s->scale : "-" );
+}
+
+static void NM_ParseSpawnArgs( char **argv, nmSpawn_t *out ) {
+	memset( out, 0, sizeof( *out ) );
+	Q_strncpyz( out->type, argv[0], sizeof( out->type ) );
+	out->vehicle = (qboolean)( atoi( argv[1] ) != 0 );
+	Q_strncpyz( out->targetname, strcmp( argv[2], "-" ) ? argv[2] : "", sizeof( out->targetname ) );
+	for ( int i = 0; i < (int)ARRAY_LEN( nmTeamArgs ); i++ ) {
+		if ( !Q_stricmp( argv[3], nmTeamArgs[i] ) )
+			out->team = (nmTeam_t)i;
+	}
+	Q_strncpyz( out->model, strcmp( argv[4], "-" ) ? argv[4] : "", sizeof( out->model ) );
+	Q_strncpyz( out->scale, strcmp( argv[5], "-" ) ? argv[5] : "", sizeof( out->scale ) );
+}
+
+static qboolean NM_ParseSavedNpc( char **argv, int argc, void *out ) {
+	// npcmanager savednpc <six words>
+	if ( argc < 8 || Q_stricmp( argv[0], NM_TOGGLE_CMD ) || Q_stricmp( argv[1], "savednpc" ) )
+		return qfalse;
+	NM_ParseSpawnArgs( argv + 2, (nmSpawn_t *)out );
+	return qtrue;
+}
+
+static qboolean NM_ParseConstructNpc( char **argv, int argc, void *to ) {
+	nmSpawn_t *out = (nmSpawn_t *)to;
+
+	// npcmanager constructnpc <six words> <x y z from the middle> <yaw>
+	if ( argc < 12 || Q_stricmp( argv[0], NM_TOGGLE_CMD ) || Q_stricmp( argv[1], "constructnpc" ) )
+		return qfalse;
+	NM_ParseSpawnArgs( argv + 2, out );
+	VectorSet( out->pos, atof( argv[8] ), atof( argv[9] ), atof( argv[10] ) );
+	out->yaw = NM_NormalizeYaw( atof( argv[11] ) );
+	return qtrue;
+}
+
+static int NM_ReadConstruct( const char *name, nmSpawn_t *out ) {
+	return NM_ReadLines( NM_SavePath( qtrue, name ), NM_ParseConstructNpc, out, sizeof( *out ), NM_MAX_PLACED );
+}
+
+static int QDECL NM_CompareSaved( const void *a, const void *b ) {
+	return Q_stricmp( ( (const nmSaved_t *)a )->name, ( (const nmSaved_t *)b )->name );
+}
+
+static void NM_RefreshSaved( void ) {
+	nmSpawn_t *scratch = (nmSpawn_t *)Z_Malloc( sizeof( nmSpawn_t ) * NM_MAX_PLACED, TAG_TEMP_WORKSPACE, qfalse );
+
+	nm.numSaved = 0;
+	for ( int construct = 0; construct < 2; construct++ ) {
+		char **list;
+		int count;
+
+		list = FS_ListFiles( construct ? NM_CONSTRUCT_DIR : NM_NPC_DIR, NM_SAVE_EXT, &count );
+		for ( int i = 0; i < count && nm.numSaved < NM_MAX_SAVED; i++ ) {
+			nmSaved_t *s = &nm.saved[nm.numSaved];
+
+			memset( s, 0, sizeof( *s ) );
+			Q_strncpyz( s->name, list[i], sizeof( s->name ) );
+			if ( strlen( s->name ) > strlen( NM_SAVE_EXT ) )
+				s->name[strlen( s->name ) - strlen( NM_SAVE_EXT )] = '\0';
+			s->construct = (qboolean)construct;
+			if ( construct )
+				s->count = NM_ReadConstruct( s->name, scratch );
+			else if ( NM_ReadLines( NM_SavePath( qfalse, s->name ), NM_ParseSavedNpc, &s->npc, sizeof( s->npc ), 1 ) < 1 )
+				continue;	// not one of ours
+			nm.numSaved++;
+		}
+		FS_FreeFileList( list );
+	}
+	Z_Free( scratch );
+	qsort( nm.saved, nm.numSaved, sizeof( nm.saved[0] ), NM_CompareSaved );
+	// appliedSaved stays: it's by name, and the form still holds it
+	nm.constructShown[0] = '\0';
+}
+
+// the selected construct's NPCs, read once per construct
+static void NM_ReadShownConstruct( const nmSaved_t *s ) {
+	if ( !Q_stricmp( nm.constructShown, s->name ) )
+		return;
+	Q_strncpyz( nm.constructShown, s->name, sizeof( nm.constructShown ) );
+	nm.numConstructNpcs = Q_max( 0, NM_ReadConstruct( s->name, nm.constructNpcs ) );
+}
+
+static int NM_FindSaved( qboolean construct, const char *name ) {
+	for ( int i = 0; i < nm.numSaved; i++ ) {
+		if ( nm.saved[i].construct == construct && !Q_stricmp( nm.saved[i].name, name ) )
+			return i;
+	}
+	return -1;
+}
+
+// a saved NPC's settings go in the form while its row is selected; leaving it puts back what was there
+static void NM_ApplySelection( void ) {
+	const nmSaved_t *s = NM_SelectedSaved();
+	const char *name = s && !s->construct ? s->name : "";
+
+	if ( !Q_stricmp( name, nm.appliedSaved ) )
+		return;
+	if ( nm.appliedSaved[0] ) {
+		Q_strncpyz( nm.fields[NM_F_TARGETNAME], nm.formBefore[0], NM_FIELD_LEN );
+		Q_strncpyz( nm.fields[NM_F_MODEL], nm.formBefore[1], NM_FIELD_LEN );
+		Q_strncpyz( nm.fields[NM_F_SCALE], nm.formBefore[2], NM_FIELD_LEN );
+		nm.team = nm.teamBefore;
+	}
+	if ( name[0] ) {
+		Q_strncpyz( nm.formBefore[0], nm.fields[NM_F_TARGETNAME], NM_FIELD_LEN );
+		Q_strncpyz( nm.formBefore[1], nm.fields[NM_F_MODEL], NM_FIELD_LEN );
+		Q_strncpyz( nm.formBefore[2], nm.fields[NM_F_SCALE], NM_FIELD_LEN );
+		nm.teamBefore = nm.team;
+		Q_strncpyz( nm.fields[NM_F_TARGETNAME], s->npc.targetname, NM_FIELD_LEN );
+		Q_strncpyz( nm.fields[NM_F_MODEL], s->npc.model, NM_FIELD_LEN );
+		Q_strncpyz( nm.fields[NM_F_SCALE], s->npc.scale, NM_FIELD_LEN );
+		nm.team = s->npc.team;
+	}
+	Q_strncpyz( nm.appliedSaved, name, sizeof( nm.appliedSaved ) );
+}
+
+// shows a saved NPC or construct in the list, selected
+static void NM_SelectSaved( qboolean construct, const char *name ) {
+	const int index = NM_FindSaved( construct, name );
+
+	if ( index < 0 )
+		return;
+	nm.fields[NM_F_TYPE_SEARCH][0] = '\0';
+	nm.show = NM_SHOW_ALL;
+	if ( nm.source != NM_SRC_ALL )
+		nm.source = NM_SRC_SAVED;
+	NM_RebuildTypeView();
+	for ( int i = 0; i < nm.numTypeView; i++ ) {
+		if ( nm.typeView[i] == -1 - index ) {
+			nm.typeList.sel = i;
+			NM_ListMove( &nm.typeList, nm.numTypeView, (int)( NM_TYPE_LIST_H / NM_ROW_H ), 0 );
+			break;
+		}
+	}
+	NM_ApplySelection();
+}
+
+static qboolean NM_SaveNpc( const char *name ) {
+	const char *path;
+	fileHandle_t f;
+	nmSpawn_t s;
+
+	if ( !NM_FormSpawn( &s ) )
+		return qfalse;
+	path = NM_SavePath( qfalse, name );
+	f = FS_FOpenFileWrite( path );
+	if ( !f ) {
+		NM_Message( va( S_COLOR_RED "Couldn't write %s", path ) );
+		return qfalse;
+	}
+	NM_WriteLine( f, va( "// NPC manager saved NPC: %s\n", name ) );
+	NM_WriteLine( f, "// Shown under Saved in the NPC manager's spawn tab; exec this file to put it in the form\n" );
+	NM_WriteLine( f, "// savednpc <type> <vehicle> <targetname> <team> <model or model/skin> <scale>, - for none\n" );
+	NM_WriteLine( f, va( "npcmanager loadnpc %s\n", name ) );
+	NM_WriteLine( f, va( "npcmanager savednpc %s\n", NM_SpawnArgs( &s ) ) );
+	FS_FCloseFile( f );
+	NM_RefreshSaved();
+	NM_Message( va( S_COLOR_GREEN "Saved %s as %s", s.type, NM_SavePath( qfalse, name ) ) );
+	return qtrue;
+}
+
+// what was put down, relative to the middle of its floor
+static qboolean NM_SaveConstruct( const char *name ) {
+	vec3_t mins, maxs, anchor;
+	const char *path;
+	fileHandle_t f;
+
+	if ( !nm.numPlaced )
+		return qfalse;
+	ClearBounds( mins, maxs );
+	for ( int i = 0; i < nm.numPlaced; i++ )
+		AddPointToBounds( nm.placed[i].pos, mins, maxs );
+	VectorSet( anchor, floorf( ( mins[0] + maxs[0] ) * 0.5f + 0.5f ), floorf( ( mins[1] + maxs[1] ) * 0.5f + 0.5f ), floorf( mins[2] + 0.5f ) );
+
+	path = NM_SavePath( qtrue, name );
+	f = FS_FOpenFileWrite( path );
+	if ( !f ) {
+		NM_Message( va( S_COLOR_RED "Couldn't write %s", path ) );
+		return qfalse;
+	}
+	NM_WriteLine( f, va( "// NPC manager construct: %i NPCs, made on %s\n", nm.numPlaced,
+		Info_ValueForKey( cl.gameState.stringData + cl.gameState.stringOffsets[CS_SERVERINFO], "mapname" ) ) );
+	NM_WriteLine( f, "// Shown under Saved in the NPC manager's spawn tab; exec this file to pick it up and put it down\n" );
+	NM_WriteLine( f, "// constructnpc <type> <vehicle> <targetname> <team> <model> <scale> <x y z from the middle> <yaw>\n" );
+	NM_WriteLine( f, va( "npcmanager loadconstruct %s\n", name ) );
+	for ( int i = 0; i < nm.numPlaced; i++ ) {
+		const nmSpawn_t *s = &nm.placed[i];
+
+		NM_WriteLine( f, va( "npcmanager constructnpc %s %i %i %i %i\n", NM_SpawnArgs( s ),
+			(int)floorf( s->pos[0] - anchor[0] + 0.5f ), (int)floorf( s->pos[1] - anchor[1] + 0.5f ), (int)floorf( s->pos[2] - anchor[2] + 0.5f ), s->yaw ) );
+	}
+	FS_FCloseFile( f );
+	NM_RefreshSaved();
+	NM_Message( va( S_COLOR_GREEN "Saved %i NPCs as %s", nm.numPlaced, NM_SavePath( qtrue, name ) ) );
+	return qtrue;
+}
+
+static void NM_StartSaving( nmSaving_t saving ) {
+	const nmType_t *t = NM_SelectedType();
+	const char *offer = "";
+
+	if ( saving == NM_SAVING_NPC ) {
+		if ( !t )
+			return;
+		offer = nm.fields[NM_F_TARGETNAME][0] ? nm.fields[NM_F_TARGETNAME] : t->name;
+	} else if ( !nm.numPlaced ) {
+		return;
+	}
+	Q_strncpyz( nm.fields[NM_F_SAVE_NAME], offer, NM_FIELD_LEN );
+	for ( char *c = nm.fields[NM_F_SAVE_NAME]; *c; c++ ) {
+		if ( !NM_SaveNameChar( *c ) )
+			*c = '_';
+	}
+	nm.saving = saving;
+	nm.focus = NM_F_NONE;
+}
+
+static void NM_DoSave( void ) {
+	const char *name = nm.fields[NM_F_SAVE_NAME];
+
+	if ( name[0] && ( nm.saving == NM_SAVING_NPC ? NM_SaveNpc( name ) : NM_SaveConstruct( name ) ) )
+		nm.saving = NM_SAVING_NONE;
 }
 
 /*
@@ -1407,6 +2051,7 @@ STATE CHANGES
 static void NM_SetTab( nmTab_t tab ) {
 	nm.tab = tab;
 	nm.focus = NM_F_NONE;
+	nm.teleBox = qfalse;
 	if ( tab != NM_TAB_SPAWN )
 		NM_ClosePreview();
 	nm.confirm = NM_CONFIRM_NONE;
@@ -1484,10 +2129,70 @@ static void NM_EndPick( void ) {
 	NM_ReleaseKeys();
 }
 
-static void NM_Open( nmTab_t tab ) {
+// the form's NPC in hand, to put down as many as wanted
+static void NM_StartPlace( void ) {
+	if ( !NM_FormSpawn( &nm.hand[0] ) )
+		return;
+	VectorClear( nm.hand[0].pos );
+	nm.numHand = 1;
+	nm.handConstruct = qfalse;
+	Q_strncpyz( nm.handName, nm.hand[0].type, sizeof( nm.handName ) );
+	NM_StartPick( NM_PICK_PLACE );
+}
+
+// a saved construct in hand
+static void NM_StartConstruct( const char *name ) {
+	int count = NM_ReadConstruct( name, nm.hand );
+
+	if ( count <= 0 ) {
+		NM_Message( va( S_COLOR_YELLOW "%s %s", count < 0 ? "No construct" : "No NPCs in", NM_SavePath( qtrue, name ) ) );
+		return;
+	}
+	nm.numHand = count;
+	nm.handConstruct = qtrue;
+	Q_strncpyz( nm.handName, name, sizeof( nm.handName ) );
+	NM_StartPick( NM_PICK_PLACE );
+}
+
+// where an NPC in hand goes with the hand at anchor: one alone faces the camera, a
+// construct turns about its middle by the wheel
+static void NM_HandSpot( int i, const vec3_t anchor, vec3_t pos, int *yaw ) {
+	const nmSpawn_t *h = &nm.hand[i];
+	float a, c, s;
+
+	if ( !nm.handConstruct ) {
+		VectorCopy( anchor, pos );
+		*yaw = NM_NormalizeYaw( NM_YawToView( anchor ) + nm.pickYaw );
+		return;
+	}
+	a = DEG2RAD( (float)nm.pickYaw );
+	c = cosf( a );
+	s = sinf( a );
+	pos[0] = anchor[0] + h->pos[0] * c - h->pos[1] * s;
+	pos[1] = anchor[1] + h->pos[0] * s + h->pos[1] * c;
+	pos[2] = anchor[2] + h->pos[2];
+	*yaw = NM_NormalizeYaw( (float)( h->yaw + nm.pickYaw ) );
+}
+
+// what is in hand goes down where anchor is, waiting to be spawned
+static void NM_PutDown( const vec3_t anchor ) {
+	for ( int i = 0; i < nm.numHand; i++ ) {
+		nmSpawn_t *p;
+
+		if ( nm.numPlaced >= NM_MAX_PLACED ) {
+			NM_Message( S_COLOR_YELLOW "That's as many as can wait at once; spawn them first" );
+			break;
+		}
+		p = &nm.placed[nm.numPlaced++];
+		*p = nm.hand[i];
+		NM_HandSpot( i, anchor, p->pos, &p->yaw );
+	}
+}
+
+static qboolean NM_Open( nmTab_t tab ) {
 	if ( cls.state != CA_ACTIVE || !cls.cgameStarted ) {
 		Com_Printf( "NPC manager: join a server first\n" );
-		return;
+		return qfalse;
 	}
 	CL_ModelManager_Close();
 	CL_ShaderManager_Close();
@@ -1502,16 +2207,19 @@ static void NM_Open( nmTab_t tab ) {
 	nm.open = qtrue;
 	nm.pick = NM_PICK_NONE;
 	nm.picker = NM_PICKER_NONE;
+	nm.saving = NM_SAVING_NONE;
 	nm.preview = qfalse;
 	nm.cursorX = SCREEN_WIDTH * 0.5f;
 	nm.cursorY = SCREEN_HEIGHT * 0.5f;
 	nm.click = qfalse;
 	nm.wheel = 0;
+	NM_RefreshSaved();
 	NM_RebuildTypeView();
 	NM_SetTab( tab );
 	if ( tab != NM_TAB_MANAGE )
 		NM_RequestList();	// for the map labels
 	Key_SetCatcher( Key_GetCatcher() | KEYCATCH_NPCMANAGER );
+	return qtrue;
 }
 
 void CL_NpcManager_Close( void ) {
@@ -1520,6 +2228,8 @@ void CL_NpcManager_Close( void ) {
 	nm.open = qfalse;
 	nm.pick = NM_PICK_NONE;
 	nm.picker = NM_PICKER_NONE;
+	nm.saving = NM_SAVING_NONE;
+	nm.teleBox = qfalse;
 	nm.preview = qfalse;
 	NM_ReleaseKeys();
 	NM_PreviewFree();	// never called while drawing
@@ -1542,10 +2252,27 @@ void CL_NpcManager_Shutdown( void ) {
 	nm.listRequestTime = nm.listLineTime = nm.listTime = nm.refreshTime = 0;
 	nm.havePos = qfalse;
 	nm.selNum = -1;
+	// spots in this map, for this server
+	nm.numPlaced = nm.placedScroll = 0;
+	nm.numQueue = nm.queueTotal = 0;
 }
 
 qboolean CL_NpcManager_Active( void ) {
 	return nm.open;
+}
+
+// every frame in game, open or not: the spawns still to go, and the list
+void CL_NpcManager_Frame( void ) {
+	NM_RunQueue();
+
+	// a list we asked for that never came, or one that is due
+	if ( nm.listRequestTime && cls.realtime - nm.listRequestTime > NM_LIST_TIMEOUT ) {
+		nm.listRequestTime = 0;
+		nm.numNpcs = 0;
+		NM_RebuildNpcView();
+	}
+	if ( nm.refreshTime && cls.realtime >= nm.refreshTime && !nm.numQueue && cls.realtime >= nm.nextSend )
+		NM_RequestList();
 }
 
 /*
@@ -1581,13 +2308,42 @@ void CL_NpcManager_f( void ) {
 		CL_NpcManager_Close();
 	} else if ( !Q_stricmp( arg, "reindex" ) ) {
 		NM_BuildIndex();
+		NM_RefreshSaved();
 		NM_RebuildTypeView();
+	} else if ( !Q_stricmp( arg, "loadnpc" ) && Cmd_Argc() >= 3 ) {
+		char name[MAX_QPATH];
+
+		Q_strncpyz( name, Cmd_Argv( 2 ), sizeof( name ) );
+		COM_StripExtension( name, name, sizeof( name ) );
+		if ( !nm.open && !NM_Open( NM_TAB_SPAWN ) )
+			return;
+		NM_SetTab( NM_TAB_SPAWN );
+		NM_RefreshSaved();
+		if ( NM_FindSaved( qfalse, name ) < 0 )
+			Com_Printf( S_COLOR_YELLOW "NPC manager: no saved NPC %s\n", NM_SavePath( qfalse, name ) );
+		NM_SelectSaved( qfalse, name );
+	} else if ( !Q_stricmp( arg, "loadconstruct" ) && Cmd_Argc() >= 3 ) {
+		char name[MAX_QPATH];
+
+		Q_strncpyz( name, Cmd_Argv( 2 ), sizeof( name ) );
+		COM_StripExtension( name, name, sizeof( name ) );
+		if ( !nm.open && !NM_Open( NM_TAB_SPAWN ) )
+			return;
+		NM_SetTab( NM_TAB_SPAWN );
+		NM_StartConstruct( name );
+		if ( nm.pick == NM_PICK_NONE )
+			Com_Printf( "%s\n", nm.message );
+	} else if ( !Q_stricmp( arg, "savednpc" ) || !Q_stricmp( arg, "constructnpc" ) ) {
+		// the lines of a saved file being exec'd; its first line read them all
 	} else {
-		Com_Printf( "usage: npcmanager              toggle the NPC manager (bind a key to it)\n" );
-		Com_Printf( "       npcmanager spawn        open on the spawn tab\n" );
-		Com_Printf( "       npcmanager manage       open on the NPCs in the map\n" );
-		Com_Printf( "       npcmanager reindex      rescan the filesystem for NPC types and models\n" );
-		Com_Printf( "       npcmanager close        close the NPC manager\n" );
+		Com_Printf( "usage: npcmanager                       toggle the NPC manager (bind a key to it)\n" );
+		Com_Printf( "       npcmanager spawn                 open on the spawn tab\n" );
+		Com_Printf( "       npcmanager manage                open on the NPCs in the map\n" );
+		Com_Printf( "       npcmanager loadnpc <name>        put a saved NPC in the spawn form\n" );
+		Com_Printf( "       npcmanager loadconstruct <name>  pick up an NPC construct to put down\n" );
+		Com_Printf( "       npcmanager reindex               rescan the filesystem for NPC types and models\n" );
+		Com_Printf( "       npcmanager close                 close the NPC manager\n" );
+		Com_Printf( "Saved NPCs are in the %s folder of the game folder, constructs in %s; both can be exec'd\n", NM_NPC_DIR, NM_CONSTRUCT_DIR );
 	}
 }
 
@@ -1804,6 +2560,11 @@ static void NM_PickClick( void ) {
 	}
 	if ( !NM_TraceCursor( pos ) )
 		return;
+	if ( nm.pick == NM_PICK_PLACE ) {
+		// stays in hand for the next one
+		NM_PutDown( pos );
+		return;
+	}
 	if ( nm.pick == NM_PICK_SPAWN ) {
 		VectorCopy( pos, nm.pos );
 		nm.yaw = NM_NormalizeYaw( NM_YawToView( pos ) + nm.pickYaw );
@@ -1815,6 +2576,10 @@ static void NM_PickClick( void ) {
 }
 
 static qboolean NM_FieldAllows( nmField_t f, int ch ) {
+	if ( f == NM_F_SAVE_NAME )
+		return NM_SaveNameChar( ch );
+	if ( f >= NM_F_TELE_X && f <= NM_F_TELE_YAW )
+		return (qboolean)( ( ch >= '0' && ch <= '9' ) || ch == '-' || ch == '.' );
 	if ( f == NM_F_SCALE )
 		return (qboolean)( ( ch >= '0' && ch <= '9' ) || ch == '.' );
 	// these go on the command line as single arguments
@@ -1853,7 +2618,7 @@ static void NM_ListKey( int key ) {
 	} else if ( nm.tab == NM_TAB_SPAWN ) {
 		list = &nm.typeList;
 		count = nm.numTypeView;
-		visible = (int)( NM_LIST_H / NM_ROW_H );
+		visible = (int)( NM_TYPE_LIST_H / NM_ROW_H );
 	} else {
 		list = &nm.npcList;
 		count = nm.numNpcView;
@@ -1872,6 +2637,16 @@ static void NM_ListKey( int key ) {
 	NM_ListMove( list, count, visible, delta );
 	if ( list == &nm.npcList && list->sel < nm.numNpcView )
 		nm.selNum = nm.npcs[nm.npcView[list->sel]].num;
+}
+
+// Enter or a double-click on the list: a construct is picked up, anything else spawns
+static void NM_SpawnOrPlace( void ) {
+	const nmSaved_t *s = NM_SelectedSaved();
+
+	if ( s && s->construct )
+		NM_StartConstruct( s->name );
+	else
+		NM_Spawn();
 }
 
 void CL_NpcManager_KeyEvent( int key, qboolean down ) {
@@ -1905,6 +2680,18 @@ void CL_NpcManager_KeyEvent( int key, qboolean down ) {
 		case A_MWHEELDOWN:
 			nm.pickYaw -= NM_YAW_STEP;
 			break;
+		case A_BACKSPACE:
+			// takes back the last one put down
+			if ( nm.pick == NM_PICK_PLACE && nm.numPlaced )
+				nm.numPlaced--;
+			break;
+		case A_ENTER:
+		case A_KP_ENTER:
+			if ( nm.pick == NM_PICK_PLACE ) {
+				NM_SpawnPlaced();
+				NM_EndPick();
+			}
+			break;
 		default:
 			break;
 		}
@@ -1912,6 +2699,40 @@ void CL_NpcManager_KeyEvent( int key, qboolean down ) {
 	}
 
 	f = NM_ActiveField();
+	if ( nm.saving != NM_SAVING_NONE && nm.picker == NM_PICKER_NONE ) {
+		// only the name box takes keys
+		switch ( key ) {
+		case A_ENTER:
+		case A_KP_ENTER:
+			NM_DoSave();
+			return;
+		case A_MOUSE1:
+		case A_BACKSPACE:
+		case A_DELETE:
+			break;
+		default:
+			return;
+		}
+	}
+	if ( nm.teleBox && nm.picker == NM_PICKER_NONE ) {
+		// only the teleport box takes keys
+		switch ( key ) {
+		case A_ENTER:
+		case A_KP_ENTER:
+			NM_TeleportToFields();
+			return;
+		case A_TAB:
+			// the next box, Shift the one before
+			nm.focus = (nmField_t)( NM_F_TELE_X + ( f - NM_F_TELE_X + ( nm.held[A_SHIFT] || nm.held[A_SHIFT2] ? 3 : 1 ) ) % 4 );
+			return;
+		case A_MOUSE1:
+		case A_BACKSPACE:
+		case A_DELETE:
+			break;
+		default:
+			return;
+		}
+	}
 	if ( nm.preview && nm.picker == NM_PICKER_NONE ) {
 		// nothing to type in; the keys go to the popup and the type list behind it
 		switch ( key ) {
@@ -1966,7 +2787,7 @@ void CL_NpcManager_KeyEvent( int key, qboolean down ) {
 			if ( target && nm.fields[f][0] )
 				NM_SendManage( va( "npc %s %s %s", f == NM_F_EMOTE ? "emote" : "dialog", nm.fields[f], target ), qfalse );
 		} else if ( nm.tab == NM_TAB_SPAWN ) {
-			NM_Spawn();
+			NM_SpawnOrPlace();
 		}
 		break;
 	default:
@@ -2004,6 +2825,10 @@ void CL_NpcManager_MouseEvent( int dx, int dy ) {
 void CL_NpcManager_Escape( void ) {
 	if ( nm.picker != NM_PICKER_NONE )
 		nm.picker = NM_PICKER_NONE;
+	else if ( nm.saving != NM_SAVING_NONE )
+		nm.saving = NM_SAVING_NONE;
+	else if ( nm.teleBox )
+		nm.teleBox = qfalse, nm.focus = NM_F_NONE;
 	else if ( nm.preview )
 		NM_ClosePreview();
 	else if ( nm.pick != NM_PICK_NONE )
@@ -2111,7 +2936,7 @@ static void NM_Field( nmField_t f, float x, float y, float w, const char *placeh
 		NM_Text( x + 4, y + 2, shown, nmWhite );
 	}
 	if ( NM_Clicked( x, y, w, NM_CTRL_H ) )
-		nm.focus = ( f == NM_F_TYPE_SEARCH || f == NM_F_NPC_SEARCH || f == NM_F_PICKER_SEARCH ) ? NM_F_NONE : f;
+		nm.focus = ( f == NM_F_TYPE_SEARCH || f == NM_F_NPC_SEARCH || f == NM_F_PICKER_SEARCH || f == NM_F_SAVE_NAME ) ? NM_F_NONE : f;
 }
 
 static void NM_Label( float y, const char *label ) {
@@ -2162,9 +2987,30 @@ static int NM_List( nmList_t *list, int count, float x, float y, float w, float 
 }
 
 static void NM_DrawTypeRow( int row, float x, float y, float w ) {
-	const nmType_t *t = &nm.types[nm.typeView[row]];
+	const int v = nm.typeView[row];
+	const nmType_t *t;
+	const nmSaved_t *s;
 
-	NM_TextClipped( x, y, w, t->vehicle ? va( "%s " S_COLOR_GREY "(vehicle)", t->name ) : t->name, nmWhite );
+	if ( v < 0 ) {
+		s = &nm.saved[-1 - v];
+		if ( s->construct )
+			NM_TextClipped( x, y, w, va( S_COLOR_CYAN "%s " S_COLOR_GREY "(construct, %i NPCs)", s->name, s->count ), nmWhite );
+		else
+			NM_TextClipped( x, y, w, va( S_COLOR_CYAN "%s " S_COLOR_GREY "(saved %s)", s->name, s->npc.type ), nmWhite );
+		return;
+	}
+	t = &nm.types[v];
+	if ( t->custom || t->vehicle )
+		NM_TextClipped( x, y, w, va( "%s " S_COLOR_GREY "(%s%s%s)", t->name, t->custom ? "custom" : "", t->custom && t->vehicle ? " " : "", t->vehicle ? "vehicle" : "" ), nmWhite );
+	else
+		NM_TextClipped( x, y, w, t->name, nmWhite );
+}
+
+// "Base" or "Custom, from <pk3>"
+static const char *NM_SourceLabel( const nmType_t *t ) {
+	if ( !t->custom )
+		return va( "Base, from %s", nm.sources[t->source] );
+	return t->source ? va( "Custom, from %s", nm.sources[t->source] ) : "Custom, not in your files";
 }
 
 static void NM_DrawNpcRow( int row, float x, float y, float w ) {
@@ -2184,26 +3030,121 @@ static void NM_DrawPickerRow( int row, float x, float y, float w ) {
 }
 
 static void NM_DrawCommandLines( const char *preview ) {
-	if ( preview )
+	if ( nm.numQueue ) {
+		NM_TextClipped( NM_RIGHT_X, NM_BUTTON_Y - 30, NM_RIGHT_W, va( S_COLOR_YELLOW "Spawning, %i of %i to go (the server takes about one a second)",
+			nm.numQueue, nm.queueTotal ), nmWhite );
+	} else if ( preview ) {
 		NM_TextClipped( NM_RIGHT_X, NM_BUTTON_Y - 30, NM_RIGHT_W, va( S_COLOR_GREY "%s", preview ), nmWhite );
+	}
 	if ( nm.lastCmd[0] ) {
 		NM_TextClipped( NM_RIGHT_X, NM_BUTTON_Y - 17, NM_RIGHT_W,
 			va( "%sSent: %s", cls.realtime - nm.sentTime < 1500 ? S_COLOR_GREEN : S_COLOR_GREY, nm.lastCmd ), nmWhite );
 	}
 }
 
+// the NPCs put down and waiting, and what can be done with them
+static void NM_DrawPlaced( void ) {
+	const float y = NM_PLACED_Y, by = y + 18, bh = NM_PLACED_ROWS * NM_ROW_H + 4, ay = by + bh + 4;
+	const qboolean any = (qboolean)( nm.numPlaced > 0 );
+	int remove = -1;
+
+	NM_Label( y, "Put down" );
+	if ( NM_Button( NM_CTRL_X, y, 140, "Place several on map...", qfalse, (qboolean)( NM_SelectedType() != NULL ) ) )
+		NM_StartPlace();
+	NM_TextClipped( NM_CTRL_X + 146, y + 2, NM_CTRL_W - 146,
+		any ? va( S_COLOR_YELLOW "%i waiting to spawn", nm.numPlaced ) : S_COLOR_GREY "none waiting", nmWhite );
+
+	NM_Box( NM_RIGHT_X, by, NM_RIGHT_W, bh, nmPanelLight );
+	if ( nm.wheel && NM_InRect( NM_RIGHT_X, by, NM_RIGHT_W, bh ) ) {
+		nm.placedScroll += nm.wheel;
+		nm.wheel = 0;
+	}
+	nm.placedScroll = Com_Clampi( 0, Q_max( 0, nm.numPlaced - NM_PLACED_ROWS ), nm.placedScroll );
+	if ( !any ) {
+		NM_TextClipped( NM_RIGHT_X + 4, by + 3, NM_RIGHT_W - 8, S_COLOR_GREY "Put NPCs down on the map, then spawn them all", nmWhite );
+		NM_TextClipped( NM_RIGHT_X + 4, by + 3 + NM_ROW_H, NM_RIGHT_W - 8, S_COLOR_GREY "at once, or save them as a construct", nmWhite );
+	}
+	for ( int i = 0; i < NM_PLACED_ROWS; i++ ) {
+		const int row = nm.placedScroll + i;
+		const float ry = by + 2 + i * NM_ROW_H, xx = NM_RIGHT_X + NM_RIGHT_W - 20;
+		const nmSpawn_t *p;
+
+		if ( row >= nm.numPlaced )
+			break;
+		p = &nm.placed[row];
+		NM_TextClipped( NM_RIGHT_X + 4, ry, NM_RIGHT_W - 28, va( "%s %s" S_COLOR_GREY "at %i %i %i, yaw %i", p->type,
+			p->targetname[0] ? va( S_COLOR_CYAN "%s ", p->targetname ) : "", (int)p->pos[0], (int)p->pos[1], (int)p->pos[2], p->yaw ), nmWhite );
+		// takes it back
+		if ( NM_InRect( xx, ry, 16, NM_ROW_H ) )
+			NM_Fill( xx, ry, 16, NM_ROW_H, nmHoverBox );
+		NM_Text( xx + 5, ry, S_COLOR_RED "x", nmWhite );
+		if ( NM_Clicked( xx, ry, 16, NM_ROW_H ) )
+			remove = row;
+	}
+	if ( remove >= 0 ) {
+		memmove( &nm.placed[remove], &nm.placed[remove + 1], ( nm.numPlaced - remove - 1 ) * sizeof( nm.placed[0] ) );
+		nm.numPlaced--;
+	}
+
+	if ( NM_Button( NM_RIGHT_X, ay, 130, any ? va( "Spawn all %i", nm.numPlaced ) : "Spawn all", qfalse, any ) )
+		NM_SpawnPlaced();
+	if ( NM_DangerButton( NM_RIGHT_X + 134, ay, 70, "Clear", NM_CONFIRM_CLEAR, any ) )
+		nm.numPlaced = nm.placedScroll = 0;
+	if ( NM_Button( NM_RIGHT_X + 208, ay, NM_RIGHT_W - 208, "Save as construct...", qfalse, any ) )
+		NM_StartSaving( NM_SAVING_CONSTRUCT );
+}
+
+// a saved construct's NPCs, in place of the form
+static void NM_DrawConstruct( const nmSaved_t *s ) {
+	const float lh = NM_PLACED_Y - 6 - ( NM_LIST_Y + 42 );
+	const int rows = (int)( ( lh - 4 ) / NM_ROW_H );
+	float y = NM_LIST_Y;
+
+	NM_ReadShownConstruct( s );
+	NM_Box( NM_RIGHT_X, y, NM_RIGHT_W, 34, nmPanelLight );
+	NM_TextClipped( NM_RIGHT_X + 6, y + 4, NM_RIGHT_W - 12, va( "%s " S_COLOR_GREY "NPC construct", s->name ), nmAccent );
+	NM_TextClipped( NM_RIGHT_X + 6, y + 18, NM_RIGHT_W - 12, va( S_COLOR_GREY "%i NPCs, from %s", nm.numConstructNpcs, NM_SavePath( qtrue, s->name ) ), nmWhite );
+
+	y += 42;
+	NM_Box( NM_RIGHT_X, y, NM_RIGHT_W, lh, nmPanelLight );
+	for ( int i = 0; i < nm.numConstructNpcs && i < rows; i++ ) {
+		const nmSpawn_t *n = &nm.constructNpcs[i];
+
+		if ( i == rows - 1 && nm.numConstructNpcs > rows ) {
+			NM_Text( NM_RIGHT_X + 4, y + 2 + i * NM_ROW_H, va( S_COLOR_GREY "and %i more", nm.numConstructNpcs - i ), nmWhite );
+			break;
+		}
+		NM_TextClipped( NM_RIGHT_X + 4, y + 2 + i * NM_ROW_H, NM_RIGHT_W - 8, va( "%s %s" S_COLOR_GREY "%s%s%s", n->type,
+			n->targetname[0] ? va( S_COLOR_CYAN "%s ", n->targetname ) : "", nmTeamLabels[n->team],
+			n->model[0] ? ", model " : "", n->model ), nmWhite );
+	}
+}
+
 static void NM_DrawSpawn( void ) {
+	const float bw = ( NM_LEFT_W - 4.0f * ( NM_SRC_COUNT - 1 ) ) / NM_SRC_COUNT;
 	const nmType_t *t;
+	const nmSaved_t *saved;
 	const char *cmd;
 	float y, x;
 	int picked;
 
 	NM_Field( NM_F_TYPE_SEARCH, NM_LEFT_X, NM_SEARCH_Y, NM_LEFT_W, "Type to search NPC types" );
+	// where they come from
+	for ( int i = 0; i < NM_SRC_COUNT; i++ ) {
+		if ( NM_Button( NM_LEFT_X + i * ( bw + 4 ), NM_LIST_Y, bw, nmSourceLabels[i], (qboolean)( nm.source == i ), qtrue ) ) {
+			nm.source = (nmSource_t)i;
+			nm.typeList.sel = nm.typeList.scroll = 0;
+		}
+	}
 	NM_RebuildTypeView();
-	picked = NM_List( &nm.typeList, nm.numTypeView, NM_LEFT_X, NM_LIST_Y, NM_LEFT_W, NM_LIST_H, NM_DrawTypeRow );
-	if ( !nm.numTypeView )
-		NM_Text( NM_LEFT_X + 4, NM_LIST_Y + 1, "No NPC types match", nmDim );
+	picked = NM_List( &nm.typeList, nm.numTypeView, NM_LEFT_X, NM_TYPE_LIST_Y, NM_LEFT_W, NM_TYPE_LIST_H, NM_DrawTypeRow );
+	if ( !nm.numTypeView ) {
+		NM_Text( NM_LEFT_X + 4, NM_TYPE_LIST_Y + 1, nm.source == NM_SRC_SAVED && !nm.fields[NM_F_TYPE_SEARCH][0]
+			? "Nothing saved yet" : "No NPC types match", nmDim );
+	}
+	NM_ApplySelection();
 	t = NM_SelectedType();
+	saved = NM_SelectedSaved();
 
 	y = NM_SEARCH_Y;
 	NM_Label( y, "Show" );
@@ -2214,12 +3155,25 @@ static void NM_DrawSpawn( void ) {
 	if ( NM_Button( NM_CTRL_X + 168, y, 80, "Vehicles", (qboolean)( nm.show == NM_SHOW_VEHICLES ), qtrue ) )
 		nm.show = NM_SHOW_VEHICLES;
 
+	if ( saved && saved->construct ) {
+		NM_DrawConstruct( saved );
+		NM_DrawPlaced();
+		NM_DrawCommandLines( NULL );
+		if ( NM_Button( NM_RIGHT_X, NM_BUTTON_Y, NM_RIGHT_W, "Pick it up to put it down...  (Enter)", qfalse, (qboolean)( saved->count > 0 ) ) || picked >= 0 )
+			NM_StartConstruct( saved->name );
+		return;
+	}
+
 	y = NM_LIST_Y;
 	NM_Box( NM_RIGHT_X, y, NM_RIGHT_W, 34, nmPanelLight );
-	if ( t ) {
+	if ( t && saved ) {
+		NM_TextClipped( NM_RIGHT_X + 6, y + 4, NM_RIGHT_W - 12, va( "%s " S_COLOR_GREY "saved NPC", saved->name ), nmAccent );
+		NM_TextClipped( NM_RIGHT_X + 6, y + 18, NM_RIGHT_W - 12,
+			va( S_COLOR_GREY "%s %s   %s", t->name, t->vehicle ? "vehicle" : "character", NM_SourceLabel( t ) ), nmWhite );
+	} else if ( t ) {
 		NM_TextClipped( NM_RIGHT_X + 6, y + 4, NM_RIGHT_W - 12, t->name, nmAccent );
 		NM_TextClipped( NM_RIGHT_X + 6, y + 18, NM_RIGHT_W - 12,
-			va( S_COLOR_GREY "%s   model %s", t->vehicle ? "Vehicle" : "Character", t->model[0] ? t->model : "(none)" ), nmWhite );
+			va( S_COLOR_GREY "%s   model %s   %s", t->vehicle ? "Vehicle" : "Character", t->model[0] ? t->model : "(none)", NM_SourceLabel( t ) ), nmWhite );
 	} else {
 		NM_Text( NM_RIGHT_X + 6, y + 4, "Pick an NPC type on the left", nmDim );
 	}
@@ -2257,15 +3211,96 @@ static void NM_DrawSpawn( void ) {
 			(int)nm.pos[0], (int)nm.pos[1], (int)nm.pos[2], nm.yaw ), nmWhite );
 	}
 
+	NM_DrawPlaced();
+
 	cmd = NM_BuildSpawn();
 	NM_DrawCommandLines( cmd ? va( "Will send: %s", cmd ) : NULL );
-	if ( NM_Button( NM_RIGHT_X, NM_BUTTON_Y, NM_RIGHT_W - 94, "Spawn  (Enter)", qfalse, (qboolean)( t != NULL ) ) || picked >= 0 )
+	if ( NM_Button( NM_RIGHT_X, NM_BUTTON_Y, NM_RIGHT_W - 188, "Spawn  (Enter)", qfalse, (qboolean)( t != NULL ) ) || picked >= 0 )
 		NM_Spawn();
+	if ( NM_Button( NM_RIGHT_X + NM_RIGHT_W - 184, NM_BUTTON_Y, 90, "Save NPC...", qfalse, (qboolean)( t != NULL ) ) )
+		NM_StartSaving( NM_SAVING_NPC );
 	if ( NM_Button( NM_RIGHT_X + NM_RIGHT_W - 90, NM_BUTTON_Y, 90, "Preview...", qfalse, (qboolean)( t != NULL ) ) ) {
 		nm.preview = qtrue;
 		nm.previewYaw = 0.0f;
 		nm.focus = NM_F_NONE;
 	}
+}
+
+// typing where to teleport to
+static void NM_DrawTeleBox( void ) {
+	static const char *labels[] = { "X", "Y", "Z", "Yaw" };
+	const float w = 300, h = 118, x = ( SCREEN_WIDTH - w ) * 0.5f, y = 160, fw = ( w - 16 - 3 * 6 ) / 4;
+	const nmNpc_t *npc = NM_SelectedNpc();
+	const char *target = NM_ApplyTarget( qfalse );
+	qboolean filled = qtrue;
+
+	NM_Box( x, y, w, h, nmPanelOpaque );
+	if ( !target )
+		NM_Text( x + 8, y + 6, "Teleport to:", nmWhite );
+	else if ( nm.apply == NM_APPLY_NAME )
+		NM_TextClipped( x + 8, y + 6, w - 16, va( "Teleport the NPCs named " S_COLOR_YELLOW "%s" S_COLOR_WHITE " to:", target ), nmWhite );
+	else
+		NM_TextClipped( x + 8, y + 6, w - 16, va( "Teleport NPC " S_COLOR_CYAN "%s" S_COLOR_WHITE "%s to:", target, npc ? va( " (%s)", npc->type ) : "" ), nmWhite );
+
+	for ( int i = 0; i < 4; i++ ) {
+		const float fx = x + 8 + i * ( fw + 6 );
+
+		NM_Text( fx, y + 22, labels[i], nmDim );
+		NM_Field( (nmField_t)( NM_F_TELE_X + i ), fx, y + 34, fw, i == 3 ? "0" : "" );
+		if ( i < 3 && !nm.fields[NM_F_TELE_X + i][0] )
+			filled = qfalse;
+	}
+
+	// starting points
+	if ( NM_Button( x + 8, y + 56, 138, "Where it is now", qfalse, (qboolean)( npc != NULL ) ) ) {
+		vec3_t org;
+
+		NM_NpcOrigin( npc, org );
+		NM_SetTeleFields( org, npc->yaw );
+	}
+	if ( NM_Button( x + w - 146, y + 56, 138, "Where I am", qfalse, qtrue ) )
+		NM_SetTeleFields( cl.snap.ps.origin, (int)cl.viewangles[YAW] );
+	NM_Text( x + 8, y + 76, S_COLOR_GREY "Tab next box   Enter teleports   Esc cancels", nmWhite );
+
+	if ( NM_Button( x + 8, y + h - 24, 120, "Teleport  (Enter)", qfalse, (qboolean)( target && filled ) ) ) {
+		NM_TeleportToFields();
+		return;
+	}
+	if ( NM_Button( x + w - 108, y + h - 24, 100, "Cancel  (Esc)", qfalse, qtrue ) ) {
+		nm.teleBox = qfalse;
+		nm.focus = NM_F_NONE;
+		return;
+	}
+	if ( NM_Clicked( 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT ) && !NM_InRect( x, y, w, h ) ) {
+		nm.teleBox = qfalse;
+		nm.focus = NM_F_NONE;
+	}
+}
+
+// the name box for saving the form's NPC or what was put down
+static void NM_DrawSaving( void ) {
+	const float w = 340, h = 88, x = ( SCREEN_WIDTH - w ) * 0.5f, y = 170;
+	const qboolean construct = (qboolean)( nm.saving == NM_SAVING_CONSTRUCT );
+	const char *name = nm.fields[NM_F_SAVE_NAME];
+
+	NM_Box( x, y, w, h, nmPanelOpaque );
+	NM_TextClipped( x + 8, y + 6, w - 16, construct ? va( "Save the %i NPCs put down as a construct named:", nm.numPlaced )
+		: "Save the form's NPC, with its settings, as:", nmWhite );
+	NM_Field( NM_F_SAVE_NAME, x + 8, y + 22, w - 16, "letters, numbers, - and _" );
+	if ( name[0] && FS_FileExists( NM_SavePath( construct, name ) ) )
+		NM_TextClipped( x + 8, y + 42, w - 16, S_COLOR_YELLOW "One with this name is there already; saving replaces it", nmWhite );
+	else
+		NM_TextClipped( x + 8, y + 42, w - 16, va( S_COLOR_GREY "Goes in %s, shown under Saved", construct ? NM_CONSTRUCT_DIR : NM_NPC_DIR ), nmWhite );
+	if ( NM_Button( x + 8, y + h - 24, 100, "Save  (Enter)", qfalse, (qboolean)( name[0] != '\0' ) ) ) {
+		NM_DoSave();
+		return;
+	}
+	if ( NM_Button( x + w - 108, y + h - 24, 100, "Cancel  (Esc)", qfalse, qtrue ) ) {
+		nm.saving = NM_SAVING_NONE;
+		return;
+	}
+	if ( NM_Clicked( 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT ) && !NM_InRect( x, y, w, h ) )
+		nm.saving = NM_SAVING_NONE;
 }
 
 // the NPC as it would spawn; Up/Down go through the types behind it
@@ -2428,15 +3463,17 @@ static void NM_DrawManage( void ) {
 
 	y += 20;
 	NM_Label( y, "Teleport" );
-	if ( NM_Button( NM_CTRL_X, y, w * 2 + 4, "Pick on map...", qfalse, (qboolean)( target != NULL ) ) )
+	if ( NM_Button( NM_CTRL_X, y, 88, "Pick on map...", qfalse, (qboolean)( target != NULL ) ) )
 		NM_StartPick( NM_PICK_TELE );
-	if ( NM_Button( NM_CTRL_X + ( w + 4 ) * 2, y, w * 2 + 4, "In front of me", qfalse, (qboolean)( target != NULL ) ) ) {
+	if ( NM_Button( NM_CTRL_X + 92, y, 88, "In front of me", qfalse, (qboolean)( target != NULL ) ) ) {
 		vec3_t pos;
 		int yaw;
 
 		NM_InFrontOfPlayer( pos, &yaw );
 		NM_Teleport( pos, yaw );
 	}
+	if ( NM_Button( NM_CTRL_X + 184, y, NM_CTRL_W - 184, "Coordinates...", qfalse, (qboolean)( target != NULL ) ) )
+		NM_OpenTeleBox();
 	if ( nm.apply == NM_APPLY_ALL )
 		NM_Text( NM_CTRL_X + ( w + 4 ) * 4, y + 2, S_COLOR_GREY "not on all", nmWhite );
 
@@ -2546,6 +3583,40 @@ static void NM_DrawLabels( void ) {
 	}
 }
 
+// a dotted line on screen, the dots as close however long it is
+static void NM_DottedLine( float x1, float y1, float x2, float y2, const float *color ) {
+	const int dots = Com_Clampi( 2, 120, (int)( sqrtf( Square( x2 - x1 ) + Square( y2 - y1 ) ) / 4.0f ) );
+
+	for ( int i = 0; i <= dots; i++ )
+		NM_Fill( x1 + ( x2 - x1 ) * i / dots - 1, y1 + ( y2 - y1 ) * i / dots - 1, 2, 2, color );
+}
+
+// a spot an NPC goes: a pole from its feet to its head, which way it faces, and a label
+static void NM_DrawMarker( const vec3_t pos, int yaw, const char *label, const float *color ) {
+	vec3_t feet, head, angles, forward, end;
+	float fx, fy, hx, hy, x, y, ex, ey, tw;
+
+	VectorCopy( pos, feet );
+	feet[2] -= NM_GROUND_HEIGHT;
+	VectorCopy( pos, head );
+	head[2] += 40.0f;
+	if ( !NM_Project( feet, &fx, &fy ) || !NM_Project( head, &hx, &hy ) || !NM_Project( pos, &x, &y ) )
+		return;
+	NM_DottedLine( fx, fy, hx, hy, color );
+	VectorSet( angles, 0, (float)yaw, 0 );
+	AngleVectors( angles, forward, NULL, NULL );
+	VectorMA( pos, 32.0f, forward, end );
+	if ( NM_Project( end, &ex, &ey ) )
+		NM_DottedLine( x, y, ex, ey, color );
+	tw = NM_TextWidth( label );
+	NM_Box( hx - tw * 0.5f - 3, hy - 16, tw + 6, 14, nmPanel );
+	NM_Text( hx - tw * 0.5f, hy - 15, label, color );
+}
+
+static const char *NM_MarkerLabel( const nmSpawn_t *s ) {
+	return s->targetname[0] ? va( "%s %s", s->type, s->targetname ) : s->type;
+}
+
 static void NM_DrawPick( void ) {
 	const char *what;
 	vec3_t pos, end, angles, forward;
@@ -2553,9 +3624,24 @@ static void NM_DrawPick( void ) {
 	int yaw;
 
 	NM_DrawLabels();
+	// the ones put down, waiting
+	for ( int i = 0; i < nm.numPlaced; i++ )
+		NM_DrawMarker( nm.placed[i].pos, nm.placed[i].yaw, NM_MarkerLabel( &nm.placed[i] ), nmPlacedColor );
 
 	if ( nm.pick == NM_PICK_SELECT ) {
 		what = "Aim at an NPC's label and click to select it.   Right-click or Esc cancels";
+	} else if ( nm.pick == NM_PICK_PLACE ) {
+		// what a click puts down, and where
+		if ( NM_TraceCursor( pos ) ) {
+			for ( int i = 0; i < nm.numHand; i++ ) {
+				vec3_t spot;
+
+				NM_HandSpot( i, pos, spot, &yaw );
+				NM_DrawMarker( spot, yaw, NM_MarkerLabel( &nm.hand[i] ), nmAccent );
+			}
+		}
+		what = va( "Click to put down %s%s, again for more.   Wheel turns it.   Backspace takes the last back",
+			nm.handConstruct ? "the construct " : "", nm.handName );
 	} else {
 		if ( NM_TraceCursor( pos ) && NM_Project( pos, &x, &y ) ) {
 			// where it goes and which way it will face
@@ -2574,9 +3660,13 @@ static void NM_DrawPick( void ) {
 			: "Aim and click where to teleport to.   Wheel turns it.   Right-click or Esc cancels";
 	}
 
-	NM_Box( 10, 10, SCREEN_WIDTH - 20, 30, nmPanel );
+	NM_Box( 10, 10, SCREEN_WIDTH - 20, nm.pick == NM_PICK_PLACE ? 43 : 30, nmPanel );
 	NM_TextClipped( 16, 13, SCREEN_WIDTH - 32, what, nmWhite );
 	NM_TextClipped( 16, 26, SCREEN_WIDTH - 32, S_COLOR_GREY "Mouse looks   WASD fly   Space/C up/down   Shift faster   Ctrl slower", nmWhite );
+	if ( nm.pick == NM_PICK_PLACE ) {
+		NM_TextClipped( 16, 39, SCREEN_WIDTH - 32, va( "%s" S_COLOR_WHITE "   Enter spawns them all   Right-click or Esc goes back, keeping them",
+			nm.numPlaced ? va( S_COLOR_GREEN "%i put down", nm.numPlaced ) : S_COLOR_GREY "None put down yet" ), nmWhite );
+	}
 
 	// the crosshair, what a click picks
 	NM_Fill( nm.cursorX - 8, nm.cursorY - 0.5f, 6, 1, nmWhite );
@@ -2595,26 +3685,19 @@ void CL_NpcManager_Draw( void ) {
 	if ( !nm.preview && nm.picker != NM_PICKER_MODEL && nm.previewG2 )
 		NM_PreviewFree();
 
-	// a list we asked for that never came, or one that is due
-	if ( nm.listRequestTime && cls.realtime - nm.listRequestTime > NM_LIST_TIMEOUT ) {
-		nm.listRequestTime = 0;
-		nm.numNpcs = 0;
-		NM_RebuildNpcView();
-	}
-	if ( nm.refreshTime && cls.realtime >= nm.refreshTime )
-		NM_RequestList();
-
 	if ( nm.pick != NM_PICK_NONE ) {
 		NM_DrawPick();
 		return;
 	}
 
-	// the picker and the preview sit on top and get the clicks first, but are drawn last
+	// the picker, the name box and the preview sit on top and get the clicks first, but are drawn last
 	qboolean pickerOpen = (qboolean)( nm.picker != NM_PICKER_NONE );
-	qboolean previewOpen = (qboolean)( nm.preview && !pickerOpen );
+	qboolean savingOpen = (qboolean)( nm.saving != NM_SAVING_NONE && !pickerOpen );
+	qboolean teleOpen = (qboolean)( nm.teleBox && !pickerOpen && !savingOpen );
+	qboolean previewOpen = (qboolean)( nm.preview && !pickerOpen && !savingOpen && !teleOpen );
 	qboolean click = nm.click;
 	int wheel = nm.wheel;
-	if ( pickerOpen || previewOpen )
+	if ( pickerOpen || savingOpen || teleOpen || previewOpen )
 		nm.click = qfalse, nm.wheel = 0;
 
 	NM_Fill( 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, nmPanel );
@@ -2627,6 +3710,9 @@ void CL_NpcManager_Draw( void ) {
 	// the server's answer to the last command
 	if ( nm.reply[0] && cls.realtime - nm.replyTime < 8000 )
 		NM_TextClipped( NM_RIGHT_X, 14, NM_RIGHT_W, va( S_COLOR_YELLOW "Server: " S_COLOR_WHITE "%s", nm.reply ), nmWhite );
+	// and the manager's own
+	if ( nm.message[0] && cls.realtime - nm.messageTime < NM_MESSAGE_MS )
+		NM_TextClipped( NM_RIGHT_X, 29, NM_RIGHT_W, nm.message, nmWhite );
 
 	if ( nm.tab == NM_TAB_SPAWN )
 		NM_DrawSpawn();
@@ -2642,6 +3728,14 @@ void CL_NpcManager_Draw( void ) {
 		nm.click = click;
 		nm.wheel = wheel;
 		NM_DrawPicker();
+	} else if ( savingOpen && nm.saving != NM_SAVING_NONE ) {
+		nm.click = click;
+		nm.wheel = wheel;
+		NM_DrawSaving();
+	} else if ( teleOpen && nm.teleBox && nm.tab == NM_TAB_MANAGE ) {
+		nm.click = click;
+		nm.wheel = wheel;
+		NM_DrawTeleBox();
 	} else if ( previewOpen && nm.preview && nm.tab == NM_TAB_SPAWN ) {
 		nm.click = click;
 		nm.wheel = wheel;
