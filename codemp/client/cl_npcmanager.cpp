@@ -87,8 +87,12 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define NM_SEARCH_Y			46.0f
 #define NM_LIST_Y			66.0f
 #define NM_LIST_H			364.0f
-#define NM_TYPE_LIST_Y		( NM_LIST_Y + 20.0f )	// under the Base / Custom / Saved buttons
+#define NM_TYPE_LIST_Y		( NM_LIST_Y + 20.0f )	// under the All / Base / Custom buttons
 #define NM_TYPE_LIST_H		( NM_LIST_H - 20.0f )
+#define NM_TREE_W			128.0f					// Saved, Base, Custom > pk3 > .npc file
+#define NM_TYPES_X			( NM_LEFT_X + NM_TREE_W + 4.0f )	// and the NPCs of the one selected
+#define NM_TYPES_W			( NM_LEFT_W - NM_TREE_W - 4.0f )
+#define NM_MAX_ROWS			2048
 #define NM_PLACED_Y			222.0f
 #define NM_PLACED_ROWS		7
 #define NM_BUTTON_Y			410.0f
@@ -115,7 +119,25 @@ typedef struct nmType_s {
 	const char	*saber, *saber2;	// .sab names, "" for none
 	int			source;				// where its .npc file is read from, index into sources
 	qboolean	custom;				// not from the game's own pk3s
+	const char	*file;				// that .npc file, in ext_data/npcs
 } nmType_t;
+
+// the left of the spawn tab, as the model manager has it: what was saved, then Base with its
+// .npc files, then Custom with a row for each pk3 and that pk3's .npc files under it
+typedef enum {
+	NM_ROW_SAVED,
+	NM_ROW_CATEGORY,	// Base or Custom
+	NM_ROW_SOURCE,		// a custom pk3
+	NM_ROW_FILE			// a .npc file
+} nmRowType_t;
+
+typedef struct nmRow_s {
+	nmRowType_t	type;
+	char		name[MAX_QPATH];
+	int			first, end;			// range in the sorted types, end not in it
+	int			count;				// of them, the filters let through
+	qboolean	custom;
+} nmRow_t;
 
 typedef struct nmNpc_s {
 	int			num;
@@ -147,11 +169,10 @@ typedef enum {
 	NM_SRC_ALL,
 	NM_SRC_BASE,
 	NM_SRC_CUSTOM,
-	NM_SRC_SAVED,		// saved NPCs and NPC constructs
 	NM_SRC_COUNT
 } nmSource_t;
 
-static const char *nmSourceLabels[NM_SRC_COUNT] = { "All", "Base", "Custom", "Saved" };
+static const char *nmSourceLabels[NM_SRC_COUNT] = { "All", "Base", "Custom" };
 
 typedef enum {
 	NM_SAVING_NONE,
@@ -388,6 +409,10 @@ static struct {
 	nmShow_t	show;
 	nmSource_t	source;
 	nmTeam_t	team;
+	nmRow_t		rows[NM_MAX_ROWS];		// of the types the filters let through
+	int			numRows;
+	int			row;					// the one selected, its NPCs listed beside it
+	nmList_t	rowList;
 	int			typeView[NM_MAX_TYPES + NM_MAX_SAVED];	// type index, or -1 - saved index
 	int			numTypeView;
 	nmList_t	typeList;
@@ -482,8 +507,10 @@ static vec4_t nmBorder		= { 0.5f, 0.5f, 0.5f, 0.8f };
 static vec4_t nmDim			= { 0.7f, 0.7f, 0.7f, 1.0f };
 static vec4_t nmAccent		= { 1.0f, 0.8f, 0.3f, 1.0f };
 static vec4_t nmPlacedColor	= { 0.4f, 1.0f, 0.5f, 1.0f };
+static vec4_t nmCustom		= { 0.6f, 1.0f, 0.6f, 1.0f };		// custom NPC types in the list
 
 static void NM_RequestList( void );
+static void NM_BuildRows( void );
 
 /*
 ===============================================================================
@@ -592,15 +619,20 @@ static void NM_AddToList( char *list, int size, const char *value ) {
 }
 
 // reads every block out of one .npc file, the way NPC_ParseParms finds them
-static void NM_ParseNpcFile( const char *path, int source ) {
+static void NM_ParseNpcFile( const char *path, const char *fileName, int source ) {
 	char *buf;
-	const char *p, *token;
+	const char *p, *token, *file;
 	char name[MAX_QPATH], key[64], model[MAX_QPATH], skin[MAX_QPATH];
 	char surfOff[1024], surfOn[1024], weapon[64], saber[64], saber2[64];
 	nmType_t looks;
 
 	if ( FS_ReadFile( path, (void **)&buf ) < 0 || !buf )
 		return;
+	file = NM_PoolString( fileName );
+	if ( !file ) {
+		FS_FreeFile( buf );
+		return;
+	}
 
 	p = buf;
 	COM_BeginParseSession( path );
@@ -618,6 +650,7 @@ static void NM_ParseNpcFile( const char *path, int source ) {
 		looks.scale = 100;
 		looks.source = source;
 		looks.custom = (qboolean)!NM_IsBaseSource( nm.sources[source] );
+		looks.file = file;
 		while ( 1 ) {
 			token = COM_ParseExt( &p, qtrue );
 			if ( !token[0] || !Q_stricmp( token, "}" ) )
@@ -707,8 +740,18 @@ static void NM_AddSkin( const char *name, void *ctx ) {
 		nm.numSkins++;
 }
 
+// Base first, then Custom pk3 by pk3, then by .npc file: every row is one contiguous range
 static int QDECL NM_CompareTypes( const void *a, const void *b ) {
-	return Q_stricmp( ( (const nmType_t *)a )->name, ( (const nmType_t *)b )->name );
+	const nmType_t *ta = (const nmType_t *)a, *tb = (const nmType_t *)b;
+	int cmp;
+
+	if ( ta->custom != tb->custom )
+		return ta->custom ? 1 : -1;
+	if ( ta->custom && ta->source != tb->source && ( cmp = Q_stricmp( nm.sources[ta->source], nm.sources[tb->source] ) ) )
+		return cmp;
+	if ( ( cmp = Q_stricmp( ta->file, tb->file ) ) != 0 )
+		return cmp;
+	return Q_stricmp( ta->name, tb->name );
 }
 
 static int QDECL NM_CompareStrings( const void *a, const void *b ) {
@@ -730,7 +773,7 @@ static void NM_BuildIndex( void ) {
 	FS_ListFilesRecursiveFrom( "ext_data/npcs", ".npc", NM_AddNpcFile, NULL );
 	files = FS_ListFiles( "ext_data/npcs", ".npc", &numFiles );
 	for ( int i = 0; i < numFiles; i++ )
-		NM_ParseNpcFile( va( "ext_data/npcs/%s", files[i] ), NM_FileSource( files[i] ) );
+		NM_ParseNpcFile( va( "ext_data/npcs/%s", files[i] ), files[i], NM_FileSource( files[i] ) );
 	FS_FreeFileList( files );
 	qsort( nm.types, nm.numTypes, sizeof( nm.types[0] ), NM_CompareTypes );
 
@@ -745,6 +788,8 @@ static void NM_BuildIndex( void ) {
 
 	nm.indexed = qtrue;
 	nm.typeList.sel = nm.typeList.scroll = 0;
+	nm.row = -1;	// the first file, once the rows are built
+	NM_BuildRows();
 	out = 0;
 	for ( int i = 0; i < nm.numTypes; i++ ) {
 		if ( nm.types[i].custom )
@@ -932,27 +977,131 @@ static qboolean NM_ShowPasses( qboolean vehicle ) {
 	return (qboolean)!( ( nm.show == NM_SHOW_CHARACTERS && vehicle ) || ( nm.show == NM_SHOW_VEHICLES && !vehicle ) );
 }
 
-// what was saved first, then the types the filters let through
+static qboolean NM_TypePasses( const nmType_t *t ) {
+	return (qboolean)( NM_ShowPasses( t->vehicle ) && !( nm.source == NM_SRC_BASE && t->custom ) && !( nm.source == NM_SRC_CUSTOM && !t->custom ) );
+}
+
+// a construct can hold both kinds
+static qboolean NM_SavedPasses( const nmSaved_t *s ) {
+	return (qboolean)( s->construct || NM_ShowPasses( s->npc.vehicle ) );
+}
+
+static int NM_AddRow( nmRowType_t type, const char *name, int first, qboolean custom ) {
+	nmRow_t *r;
+
+	if ( nm.numRows >= NM_MAX_ROWS )
+		return -1;
+	r = &nm.rows[nm.numRows];
+	r->type = type;
+	Q_strncpyz( r->name, name, sizeof( r->name ) );
+	r->first = r->end = first;
+	r->count = 0;
+	r->custom = custom;
+	return nm.numRows++;
+}
+
+// what was saved, then Base and its .npc files, then Custom with each pk3 and its files, of
+// the types the filters let through. The row selected stays, if it is still there
+static void NM_BuildRows( void ) {
+	nmRow_t keep;
+	int category = -1, source = -1, catRow = -1, srcRow = -1, fileRow = -1;
+	const qboolean haveKeep = (qboolean)( nm.row >= 0 && nm.row < nm.numRows );
+
+	if ( haveKeep )
+		keep = nm.rows[nm.row];
+	nm.numRows = 0;
+	NM_AddRow( NM_ROW_SAVED, "Saved", 0, qfalse );
+	for ( int i = 0; i < nm.numSaved; i++ ) {
+		if ( NM_SavedPasses( &nm.saved[i] ) )
+			nm.rows[0].count++;
+	}
+	for ( int i = 0; i < nm.numTypes; i++ ) {
+		const nmType_t *t = &nm.types[i];
+
+		if ( !NM_TypePasses( t ) )
+			continue;
+		if ( t->custom != category ) {
+			category = t->custom;
+			catRow = NM_AddRow( NM_ROW_CATEGORY, t->custom ? "Custom" : "Base", i, t->custom );
+			source = srcRow = fileRow = -1;
+		}
+		if ( t->custom && t->source != source ) {
+			source = t->source;
+			srcRow = NM_AddRow( NM_ROW_SOURCE, nm.sources[source], i, qtrue );
+			fileRow = -1;
+		}
+		if ( fileRow < 0 || Q_stricmp( nm.rows[fileRow].name, t->file ) )
+			fileRow = NM_AddRow( NM_ROW_FILE, t->file, i, t->custom );
+		if ( catRow < 0 || fileRow < 0 )
+			break;	// out of rows
+		nm.rows[catRow].end = nm.rows[fileRow].end = i + 1;
+		nm.rows[catRow].count++;
+		nm.rows[fileRow].count++;
+		if ( srcRow >= 0 && t->custom ) {
+			nm.rows[srcRow].end = i + 1;
+			nm.rows[srcRow].count++;
+		}
+	}
+
+	// the same row again, else the first file
+	nm.row = -1;
+	for ( int i = 0; i < nm.numRows && haveKeep; i++ ) {
+		if ( nm.rows[i].type == keep.type && nm.rows[i].custom == keep.custom && !Q_stricmp( nm.rows[i].name, keep.name ) ) {
+			nm.row = i;
+			break;
+		}
+	}
+	for ( int i = 0; i < nm.numRows && nm.row < 0; i++ ) {
+		if ( nm.rows[i].type == NM_ROW_FILE )
+			nm.row = i;
+	}
+	if ( nm.row < 0 )
+		nm.row = 0;
+	nm.rowList.sel = nm.row;
+}
+
+// the row on the left, its NPCs listed beside it
+static void NM_SetRow( int row ) {
+	if ( !nm.numRows )
+		return;
+	nm.row = Com_Clampi( 0, nm.numRows - 1, row );
+	nm.rowList.sel = nm.row;
+	NM_ListMove( &nm.rowList, nm.numRows, (int)( NM_TYPE_LIST_H / NM_ROW_H ), 0 );
+	nm.fields[NM_F_TYPE_SEARCH][0] = '\0';
+	nm.typeList.sel = nm.typeList.scroll = 0;
+}
+
+// the NPCs of the selected row, or with a search everything that matches, saved ones first
 static void NM_RebuildTypeView( void ) {
 	const char *search = nm.fields[NM_F_TYPE_SEARCH];
+	const nmRow_t *r = nm.row >= 0 && nm.row < nm.numRows ? &nm.rows[nm.row] : NULL;
+	int first = 0, end = nm.numTypes;
 
 	nm.numTypeView = 0;
-	if ( nm.source == NM_SRC_ALL || nm.source == NM_SRC_SAVED ) {
-		for ( int i = 0; i < nm.numSaved; i++ ) {
+	if ( search[0] || ( r && r->type == NM_ROW_SAVED ) ) {
+		for ( int i = 0; i < nm.numSaved && ( !search[0] || nm.source == NM_SRC_ALL ); i++ ) {
 			const nmSaved_t *s = &nm.saved[i];
 
-			// a construct can hold both kinds
-			if ( !s->construct && !NM_ShowPasses( s->npc.vehicle ) )
+			if ( !NM_SavedPasses( s ) )
 				continue;
 			if ( search[0] && !NM_ContainsNoCase( s->name, search ) && ( s->construct || !NM_ContainsNoCase( s->npc.type, search ) ) )
 				continue;
 			nm.typeView[nm.numTypeView++] = -1 - i;
 		}
+		if ( !search[0] ) {
+			NM_ListClamp( &nm.typeList, nm.numTypeView, (int)( NM_TYPE_LIST_H / NM_ROW_H ) );
+			return;
+		}
+	} else if ( r ) {
+		first = r->first;
+		end = r->end;
+	} else {
+		end = 0;
 	}
-	for ( int i = 0; i < nm.numTypes && nm.source != NM_SRC_SAVED; i++ ) {
+	for ( int i = first; i < end; i++ ) {
 		const nmType_t *t = &nm.types[i];
 
-		if ( !NM_ShowPasses( t->vehicle ) || ( nm.source == NM_SRC_BASE && t->custom ) || ( nm.source == NM_SRC_CUSTOM && !t->custom ) )
+		if ( !NM_TypePasses( t ) )
 			continue;
 		if ( search[0] && !NM_ContainsNoCase( t->name, search ) && !NM_ContainsNoCase( t->model, search ) )
 			continue;
@@ -1888,6 +2037,9 @@ static void NM_RefreshSaved( void ) {
 	qsort( nm.saved, nm.numSaved, sizeof( nm.saved[0] ), NM_CompareSaved );
 	// appliedSaved stays: it's by name, and the form still holds it
 	nm.constructShown[0] = '\0';
+	// the Saved row's count
+	if ( nm.indexed )
+		NM_BuildRows();
 }
 
 // the selected construct's NPCs, read once per construct
@@ -1938,10 +2090,10 @@ static void NM_SelectSaved( qboolean construct, const char *name ) {
 
 	if ( index < 0 )
 		return;
-	nm.fields[NM_F_TYPE_SEARCH][0] = '\0';
+	// on the Saved row, with nothing hiding it
 	nm.show = NM_SHOW_ALL;
-	if ( nm.source != NM_SRC_ALL )
-		nm.source = NM_SRC_SAVED;
+	NM_BuildRows();
+	NM_SetRow( 0 );
 	NM_RebuildTypeView();
 	for ( int i = 0; i < nm.numTypeView; i++ ) {
 		if ( nm.typeView[i] == -1 - index ) {
@@ -2616,6 +2768,12 @@ static void NM_ListKey( int key ) {
 		count = nm.numPickerView;
 		visible = (int)( ( NM_PICKER_H - 74 ) / NM_ROW_H );
 	} else if ( nm.tab == NM_TAB_SPAWN ) {
+		// the rows on the left
+		if ( key == A_CURSOR_LEFT || key == A_CURSOR_RIGHT ) {
+			if ( !nm.fields[NM_F_TYPE_SEARCH][0] )
+				NM_SetRow( nm.row + ( key == A_CURSOR_LEFT ? -1 : 1 ) );
+			return;
+		}
 		list = &nm.typeList;
 		count = nm.numTypeView;
 		visible = (int)( NM_TYPE_LIST_H / NM_ROW_H );
@@ -2999,11 +3157,40 @@ static void NM_DrawTypeRow( int row, float x, float y, float w ) {
 			NM_TextClipped( x, y, w, va( S_COLOR_CYAN "%s " S_COLOR_GREY "(saved %s)", s->name, s->npc.type ), nmWhite );
 		return;
 	}
+	// custom ones in green
 	t = &nm.types[v];
-	if ( t->custom || t->vehicle )
-		NM_TextClipped( x, y, w, va( "%s " S_COLOR_GREY "(%s%s%s)", t->name, t->custom ? "custom" : "", t->custom && t->vehicle ? " " : "", t->vehicle ? "vehicle" : "" ), nmWhite );
-	else
-		NM_TextClipped( x, y, w, t->name, nmWhite );
+	NM_TextClipped( x, y, w, t->vehicle ? va( "%s " S_COLOR_GREY "(vehicle)", t->name ) : t->name, t->custom ? nmCustom : nmWhite );
+}
+
+// what was saved, Base and its .npc files, Custom with its pk3s and theirs indented under them
+static void NM_DrawTreeRow( int row, float x, float y, float w ) {
+	const nmRow_t *r = &nm.rows[row];
+	const float *color = nm.fields[NM_F_TYPE_SEARCH][0] ? nmDim : nmWhite;
+	char file[MAX_QPATH];
+	const char *slash;
+	float indent;
+
+	switch ( r->type ) {
+	case NM_ROW_SAVED:
+		NM_TextClipped( x, y, w, va( S_COLOR_CYAN "%s " S_COLOR_GREY "(%i)", r->name, r->count ), color );
+		break;
+	case NM_ROW_CATEGORY:
+		NM_TextClipped( x, y, w, va( S_COLOR_YELLOW "%s " S_COLOR_GREY "(%i)", r->name, r->count ), color );
+		break;
+	case NM_ROW_SOURCE:
+		// "base/name.pk3" as "name.pk3", a loose folder as itself
+		slash = strrchr( r->name, '/' );
+		indent = 6;
+		NM_TextClipped( x + indent, y, w - indent, strlen( r->name ) > 4 && !Q_stricmp( r->name + strlen( r->name ) - 4, ".pk3" )
+			? va( S_COLOR_GREEN "%s " S_COLOR_GREY "(%i)", slash ? slash + 1 : r->name, r->count )
+			: va( S_COLOR_GREEN "%s folder " S_COLOR_GREY "(%i)", r->name, r->count ), color );
+		break;
+	default:
+		indent = r->custom ? 12 : 6;
+		COM_StripExtension( r->name, file, sizeof( file ) );
+		NM_TextClipped( x + indent, y, w - indent, va( "%s " S_COLOR_GREY "(%i)", file, r->count ), color );
+		break;
+	}
 }
 
 // "Base" or "Custom, from <pk3>"
@@ -3131,16 +3318,27 @@ static void NM_DrawSpawn( void ) {
 	NM_Field( NM_F_TYPE_SEARCH, NM_LEFT_X, NM_SEARCH_Y, NM_LEFT_W, "Type to search NPC types" );
 	// where they come from
 	for ( int i = 0; i < NM_SRC_COUNT; i++ ) {
-		if ( NM_Button( NM_LEFT_X + i * ( bw + 4 ), NM_LIST_Y, bw, nmSourceLabels[i], (qboolean)( nm.source == i ), qtrue ) ) {
+		if ( NM_Button( NM_LEFT_X + i * ( bw + 4 ), NM_LIST_Y, bw, nmSourceLabels[i], (qboolean)( nm.source == i ), qtrue ) && nm.source != i ) {
 			nm.source = (nmSource_t)i;
 			nm.typeList.sel = nm.typeList.scroll = 0;
+			NM_BuildRows();
 		}
 	}
+
+	// the rows, and the NPCs of the one selected beside them
+	nm.rowList.sel = nm.fields[NM_F_TYPE_SEARCH][0] ? -1 : nm.row;
+	{
+		const int before = nm.rowList.sel;
+
+		NM_List( &nm.rowList, nm.numRows, NM_LEFT_X, NM_TYPE_LIST_Y, NM_TREE_W, NM_TYPE_LIST_H, NM_DrawTreeRow );
+		if ( nm.rowList.sel != before && nm.rowList.sel >= 0 )
+			NM_SetRow( nm.rowList.sel );
+	}
 	NM_RebuildTypeView();
-	picked = NM_List( &nm.typeList, nm.numTypeView, NM_LEFT_X, NM_TYPE_LIST_Y, NM_LEFT_W, NM_TYPE_LIST_H, NM_DrawTypeRow );
+	picked = NM_List( &nm.typeList, nm.numTypeView, NM_TYPES_X, NM_TYPE_LIST_Y, NM_TYPES_W, NM_TYPE_LIST_H, NM_DrawTypeRow );
 	if ( !nm.numTypeView ) {
-		NM_Text( NM_LEFT_X + 4, NM_TYPE_LIST_Y + 1, nm.source == NM_SRC_SAVED && !nm.fields[NM_F_TYPE_SEARCH][0]
-			? "Nothing saved yet" : "No NPC types match", nmDim );
+		NM_Text( NM_TYPES_X + 4, NM_TYPE_LIST_Y + 1, nm.row == 0 && !nm.fields[NM_F_TYPE_SEARCH][0]
+			? "Nothing saved yet" : "None match", nmDim );
 	}
 	NM_ApplySelection();
 	t = NM_SelectedType();
@@ -3148,12 +3346,14 @@ static void NM_DrawSpawn( void ) {
 
 	y = NM_SEARCH_Y;
 	NM_Label( y, "Show" );
-	if ( NM_Button( NM_CTRL_X, y, 80, "All", (qboolean)( nm.show == NM_SHOW_ALL ), qtrue ) )
-		nm.show = NM_SHOW_ALL;
-	if ( NM_Button( NM_CTRL_X + 84, y, 80, "Characters", (qboolean)( nm.show == NM_SHOW_CHARACTERS ), qtrue ) )
-		nm.show = NM_SHOW_CHARACTERS;
-	if ( NM_Button( NM_CTRL_X + 168, y, 80, "Vehicles", (qboolean)( nm.show == NM_SHOW_VEHICLES ), qtrue ) )
-		nm.show = NM_SHOW_VEHICLES;
+	for ( int i = 0; i < 3; i++ ) {
+		static const char *labels[] = { "All", "Characters", "Vehicles" };
+
+		if ( NM_Button( NM_CTRL_X + i * 84, y, 80, labels[i], (qboolean)( nm.show == i ), qtrue ) && nm.show != i ) {
+			nm.show = (nmShow_t)i;
+			NM_BuildRows();
+		}
+	}
 
 	if ( saved && saved->construct ) {
 		NM_DrawConstruct( saved );
