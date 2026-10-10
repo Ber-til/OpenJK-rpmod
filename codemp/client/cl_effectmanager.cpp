@@ -20,13 +20,15 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 
 // cl_effectmanager.cpp -- engine-side front end for RPMod's /rpeffect command
 //
-// Effects tab: every effects/*.efx the filesystem can see, played live in a window
-// onto the world, then sent as "rpeffect once|add" at the player, at a spot picked
-// with a free camera, or bolted to a tag or bone of a player or NPC. Bolted ones
-// are shown on the real player or NPC before they are sent.
+// Effects tab: every effects/*.efx the filesystem can see, Base (the game's own pk3s)
+// or Custom, played live in a window onto the world, then sent as "rpeffect once|add"
+// at the player, at a spot picked with a free camera, or bolted to a tag or bone of a
+// player or NPC. Bolted ones are shown on the real player or NPC before they are sent.
+// Effects can wait to be sent together, and looping ones can be given a name.
 // Active tab: the effects playing in the map, read from the server's "rpeffect list"
-// reply, to remove one, several or all of them. Presets tab: alarm, fadeout and
-// camerashake.
+// reply, to remove one, several, all, or the ones with a name. RPMod doesn't keep the
+// names, so a state does: saved before rpdump, reloaded after, it finds the effects
+// again by what and where they are. Presets tab: alarm, fadeout and camerashake.
 //
 // Previews are played by this client's own effects system, so nobody else sees
 // them. This lives in the engine rather than cgame so it works whatever cgame the
@@ -43,9 +45,27 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define EM_EXT				".efx"
 #define EM_TOGGLE_CMD		"effectmanager"
 #define EM_LIST_HEADER		"List of all effects currently playing"
+#define EM_SAVE_DIR			"effectmanager"			// in the game folder
+#define EM_STATE_DIR		EM_SAVE_DIR "/states"
+#define EM_CONSTRUCT_DIR	EM_SAVE_DIR "/constructs"
+#define EM_MAX_CPIECES		128		// effects in one construct
+#define EM_SAVE_EXT			".cfg"
+#define EM_BASE_PAKS		BASEGAME "/assets"		// base/assets0.pk3 to assets3.pk3 are the game's own
+
+#define EM_MAX_SOURCES		1024
+#define EM_MAX_WAITING		128		// effects put down, not sent yet
+#define EM_MAX_EXPECT		128		// looping effects sent, not in a list yet
+#define EM_MAX_NAMES		256
+#define EM_MAX_STATE		EM_MAX_ACTIVE
+#define EM_NAME_LEN			48
+#define EM_EXPECT_MS		30000	// a sent effect not in a list by then isn't coming
+#define EM_MATCH_DIST		8.0f	// an effect this close to where it was sent is that one
+#define EM_STATE_MATCH_DIST	4.0f	// and this close to where a state had it, after rpdump load
+#define EM_MESSAGE_MS		5000
+#define EM_FILTER_W			44.0f	// the All / Base / Custom buttons, right of the search box
 
 #define EM_MAX_EFFECTS		8192
-#define EM_MAX_FOLDERS		1024
+#define EM_MAX_ROWS			2048
 #define EM_NAME_POOL		( EM_MAX_EFFECTS * 48 )
 #define EM_HASH_SIZE		( EM_MAX_EFFECTS * 2 )
 #define EM_MAX_ACTIVE		1024
@@ -80,9 +100,9 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define EM_LIST_Y			66.0f
 #define EM_LIST_H			364.0f
 #define EM_FOLDER_X			16.0f
-#define EM_FOLDER_W			124.0f
-#define EM_EFFECT_X			144.0f
-#define EM_EFFECT_W			186.0f
+#define EM_FOLDER_W			150.0f
+#define EM_EFFECT_X			170.0f
+#define EM_EFFECT_W			160.0f
 #define EM_RIGHT_X			338.0f
 #define EM_RIGHT_W			286.0f
 #define EM_CTRL_X			( EM_RIGHT_X + 52.0f )
@@ -129,8 +149,26 @@ typedef enum {
 	EM_PICKER_NPC,
 	EM_PICKER_BOLT,
 	EM_PICKER_REMOVE_PLAYER,	// "remove bolted" on a player
-	EM_PICKER_REMOVE_NPC
+	EM_PICKER_REMOVE_NPC,
+	EM_PICKER_REMOVE_NAME,		// the effects with a name
+	EM_PICKER_STATE				// a saved state to reload
 } emPicker_t;
+
+typedef enum {
+	EM_FILTER_ALL,
+	EM_FILTER_BASE,
+	EM_FILTER_CUSTOM,
+	EM_FILTER_COUNT
+} emFilter_t;
+
+static const char *emFilterNames[EM_FILTER_COUNT] = { "All", "Base", "Custom" };
+
+typedef enum {
+	EM_NAMING_NONE,
+	EM_NAMING_TAG,		// naming what is sent, Shift+Enter in the free camera
+	EM_NAMING_STATE,	// saving the state
+	EM_NAMING_CONSTRUCT	// saving the selection, or what waits, as a construct
+} emNaming_t;
 
 typedef enum {
 	EM_F_NONE,			// typing goes to the search box of whatever is showing
@@ -143,34 +181,121 @@ typedef enum {
 	EM_F_INTENSITY,
 	EM_F_DURATION,
 	EM_F_PICKER_SEARCH,
+	EM_F_NAME,			// what the effects sent are named, "" = nothing
+	EM_F_STATE_NAME,
+	EM_F_CONSTRUCT_NAME,
 	EM_NUM_FIELDS
 } emField_t;
 
 typedef enum {
 	EM_CONFIRM_NONE,
 	EM_CONFIRM_REMOVE,
-	EM_CONFIRM_REMOVE_ALL
+	EM_CONFIRM_REMOVE_ALL,
+	EM_CONFIRM_CLEAR
 } emConfirm_t;
 
 typedef struct emEffect_s {
 	const char	*path;		// relative to EM_ROOT, no extension, e.g. "scepter/invincibility"
 	const char	*base;		// file name part of path
-	int			folder;
 	int			id;			// in the effects system, 0 = not loaded yet
 	qboolean	failed;		// the effects system couldn't load it
+	int			source;		// where it is read from, index into sources
+	qboolean	custom;		// not from the game's own pk3s
 } emEffect_t;
 
-typedef struct emFolder_s {
-	char		name[MAX_QPATH];	// relative to EM_ROOT, "" for the root itself
+// the left column, as the model manager has it: the saved constructs, then Base with its
+// folders, then Custom with a row for each pk3 and that pk3's folders under it
+typedef enum {
+	EM_ROW_SAVED,
+	EM_ROW_CATEGORY,	// Base or Custom
+	EM_ROW_SOURCE,		// a custom pk3
+	EM_ROW_FOLDER
+} emRowType_t;
+
+typedef struct emRow_s {
+	emRowType_t	type;
+	char		name[MAX_QPATH];	// a folder's path relative to EM_ROOT, "" for the root itself
 	int			first, count;		// range in the sorted effect list
-} emFolder_t;
+	qboolean	custom;				// under Custom
+} emRow_t;
 
 typedef struct emActive_s {
 	int			num;
 	vec3_t		origin;
 	char		path[MAX_QPATH];
 	qboolean	checked;
+	char		tag[EM_NAME_LEN];	// the name it was sent with, "" = none
+	qboolean	placed;				// sent by this manager, so it goes in the state
+	qboolean	bolted;				// sent bolted, so where it is says little
+	qboolean	fresh;				// not in the list before this one
+
+	// moving it in the free camera: sent as a remove and an add
+	vec3_t		pos;				// where it's going, origin if nowhere
+	vec3_t		angles;
+	qboolean	haveAngles;			// else straight up
+	qboolean	srvHaveAngles;		// what it was sent with, if this manager sent it
+	vec3_t		srvAngles;
+	qboolean	selected;
+	qboolean	deleted;			// to be removed
+	qboolean	sent;				// its commands are on their way; the next list shows how it went
+	vec3_t		carryFrom, carryOffset, carryAngles;
+	qboolean	carryHaveAngles;
+	int			nextPlay;			// its preview where it's going
 } emActive_t;
+
+// one effect as it is sent: the form's, or one waiting
+typedef struct emItem_s {
+	char		path[MAX_QPATH];
+	qboolean	loop;
+	qboolean	bolted;
+	qboolean	havePos;			// else at the player
+	vec3_t		pos;
+	qboolean	haveAngles;			// else straight up
+	vec3_t		angles;
+	char		bolt[EM_FIELD_LEN];
+	emTarget_t	target;
+	int			targetClient, targetNpc;
+	char		targetName[MAX_QPATH];
+	char		tag[EM_NAME_LEN];
+	int			nextPlay;			// its preview, waiting
+	qboolean	selected;			// in the free camera
+	vec3_t		carryFrom, carryOffset, carryAngles;
+	qboolean	carryHaveAngles;
+} emItem_t;
+
+// a looping effect sent, to be named when the list shows it
+typedef struct emExpect_s {
+	char		path[MAX_QPATH];
+	qboolean	anyPos;				// bolted or at the player: where it is wasn't known
+	vec3_t		pos;
+	qboolean	bolted;
+	qboolean	haveAngles;
+	vec3_t		angles;
+	char		tag[EM_NAME_LEN];
+	qboolean	selected;			// a moved one, selected when it went
+	int			time;
+} emExpect_t;
+
+// an effect of a construct: at a place from its middle, or bolted to a tag or bone of
+// whoever it is put on, which is picked when it is used
+typedef struct emCPiece_s {
+	char		path[MAX_QPATH];
+	qboolean	loop;
+	qboolean	bolted;
+	vec3_t		offset;
+	qboolean	haveAngles;
+	vec3_t		angles;
+	char		bolt[EM_FIELD_LEN];
+	int			nextPlay;			// its preview, in hand
+} emCPiece_t;
+
+// an effect of a saved state, where the server had it
+typedef struct emStateEffect_s {
+	char		tag[EM_NAME_LEN];
+	char		path[MAX_QPATH];
+	vec3_t		origin;
+	qboolean	bolted;
+} emStateEffect_t;
 
 typedef struct emList_s {
 	int			sel, scroll;
@@ -220,14 +345,18 @@ static struct {
 	qboolean	indexed;
 	int			numEffects;
 	emEffect_t	effects[EM_MAX_EFFECTS];
-	int			numFolders;
-	emFolder_t	folders[EM_MAX_FOLDERS];
+	int			numCustom;
 	char		pool[EM_NAME_POOL];
 	int			poolUsed;
 	int			hash[EM_HASH_SIZE];	// effect index + 1, 0 = empty
+	const char	*sources[EM_MAX_SOURCES];	// "gamedir/name.pk3", or "gamedir" for loose files
+	int			numSources;
 
 	// effects tab
-	int			folder;
+	emFilter_t	filter;					// which effects the rows and the search show
+	emRow_t		rows[EM_MAX_ROWS];		// of the effects the filter lets through
+	int			numRows;
+	int			row;					// the one selected, its effects listed on the right
 	int			view[EM_MAX_EFFECTS];	// effect indices currently listed
 	int			numView;
 	emList_t	folderList, effectList;
@@ -238,6 +367,48 @@ static struct {
 	qboolean	havePos;
 	vec3_t		pos;
 	float		previewDist;			// how far into the preview window the effect plays
+
+	// put down or added, waiting to be sent together
+	emItem_t	waiting[EM_MAX_WAITING];
+	int			numWaiting;
+	qboolean	instant;				// the free camera sends each one as it is put down, else on Enter
+
+	// constructs
+	char		constructs[EM_MAX_NAMES][MAX_QPATH];	// saved ones, sorted
+	int			constructCounts[EM_MAX_NAMES];
+	int			numConstructs;
+	int			construct;				// the one selected on their row, -1 = none
+	emCPiece_t	cpieces[EM_MAX_CPIECES];	// what it holds
+	int			numCPieces;
+	qboolean	constructFromSelection;	// saving the free camera's selection, else what waits
+	emCPiece_t	hand[EM_MAX_CPIECES];	// a construct's placed effects, in hand in the free camera
+	int			numHand;
+	qboolean	handConstruct;			// the free camera puts the hand down, not the form's effect
+	int			handYaw;				// it's turned by
+	char		handName[MAX_QPATH];
+
+	// selecting and moving effects in the free camera, waiting ones and the map's
+	qboolean	selecting;				// the free camera selects, rather than puts the form's effect down
+	qboolean	carrying;				// the selection is in hand
+	qboolean	carryLocked;			// in hand, but not following the crosshair
+	int			hover;					// under the crosshair: a handle, -1 = none
+
+	// names and states
+	emExpect_t	expect[EM_MAX_EXPECT];
+	int			numExpect;
+	emNaming_t	naming;					// the name box is open, and what for
+	char		names[EM_MAX_NAMES][EM_NAME_LEN];	// for the remove-by-name picker
+	int			numNames;
+	char		stateFiles[EM_MAX_NAMES][MAX_QPATH];	// for the reload picker
+	int			numStateFiles;
+	char		activeMap[MAX_STRING_CHARS];	// the server and map the active list is for
+	qboolean	reloading;				// a state waits for the list it asked for
+	int			reloadTime;
+	char		reloadName[MAX_QPATH];
+	emStateEffect_t stateEffects[EM_MAX_STATE];
+	int			numStateEffects;
+	char		message[MAX_STRING_CHARS];
+	int			messageTime;
 
 	// bolting
 	emTarget_t	target;
@@ -281,10 +452,11 @@ static struct {
 	qboolean	listQueued;			// a request is waiting in the queue
 	int			listLineTime;		// last list line read, 0 = not reading a list
 	int			listTime;			// when a list was last read, 0 = never
+	int			listTimeoutTime;	// when a list asked for last didn't come
 	int			refreshTime;		// read the list again at this time, 0 = no
 
 	// picker
-	int			pickerView[MAX_CLIENTS > EM_MAX_BOLTS ? MAX_CLIENTS : EM_MAX_BOLTS];
+	int			pickerView[EM_MAX_NAMES > EM_MAX_BOLTS ? EM_MAX_NAMES : EM_MAX_BOLTS];
 	int			numPickerView;
 	emList_t	pickerList;
 
@@ -327,9 +499,19 @@ static vec4_t emDanger		= { 0.6f, 0.15f, 0.15f, 0.9f };
 static vec4_t emBorder		= { 0.5f, 0.5f, 0.5f, 0.8f };
 static vec4_t emDim			= { 0.7f, 0.7f, 0.7f, 1.0f };
 static vec4_t emAccent		= { 1.0f, 0.8f, 0.3f, 1.0f };
+static vec4_t emCustom		= { 0.6f, 1.0f, 0.6f, 1.0f };		// custom effects in the list
+static vec4_t emPanelOpaque	= { 0.05f, 0.05f, 0.05f, 0.95f };	// a box over the panel, which would show through
 
 static void EM_RequestList( void );
 static void EM_FieldChanged( int f );
+static void EM_BuildRows( void );
+static int EM_FirstFolderRow( void );
+static qboolean EM_ActiveEdited( const emActive_t *a );
+static void EM_NormPath( const char *in, char *out, int size );
+static int EM_ReadConstruct( const char *name, emCPiece_t *out, int max );
+static void EM_ListConstructs( void );
+static void EM_HandItem( int i, const vec3_t anchor, emItem_t *out );
+static void EM_StartNaming( emNaming_t naming );
 
 /*
 ===============================================================================
@@ -361,8 +543,34 @@ static const char *EM_PoolString( const char *s ) {
 	return out;
 }
 
-// name is a full game path, e.g. "effects/scepter/invincibility.efx"
-static void EM_AddEffect( const char *name, void *ctx ) {
+// "base/assets<digits>.pk3"; anything else people named assets_something isn't
+static qboolean EM_IsBaseSource( const char *source ) {
+	const int prefixLen = strlen( EM_BASE_PAKS );
+	const char *c = source + prefixLen;
+
+	if ( Q_stricmpn( source, EM_BASE_PAKS, prefixLen ) || !isdigit( (unsigned char)*c ) )
+		return qfalse;
+	while ( isdigit( (unsigned char)*c ) )
+		c++;
+	return (qboolean)!Q_stricmp( c, ".pk3" );
+}
+
+static int EM_SourceIndex( const char *source ) {
+	const char *stored;
+
+	// the files of one pk3 come together
+	for ( int i = em.numSources - 1; i >= 0; i-- ) {
+		if ( !Q_stricmp( em.sources[i], source ) )
+			return i;
+	}
+	if ( em.numSources >= EM_MAX_SOURCES || !( stored = EM_PoolString( source ) ) )
+		return 0;
+	em.sources[em.numSources] = stored;
+	return em.numSources++;
+}
+
+// name is a full game path, e.g. "effects/scepter/invincibility.efx"; the first one seen is the one in use
+static void EM_AddEffect( const char *name, const char *source, void *ctx ) {
 	char path[MAX_QPATH];
 	const int rootLen = strlen( EM_ROOT ), extLen = strlen( EM_EXT );
 	const char *stored, *slash;
@@ -396,19 +604,37 @@ static void EM_AddEffect( const char *name, void *ctx ) {
 	memset( &em.effects[em.numEffects], 0, sizeof( em.effects[0] ) );
 	em.effects[em.numEffects].path = stored;
 	em.effects[em.numEffects].base = slash ? slash + 1 : stored;
+	em.effects[em.numEffects].source = EM_SourceIndex( source );
+	em.effects[em.numEffects].custom = (qboolean)!EM_IsBaseSource( source );
 	em.hash[h] = ++em.numEffects;
+}
+
+// the effect with the path relative to EM_ROOT, -1 if there is none
+static int EM_FindEffect( const char *path ) {
+	int h = EM_HashName( path );
+
+	while ( em.hash[h] ) {
+		if ( !Q_stricmp( em.effects[em.hash[h] - 1].path, path ) )
+			return em.hash[h] - 1;
+		h = ( h + 1 ) % EM_HASH_SIZE;
+	}
+	return -1;
 }
 
 static int EM_FolderLen( const emEffect_t *e ) {
 	return (int)( e->base - e->path ) - ( e->base != e->path ? 1 : 0 );
 }
 
+// Base first, then Custom pk3 by pk3, then by folder: every row is one contiguous range
 static int QDECL EM_CompareEffects( const void *a, const void *b ) {
 	const emEffect_t *ea = (const emEffect_t *)a, *eb = (const emEffect_t *)b;
-	int la = EM_FolderLen( ea ), lb = EM_FolderLen( eb );
-	int cmp = Q_stricmpn( ea->path, eb->path, la < lb ? la : lb );
+	int la = EM_FolderLen( ea ), lb = EM_FolderLen( eb ), cmp;
 
-	// group by folder first so every folder is one contiguous range
+	if ( ea->custom != eb->custom )
+		return ea->custom ? 1 : -1;
+	if ( ea->custom && ea->source != eb->source && ( cmp = Q_stricmp( em.sources[ea->source], em.sources[eb->source] ) ) )
+		return cmp;
+	cmp = Q_stricmpn( ea->path, eb->path, la < lb ? la : lb );
 	if ( cmp )
 		return cmp;
 	if ( la != lb )
@@ -420,39 +646,37 @@ static void EM_BuildIndex( void ) {
 	int start = Sys_Milliseconds();
 
 	em.numEffects = 0;
-	em.numFolders = 0;
+	em.numCustom = 0;
 	em.poolUsed = 0;
+	em.numSources = 0;
 	memset( em.hash, 0, sizeof( em.hash ) );
 
-	FS_ListFilesRecursive( EM_ROOT, EM_EXT, EM_AddEffect, NULL );
+	FS_ListFilesRecursiveFrom( EM_ROOT, EM_EXT, EM_AddEffect, NULL );
 
 	qsort( em.effects, em.numEffects, sizeof( em.effects[0] ), EM_CompareEffects );
+	// sorting moved them; the hash finds them by path again
+	memset( em.hash, 0, sizeof( em.hash ) );
+	for ( int i = 0; i < em.numEffects; i++ ) {
+		int h = EM_HashName( em.effects[i].path );
+
+		while ( em.hash[h] )
+			h = ( h + 1 ) % EM_HASH_SIZE;
+		em.hash[h] = i + 1;
+	}
 
 	for ( int i = 0; i < em.numEffects; i++ ) {
-		emEffect_t *e = &em.effects[i];
-		int len = EM_FolderLen( e );
-		emFolder_t *f = em.numFolders ? &em.folders[em.numFolders - 1] : NULL;
-
-		if ( !f || (int)strlen( f->name ) != len || Q_stricmpn( f->name, e->path, len ) ) {
-			if ( em.numFolders >= EM_MAX_FOLDERS ) {
-				em.numEffects = i;
-				break;
-			}
-			f = &em.folders[em.numFolders++];
-			Q_strncpyz( f->name, e->path, len + 1 < (int)sizeof( f->name ) ? len + 1 : (int)sizeof( f->name ) );
-			f->first = i;
-			f->count = 0;
-		}
-		f->count++;
-		e->folder = em.numFolders - 1;
+		if ( em.effects[i].custom )
+			em.numCustom++;
 	}
 
 	em.indexed = qtrue;
 	em.effect = -1;
-	em.folder = 0;
 	memset( &em.folderList, 0, sizeof( em.folderList ) );
 	memset( &em.effectList, 0, sizeof( em.effectList ) );
-	Com_Printf( "Effect manager: indexed %i effects in %i folders (%i ms)\n", em.numEffects, em.numFolders, Sys_Milliseconds() - start );
+	EM_BuildRows();
+	em.row = em.folderList.sel = EM_FirstFolderRow();
+	Com_Printf( "Effect manager: indexed %i effects, %i of them custom, in %i rows (%i ms)\n",
+		em.numEffects, em.numCustom, em.numRows, Sys_Milliseconds() - start );
 }
 
 /*
@@ -600,20 +824,100 @@ VIEWS
 ===============================================================================
 */
 
+static qboolean EM_PassesFilter( const emEffect_t *e ) {
+	return (qboolean)( em.filter == EM_FILTER_ALL || ( em.filter == EM_FILTER_CUSTOM ) == ( e->custom != qfalse ) );
+}
+
+static int EM_AddRow( emRowType_t type, const char *name, int first, qboolean custom ) {
+	emRow_t *r;
+
+	if ( em.numRows >= EM_MAX_ROWS )
+		return -1;
+	r = &em.rows[em.numRows];
+	r->type = type;
+	Q_strncpyz( r->name, name, sizeof( r->name ) );
+	r->first = first;
+	r->count = 0;
+	r->custom = custom;
+	return em.numRows++;
+}
+
+// the saved constructs, then Base and its folders, then Custom with each pk3 and its folders,
+// of the effects the filter lets through
+static void EM_BuildRows( void ) {
+	int category = -1, source = -1, catRow = -1, srcRow = -1, folderRow = -1;
+
+	em.numRows = 0;
+	EM_AddRow( EM_ROW_SAVED, "Saved constructs", 0, qfalse );
+	em.rows[0].count = em.numConstructs;
+	for ( int i = 0; i < em.numEffects; i++ ) {
+		const emEffect_t *e = &em.effects[i];
+		const int len = EM_FolderLen( e );
+
+		// base and custom are each one block, so a range stays whole
+		if ( !EM_PassesFilter( e ) )
+			continue;
+		if ( e->custom != category ) {
+			category = e->custom;
+			catRow = EM_AddRow( EM_ROW_CATEGORY, e->custom ? "Custom" : "Base", i, e->custom );
+			source = -1;
+			folderRow = -1;
+		}
+		if ( e->custom && e->source != source ) {
+			source = e->source;
+			srcRow = EM_AddRow( EM_ROW_SOURCE, em.sources[source], i, qtrue );
+			folderRow = -1;
+		}
+		if ( folderRow < 0 || (int)strlen( em.rows[folderRow].name ) != len || Q_stricmpn( em.rows[folderRow].name, e->path, len ) ) {
+			char folder[MAX_QPATH];
+
+			Q_strncpyz( folder, e->path, Q_min( len + 1, (int)sizeof( folder ) ) );
+			folderRow = EM_AddRow( EM_ROW_FOLDER, folder, i, e->custom );
+		}
+		if ( catRow < 0 || folderRow < 0 )
+			break;	// out of rows
+		em.rows[catRow].count++;
+		if ( e->custom && srcRow >= 0 )
+			em.rows[srcRow].count++;
+		em.rows[folderRow].count++;
+	}
+}
+
+static int EM_FirstFolderRow( void ) {
+	for ( int i = 0; i < em.numRows; i++ ) {
+		if ( em.rows[i].type == EM_ROW_FOLDER )
+			return i;
+	}
+	return 0;
+}
+
+// the effect list shows the saved constructs
+static qboolean EM_ConstructShown( void ) {
+	return (qboolean)( em.row == 0 && !em.fields[EM_F_SEARCH][0] );
+}
+
 static void EM_RebuildEffectView( void ) {
 	const char *search = em.fields[EM_F_SEARCH];
 
 	em.numView = 0;
+	if ( EM_ConstructShown() ) {
+		for ( int i = 0; i < em.numConstructs; i++ )
+			em.view[em.numView++] = i;
+		em.effectList.sel = em.construct >= 0 && em.construct < em.numView ? em.construct : -1;
+		EM_ListClamp( &em.effectList, em.numView, (int)( EM_LIST_H / EM_ROW_H ) );
+		return;
+	}
 	if ( search[0] ) {
 		for ( int i = 0; i < em.numEffects; i++ ) {
-			if ( EM_ContainsNoCase( em.effects[i].path, search ) )
+			if ( EM_PassesFilter( &em.effects[i] ) && EM_ContainsNoCase( em.effects[i].path, search ) )
 				em.view[em.numView++] = i;
 		}
-	} else if ( em.numFolders ) {
-		const emFolder_t *f = &em.folders[Com_Clampi( 0, em.numFolders - 1, em.folder )];
+	} else if ( em.row > 0 && em.row < em.numRows ) {
+		// a folder, a pk3 or all of Base or Custom
+		const emRow_t *r = &em.rows[em.row];
 
-		for ( int i = 0; i < f->count; i++ )
-			em.view[em.numView++] = f->first + i;
+		for ( int i = 0; i < r->count; i++ )
+			em.view[em.numView++] = r->first + i;
 	}
 
 	// keep the selected effect selected if it is still listed
@@ -627,15 +931,62 @@ static void EM_RebuildEffectView( void ) {
 	EM_ListClamp( &em.effectList, em.numView, (int)( EM_LIST_H / EM_ROW_H ) );
 }
 
-static void EM_SetFolder( int folder ) {
-	if ( !em.numFolders )
+static void EM_SelectConstruct( int index ) {
+	if ( index < 0 || index >= em.numConstructs )
 		return;
-	em.folder = Com_Clampi( 0, em.numFolders - 1, folder );
-	em.folderList.sel = em.folder;
+	if ( index != em.construct || !em.numCPieces ) {
+		em.construct = index;
+		em.numCPieces = Q_max( 0, EM_ReadConstruct( em.constructs[index], em.cpieces, EM_MAX_CPIECES ) );
+	}
+	for ( int i = 0; i < em.numView; i++ ) {
+		if ( em.view[i] == index ) {
+			EM_ListMove( &em.effectList, em.numView, (int)( EM_LIST_H / EM_ROW_H ), i - em.effectList.sel );
+			break;
+		}
+	}
+}
+
+// the row on the left, its effects listed on the right; the saved constructs, the first selected
+static void EM_SetRow( int row ) {
+	if ( !em.numRows )
+		return;
+	em.row = Com_Clampi( 0, em.numRows - 1, row );
+	em.folderList.sel = em.row;
 	em.fields[EM_F_SEARCH][0] = '\0';
 	em.effectList.sel = em.effectList.scroll = 0;
-	EM_ListMove( &em.folderList, em.numFolders, (int)( EM_LIST_H / EM_ROW_H ), 0 );
+	EM_ListMove( &em.folderList, em.numRows, (int)( EM_LIST_H / EM_ROW_H ), 0 );
+	if ( em.row == 0 ) {
+		EM_ListConstructs();
+		em.construct = -1;
+	}
 	EM_RebuildEffectView();
+	if ( em.row == 0 && em.numConstructs )
+		EM_SelectConstruct( 0 );
+}
+
+static void EM_ShowConstructs( void ) {
+	EM_SetRow( 0 );
+}
+
+static void EM_StepFolder( int delta ) {
+	EM_SetRow( em.row + delta );
+}
+
+static void EM_SetFilter( emFilter_t filter ) {
+	const qboolean onSaved = (qboolean)( em.row == 0 );
+
+	if ( filter == em.filter )
+		return;
+	em.filter = filter;
+	EM_BuildRows();
+	// the rows moved; a search stays
+	if ( em.fields[EM_F_SEARCH][0] ) {
+		em.row = onSaved ? 0 : EM_FirstFolderRow();
+		em.effectList.sel = em.effectList.scroll = 0;
+		EM_RebuildEffectView();
+	} else {
+		EM_SetRow( onSaved ? 0 : EM_FirstFolderRow() );
+	}
 }
 
 static void EM_SelectEffect( int index ) {
@@ -649,6 +1000,16 @@ static void EM_SelectEffect( int index ) {
 		return;
 	em.effect = index;
 	em.selTime = cls.realtime;
+}
+
+// what is on the effect list's row: an effect, or a saved construct
+static void EM_SelectRow( int row ) {
+	if ( row < 0 || row >= em.numView )
+		return;
+	if ( EM_ConstructShown() )
+		EM_SelectConstruct( em.view[row] );
+	else
+		EM_SelectEffect( em.view[row] );
 }
 
 static void EM_RebuildActiveView( void ) {
@@ -682,6 +1043,8 @@ static int EM_PickerCount( void ) {
 	case EM_PICKER_NPC:
 	case EM_PICKER_REMOVE_NPC:		return CL_NpcManager_NumNpcs();
 	case EM_PICKER_BOLT:			return em.numBolts;
+	case EM_PICKER_REMOVE_NAME:		return em.numNames;
+	case EM_PICKER_STATE:			return em.numStateFiles;
 	default:						return 0;
 	}
 }
@@ -702,6 +1065,10 @@ static const char *EM_PickerItem( int index ) {
 		return va( "%i %s %s", num, name, type );
 	case EM_PICKER_BOLT:
 		return em.bolts[index].name;
+	case EM_PICKER_REMOVE_NAME:
+		return em.names[index];
+	case EM_PICKER_STATE:
+		return em.stateFiles[index];
 	default:
 		return "";
 	}
@@ -1090,6 +1457,65 @@ static int EM_BoltIndex( void ) {
 	return re->G2API_AddBolt( *em.g2, 0, em.fields[EM_F_BOLT] );
 }
 
+static void EM_ItemDirection( const emItem_t *it, vec3_t dir ) {
+	if ( it->haveAngles )
+		AngleVectors( it->angles, dir, NULL, NULL );
+	else
+		VectorSet( dir, 0, 0, 1 );
+}
+
+// the effects waiting at a position, playing where they will be, on this client only
+static void EM_PreviewWaiting( void ) {
+	vec3_t dir;
+	int index, id, length, repeatDelay;
+
+	for ( int i = 0; i < em.numWaiting; i++ ) {
+		emItem_t *it = &em.waiting[i];
+
+		if ( it->bolted || !it->havePos || cls.realtime < it->nextPlay )
+			continue;
+		index = EM_FindEffect( it->path );
+		id = index >= 0 ? EM_EffectId( &em.effects[index] ) : 0;
+		if ( !id ) {
+			it->nextPlay = cls.realtime + 1000;
+			continue;
+		}
+		length = repeatDelay = 0;
+		if ( !theFxScheduler.GetEffectTiming( id, &length, &repeatDelay ) )
+			length = 1000;
+		if ( !it->loop )
+			length += EM_ONCE_GAP;
+		it->nextPlay = cls.realtime + Q_max( EM_MIN_PERIOD, length );
+		EM_ItemDirection( it, dir );
+		FX_PlayEffectID( id, it->pos, dir, -1, -1 );
+	}
+
+	// the map's moved ones where they're going; the server's copy still plays where it was
+	for ( int i = 0; i < em.numActive; i++ ) {
+		emActive_t *a = &em.active[i];
+		char path[MAX_QPATH];
+
+		if ( a->sent || a->deleted || a->bolted || cls.realtime < a->nextPlay || !EM_ActiveEdited( a ) )
+			continue;
+		EM_NormPath( a->path, path, sizeof( path ) );
+		index = EM_FindEffect( path );
+		id = index >= 0 ? EM_EffectId( &em.effects[index] ) : 0;
+		if ( !id ) {
+			a->nextPlay = cls.realtime + 1000;
+			continue;
+		}
+		length = repeatDelay = 0;
+		if ( !theFxScheduler.GetEffectTiming( id, &length, &repeatDelay ) )
+			length = 1000;
+		a->nextPlay = cls.realtime + Q_max( EM_MIN_PERIOD, length );
+		if ( a->haveAngles )
+			AngleVectors( a->angles, dir, NULL, NULL );
+		else
+			VectorSet( dir, 0, 0, 1 );
+		FX_PlayEffectID( id, a->pos, dir, -1, -1 );
+	}
+}
+
 // plays the selected effect where it would go, again and again, on this client only
 static void EM_PreviewFrame( void ) {
 	emEffect_t *e = em.effect >= 0 && em.effect < em.numEffects ? &em.effects[em.effect] : NULL;
@@ -1099,11 +1525,40 @@ static void EM_PreviewFrame( void ) {
 	int id, bolt = -1;
 
 	em.playError = NULL;
-	if ( !e || em.picker != EM_PICKER_NONE )
+	if ( em.state == EM_PLACE )
+		EM_PreviewWaiting();
+	// a construct in hand plays where each of its effects would go
+	if ( em.state == EM_PLACE && em.handConstruct ) {
+		for ( int i = 0; i < em.numHand; i++ ) {
+			emCPiece_t *p = &em.hand[i];
+			emItem_t it;
+			int index, length = 0, repeatDelay = 0;
+
+			if ( cls.realtime < p->nextPlay )
+				continue;
+			index = EM_FindEffect( p->path );
+			id = index >= 0 ? EM_EffectId( &em.effects[index] ) : 0;
+			if ( !id ) {
+				p->nextPlay = cls.realtime + 1000;
+				continue;
+			}
+			if ( !theFxScheduler.GetEffectTiming( id, &length, &repeatDelay ) )
+				length = 1000;
+			if ( !p->loop )
+				length += EM_ONCE_GAP;
+			p->nextPlay = cls.realtime + Q_max( EM_MIN_PERIOD, length );
+			EM_HandItem( i, em.origin, &it );
+			EM_ItemDirection( &it, dir );
+			FX_PlayEffectID( id, it.pos, dir, -1, -1 );
+		}
+		return;
+	}
+	// selecting, nothing is in hand to play
+	if ( !e || em.picker != EM_PICKER_NONE || ( em.state == EM_PLACE && em.selecting ) )
 		return;
 	if ( em.state == EM_BROWSE ) {
 		// bolted effects are shown on the model in the window, and played in the world from "View in world"
-		if ( em.tab != EM_TAB_EFFECTS || bolted )
+		if ( em.tab != EM_TAB_EFFECTS || bolted || EM_ConstructShown() )
 			return;
 	} else if ( em.state != EM_PLACE ) {
 		return;
@@ -1196,10 +1651,20 @@ static void EM_RunQueue( void ) {
 	em.nextSend = cls.realtime + EM_CommandGap();
 }
 
+// the list once the commands before it went through; one already waiting moves behind
+// what was queued since, so it shows that too
 static void EM_RequestList( void ) {
 	em.refreshTime = 0;
-	if ( em.listQueued )
-		return;
+	for ( int i = 0; i < em.numQueue && em.listQueued; i++ ) {
+		if ( em.queueEcho[i] || Q_stricmp( em.queue[i], "rpeffect list" ) )
+			continue;
+		if ( i == em.numQueue - 1 )
+			return;
+		em.numQueue--;
+		memmove( em.queue[i], em.queue[i + 1], ( em.numQueue - i ) * sizeof( em.queue[0] ) );
+		memmove( &em.queueEcho[i], &em.queueEcho[i + 1], ( em.numQueue - i ) * sizeof( em.queueEcho[0] ) );
+		break;
+	}
 	em.listQueued = qtrue;
 	EM_Queue( "rpeffect list", qfalse );
 }
@@ -1210,52 +1675,113 @@ static void EM_SendAndRefresh( const char *cmd ) {
 	EM_RequestList();
 }
 
-// the command for the selected effect, NULL if something is missing
-static const char *EM_BuildCommand( void ) {
-	static char cmd[MAX_STRING_CHARS];
-	const emEffect_t *e = EM_Effect();
-	vec3_t angles;
-	const float *pos = NULL;
+static void EM_Message( const char *text ) {
+	Q_strncpyz( em.message, text, sizeof( em.message ) );
+	em.messageTime = cls.realtime;
+}
 
+// the effect the form describes, where it would go now; qfalse if something is missing
+static qboolean EM_FormItem( emItem_t *out ) {
+	const emEffect_t *e = EM_Effect();
+
+	memset( out, 0, sizeof( *out ) );
 	if ( !e )
-		return NULL;
-	Com_sprintf( cmd, sizeof( cmd ), "rpeffect %s %s", em.loop ? "add" : "once", e->path );
+		return qfalse;
+	Q_strncpyz( out->path, e->path, sizeof( out->path ) );
+	out->loop = em.loop;
+	Q_strncpyz( out->tag, em.fields[EM_F_NAME], sizeof( out->tag ) );
 
 	if ( em.where == EM_WHERE_BOLT ) {
-		if ( !em.fields[EM_F_BOLT][0] )
-			return NULL;
-		Q_strcat( cmd, sizeof( cmd ), va( " bolted %s", em.fields[EM_F_BOLT] ) );
-		if ( em.target == EM_TARGET_PLAYER ) {
-			Q_strcat( cmd, sizeof( cmd ), va( " %i", em.targetClient ) );
-		} else if ( em.target == EM_TARGET_NPC ) {
-			if ( !em.targetName[0] )
-				return NULL;
-			Q_strcat( cmd, sizeof( cmd ), va( " npc %s", em.targetName ) );
-		}
+		if ( !em.fields[EM_F_BOLT][0] || ( em.target == EM_TARGET_NPC && !em.targetName[0] ) )
+			return qfalse;
+		out->bolted = qtrue;
+		Q_strncpyz( out->bolt, em.fields[EM_F_BOLT], sizeof( out->bolt ) );
+		out->target = em.target;
+		out->targetClient = em.targetClient;
+		out->targetNpc = em.targetNpc;
+		Q_strncpyz( out->targetName, em.targetName, sizeof( out->targetName ) );
+		return qtrue;
+	}
+
+	if ( em.state == EM_PLACE ) {
+		out->havePos = qtrue;
+		VectorCopy( em.origin, out->pos );
+	} else if ( em.where == EM_WHERE_POS && em.havePos ) {
+		out->havePos = qtrue;
+		VectorCopy( em.pos, out->pos );
+	}
+	out->haveAngles = EM_HaveAngles();
+	EM_GetAngles( out->angles );
+	return qtrue;
+}
+
+static const char *EM_ItemCommand( const emItem_t *it ) {
+	static char cmd[MAX_STRING_CHARS];
+
+	Com_sprintf( cmd, sizeof( cmd ), "rpeffect %s %s", it->loop ? "add" : "once", it->path );
+	if ( it->bolted ) {
+		Q_strcat( cmd, sizeof( cmd ), va( " bolted %s", it->bolt ) );
+		if ( it->target == EM_TARGET_PLAYER )
+			Q_strcat( cmd, sizeof( cmd ), va( " %i", it->targetClient ) );
+		else if ( it->target == EM_TARGET_NPC )
+			Q_strcat( cmd, sizeof( cmd ), va( " npc %s", it->targetName ) );
 		return cmd;
 	}
 
-	if ( em.state == EM_PLACE )
-		pos = em.origin;
-	else if ( em.where == EM_WHERE_POS && em.havePos )
-		pos = em.pos;
-
 	// positional: angles need the coordinates before them, which 0 0 0 leaves to the server
-	if ( pos )
-		Q_strcat( cmd, sizeof( cmd ), va( " %i %i %i", (int)floorf( pos[0] + 0.5f ), (int)floorf( pos[1] + 0.5f ), (int)floorf( pos[2] + 0.5f ) ) );
-	if ( EM_HaveAngles() ) {
-		EM_GetAngles( angles );
-		if ( !pos )
+	if ( it->havePos )
+		Q_strcat( cmd, sizeof( cmd ), va( " %i %i %i", (int)floorf( it->pos[0] + 0.5f ), (int)floorf( it->pos[1] + 0.5f ), (int)floorf( it->pos[2] + 0.5f ) ) );
+	if ( it->haveAngles ) {
+		if ( !it->havePos )
 			Q_strcat( cmd, sizeof( cmd ), " 0 0 0" );
-		Q_strcat( cmd, sizeof( cmd ), va( " %i %i %i", EM_NormalizeAngle( angles[PITCH] ), EM_NormalizeAngle( angles[YAW] ), EM_NormalizeAngle( angles[ROLL] ) ) );
+		Q_strcat( cmd, sizeof( cmd ), va( " %i %i %i", EM_NormalizeAngle( it->angles[PITCH] ), EM_NormalizeAngle( it->angles[YAW] ), EM_NormalizeAngle( it->angles[ROLL] ) ) );
 	}
 	return cmd;
 }
 
-static void EM_Send( void ) {
-	const char *cmd = EM_BuildCommand();
+// the command for the selected effect, NULL if something is missing
+static const char *EM_BuildCommand( void ) {
+	emItem_t it;
 
-	if ( !cmd )
+	if ( !EM_FormItem( &it ) )
+		return NULL;
+	return EM_ItemCommand( &it );
+}
+
+// a looping one stays on the map, to be found in the next list
+static void EM_Expect( const emItem_t *it ) {
+	emExpect_t *x;
+
+	if ( !it->loop )
+		return;
+	if ( em.numExpect >= EM_MAX_EXPECT ) {
+		memmove( &em.expect[0], &em.expect[1], ( EM_MAX_EXPECT - 1 ) * sizeof( em.expect[0] ) );
+		em.numExpect--;
+	}
+	x = &em.expect[em.numExpect++];
+	Q_strncpyz( x->path, it->path, sizeof( x->path ) );
+	x->anyPos = (qboolean)( it->bolted || !it->havePos );
+	VectorCopy( it->pos, x->pos );
+	x->bolted = it->bolted;
+	x->haveAngles = it->haveAngles;
+	VectorCopy( it->angles, x->angles );
+	Q_strncpyz( x->tag, it->tag, sizeof( x->tag ) );
+	x->selected = it->selected;
+	x->time = cls.realtime;
+}
+
+static void EM_SendItem( const emItem_t *it ) {
+	EM_Expect( it );
+	if ( it->loop )
+		EM_SendAndRefresh( EM_ItemCommand( it ) );
+	else
+		EM_Queue( EM_ItemCommand( it ), qtrue );
+}
+
+static void EM_Send( void ) {
+	emItem_t it;
+
+	if ( !EM_FormItem( &it ) )
 		return;
 	if ( em.state == EM_PLACE && em.where != EM_WHERE_BOLT ) {
 		// what was placed is the position from now on
@@ -1263,10 +1789,34 @@ static void EM_Send( void ) {
 		em.havePos = qtrue;
 		em.where = EM_WHERE_POS;
 	}
-	if ( em.loop )
-		EM_SendAndRefresh( cmd );
-	else
-		EM_Queue( cmd, qtrue );
+	EM_SendItem( &it );
+}
+
+// the form's effect waits, to go with the others
+static void EM_AddWaiting( void ) {
+	if ( em.numWaiting >= EM_MAX_WAITING ) {
+		EM_Message( S_COLOR_YELLOW "That's as many as can wait at once; send them first" );
+		return;
+	}
+	if ( !EM_FormItem( &em.waiting[em.numWaiting] ) )
+		return;
+	em.waiting[em.numWaiting].nextPlay = cls.realtime;
+	em.numWaiting++;
+}
+
+static void EM_SendWaiting( void ) {
+	const int count = em.numWaiting;
+
+	if ( !count )
+		return;
+	// one list after them all
+	for ( int i = 0; i < count; i++ ) {
+		EM_Expect( &em.waiting[i] );
+		EM_Queue( EM_ItemCommand( &em.waiting[i] ), qtrue );
+	}
+	EM_RequestList();
+	em.numWaiting = 0;
+	EM_Message( va( S_COLOR_GREEN "Sending %i effects, about one a second", count ) );
 }
 
 /*
@@ -1297,14 +1847,138 @@ static qboolean EM_ParseActiveLine( const char *line, const emActive_t *old, int
 		rest++;
 	Q_strncpyz( a->path, rest, sizeof( a->path ) );
 	a->checked = qfalse;
+	a->tag[0] = '\0';
+	a->placed = a->bolted = qfalse;
+	a->fresh = qtrue;
+	VectorCopy( a->origin, a->pos );
+	VectorClear( a->angles );
+	VectorClear( a->srvAngles );
+	a->haveAngles = a->srvHaveAngles = qfalse;
+	a->selected = a->deleted = a->sent = qfalse;
+	// the same effect as before keeps what it had
 	for ( int i = 0; i < numOld; i++ ) {
-		if ( old[i].num == num ) {
-			a->checked = old[i].checked;
-			break;
+		const emActive_t *o = &old[i];
+
+		if ( o->num != num || Q_stricmp( o->path, a->path ) )
+			continue;
+		a->checked = o->checked;
+		Q_strncpyz( a->tag, o->tag, sizeof( a->tag ) );
+		a->placed = o->placed;
+		a->bolted = o->bolted;
+		a->fresh = qfalse;
+		a->haveAngles = a->srvHaveAngles = o->srvHaveAngles;
+		VectorCopy( o->srvAngles, a->srvAngles );
+		VectorCopy( o->srvAngles, a->angles );
+		// what was done to it and not sent yet; something sent is as the list has it
+		if ( !o->sent ) {
+			VectorCopy( o->pos, a->pos );
+			VectorCopy( o->angles, a->angles );
+			a->haveAngles = o->haveAngles;
+			a->selected = o->selected;
+			a->deleted = o->deleted;
+			// in hand while the list came
+			VectorCopy( o->carryFrom, a->carryFrom );
+			VectorCopy( o->carryOffset, a->carryOffset );
+			VectorCopy( o->carryAngles, a->carryAngles );
+			a->carryHaveAngles = o->carryHaveAngles;
 		}
+		break;
 	}
 	em.numActive++;
 	return qtrue;
+}
+
+// "effects/scepter/invincibility.efx" and the like as "scepter/invincibility"
+static void EM_NormPath( const char *in, char *out, int size ) {
+	const int rootLen = strlen( EM_ROOT ), extLen = strlen( EM_EXT );
+	int len;
+
+	if ( !Q_stricmpn( in, EM_ROOT "/", rootLen + 1 ) || !Q_stricmpn( in, EM_ROOT "\\", rootLen + 1 ) )
+		in += rootLen + 1;
+	Q_strncpyz( out, in, size );
+	len = strlen( out );
+	if ( len > extLen && !Q_stricmp( out + len - extLen, EM_EXT ) )
+		out[len - extLen] = '\0';
+	for ( char *c = out; *c; c++ ) {
+		if ( *c == '\\' )
+			*c = '/';
+	}
+}
+
+static qboolean EM_SamePath( const char *a, const char *b ) {
+	char na[MAX_QPATH], nb[MAX_QPATH];
+
+	EM_NormPath( a, na, sizeof( na ) );
+	EM_NormPath( b, nb, sizeof( nb ) );
+	return (qboolean)!Q_stricmp( na, nb );
+}
+
+// the active list is for one map of one server; a vid_restart keeps it, and its names
+static void EM_CheckMap( void ) {
+	char key[MAX_STRING_CHARS];
+
+	Com_sprintf( key, sizeof( key ), "%s %s", cls.servername,
+		Info_ValueForKey( cl.gameState.stringData + cl.gameState.stringOffsets[CS_SERVERINFO], "mapname" ) );
+	if ( !Q_stricmp( key, em.activeMap ) )
+		return;
+	Q_strncpyz( em.activeMap, key, sizeof( em.activeMap ) );
+	em.numActive = em.numActiveView = 0;
+	em.numWaiting = em.numExpect = 0;
+	em.reloading = qfalse;
+}
+
+// the effects new in the list that this manager sent take what they were sent with
+static void EM_MatchExpected( void ) {
+	for ( int i = 0; i < em.numExpect; ) {
+		if ( cls.realtime - em.expect[i].time > EM_EXPECT_MS ) {
+			em.numExpect--;
+			memmove( &em.expect[i], &em.expect[i + 1], ( em.numExpect - i ) * sizeof( em.expect[0] ) );
+			continue;
+		}
+		i++;
+	}
+
+	for ( int i = 0; i < em.numActive; i++ ) {
+		emActive_t *a = &em.active[i];
+		int best, bestPos = -1, bestAny = -1;
+		float bestDist = EM_MATCH_DIST, d;
+
+		if ( !a->fresh )
+			continue;
+		a->fresh = qfalse;
+		for ( int j = 0; j < em.numExpect; j++ ) {
+			const emExpect_t *x = &em.expect[j];
+
+			if ( !EM_SamePath( x->path, a->path ) )
+				continue;
+			if ( x->anyPos ) {
+				// the oldest sent first, the list goes in the order they came
+				if ( bestAny < 0 )
+					bestAny = j;
+				continue;
+			}
+			d = Distance( x->pos, a->origin );
+			if ( d <= bestDist ) {
+				bestPos = j;
+				bestDist = d;
+			}
+		}
+		// one sent to this very spot is surer than one sent anywhere
+		best = bestPos >= 0 ? bestPos : bestAny;
+		if ( best < 0 )
+			continue;
+		Q_strncpyz( a->tag, em.expect[best].tag, sizeof( a->tag ) );
+		a->placed = qtrue;
+		a->bolted = em.expect[best].bolted;
+		// it was sent turned this way
+		a->haveAngles = a->srvHaveAngles = em.expect[best].haveAngles;
+		VectorCopy( em.expect[best].angles, a->angles );
+		VectorCopy( em.expect[best].angles, a->srvAngles );
+		// one moved stays selected under its new number
+		a->selected = em.expect[best].selected;
+		em.numExpect--;
+		memmove( &em.expect[best], &em.expect[best + 1], ( em.numExpect - best ) * sizeof( em.expect[0] ) );
+	}
 }
 
 // every server print goes through here on its way to the cgame; qtrue keeps it out of the console
@@ -1335,6 +2009,7 @@ qboolean CL_EffectManager_ServerPrint( const char *text ) {
 			// also read a list someone typed /rpeffect list for, just don't hide it
 			em.listOurs = (qboolean)( em.listRequestTime && cls.realtime - em.listRequestTime < EM_LIST_TIMEOUT );
 			em.listRequestTime = 0;
+			EM_CheckMap();
 			em.listLineTime = em.listTime = cls.realtime;
 			// the checks stay on the effects that are still there
 			memcpy( old, em.active, em.numActive * sizeof( em.active[0] ) );
@@ -1376,6 +2051,1008 @@ static void EM_RemoveChecked( void ) {
 /*
 ===============================================================================
 
+NAMES AND STATES
+
+A name goes with the looping effects sent while it is in the form, and sticks to
+them once the next list shows them. RPMod doesn't keep it, so a state remembers it:
+the effects sent with the manager and the named ones, where the server has them.
+Once rpdump load has brought them back, reloading the state finds each one by its
+effect and position in a fresh list, and gives it its name again.
+
+===============================================================================
+*/
+
+static qboolean EM_NameChar( int ch ) {
+	return (qboolean)( ( ch >= 'a' && ch <= 'z' ) || ( ch >= 'A' && ch <= 'Z' ) || ( ch >= '0' && ch <= '9' ) || ch == '_' || ch == '-' );
+}
+
+static qboolean EM_CheckName( const char *name, const char *what ) {
+	if ( !name[0] ) {
+		EM_Message( va( S_COLOR_YELLOW "Give the %s a name", what ) );
+		return qfalse;
+	}
+	for ( const char *c = name; *c; c++ ) {
+		if ( !EM_NameChar( *c ) ) {
+			EM_Message( S_COLOR_YELLOW "Use only letters, numbers, - and _ in the name" );
+			return qfalse;
+		}
+	}
+	return qtrue;
+}
+
+// both said, for the console commands that work with the manager closed
+static void EM_Report( const char *text ) {
+	EM_Message( text );
+	Com_Printf( "Effect manager: %s\n", text );
+}
+
+static const char *EM_MapName( void ) {
+	return Info_ValueForKey( cl.gameState.stringData + cl.gameState.stringOffsets[CS_SERVERINFO], "mapname" );
+}
+
+static int EM_CountTagged( const char *tag ) {
+	int count = 0;
+
+	for ( int i = 0; i < em.numActive; i++ ) {
+		if ( !Q_stricmp( em.active[i].tag, tag ) )
+			count++;
+	}
+	return count;
+}
+
+// the names in the active list, once each
+static void EM_CollectNames( void ) {
+	em.numNames = 0;
+	for ( int i = 0; i < em.numActive && em.numNames < EM_MAX_NAMES; i++ ) {
+		const char *tag = em.active[i].tag;
+		qboolean seen = qfalse;
+
+		if ( !tag[0] )
+			continue;
+		for ( int j = 0; j < em.numNames && !seen; j++ )
+			seen = (qboolean)!Q_stricmp( em.names[j], tag );
+		if ( !seen )
+			Q_strncpyz( em.names[em.numNames++], tag, EM_NAME_LEN );
+	}
+}
+
+static void EM_RemoveNamed( const char *name ) {
+	int count = 0;
+
+	for ( int i = 0; i < em.numActive; i++ ) {
+		if ( Q_stricmp( em.active[i].tag, name ) )
+			continue;
+		EM_Queue( va( "rpeffect remove %i", em.active[i].num ), qtrue );
+		count++;
+	}
+	if ( !count ) {
+		EM_Report( va( S_COLOR_YELLOW "No effects are named %s; effectmanager names lists the names", name ) );
+		return;
+	}
+	EM_RequestList();
+	EM_Report( va( "Removing %i effects named %s", count, name ) );
+}
+
+static void EM_PrintNames( void ) {
+	EM_CollectNames();
+	for ( int i = 0; i < em.numNames; i++ )
+		Com_Printf( "%s: %i effects\n", em.names[i], EM_CountTagged( em.names[i] ) );
+	if ( !em.numNames )
+		Com_Printf( "Effect manager: no named effects; a name in the effects form goes with the looping effects sent, and reloading a state brings names back\n" );
+}
+
+// what a state remembers: the effects sent with the manager, and the named ones
+static qboolean EM_InState( const emActive_t *a ) {
+	return (qboolean)( a->placed || a->tag[0] );
+}
+
+static int EM_StateCount( void ) {
+	int count = 0;
+
+	for ( int i = 0; i < em.numActive; i++ ) {
+		if ( EM_InState( &em.active[i] ) )
+			count++;
+	}
+	return count;
+}
+
+static void EM_WriteLine( fileHandle_t f, const char *text ) {
+	FS_Write( text, strlen( text ), f );
+}
+
+static qboolean EM_SaveState( const char *name ) {
+	char path[MAX_QPATH], effect[MAX_QPATH];
+	fileHandle_t f;
+	int count = EM_StateCount(), named = 0;
+
+	if ( !EM_CheckName( name, "state" ) )
+		return qfalse;
+	if ( !count ) {
+		EM_Message( S_COLOR_YELLOW "Nothing to save: no looping effects were sent or named yet" );
+		return qfalse;
+	}
+	Com_sprintf( path, sizeof( path ), "%s/%s%s", EM_STATE_DIR, name, EM_SAVE_EXT );
+	f = FS_FOpenFileWrite( path );
+	if ( !f ) {
+		EM_Message( va( S_COLOR_RED "Couldn't write %s", path ) );
+		return qfalse;
+	}
+	EM_WriteLine( f, va( "// Effect manager state: %i effects on %s\n", count, EM_MapName() ) );
+	EM_WriteLine( f, "// Once the effects are back on the map, after rpdump load, reload it from the effect manager's\n" );
+	EM_WriteLine( f, "// Active tab, or exec this file, and they get their names back\n" );
+	EM_WriteLine( f, "// stated <name, - for none> <effect> <x y z> <bolted>\n" );
+	EM_WriteLine( f, va( "effectmanager reloadstate %s\n", name ) );
+	for ( int i = 0; i < em.numActive; i++ ) {
+		const emActive_t *a = &em.active[i];
+
+		if ( !EM_InState( a ) )
+			continue;
+		if ( a->tag[0] )
+			named++;
+		EM_NormPath( a->path, effect, sizeof( effect ) );
+		EM_WriteLine( f, va( "effectmanager stated %s %s %i %i %i %i\n", a->tag[0] ? a->tag : "-", effect,
+			(int)floorf( a->origin[0] + 0.5f ), (int)floorf( a->origin[1] + 0.5f ), (int)floorf( a->origin[2] + 0.5f ), a->bolted ? 1 : 0 ) );
+	}
+	FS_FCloseFile( f );
+	EM_Report( va( S_COLOR_GREEN "Saved the state of %i effects, %i of them named, as %s", count, named, path ) );
+	return qtrue;
+}
+
+// splits a line into words; the line is cut up in place
+static int EM_SplitLine( char *line, char **argv, int max ) {
+	int argc = 0;
+
+	while ( *line && argc < max ) {
+		while ( *line == ' ' || *line == '\t' )
+			line++;
+		if ( !*line )
+			break;
+		argv[argc++] = line;
+		while ( *line && *line != ' ' && *line != '\t' )
+			line++;
+		if ( *line )
+			*line++ = '\0';
+	}
+	return argc;
+}
+
+// the effects of a saved state; -1 if there is no such state
+static int EM_ReadState( const char *name, emStateEffect_t *out, int max ) {
+	char *buf, *line, *next, *argv[16];
+	int count = 0, argc;
+
+	if ( FS_ReadFile( va( "%s/%s%s", EM_STATE_DIR, name, EM_SAVE_EXT ), (void **)&buf ) < 0 || !buf )
+		return -1;
+	for ( line = buf; line && count < max; line = next ) {
+		next = strchr( line, '\n' );
+		if ( next )
+			*next++ = '\0';
+		for ( char *c = line; *c; c++ ) {
+			if ( *c == '\r' )
+				*c = '\0';
+		}
+		// effectmanager stated <name> <effect> <x y z> <bolted>
+		argc = EM_SplitLine( line, argv, ARRAY_LEN( argv ) );
+		if ( argc < 8 || Q_stricmp( argv[0], EM_TOGGLE_CMD ) || Q_stricmp( argv[1], "stated" ) )
+			continue;
+		Q_strncpyz( out[count].tag, strcmp( argv[2], "-" ) ? argv[2] : "", sizeof( out[0].tag ) );
+		Q_strncpyz( out[count].path, argv[3], sizeof( out[0].path ) );
+		VectorSet( out[count].origin, atof( argv[4] ), atof( argv[5] ), atof( argv[6] ) );
+		out[count].bolted = (qboolean)( atoi( argv[7] ) != 0 );
+		count++;
+	}
+	FS_FreeFile( buf );
+	return count;
+}
+
+static int QDECL EM_CompareStateFiles( const void *a, const void *b ) {
+	return Q_stricmp( (const char *)a, (const char *)b );
+}
+
+static void EM_ListStates( void ) {
+	char **list;
+	int count;
+
+	em.numStateFiles = 0;
+	list = FS_ListFiles( EM_STATE_DIR, EM_SAVE_EXT, &count );
+	for ( int i = 0; i < count && em.numStateFiles < EM_MAX_NAMES; i++ ) {
+		char *name = em.stateFiles[em.numStateFiles++];
+
+		Q_strncpyz( name, list[i], MAX_QPATH );
+		if ( strlen( name ) > strlen( EM_SAVE_EXT ) )
+			name[strlen( name ) - strlen( EM_SAVE_EXT )] = '\0';
+	}
+	FS_FreeFileList( list );
+	qsort( em.stateFiles, em.numStateFiles, sizeof( em.stateFiles[0] ), EM_CompareStateFiles );
+}
+
+// the list asked for is in: each effect of the state, the closest of its kind where it was
+static void EM_MatchState( void ) {
+	static qboolean taken[EM_MAX_ACTIVE];
+	int matched = 0, named = 0;
+
+	em.reloading = qfalse;
+	memset( taken, 0, sizeof( taken ) );
+	for ( int i = 0; i < em.numStateEffects; i++ ) {
+		const emStateEffect_t *s = &em.stateEffects[i];
+		int best = -1;
+		float bestDist = EM_STATE_MATCH_DIST, d;
+
+		for ( int j = 0; j < em.numActive; j++ ) {
+			const emActive_t *a = &em.active[j];
+
+			if ( taken[j] || !EM_SamePath( a->path, s->path ) )
+				continue;
+			// a bolted one moves with what it's on; the first of its kind will do
+			if ( s->bolted ) {
+				best = j;
+				break;
+			}
+			d = Distance( a->origin, s->origin );
+			if ( d <= bestDist ) {
+				best = j;
+				bestDist = d;
+			}
+		}
+		if ( best < 0 )
+			continue;
+		taken[best] = qtrue;
+		em.active[best].placed = qtrue;
+		em.active[best].bolted = s->bolted;
+		if ( s->tag[0] ) {
+			Q_strncpyz( em.active[best].tag, s->tag, sizeof( em.active[best].tag ) );
+			named++;
+		}
+		matched++;
+	}
+
+	if ( em.state != EM_OFF )
+		EM_RebuildActiveView();
+	if ( matched == em.numStateEffects )
+		EM_Report( va( S_COLOR_GREEN "Reloaded state %s: found all %i effects, %i of them named", em.reloadName, matched, named ) );
+	else
+		EM_Report( va( S_COLOR_YELLOW "Reloaded state %s: found %i of %i effects, %i of them named; the rest aren't on the map, or not where the state had them",
+			em.reloadName, matched, em.numStateEffects, named ) );
+}
+
+static void EM_ReloadState( const char *name ) {
+	int count;
+
+	if ( cls.state != CA_ACTIVE ) {
+		Com_Printf( "Effect manager: join a server first\n" );
+		return;
+	}
+	count = EM_ReadState( name, em.stateEffects, EM_MAX_STATE );
+	if ( count <= 0 ) {
+		EM_Report( va( S_COLOR_YELLOW "%s %s/%s%s", count < 0 ? "No state" : "No effects in", EM_STATE_DIR, name, EM_SAVE_EXT ) );
+		return;
+	}
+	em.numStateEffects = count;
+	Q_strncpyz( em.reloadName, name, sizeof( em.reloadName ) );
+	em.reloading = qtrue;
+	em.reloadTime = cls.realtime;
+	EM_RequestList();
+	EM_Report( va( "Reloading state %s: reading the map's effects from the server", name ) );
+}
+
+/*
+===============================================================================
+
+SELECTING AND MOVING
+
+In the free camera, V selects instead of putting the form's effect down: the effects
+waiting at a position, and the map's own. RPMod can't move an effect, so one of the
+map's that was moved is removed and added again where it went, as the model manager
+does it, and the next list gives it its name back under its new number. The list
+has no angles: one this manager sent keeps the ones it was sent with, any other goes
+back straight up unless it is turned.
+
+===============================================================================
+*/
+
+#define EM_HANDLE_ACTIVE	EM_MAX_WAITING	// handles from here on are the map's effects
+#define EM_HOVER_PIXELS		18.0f			// how near the crosshair an effect is to be under it
+
+// what the selection code moves, for one waiting at a position or one on the map
+typedef struct emHandle_s {
+	float		*pos, *angles;
+	qboolean	*haveAngles, *selected;
+	float		*carryFrom, *carryOffset, *carryAngles;
+	qboolean	*carryHaveAngles;
+	const char	*path;
+	emActive_t	*active;	// NULL for one waiting
+} emHandle_t;
+
+static int EM_FirstHandle( void ) {
+	return em.numWaiting ? 0 : EM_HANDLE_ACTIVE;
+}
+
+static int EM_NextHandle( int h ) {
+	return h + 1 == em.numWaiting ? EM_HANDLE_ACTIVE : h + 1;
+}
+
+static int EM_EndHandle( void ) {
+	return EM_HANDLE_ACTIVE + em.numActive;
+}
+
+// the effect behind handle h, if it can be selected: bolted ones go with what they're on
+static qboolean EM_GetHandle( int h, emHandle_t *out ) {
+	if ( h >= 0 && h < em.numWaiting ) {
+		emItem_t *it = &em.waiting[h];
+
+		if ( it->bolted || !it->havePos )
+			return qfalse;
+		out->pos = it->pos;
+		out->angles = it->angles;
+		out->haveAngles = &it->haveAngles;
+		out->selected = &it->selected;
+		out->carryFrom = it->carryFrom;
+		out->carryOffset = it->carryOffset;
+		out->carryAngles = it->carryAngles;
+		out->carryHaveAngles = &it->carryHaveAngles;
+		out->path = it->path;
+		out->active = NULL;
+		return qtrue;
+	}
+	h -= EM_HANDLE_ACTIVE;
+	if ( h >= 0 && h < em.numActive ) {
+		emActive_t *a = &em.active[h];
+
+		if ( a->bolted || a->sent )
+			return qfalse;
+		out->pos = a->pos;
+		out->angles = a->angles;
+		out->haveAngles = &a->haveAngles;
+		out->selected = &a->selected;
+		out->carryFrom = a->carryFrom;
+		out->carryOffset = a->carryOffset;
+		out->carryAngles = a->carryAngles;
+		out->carryHaveAngles = &a->carryHaveAngles;
+		out->path = a->path;
+		out->active = a;
+		return qtrue;
+	}
+	return qfalse;
+}
+
+// one of the map's that isn't where, or turned the way, the server has it
+static qboolean EM_ActiveEdited( const emActive_t *a ) {
+	if ( Distance( a->pos, a->origin ) > 0.5f || a->haveAngles != a->srvHaveAngles )
+		return qtrue;
+	for ( int i = 0; i < 3 && a->haveAngles; i++ ) {
+		if ( EM_NormalizeAngle( a->angles[i] ) != EM_NormalizeAngle( a->srvAngles[i] ) )
+			return qtrue;
+	}
+	return qfalse;
+}
+
+static int EM_NumSelected( void ) {
+	emHandle_t hd;
+	int count = 0;
+
+	for ( int h = EM_FirstHandle(); h < EM_EndHandle(); h = EM_NextHandle( h ) ) {
+		if ( EM_GetHandle( h, &hd ) && *hd.selected )
+			count++;
+	}
+	return count;
+}
+
+static void EM_ClearSelection( void ) {
+	for ( int i = 0; i < em.numWaiting; i++ )
+		em.waiting[i].selected = qfalse;
+	for ( int i = 0; i < em.numActive; i++ )
+		em.active[i].selected = qfalse;
+}
+
+// the one nearest the crosshair on screen, -1 if none is near enough
+static int EM_HoverAtCrosshair( void ) {
+	float best = EM_HOVER_PIXELS * EM_HOVER_PIXELS, x, y, d;
+	emHandle_t hd;
+	int found = -1;
+
+	for ( int h = EM_FirstHandle(); h < EM_EndHandle(); h = EM_NextHandle( h ) ) {
+		if ( !EM_GetHandle( h, &hd ) || !EM_Project( hd.pos, &x, &y ) )
+			continue;
+		d = Square( x - SCREEN_WIDTH * 0.5f ) + Square( y - SCREEN_HEIGHT * 0.5f );
+		if ( d < best ) {
+			best = d;
+			found = h;
+		}
+	}
+	return found;
+}
+
+// the middle of the selection, which it turns about
+static void EM_Pivot( vec3_t pivot ) {
+	vec3_t mins, maxs;
+	emHandle_t hd;
+
+	ClearBounds( mins, maxs );
+	for ( int h = EM_FirstHandle(); h < EM_EndHandle(); h = EM_NextHandle( h ) ) {
+		if ( EM_GetHandle( h, &hd ) && *hd.selected )
+			AddPointToBounds( hd.pos, mins, maxs );
+	}
+	if ( mins[0] > maxs[0] ) {
+		VectorClear( pivot );
+		return;
+	}
+	VectorAdd( mins, maxs, pivot );
+	VectorScale( pivot, 0.5f, pivot );
+}
+
+static void EM_ClickSelect( void ) {
+	emHandle_t hd;
+
+	const qboolean shift = (qboolean)( em.held[A_SHIFT] || em.held[A_SHIFT2] );
+
+	if ( !EM_GetHandle( em.hover, &hd ) ) {
+		if ( !shift )
+			EM_ClearSelection();
+		return;
+	}
+	if ( shift ) {
+		*hd.selected = (qboolean)!*hd.selected;
+	} else {
+		EM_ClearSelection();
+		*hd.selected = qtrue;
+	}
+}
+
+// the selection in hand, to follow the crosshair; where each was stays, to put back
+static qboolean EM_PickUp( void ) {
+	vec3_t pivot;
+	emHandle_t hd;
+
+	if ( em.carrying )
+		return qtrue;
+	if ( !EM_NumSelected() ) {
+		EM_Message( S_COLOR_YELLOW "Nothing selected: aim at an effect and click it" );
+		return qfalse;
+	}
+	EM_Pivot( pivot );
+	for ( int h = EM_FirstHandle(); h < EM_EndHandle(); h = EM_NextHandle( h ) ) {
+		if ( !EM_GetHandle( h, &hd ) || !*hd.selected )
+			continue;
+		VectorCopy( hd.pos, hd.carryFrom );
+		VectorSubtract( hd.pos, pivot, hd.carryOffset );
+		VectorCopy( hd.angles, hd.carryAngles );
+		*hd.carryHaveAngles = *hd.haveAngles;
+	}
+	em.carrying = qtrue;
+	em.carryLocked = qfalse;
+	return qtrue;
+}
+
+// back where they were picked up
+static void EM_CancelCarry( void ) {
+	emHandle_t hd;
+
+	if ( !em.carrying )
+		return;
+	em.carrying = qfalse;
+	for ( int h = EM_FirstHandle(); h < EM_EndHandle(); h = EM_NextHandle( h ) ) {
+		if ( !EM_GetHandle( h, &hd ) || !*hd.selected )
+			continue;
+		VectorCopy( hd.carryFrom, hd.pos );
+		VectorCopy( hd.carryAngles, hd.angles );
+		*hd.haveAngles = *hd.carryHaveAngles;
+	}
+}
+
+// where the crosshair meets the world, just off that surface
+static void EM_CrosshairPoint( vec3_t out ) {
+	vec3_t forward, end;
+	trace_t tr;
+	int grid = emSnaps[em.snap].grid;
+
+	AngleVectors( em.camAng, forward, NULL, NULL );
+	VectorMA( em.camOrg, EM_TRACE_DIST, forward, end );
+	CM_BoxTrace( &tr, em.camOrg, end, vec3_origin, vec3_origin, 0, EM_TRACE_MASK, qfalse );
+	if ( tr.fraction < 1.0f && !tr.startsolid && !( tr.surfaceFlags & SURF_SKY ) ) {
+		VectorMA( tr.endpos, 1.0f, tr.plane.normal, out );
+		for ( int i = 0; i < 3; i++ ) {
+			if ( fabsf( tr.plane.normal[i] ) < 0.7f )
+				out[i] = EM_SnapTo( out[i], grid );
+		}
+	} else {
+		VectorMA( em.camOrg, EM_NO_HIT_DIST, forward, out );
+		for ( int i = 0; i < 3; i++ )
+			out[i] = EM_SnapTo( out[i], grid );
+	}
+}
+
+static void EM_FollowSelection( void ) {
+	vec3_t point;
+	emHandle_t hd;
+
+	EM_CrosshairPoint( point );
+	for ( int h = EM_FirstHandle(); h < EM_EndHandle(); h = EM_NextHandle( h ) ) {
+		if ( EM_GetHandle( h, &hd ) && *hd.selected )
+			VectorAdd( point, hd.carryOffset, hd.pos );
+	}
+}
+
+// the changes to the map's effects, removes first while the numbers still name the
+// effects they were read for; the selected ones, or all of them
+static int EM_SendActiveChanges( qboolean selectedOnly ) {
+	int count = 0;
+
+	for ( int i = 0; i < em.numActive; i++ ) {
+		const emActive_t *a = &em.active[i];
+
+		if ( a->sent || a->bolted || ( selectedOnly && !a->selected ) )
+			continue;
+		if ( a->deleted || EM_ActiveEdited( a ) )
+			EM_Queue( va( "rpeffect remove %i", a->num ), qtrue );
+	}
+	for ( int i = 0; i < em.numActive; i++ ) {
+		emActive_t *a = &em.active[i];
+		emItem_t it;
+
+		if ( a->sent || a->bolted || ( selectedOnly && !a->selected ) )
+			continue;
+		if ( a->deleted ) {
+			a->sent = qtrue;
+			count++;
+			continue;
+		}
+		if ( !EM_ActiveEdited( a ) )
+			continue;
+		// back where it went, looping as all the map's are, with its name
+		memset( &it, 0, sizeof( it ) );
+		EM_NormPath( a->path, it.path, sizeof( it.path ) );
+		it.loop = qtrue;
+		it.havePos = qtrue;
+		VectorCopy( a->pos, it.pos );
+		it.haveAngles = a->haveAngles;
+		VectorCopy( a->angles, it.angles );
+		Q_strncpyz( it.tag, a->tag, sizeof( it.tag ) );
+		it.selected = a->selected;
+		EM_Expect( &it );
+		EM_Queue( EM_ItemCommand( &it ), qtrue );
+		a->sent = qtrue;
+		count++;
+	}
+	if ( count )
+		EM_RequestList();
+	return count;
+}
+
+// the map's effects moved, removed or still to send, and those waiting
+static void EM_PendingChanges( int *moved, int *removed ) {
+	*moved = *removed = 0;
+	for ( int i = 0; i < em.numActive; i++ ) {
+		const emActive_t *a = &em.active[i];
+
+		if ( a->sent || a->bolted )
+			continue;
+		if ( a->deleted )
+			( *removed )++;
+		else if ( EM_ActiveEdited( a ) )
+			( *moved )++;
+	}
+}
+
+static void EM_SendAllChanges( void ) {
+	const int changed = EM_SendActiveChanges( qfalse ), waiting = em.numWaiting;
+
+	EM_SendWaiting();
+	if ( changed + waiting )
+		EM_Message( va( S_COLOR_GREEN "Sending %i changes and %i new effects, about one a second", changed, waiting ) );
+	else
+		EM_Message( "Nothing to send" );
+}
+
+static void EM_DropSelection( void ) {
+	if ( !em.carrying )
+		return;
+	em.carrying = qfalse;
+	if ( em.instant )
+		EM_SendActiveChanges( qtrue );
+}
+
+static void EM_RotateSelection( int axis, int sign ) {
+	const int step = emSnaps[em.snap].angle;
+	const float a = DEG2RAD( (float)( sign * step ) );
+	const qboolean group = (qboolean)( EM_NumSelected() > 1 );
+	vec3_t pivot, d;
+	emHandle_t hd;
+
+	if ( !EM_NumSelected() ) {
+		EM_Message( S_COLOR_YELLOW "Nothing selected: aim at an effect and click it" );
+		return;
+	}
+	EM_Pivot( pivot );
+	for ( int h = EM_FirstHandle(); h < EM_EndHandle(); h = EM_NextHandle( h ) ) {
+		if ( !EM_GetHandle( h, &hd ) || !*hd.selected )
+			continue;
+		if ( !*hd.haveAngles ) {
+			VectorClear( hd.angles );
+			*hd.haveAngles = qtrue;
+		}
+		hd.angles[axis] = (float)EM_NormalizeAngle( EM_SnapTo( hd.angles[axis] + sign * step, step ) );
+		// a group turns about its middle
+		if ( group && axis == YAW ) {
+			VectorSubtract( hd.pos, pivot, d );
+			hd.pos[0] = pivot[0] + d[0] * cosf( a ) - d[1] * sinf( a );
+			hd.pos[1] = pivot[1] + d[0] * sinf( a ) + d[1] * cosf( a );
+			if ( em.carrying )
+				VectorSubtract( hd.pos, pivot, hd.carryOffset );
+		}
+	}
+}
+
+static void EM_StraightenSelection( void ) {
+	emHandle_t hd;
+
+	for ( int h = EM_FirstHandle(); h < EM_EndHandle(); h = EM_NextHandle( h ) ) {
+		if ( EM_GetHandle( h, &hd ) && *hd.selected ) {
+			VectorClear( hd.angles );
+			*hd.haveAngles = qfalse;
+		}
+	}
+}
+
+// along the world axis closest to the camera direction, so nudges stay on the grid
+static void EM_NudgeSelection( int dx, int dy, int dz ) {
+	const float yaw = DEG2RAD( floorf( em.camAng[YAW] / 90.0f + 0.5f ) * 90.0f );
+	const int grid = emSnaps[em.snap].grid;
+	vec3_t forward, right, delta;
+	emHandle_t hd;
+
+	if ( !EM_NumSelected() ) {
+		EM_Message( S_COLOR_YELLOW "Nothing selected: aim at an effect and click it" );
+		return;
+	}
+	if ( em.carrying )
+		em.carryLocked = qtrue;
+	VectorSet( forward, cosf( yaw ), sinf( yaw ), 0 );
+	VectorSet( right, sinf( yaw ), -cosf( yaw ), 0 );
+	VectorScale( forward, (float)( dx * grid ), delta );
+	VectorMA( delta, (float)( dy * grid ), right, delta );
+	delta[0] = floorf( delta[0] + 0.5f );
+	delta[1] = floorf( delta[1] + 0.5f );
+	delta[2] = (float)( dz * grid );
+	for ( int h = EM_FirstHandle(); h < EM_EndHandle(); h = EM_NextHandle( h ) ) {
+		if ( EM_GetHandle( h, &hd ) && *hd.selected )
+			VectorAdd( hd.pos, delta, hd.pos );
+	}
+}
+
+// waiting ones just go, the map's are removed
+static void EM_DeleteSelection( void ) {
+	int keep = 0, removed = 0;
+
+	EM_CancelCarry();
+	for ( int i = 0; i < em.numWaiting; i++ ) {
+		const emItem_t *it = &em.waiting[i];
+
+		if ( it->selected && !it->bolted && it->havePos )
+			continue;
+		em.waiting[keep++] = em.waiting[i];
+	}
+	em.numWaiting = keep;
+	for ( int i = 0; i < em.numActive; i++ ) {
+		emActive_t *a = &em.active[i];
+
+		if ( !a->selected || a->bolted || a->sent )
+			continue;
+		a->deleted = qtrue;
+		removed++;
+	}
+	em.hover = -1;
+	if ( removed && em.instant )
+		EM_SendActiveChanges( qtrue );
+}
+
+// the map's effects back as the server has them: the selected ones, or all
+static void EM_UndoChanges( void ) {
+	const qboolean all = (qboolean)!EM_NumSelected();
+
+	EM_CancelCarry();
+	for ( int i = 0; i < em.numActive; i++ ) {
+		emActive_t *a = &em.active[i];
+
+		if ( a->sent || ( !all && !a->selected ) )
+			continue;
+		VectorCopy( a->origin, a->pos );
+		VectorCopy( a->srvAngles, a->angles );
+		a->haveAngles = a->srvHaveAngles;
+		a->deleted = qfalse;
+	}
+}
+
+/*
+===============================================================================
+
+CONSTRUCTS
+
+Effects saved together: the free camera's selection, or what waits. Placed ones are
+kept from their middle, to put down anywhere and turn; bolted ones keep their tag or
+bone, and go on whoever is picked when the construct is used.
+
+===============================================================================
+*/
+
+static int QDECL EM_CompareNames( const void *a, const void *b ) {
+	return Q_stricmp( (const char *)a, (const char *)b );
+}
+
+static qboolean EM_ParseCPiece( char **argv, int argc, emCPiece_t *out ) {
+	// effectmanager cpiece <effect> <loop> pos <x y z> <angles seen> <pitch yaw roll>
+	// effectmanager cpiece <effect> <loop> bolt <tag or bone>
+	if ( argc < 6 || Q_stricmp( argv[0], EM_TOGGLE_CMD ) || Q_stricmp( argv[1], "cpiece" ) )
+		return qfalse;
+	memset( out, 0, sizeof( *out ) );
+	Q_strncpyz( out->path, argv[2], sizeof( out->path ) );
+	out->loop = (qboolean)( atoi( argv[3] ) != 0 );
+	if ( !Q_stricmp( argv[4], "bolt" ) ) {
+		out->bolted = qtrue;
+		Q_strncpyz( out->bolt, argv[5], sizeof( out->bolt ) );
+		return qtrue;
+	}
+	if ( Q_stricmp( argv[4], "pos" ) || argc < 12 )
+		return qfalse;
+	VectorSet( out->offset, atof( argv[5] ), atof( argv[6] ), atof( argv[7] ) );
+	out->haveAngles = (qboolean)( atoi( argv[8] ) != 0 );
+	VectorSet( out->angles, atof( argv[9] ), atof( argv[10] ), atof( argv[11] ) );
+	return qtrue;
+}
+
+// the effects of a saved construct; -1 if there is no such construct
+static int EM_ReadConstruct( const char *name, emCPiece_t *out, int max ) {
+	char *buf, *line, *next, *argv[16];
+	int count = 0;
+
+	if ( FS_ReadFile( va( "%s/%s%s", EM_CONSTRUCT_DIR, name, EM_SAVE_EXT ), (void **)&buf ) < 0 || !buf )
+		return -1;
+	for ( line = buf; line && count < max; line = next ) {
+		next = strchr( line, '\n' );
+		if ( next )
+			*next++ = '\0';
+		for ( char *c = line; *c; c++ ) {
+			if ( *c == '\r' )
+				*c = '\0';
+		}
+		if ( EM_ParseCPiece( argv, EM_SplitLine( line, argv, ARRAY_LEN( argv ) ), &out[count] ) )
+			count++;
+	}
+	FS_FreeFile( buf );
+	return count;
+}
+
+static void EM_ListConstructs( void ) {
+	static emCPiece_t scratch[EM_MAX_CPIECES];
+	char **list;
+	int count;
+
+	em.numConstructs = 0;
+	list = FS_ListFiles( EM_CONSTRUCT_DIR, EM_SAVE_EXT, &count );
+	for ( int i = 0; i < count && em.numConstructs < EM_MAX_NAMES; i++ ) {
+		char *name = em.constructs[em.numConstructs++];
+
+		Q_strncpyz( name, list[i], MAX_QPATH );
+		if ( strlen( name ) > strlen( EM_SAVE_EXT ) )
+			name[strlen( name ) - strlen( EM_SAVE_EXT )] = '\0';
+	}
+	FS_FreeFileList( list );
+	qsort( em.constructs, em.numConstructs, sizeof( em.constructs[0] ), EM_CompareNames );
+	for ( int i = 0; i < em.numConstructs; i++ )
+		em.constructCounts[i] = Q_max( 0, EM_ReadConstruct( em.constructs[i], scratch, EM_MAX_CPIECES ) );
+	em.numCPieces = 0;
+	if ( em.numRows )
+		em.rows[0].count = em.numConstructs;
+}
+
+static void EM_CountCPieces( const emCPiece_t *pieces, int count, int *placed, int *bolted ) {
+	*placed = *bolted = 0;
+	for ( int i = 0; i < count; i++ ) {
+		if ( pieces[i].bolted )
+			( *bolted )++;
+		else
+			( *placed )++;
+	}
+}
+
+// what saving a construct would take: the free camera's selection, or what waits
+static int EM_ConstructSource( emCPiece_t *out, int max ) {
+	vec3_t mins, maxs, anchor;
+	emHandle_t hd;
+	int count = 0;
+
+	if ( em.constructFromSelection ) {
+		for ( int h = EM_FirstHandle(); h < EM_EndHandle() && count < max; h = EM_NextHandle( h ) ) {
+			emCPiece_t *p = &out[count];
+
+			if ( !EM_GetHandle( h, &hd ) || !*hd.selected )
+				continue;
+			memset( p, 0, sizeof( *p ) );
+			EM_NormPath( hd.path, p->path, sizeof( p->path ) );
+			p->loop = hd.active ? qtrue : em.waiting[h].loop;	// the map's all loop
+			VectorCopy( hd.pos, p->offset );
+			p->haveAngles = *hd.haveAngles;
+			VectorCopy( hd.angles, p->angles );
+			count++;
+		}
+	} else {
+		for ( int i = 0; i < em.numWaiting && count < max; i++ ) {
+			const emItem_t *it = &em.waiting[i];
+			emCPiece_t *p = &out[count];
+
+			// one at the player has no place of its own
+			if ( !it->bolted && !it->havePos )
+				continue;
+			memset( p, 0, sizeof( *p ) );
+			Q_strncpyz( p->path, it->path, sizeof( p->path ) );
+			p->loop = it->loop;
+			p->bolted = it->bolted;
+			Q_strncpyz( p->bolt, it->bolt, sizeof( p->bolt ) );
+			VectorCopy( it->pos, p->offset );
+			p->haveAngles = it->haveAngles;
+			VectorCopy( it->angles, p->angles );
+			count++;
+		}
+	}
+
+	// placed ones from the middle of their floor
+	ClearBounds( mins, maxs );
+	for ( int i = 0; i < count; i++ ) {
+		if ( !out[i].bolted )
+			AddPointToBounds( out[i].offset, mins, maxs );
+	}
+	if ( mins[0] <= maxs[0] ) {
+		VectorSet( anchor, floorf( ( mins[0] + maxs[0] ) * 0.5f + 0.5f ), floorf( ( mins[1] + maxs[1] ) * 0.5f + 0.5f ), floorf( mins[2] + 0.5f ) );
+		for ( int i = 0; i < count; i++ ) {
+			if ( !out[i].bolted )
+				VectorSubtract( out[i].offset, anchor, out[i].offset );
+		}
+	}
+	return count;
+}
+
+static qboolean EM_SaveConstruct( const char *name ) {
+	static emCPiece_t pieces[EM_MAX_CPIECES];
+	char path[MAX_QPATH];
+	fileHandle_t f;
+	int count, placed, bolted;
+
+	if ( !EM_CheckName( name, "construct" ) )
+		return qfalse;
+	count = EM_ConstructSource( pieces, EM_MAX_CPIECES );
+	if ( !count ) {
+		EM_Message( S_COLOR_YELLOW "Nothing to save: select effects, or add some to waiting" );
+		return qfalse;
+	}
+	Com_sprintf( path, sizeof( path ), "%s/%s%s", EM_CONSTRUCT_DIR, name, EM_SAVE_EXT );
+	f = FS_FOpenFileWrite( path );
+	if ( !f ) {
+		EM_Message( va( S_COLOR_RED "Couldn't write %s", path ) );
+		return qfalse;
+	}
+	EM_CountCPieces( pieces, count, &placed, &bolted );
+	EM_WriteLine( f, va( "// Effect manager construct: %i effects, %i placed and %i bolted, made on %s\n", count, placed, bolted, EM_MapName() ) );
+	EM_WriteLine( f, "// Shown under Saved constructs in the effect manager; exec this file to pick it\n" );
+	EM_WriteLine( f, "// cpiece <effect> <loop> pos <x y z from the middle> <angles seen> <pitch yaw roll>\n" );
+	EM_WriteLine( f, "// cpiece <effect> <loop> bolt <tag or bone>, on whoever it is put on\n" );
+	EM_WriteLine( f, va( "effectmanager loadconstruct %s\n", name ) );
+	for ( int i = 0; i < count; i++ ) {
+		const emCPiece_t *p = &pieces[i];
+
+		if ( p->bolted ) {
+			EM_WriteLine( f, va( "effectmanager cpiece %s %i bolt %s\n", p->path, p->loop ? 1 : 0, p->bolt ) );
+			continue;
+		}
+		EM_WriteLine( f, va( "effectmanager cpiece %s %i pos %i %i %i %i %i %i %i\n", p->path, p->loop ? 1 : 0,
+			(int)floorf( p->offset[0] + 0.5f ), (int)floorf( p->offset[1] + 0.5f ), (int)floorf( p->offset[2] + 0.5f ),
+			p->haveAngles ? 1 : 0, EM_NormalizeAngle( p->angles[PITCH] ), EM_NormalizeAngle( p->angles[YAW] ), EM_NormalizeAngle( p->angles[ROLL] ) ) );
+	}
+	FS_FCloseFile( f );
+	EM_ListConstructs();
+	EM_Report( va( S_COLOR_GREEN "Saved %i effects as %s", count, path ) );
+	return qtrue;
+}
+
+// a bolted piece on whoever the form has picked
+static qboolean EM_BoltedItem( const emCPiece_t *p, emItem_t *out ) {
+	memset( out, 0, sizeof( *out ) );
+	if ( em.target == EM_TARGET_NPC && !em.targetName[0] )
+		return qfalse;
+	Q_strncpyz( out->path, p->path, sizeof( out->path ) );
+	out->loop = p->loop;
+	out->bolted = qtrue;
+	Q_strncpyz( out->bolt, p->bolt, sizeof( out->bolt ) );
+	out->target = em.target;
+	out->targetClient = em.targetClient;
+	out->targetNpc = em.targetNpc;
+	Q_strncpyz( out->targetName, em.targetName, sizeof( out->targetName ) );
+	Q_strncpyz( out->tag, em.fields[EM_F_NAME], sizeof( out->tag ) );
+	return qtrue;
+}
+
+// the selected construct's bolted effects on the target, sent or waiting
+static void EM_ApplyConstructBolts( qboolean toWaiting ) {
+	int count = 0;
+
+	for ( int i = 0; i < em.numCPieces; i++ ) {
+		emItem_t it;
+
+		if ( !em.cpieces[i].bolted || !EM_BoltedItem( &em.cpieces[i], &it ) )
+			continue;
+		if ( toWaiting ) {
+			if ( em.numWaiting >= EM_MAX_WAITING )
+				break;
+			em.waiting[em.numWaiting++] = it;
+		} else {
+			EM_Expect( &it );
+			EM_Queue( EM_ItemCommand( &it ), qtrue );
+		}
+		count++;
+	}
+	if ( !count )
+		return;
+	if ( !toWaiting )
+		EM_RequestList();
+	EM_Message( va( toWaiting ? S_COLOR_GREEN "%i bolted effects added to waiting, on %s" : S_COLOR_GREEN "Sending %i bolted effects, on %s",
+		count, EM_TargetLabel() ) );
+}
+
+// a placed piece in hand, with the hand at anchor and turned
+static void EM_HandItem( int i, const vec3_t anchor, emItem_t *out ) {
+	const emCPiece_t *p = &em.hand[i];
+	const float a = DEG2RAD( (float)em.handYaw );
+
+	memset( out, 0, sizeof( *out ) );
+	Q_strncpyz( out->path, p->path, sizeof( out->path ) );
+	out->loop = p->loop;
+	out->havePos = qtrue;
+	out->pos[0] = anchor[0] + p->offset[0] * cosf( a ) - p->offset[1] * sinf( a );
+	out->pos[1] = anchor[1] + p->offset[0] * sinf( a ) + p->offset[1] * cosf( a );
+	out->pos[2] = anchor[2] + p->offset[2];
+	// straight up stays straight up, whichever way it's turned
+	out->haveAngles = p->haveAngles;
+	VectorCopy( p->angles, out->angles );
+	if ( p->haveAngles )
+		out->angles[YAW] = (float)EM_NormalizeAngle( out->angles[YAW] + em.handYaw );
+	Q_strncpyz( out->tag, em.fields[EM_F_NAME], sizeof( out->tag ) );
+}
+
+// what is in hand goes down where the crosshair is, sent or waiting; it stays in hand
+static void EM_PutDownHand( qboolean send ) {
+	int count = 0;
+
+	for ( int i = 0; i < em.numHand; i++ ) {
+		emItem_t it;
+
+		EM_HandItem( i, em.origin, &it );
+		if ( send ) {
+			EM_Expect( &it );
+			EM_Queue( EM_ItemCommand( &it ), qtrue );
+		} else {
+			if ( em.numWaiting >= EM_MAX_WAITING ) {
+				EM_Message( S_COLOR_YELLOW "That's as many as can wait at once; send them first" );
+				break;
+			}
+			it.nextPlay = cls.realtime;
+			em.waiting[em.numWaiting++] = it;
+		}
+		count++;
+	}
+	if ( send && count )
+		EM_RequestList();
+}
+
+// a list was read whole
+static void EM_ListDone( void ) {
+	EM_MatchExpected();
+	if ( em.reloading && em.listTime >= em.reloadTime )
+		EM_MatchState();
+	if ( em.state != EM_OFF )
+		EM_RebuildActiveView();
+}
+
+/*
+===============================================================================
+
 STATE CHANGES
 
 ===============================================================================
@@ -1401,6 +3078,10 @@ static void EM_OpenPicker( emPicker_t picker ) {
 	em.modelYaw = 0.0f;
 	if ( picker == EM_PICKER_NPC || picker == EM_PICKER_REMOVE_NPC )
 		CL_NpcManager_RequestList();
+	if ( picker == EM_PICKER_REMOVE_NAME )
+		EM_CollectNames();
+	if ( picker == EM_PICKER_STATE )
+		EM_ListStates();
 	EM_RebuildPickerView();
 	// start on the bolt already chosen
 	if ( picker == EM_PICKER_BOLT ) {
@@ -1440,6 +3121,12 @@ static void EM_ChoosePicker( int index ) {
 			return;
 		EM_SendAndRefresh( va( "rpeffect remove bolted npc %s", name ) );
 		break;
+	case EM_PICKER_REMOVE_NAME:
+		EM_RemoveNamed( em.names[index] );
+		break;
+	case EM_PICKER_STATE:
+		EM_ReloadState( em.stateFiles[index] );
+		break;
 	default:
 		break;
 	}
@@ -1447,17 +3134,16 @@ static void EM_ChoosePicker( int index ) {
 }
 
 static void EM_EnterBrowse( void ) {
+	EM_CancelCarry();
+	em.selecting = qfalse;
+	em.handConstruct = qfalse;
 	em.state = EM_BROWSE;
 	em.focus = EM_F_NONE;
 	EM_ReleaseKeys();
 }
 
-static void EM_EnterPlace( void ) {
-	if ( !EM_Effect() )
-		return;
-
-	em.picker = EM_PICKER_NONE;
-	em.focus = EM_F_NONE;
+// the free camera starts where the player looks from
+static void EM_CameraFromView( void ) {
 	if ( em.haveView ) {
 		VectorCopy( em.viewOrg, em.camOrg );
 		vectoangles( em.viewAxis[0], em.camAng );
@@ -1466,6 +3152,40 @@ static void EM_EnterPlace( void ) {
 		em.camOrg[2] += cl.snap.ps.viewheight;
 		VectorCopy( cl.viewangles, em.camAng );
 	}
+	if ( em.camAng[PITCH] > 180.0f )
+		em.camAng[PITCH] -= 360.0f;
+	em.camAng[ROLL] = 0;
+}
+
+// the free camera, selecting the effects waiting and the map's, to move them
+static void EM_EnterSelect( void ) {
+	if ( em.state != EM_PLACE ) {
+		em.picker = EM_PICKER_NONE;
+		em.focus = EM_F_NONE;
+		EM_CameraFromView();
+		em.state = EM_PLACE;
+		em.lastFrameTime = cls.realtime;
+		EM_ReleaseKeys();
+	}
+	em.selecting = qtrue;
+	em.handConstruct = qfalse;
+	em.carrying = qfalse;
+	em.hover = -1;
+	em.playKey[0] = '\0';
+	// what is on the map now
+	EM_RequestList();
+}
+
+static void EM_EnterPlace( void ) {
+	if ( !EM_Effect() )
+		return;
+
+	em.picker = EM_PICKER_NONE;
+	em.focus = EM_F_NONE;
+	EM_CancelCarry();
+	em.selecting = qfalse;
+	em.handConstruct = qfalse;
+	EM_CameraFromView();
 
 	if ( em.where == EM_WHERE_BOLT ) {
 		// in front of the target, looking at it
@@ -1493,6 +3213,35 @@ static void EM_EnterPlace( void ) {
 	EM_ReleaseKeys();
 }
 
+// the selected construct's placed effects in hand, in the free camera, to put down
+static void EM_StartConstructPlace( void ) {
+	em.numHand = 0;
+	for ( int i = 0; i < em.numCPieces && em.construct >= 0; i++ ) {
+		if ( em.cpieces[i].bolted )
+			continue;
+		em.hand[em.numHand] = em.cpieces[i];
+		em.hand[em.numHand].nextPlay = cls.realtime;
+		em.numHand++;
+	}
+	if ( !em.numHand ) {
+		EM_Message( S_COLOR_YELLOW "This construct has only bolted effects: pick who they go on, then Send or Add to waiting" );
+		return;
+	}
+	Q_strncpyz( em.handName, em.constructs[em.construct], sizeof( em.handName ) );
+	em.handYaw = 0;
+	em.picker = EM_PICKER_NONE;
+	em.focus = EM_F_NONE;
+	EM_CancelCarry();
+	em.selecting = qfalse;
+	em.handConstruct = qtrue;
+	em.locked = qfalse;
+	EM_CameraFromView();
+	em.state = EM_PLACE;
+	em.lastFrameTime = cls.realtime;
+	em.playKey[0] = '\0';
+	EM_ReleaseKeys();
+}
+
 static void EM_Open( void ) {
 	if ( cls.state != CA_ACTIVE || !cls.cgameStarted ) {
 		Com_Printf( "Effect manager: join a server first\n" );
@@ -1501,6 +3250,8 @@ static void EM_Open( void ) {
 	CL_ModelManager_Close();
 	CL_NpcManager_Close();
 	CL_ShaderManager_Close();
+	EM_CheckMap();
+	EM_ListConstructs();
 	if ( !em.indexed ) {
 		EM_BuildIndex();
 		EM_RebuildEffectView();
@@ -1525,6 +3276,7 @@ static void EM_Open( void ) {
 static void EM_Close( void ) {
 	em.state = EM_OFF;
 	em.picker = EM_PICKER_NONE;
+	em.naming = EM_NAMING_NONE;
 	em.numPending = 0;
 	EM_ReleaseKeys();
 	Key_SetCatcher( Key_GetCatcher() & ~KEYCATCH_EFFECTMANAGER );
@@ -1540,6 +3292,8 @@ void CL_EffectManager_Init( void ) {
 	em.effect = -1;
 	em.previewDist = 160.0f;
 	em.snap = 2;
+	em.instant = qtrue;
+	em.construct = -1;
 	Q_strncpyz( em.fields[EM_F_BOLT], "*r_hand", EM_FIELD_LEN );
 	Q_strncpyz( em.fields[EM_F_INTENSITY], "5", EM_FIELD_LEN );
 	Q_strncpyz( em.fields[EM_F_DURATION], "2", EM_FIELD_LEN );
@@ -1557,8 +3311,10 @@ void CL_EffectManager_Shutdown( void ) {
 	// the pure pk3 list can change with the next map or server
 	em.indexed = qfalse;
 	em.haveView = qfalse;
-	em.numActive = em.numActiveView = 0;
+	// the active list stays for its names, until EM_CheckMap finds another map or server
 	em.numQueue = 0;
+	em.numExpect = 0;
+	em.reloading = qfalse;
 	em.listRequestTime = em.listLineTime = em.listTime = em.refreshTime = 0;
 	em.listQueued = qfalse;
 	em.havePos = qfalse;
@@ -1607,6 +3363,11 @@ void CL_EffectManager_f( void ) {
 			EM_SetTab( EM_TAB_EFFECTS );
 			EM_EnterPlace();
 		}
+	} else if ( !Q_stricmp( arg, "edit" ) ) {
+		if ( em.state == EM_OFF )
+			EM_Open();
+		if ( em.state != EM_OFF )
+			EM_EnterSelect();
 	} else if ( !Q_stricmp( arg, "bolt" ) && Cmd_Argc() >= 3 ) {
 		em.where = EM_WHERE_BOLT;
 		em.target = EM_TARGET_ME;
@@ -1616,15 +3377,60 @@ void CL_EffectManager_f( void ) {
 			EM_EnterBrowse();
 		EM_BuildIndex();
 		EM_RebuildEffectView();
+	} else if ( !Q_stricmp( arg, "remove" ) && Cmd_Argc() >= 3 ) {
+		if ( cls.state == CA_ACTIVE )
+			EM_RemoveNamed( Cmd_Argv( 2 ) );
+	} else if ( !Q_stricmp( arg, "names" ) ) {
+		EM_PrintNames();
+	} else if ( !Q_stricmp( arg, "savestate" ) && Cmd_Argc() >= 3 ) {
+		if ( cls.state == CA_ACTIVE && !EM_SaveState( Cmd_Argv( 2 ) ) )
+			Com_Printf( "%s\n", em.message );
+	} else if ( !Q_stricmp( arg, "reloadstate" ) && Cmd_Argc() >= 3 ) {
+		char name[MAX_QPATH];
+
+		Q_strncpyz( name, Cmd_Argv( 2 ), sizeof( name ) );
+		COM_StripExtension( name, name, sizeof( name ) );
+		EM_ReloadState( name );
+	} else if ( !Q_stricmp( arg, "loadconstruct" ) && Cmd_Argc() >= 3 ) {
+		char name[MAX_QPATH];
+
+		Q_strncpyz( name, Cmd_Argv( 2 ), sizeof( name ) );
+		COM_StripExtension( name, name, sizeof( name ) );
+		if ( em.state == EM_OFF ) {
+			em.tab = EM_TAB_EFFECTS;
+			EM_Open();
+		}
+		if ( em.state == EM_OFF )
+			return;
+		EM_EnterBrowse();
+		EM_SetTab( EM_TAB_EFFECTS );
+		EM_ShowConstructs();
+		for ( int i = 0; i < em.numConstructs; i++ ) {
+			if ( !Q_stricmp( em.constructs[i], name ) )
+				EM_SelectConstruct( i );
+		}
+		if ( em.construct < 0 || Q_stricmp( em.constructs[em.construct], name ) )
+			Com_Printf( S_COLOR_YELLOW "Effect manager: no construct %s/%s%s\n", EM_CONSTRUCT_DIR, name, EM_SAVE_EXT );
+	} else if ( !Q_stricmp( arg, "cpiece" ) ) {
+		// an effect of a construct being exec'd; its loadconstruct line read them all
+	} else if ( !Q_stricmp( arg, "stated" ) ) {
+		// an effect of a state being exec'd; its reloadstate line read them all
 	} else if ( !Q_stricmp( arg, "help" ) || !Q_stricmp( arg, "?" ) ) {
 		Com_Printf( "usage: effectmanager              toggle the effect manager (bind a key to it)\n" );
 		Com_Printf( "       effectmanager <search>     open the effects filtered by <search>\n" );
 		Com_Printf( "       effectmanager active       open on the effects playing in the map\n" );
 		Com_Printf( "       effectmanager presets      open on alarm, fadeout and camerashake\n" );
 		Com_Printf( "       effectmanager place        place the selected effect in the world\n" );
+		Com_Printf( "       effectmanager edit         select and move the map's effects, and those waiting\n" );
+		Com_Printf( "       effectmanager loadconstruct <name>  show a saved construct, to use\n" );
 		Com_Printf( "       effectmanager bolt <tag>   bolt the selected effect to your own tag or bone\n" );
+		Com_Printf( "       effectmanager names        list the names given to looping effects\n" );
+		Com_Printf( "       effectmanager remove <name>  remove the effects with that name from the map\n" );
+		Com_Printf( "       effectmanager savestate <name>    save the effects sent or named, and their names\n" );
+		Com_Printf( "       effectmanager reloadstate <name>  give the effects of a state their names back, after rpdump load\n" );
 		Com_Printf( "       effectmanager reindex      rescan the filesystem for effects\n" );
 		Com_Printf( "       effectmanager close        close the effect manager\n" );
+		Com_Printf( "States are in the %s folder of the game folder, and can be exec'd\n", EM_STATE_DIR );
 	} else {
 		// anything else is a search
 		if ( em.state == EM_OFF ) {
@@ -1662,6 +3468,8 @@ static qboolean EM_CtrlDown( void ) {
 
 // the field typing goes to
 static emField_t EM_ActiveField( void ) {
+	if ( em.naming != EM_NAMING_NONE )
+		return em.naming == EM_NAMING_TAG ? EM_F_NAME : em.naming == EM_NAMING_STATE ? EM_F_STATE_NAME : EM_F_CONSTRUCT_NAME;
 	if ( em.picker != EM_PICKER_NONE )
 		return EM_F_PICKER_SEARCH;
 	if ( em.focus != EM_F_NONE )
@@ -1678,13 +3486,15 @@ static qboolean EM_IsToggleKey( int key ) {
 	const char *binding;
 
 	// a printable key belongs to the text box
-	if ( em.state == EM_BROWSE && EM_ActiveField() != EM_F_NONE && key >= A_SPACE && key <= A_TILDE )
+	if ( ( em.state == EM_BROWSE || em.naming != EM_NAMING_NONE ) && EM_ActiveField() != EM_F_NONE && key >= A_SPACE && key <= A_TILDE )
 		return qfalse;
 	binding = Key_GetBinding( key );
 	return (qboolean)( VALIDSTRING( binding ) && !Q_stricmp( binding, EM_TOGGLE_CMD ) );
 }
 
 static qboolean EM_FieldAllows( emField_t f, int ch ) {
+	if ( f == EM_F_NAME || f == EM_F_STATE_NAME || f == EM_F_CONSTRUCT_NAME )
+		return EM_NameChar( ch );
 	if ( f == EM_F_PITCH || f == EM_F_YAW || f == EM_F_ROLL )
 		return (qboolean)( ( ch >= '0' && ch <= '9' ) || ch == '-' || ch == '.' );
 	if ( f == EM_F_INTENSITY || f == EM_F_DURATION )
@@ -1727,9 +3537,8 @@ static void EM_BrowseListKey( int key ) {
 	} else if ( em.tab == EM_TAB_EFFECTS ) {
 		if ( key == A_CURSOR_LEFT || key == A_CURSOR_RIGHT ) {
 			if ( !em.fields[EM_F_SEARCH][0] ) {
-				EM_SetFolder( em.folder + ( key == A_CURSOR_LEFT ? -1 : 1 ) );
-				if ( em.numView )
-					EM_SelectEffect( em.view[0] );
+				EM_StepFolder( key == A_CURSOR_LEFT ? -1 : 1 );
+				EM_SelectRow( 0 );
 			}
 			return;
 		}
@@ -1754,8 +3563,8 @@ static void EM_BrowseListKey( int key ) {
 	default:			return;
 	}
 	EM_ListMove( list, count, visible, delta );
-	if ( list == &em.effectList && list->sel < em.numView )
-		EM_SelectEffect( em.view[list->sel] );
+	if ( list == &em.effectList )
+		EM_SelectRow( list->sel );
 }
 
 static void EM_BrowseKey( int key ) {
@@ -1799,7 +3608,10 @@ static void EM_BrowseKey( int key ) {
 			if ( em.pickerList.sel < em.numPickerView )
 				EM_ChoosePicker( em.pickerView[em.pickerList.sel] );
 		} else if ( em.tab == EM_TAB_EFFECTS ) {
-			EM_Send();
+			if ( EM_ConstructShown() )
+				EM_ApplyConstructBolts( qfalse );
+			else
+				EM_Send();
 		}
 		break;
 	default:
@@ -1832,14 +3644,149 @@ static void EM_Nudge( qboolean forwardAxis, int sign ) {
 	em.origin[1] = floorf( em.origin[1] + 0.5f );
 }
 
+// the free camera selecting: the effects waiting and the map's, to move or remove
+static void EM_SelectKey( int key ) {
+	switch ( key ) {
+	case A_MOUSE1:
+		if ( em.carrying )
+			EM_DropSelection();
+		else
+			EM_ClickSelect();
+		break;
+	case A_MOUSE2:
+	case A_CAP_F:
+		if ( em.carrying )
+			em.carryLocked = (qboolean)!em.carryLocked;
+		else
+			EM_PickUp();
+		break;
+	case A_ENTER:
+	case A_KP_ENTER:
+		em.carrying = qfalse;
+		EM_SendAllChanges();
+		break;
+	case A_MWHEELUP:	EM_RotateSelection( YAW, 1 );	break;
+	case A_MWHEELDOWN:	EM_RotateSelection( YAW, -1 );	break;
+	case A_CAP_Z:		EM_RotateSelection( PITCH, -1 );	break;
+	case A_CAP_X:		EM_RotateSelection( PITCH, 1 );	break;
+	case A_CAP_Q:		EM_RotateSelection( ROLL, -1 );	break;
+	case A_CAP_E:		EM_RotateSelection( ROLL, 1 );	break;
+	case A_CAP_R:
+		EM_StraightenSelection();
+		break;
+	case A_CURSOR_UP:		EM_NudgeSelection( 1, 0, 0 );	break;
+	case A_CURSOR_DOWN:		EM_NudgeSelection( -1, 0, 0 );	break;
+	case A_CURSOR_RIGHT:	EM_NudgeSelection( 0, 1, 0 );	break;
+	case A_CURSOR_LEFT:		EM_NudgeSelection( 0, -1, 0 );	break;
+	case A_PAGE_UP:			EM_NudgeSelection( 0, 0, 1 );	break;
+	case A_PAGE_DOWN:		EM_NudgeSelection( 0, 0, -1 );	break;
+	case A_DELETE:
+		EM_DeleteSelection();
+		break;
+	case A_CAP_U:
+		EM_UndoChanges();
+		break;
+	case A_CAP_I:
+		em.instant = (qboolean)!em.instant;
+		break;
+	case A_CAP_G:
+		em.snap = ( em.snap + 1 ) % ARRAY_LEN( emSnaps );
+		break;
+	case A_CAP_H:
+		em.hideHelp = (qboolean)!em.hideHelp;
+		break;
+	case A_CAP_L:
+		EM_RequestList();
+		break;
+	case A_CAP_K:
+		EM_StartNaming( EM_NAMING_CONSTRUCT );
+		break;
+	case A_CAP_V:
+		// back to putting the form's effect down, if there is one
+		EM_CancelCarry();
+		if ( EM_Effect() ) {
+			em.selecting = qfalse;
+			em.playKey[0] = '\0';
+		} else {
+			EM_Message( S_COLOR_YELLOW "Pick an effect in the manager first to put one down" );
+		}
+		break;
+	case A_TAB:
+		EM_EnterBrowse();
+		break;
+	default:
+		break;
+	}
+}
+
 static void EM_PlaceKey( int key ) {
 	const qboolean bolted = (qboolean)( em.where == EM_WHERE_BOLT );
 
+	if ( em.selecting ) {
+		EM_SelectKey( key );
+		return;
+	}
+	if ( key == A_CAP_V ) {
+		EM_EnterSelect();
+		return;
+	}
+
+	// a construct in hand: a copy goes down with each click
+	if ( em.handConstruct ) {
+		switch ( key ) {
+		case A_MOUSE1:
+			EM_PutDownHand( em.instant );
+			return;
+		case A_ENTER:
+		case A_KP_ENTER:
+			if ( em.numWaiting )
+				EM_SendWaiting();
+			else
+				EM_PutDownHand( qtrue );
+			return;
+		case A_MWHEELUP:
+		case A_MWHEELDOWN:
+			em.handYaw = EM_NormalizeAngle( (float)( em.handYaw + ( key == A_MWHEELUP ? 1 : -1 ) * emSnaps[em.snap].angle ) );
+			return;
+		case A_CAP_R:
+		case A_BACKSPACE:
+			em.handYaw = 0;
+			return;
+		case A_CAP_Z:
+		case A_CAP_X:
+		case A_CAP_Q:
+		case A_CAP_E:
+		case A_CAP_N:
+		case A_CAP_M:
+			// its effects keep the angles and looping they were saved with
+			return;
+		default:
+			break;
+		}
+	}
+
 	switch ( key ) {
 	case A_MOUSE1:
+		// right away, or to wait for the others
+		if ( em.instant )
+			EM_Send();
+		else
+			EM_AddWaiting();
+		break;
 	case A_ENTER:
 	case A_KP_ENTER:
-		EM_Send();
+		if ( em.numWaiting )
+			EM_SendWaiting();
+		else
+			EM_Send();
+		break;
+	case A_CAP_I:
+		em.instant = (qboolean)!em.instant;
+		break;
+	case A_CAP_U:
+		// takes back the last one put down
+		if ( em.numWaiting )
+			em.numWaiting--;
 		break;
 	case A_CAP_M:
 		em.loop = (qboolean)!em.loop;
@@ -1853,7 +3800,7 @@ static void EM_PlaceKey( int key ) {
 	default:
 		break;
 	}
-	if ( bolted )
+	if ( bolted && !em.handConstruct )
 		return;
 
 	switch ( key ) {
@@ -1914,17 +3861,135 @@ static void EM_PickClick( void ) {
 		em.active[found].checked = (qboolean)!em.active[found].checked;
 }
 
+// the name box: what is sent named, or the state saved
+static void EM_StartNaming( emNaming_t naming ) {
+	emItem_t it;
+
+	if ( naming == EM_NAMING_STATE ) {
+		if ( !EM_StateCount() ) {
+			EM_Message( S_COLOR_YELLOW "Nothing to save in a state: no looping effects were sent or named yet" );
+			return;
+		}
+		Q_strncpyz( em.fields[EM_F_STATE_NAME], COM_SkipPath( (char *)EM_MapName() ), EM_FIELD_LEN );
+		for ( char *c = em.fields[EM_F_STATE_NAME]; *c; c++ ) {
+			if ( !EM_NameChar( *c ) )
+				*c = '_';
+		}
+	} else if ( naming == EM_NAMING_CONSTRUCT ) {
+		// the free camera's selection, or what waits
+		em.constructFromSelection = (qboolean)( em.state == EM_PLACE && em.selecting );
+		if ( em.constructFromSelection ? !EM_NumSelected() : !em.numWaiting ) {
+			EM_Message( em.constructFromSelection ? S_COLOR_YELLOW "Select the effects to save first" : S_COLOR_YELLOW "Add effects to waiting first" );
+			return;
+		}
+	} else if ( em.state == EM_PLACE && em.selecting ) {
+		if ( !EM_NumSelected() ) {
+			EM_Message( S_COLOR_YELLOW "Select the effects to name first" );
+			return;
+		}
+	} else if ( !em.numWaiting && !EM_FormItem( &it ) ) {
+		return;
+	}
+	em.naming = naming;
+	em.focus = EM_F_NONE;
+	EM_ReleaseKeys();
+}
+
+static void EM_ConfirmNaming( void ) {
+	const char *name = em.fields[EM_F_NAME];
+
+	if ( em.naming == EM_NAMING_STATE ) {
+		if ( EM_SaveState( em.fields[EM_F_STATE_NAME] ) )
+			em.naming = EM_NAMING_NONE;
+		return;
+	}
+	if ( em.naming == EM_NAMING_CONSTRUCT ) {
+		if ( EM_SaveConstruct( em.fields[EM_F_CONSTRUCT_NAME] ) )
+			em.naming = EM_NAMING_NONE;
+		return;
+	}
+	// selecting: the selected ones are named, the map's here only, as RPMod keeps no names
+	if ( em.state == EM_PLACE && em.selecting ) {
+		emHandle_t hd;
+		int count = 0;
+
+		em.naming = EM_NAMING_NONE;
+		for ( int h = EM_FirstHandle(); h < EM_EndHandle(); h = EM_NextHandle( h ) ) {
+			if ( !EM_GetHandle( h, &hd ) || !*hd.selected )
+				continue;
+			if ( hd.active )
+				Q_strncpyz( hd.active->tag, name, sizeof( hd.active->tag ) );
+			else
+				Q_strncpyz( em.waiting[h].tag, name, sizeof( em.waiting[h].tag ) );
+			count++;
+		}
+		EM_Message( name[0] ? va( S_COLOR_GREEN "Named %i effects %s", count, name ) : va( "Took the name off %i effects", count ) );
+		return;
+	}
+
+	// what waits, or the form's one
+	qboolean looping = (qboolean)( !em.numWaiting && em.loop );
+
+	em.naming = EM_NAMING_NONE;
+	for ( int i = 0; i < em.numWaiting; i++ ) {
+		Q_strncpyz( em.waiting[i].tag, name, sizeof( em.waiting[i].tag ) );
+		if ( em.waiting[i].loop )
+			looping = qtrue;
+	}
+	if ( em.numWaiting )
+		EM_SendWaiting();
+	else
+		EM_Send();
+	if ( name[0] && !looping )
+		EM_Message( S_COLOR_YELLOW "Sent, but only looping effects stay on the map to keep a name" );
+	else if ( name[0] )
+		EM_Message( va( S_COLOR_GREEN "Sent, named %s", name ) );
+}
+
+// the keys the name box takes; qtrue if it took this one
+static qboolean EM_NamingKey( int key ) {
+	const emField_t f = EM_ActiveField();
+	int len;
+
+	switch ( key ) {
+	case A_ENTER:
+	case A_KP_ENTER:
+		EM_ConfirmNaming();
+		break;
+	case A_BACKSPACE:
+		len = strlen( em.fields[f] );
+		if ( len )
+			em.fields[f][len - 1] = '\0';
+		break;
+	case A_DELETE:
+		em.fields[f][0] = '\0';
+		break;
+	default:
+		break;
+	}
+	return qtrue;
+}
+
 void CL_EffectManager_KeyEvent( int key, qboolean down ) {
 	if ( em.state == EM_OFF )
 		return;
 
+	// letters typed into the name box don't fly the camera
 	if ( key >= 0 && key < MAX_KEYS )
-		em.held[key] = down;
+		em.held[key] = (qboolean)( down && em.naming == EM_NAMING_NONE );
 	if ( !down )
 		return;
 
 	if ( EM_IsToggleKey( key ) ) {
 		EM_Close();
+		return;
+	}
+
+	if ( em.naming != EM_NAMING_NONE && EM_NamingKey( key ) )
+		return;
+	if ( ( key == A_ENTER || key == A_KP_ENTER ) && EM_ShiftDown() && em.state != EM_PICK
+		&& ( em.state == EM_PLACE || ( em.tab == EM_TAB_EFFECTS && em.picker == EM_PICKER_NONE ) ) ) {
+		EM_StartNaming( EM_NAMING_TAG );
 		return;
 	}
 
@@ -1950,7 +4015,7 @@ void CL_EffectManager_CharEvent( int ch ) {
 	emField_t f;
 	int len;
 
-	if ( em.state != EM_BROWSE )
+	if ( em.state != EM_BROWSE && em.naming == EM_NAMING_NONE )
 		return;
 	f = EM_ActiveField();
 	if ( f == EM_F_NONE )
@@ -1975,7 +4040,11 @@ void CL_EffectManager_MouseEvent( int dx, int dy ) {
 
 // escape backs out one level: picker, a text box, the world, then the manager
 void CL_EffectManager_Escape( void ) {
-	if ( em.state == EM_PLACE || em.state == EM_PICK )
+	if ( em.naming != EM_NAMING_NONE )
+		em.naming = EM_NAMING_NONE;
+	else if ( em.state == EM_PLACE && em.carrying )
+		EM_CancelCarry();
+	else if ( em.state == EM_PLACE || em.state == EM_PICK )
 		EM_EnterBrowse();
 	else if ( em.picker != EM_PICKER_NONE )
 		em.picker = EM_PICKER_NONE;
@@ -2057,24 +4126,38 @@ static void EM_ExpireModels( void ) {
 void CL_EffectManager_Frame( void ) {
 	float dt;
 
-	// queued commands go out even with the manager closed
+	// queued commands go out, and lists are read, even with the manager closed
 	EM_RunQueue();
 	EM_ExpireModels();
+
+	// a list read whole
+	if ( em.listLineTime && cls.realtime - em.listLineTime >= EM_LIST_LINE_GAP ) {
+		em.listLineTime = 0;
+		EM_ListDone();
+	}
+	// a list we asked for that never came
+	if ( em.listRequestTime && cls.realtime - em.listRequestTime > EM_LIST_TIMEOUT ) {
+		em.listRequestTime = 0;
+		em.listTimeoutTime = cls.realtime;
+		if ( em.state != EM_OFF )
+			EM_RebuildActiveView();
+		if ( em.reloading && !em.listQueued ) {
+			em.reloading = qfalse;
+			EM_Report( va( S_COLOR_YELLOW "Couldn't reload state %s: the server didn't send its list of effects", em.reloadName ) );
+		}
+	}
 
 	if ( em.state == EM_OFF )
 		return;
 	if ( !( Key_GetCatcher() & KEYCATCH_EFFECTMANAGER ) ) {
 		// something else cleared the catchers
 		em.state = EM_OFF;
+		em.naming = EM_NAMING_NONE;
 		EM_ReleaseKeys();
 		return;
 	}
 
-	// a list we asked for that never came, or one that is due
-	if ( em.listRequestTime && cls.realtime - em.listRequestTime > EM_LIST_TIMEOUT ) {
-		em.listRequestTime = 0;
-		EM_RebuildActiveView();
-	}
+	// a list that is due
 	if ( em.refreshTime && cls.realtime >= em.refreshTime )
 		EM_RequestList();
 
@@ -2082,8 +4165,13 @@ void CL_EffectManager_Frame( void ) {
 	em.lastFrameTime = cls.realtime;
 	if ( em.state == EM_PLACE ) {
 		EM_UpdateCamera( dt );
-		if ( em.where != EM_WHERE_BOLT && !em.locked )
+		if ( em.selecting ) {
+			if ( em.carrying && !em.carryLocked )
+				EM_FollowSelection();
+			em.hover = em.carrying ? -1 : EM_HoverAtCrosshair();
+		} else if ( ( em.handConstruct || em.where != EM_WHERE_BOLT ) && !em.locked ) {
 			EM_FollowCrosshair();
+		}
 	}
 
 	EM_PreviewFrame();
@@ -2120,23 +4208,94 @@ static void EM_AddEdge( const vec3_t a, const vec3_t b, const byte *color ) {
 	re->AddPolyToScene( cls.whiteShader, 4, back, 1 );
 }
 
-// a small cross where the effect goes, and which way it faces
-static void EM_AddMarker( void ) {
-	static const byte crossColor[4] = { 255, 255, 255, 255 };
-	static const byte dirColor[4] = { 255, 200, 64, 255 };
-	static const byte sentColor[4] = { 64, 255, 96, 255 };
-	vec3_t a, b, dir;
+static void EM_AddCross( const vec3_t origin, const vec3_t dir, const byte *crossColor, const byte *dirColor ) {
+	vec3_t a, b;
 
 	for ( int i = 0; i < 3; i++ ) {
-		VectorCopy( em.origin, a );
-		VectorCopy( em.origin, b );
+		VectorCopy( origin, a );
+		VectorCopy( origin, b );
 		a[i] -= 6.0f;
 		b[i] += 6.0f;
 		EM_AddEdge( a, b, crossColor );
 	}
+	VectorMA( origin, 32.0f, dir, b );
+	EM_AddEdge( origin, b, dirColor );
+}
+
+// a small cross where the effect goes, and which way it faces; green ones wait there
+static void EM_AddMarker( void ) {
+	static const byte crossColor[4] = { 255, 255, 255, 255 };
+	static const byte dirColor[4] = { 255, 200, 64, 255 };
+	static const byte sentColor[4] = { 64, 255, 96, 255 };
+	static const byte selColor[4] = { 64, 220, 255, 255 };
+	static const byte hoverColor[4] = { 255, 255, 64, 255 };
+	static const byte movedColor[4] = { 255, 96, 255, 255 };
+	static const byte deletedColor[4] = { 255, 64, 64, 255 };
+	static const byte mapColor[4] = { 170, 170, 170, 255 };
+	vec3_t dir;
+
+	if ( em.selecting ) {
+		emHandle_t hd;
+
+		for ( int h = EM_FirstHandle(); h < EM_EndHandle(); h = EM_NextHandle( h ) ) {
+			const byte *color;
+
+			if ( !EM_GetHandle( h, &hd ) )
+				continue;
+			if ( h == em.hover )
+				color = hoverColor;
+			else if ( *hd.selected )
+				color = selColor;
+			else if ( !hd.active )
+				color = sentColor;
+			else if ( hd.active->deleted )
+				color = deletedColor;
+			else if ( EM_ActiveEdited( hd.active ) )
+				color = movedColor;
+			else
+				color = mapColor;
+			if ( *hd.haveAngles )
+				AngleVectors( hd.angles, dir, NULL, NULL );
+			else
+				VectorSet( dir, 0, 0, 1 );
+			EM_AddCross( hd.pos, dir, color, color );
+			// a moved one of the map's: a small cross where the server still has it
+			if ( hd.active && Distance( hd.active->origin, hd.pos ) > 0.5f ) {
+				vec3_t a, b;
+
+				for ( int i = 0; i < 2; i++ ) {
+					VectorCopy( hd.active->origin, a );
+					VectorCopy( hd.active->origin, b );
+					a[i] -= 4.0f;
+					b[i] += 4.0f;
+					EM_AddEdge( a, b, movedColor );
+				}
+			}
+		}
+		return;
+	}
+
+	for ( int i = 0; i < em.numWaiting; i++ ) {
+		if ( em.waiting[i].bolted || !em.waiting[i].havePos )
+			continue;
+		EM_ItemDirection( &em.waiting[i], dir );
+		EM_AddCross( em.waiting[i].pos, dir, sentColor, sentColor );
+	}
+	// a construct in hand, each of its effects
+	if ( em.handConstruct ) {
+		for ( int i = 0; i < em.numHand; i++ ) {
+			emItem_t it;
+
+			EM_HandItem( i, em.origin, &it );
+			EM_ItemDirection( &it, dir );
+			EM_AddCross( it.pos, dir, crossColor, dirColor );
+		}
+		return;
+	}
+	if ( em.where == EM_WHERE_BOLT )
+		return;
 	EM_Direction( dir );
-	VectorMA( em.origin, 32.0f, dir, b );
-	EM_AddEdge( em.origin, b, cls.realtime - em.sentTime < 300 ? sentColor : dirColor );
+	EM_AddCross( em.origin, dir, crossColor, cls.realtime - em.sentTime < 300 ? sentColor : dirColor );
 }
 
 // every entity cgame adds; models are kept to find the bolt target among them
@@ -2214,8 +4373,7 @@ qboolean CL_EffectManager_RenderScene( const refdef_t *fd ) {
 	view = *fd;
 	if ( em.viewFrame != cls.framecount ) {
 		em.viewFrame = cls.framecount;
-		if ( em.where != EM_WHERE_BOLT )
-			EM_AddMarker();
+		EM_AddMarker();
 	}
 	VectorCopy( em.camOrg, view.vieworg );
 	VectorCopy( em.camAng, view.viewangles );
@@ -2380,15 +4538,52 @@ static int EM_List( emList_t *list, int count, float x, float y, float w, float 
 	return picked;
 }
 
+// the saved constructs, Base and its folders, Custom with its pk3s and theirs indented under them
 static void EM_DrawFolderRow( int row, float x, float y, float w ) {
-	EM_TextClipped( x, y, w, va( "%s " S_COLOR_GREY "(%i)", em.folders[row].name[0] ? em.folders[row].name : "(root)", em.folders[row].count ),
-		em.fields[EM_F_SEARCH][0] ? emDim : emWhite );
+	const emRow_t *r = &em.rows[row];
+	const float *color = em.fields[EM_F_SEARCH][0] ? emDim : emWhite;
+	const char *slash;
+	float indent = 0;
+
+	switch ( r->type ) {
+	case EM_ROW_SAVED:
+		EM_TextClipped( x, y, w, va( S_COLOR_CYAN "%s " S_COLOR_GREY "(%i)", r->name, r->count ), color );
+		return;
+	case EM_ROW_CATEGORY:
+		EM_TextClipped( x, y, w, va( S_COLOR_YELLOW "%s " S_COLOR_GREY "(%i)", r->name, r->count ), color );
+		return;
+	case EM_ROW_SOURCE:
+		// "base/name.pk3" as "name.pk3", a loose folder as itself
+		slash = strrchr( r->name, '/' );
+		indent = 6;
+		EM_TextClipped( x + indent, y, w - indent, strlen( r->name ) > 4 && !Q_stricmp( r->name + strlen( r->name ) - 4, ".pk3" )
+			? va( S_COLOR_GREEN "%s " S_COLOR_GREY "(%i)", slash ? slash + 1 : r->name, r->count )
+			: va( S_COLOR_GREEN "%s folder " S_COLOR_GREY "(%i)", r->name, r->count ), color );
+		return;
+	default:
+		indent = r->custom ? 12 : 6;
+		EM_TextClipped( x + indent, y, w - indent, va( "%s " S_COLOR_GREY "(%i)", r->name[0] ? r->name : "(root)", r->count ), color );
+		return;
+	}
 }
 
+// custom ones in green
 static void EM_DrawEffectRow( int row, float x, float y, float w ) {
-	const emEffect_t *e = &em.effects[em.view[row]];
+	const emEffect_t *e;
 
-	EM_TextClipped( x, y, w, em.fields[EM_F_SEARCH][0] ? e->path : e->base, e->failed ? emRed : emWhite );
+	if ( EM_ConstructShown() ) {
+		EM_TextClipped( x, y, w, va( S_COLOR_CYAN "%s " S_COLOR_GREY "(%i)", em.constructs[em.view[row]], em.constructCounts[em.view[row]] ), emWhite );
+		return;
+	}
+	// a folder lists names, anything wider lists where they are
+	e = &em.effects[em.view[row]];
+	EM_TextClipped( x, y, w, em.fields[EM_F_SEARCH][0] || em.rows[em.row].type != EM_ROW_FOLDER ? e->path : e->base,
+		e->failed ? emRed : e->custom ? emCustom : emWhite );
+}
+
+// "Base, from base/assets1.pk3" or "Custom, from ..."
+static const char *EM_SourceLabel( const emEffect_t *e ) {
+	return va( "%s, from %s", e->custom ? "Custom" : "Base", em.sources[e->source] );
 }
 
 static void EM_DrawCheck( float x, float y, qboolean checked ) {
@@ -2402,7 +4597,8 @@ static void EM_DrawActiveRow( int row, float x, float y, float w ) {
 
 	EM_DrawCheck( x, y, a->checked );
 	EM_Text( x + 14, y, va( S_COLOR_CYAN "%i", a->num ), emWhite );
-	EM_TextClipped( x + 44, y, w - 44, va( "%s " S_COLOR_GREY "%i u", a->path, (int)Distance( a->origin, cl.snap.ps.origin ) ), emWhite );
+	EM_TextClipped( x + 44, y, w - 44, va( "%s%s " S_COLOR_GREY "%i u", a->tag[0] ? va( S_COLOR_GREEN "%s " S_COLOR_WHITE, a->tag ) : "",
+		a->path, (int)Distance( a->origin, cl.snap.ps.origin ) ), emWhite );
 }
 
 static void EM_DrawPickerRow( int row, float x, float y, float w ) {
@@ -2426,6 +4622,12 @@ static void EM_DrawPickerRow( int row, float x, float y, float w ) {
 		break;
 	case EM_PICKER_BOLT:
 		EM_TextClipped( x, y, w, va( "%s%s", em.bolts[index].name, em.bolts[index].tag ? "" : S_COLOR_GREY "  bone" ), emWhite );
+		break;
+	case EM_PICKER_REMOVE_NAME:
+		EM_TextClipped( x, y, w, va( S_COLOR_GREEN "%s " S_COLOR_GREY "(%i effects)", em.names[index], EM_CountTagged( em.names[index] ) ), emWhite );
+		break;
+	case EM_PICKER_STATE:
+		EM_TextClipped( x, y, w, em.stateFiles[index], emWhite );
 		break;
 	default:
 		break;
@@ -2524,6 +4726,8 @@ static void EM_DrawWindow( void ) {
 		if ( em.g2 && em.targetSeen ) {
 			EM_RenderModel( x + 1, y + 1, w - 2, h - 2, em.fields[EM_F_BOLT] );
 			EM_TextClipped( x + 6, y + h - 16, w - 12, va( S_COLOR_GREY "%s", em.g2Model ), emWhite );
+			if ( e )
+				EM_TextClipped( x + 6, y + 4, w - 12, va( S_COLOR_GREY "%s", EM_SourceLabel( e ) ), emWhite );
 		} else {
 			EM_TextClipped( x + 8, y + 8, w - 16, "The target isn't in view.", emRed );
 			EM_TextClipped( x + 8, y + 8 + EM_ROW_H, w - 16, "Its model shows here once it is drawn:", emDim );
@@ -2542,7 +4746,88 @@ static void EM_DrawWindow( void ) {
 		EM_TextClipped( x + 6, y + 4, w - 12, "Pick an effect on the left", emDim );
 	else if ( em.playError )
 		EM_TextClipped( x + 6, y + 4, w - 12, em.playError, emRed );
+	else
+		EM_TextClipped( x + 6, y + 4, w - 12, va( S_COLOR_GREY "%s", EM_SourceLabel( e ) ), emWhite );
 	EM_TextClipped( x + 6, y + h - 16, w - 12, va( S_COLOR_GREY "Live, %i units away   Wheel nearer/farther", (int)em.previewDist ), emWhite );
+}
+
+// what the looping ones sent are called, and what waits to go together
+static void EM_DrawNameAndWaiting( void ) {
+	float y = 328;
+
+	EM_Label( EM_RIGHT_X, y, "Name" );
+	EM_Field( EM_F_NAME, EM_CTRL_X, y, EM_CTRL_W, "optional, looping effects keep it" );
+
+	y += 20;
+	EM_Label( EM_RIGHT_X, y, "Waiting" );
+	if ( EM_Button( EM_CTRL_X, y, 86, em.numWaiting ? va( "Send all %i", em.numWaiting ) : "Send all", qfalse, (qboolean)( em.numWaiting > 0 ) ) )
+		EM_SendWaiting();
+	if ( EM_DangerButton( EM_CTRL_X + 90, y, 50, "Clear", EM_CONFIRM_CLEAR, (qboolean)( em.numWaiting > 0 ) ) )
+		em.numWaiting = 0;
+	if ( EM_Button( EM_CTRL_X + 144, y, EM_CTRL_W - 144, "Save construct...", qfalse, (qboolean)( em.numWaiting > 0 ) ) )
+		EM_StartNaming( EM_NAMING_CONSTRUCT );
+}
+
+// a saved construct: what it holds, who its bolted effects go on, and where its placed ones go
+static void EM_DrawConstructPanel( int picked ) {
+	const float x = EM_RIGHT_X, w = EM_RIGHT_W;
+	const int rows = (int)( ( EM_VIEW_H - 8 ) / EM_ROW_H );
+	float y = EM_VIEW_Y;
+	int placed, bolted;
+	qboolean targetOk = (qboolean)( em.target != EM_TARGET_NPC || em.targetName[0] );
+
+	EM_CountCPieces( em.cpieces, em.numCPieces, &placed, &bolted );
+	EM_Box( x, y, w, EM_VIEW_H, emPanelLight );
+	if ( em.construct < 0 || !em.numConstructs ) {
+		EM_TextClipped( x + 6, y + 4, w - 12, "None saved yet. Save one from:", emDim );
+		EM_TextClipped( x + 6, y + 4 + EM_ROW_H, w - 12, S_COLOR_GREY "- K in the free camera, selecting (V): the selection", emWhite );
+		EM_TextClipped( x + 6, y + 4 + EM_ROW_H * 2, w - 12, S_COLOR_GREY "- Save construct... under Waiting: what waits,", emWhite );
+		EM_TextClipped( x + 6, y + 4 + EM_ROW_H * 3, w - 12, S_COLOR_GREY "  bolted ones too, without who they're on", emWhite );
+		EM_DrawNameAndWaiting();
+		return;
+	}
+	for ( int i = 0; i < em.numCPieces && i < rows; i++ ) {
+		const emCPiece_t *p = &em.cpieces[i];
+		const float ry = y + 4 + i * EM_ROW_H;
+
+		if ( i == rows - 1 && em.numCPieces > rows ) {
+			EM_Text( x + 6, ry, va( S_COLOR_GREY "and %i more", em.numCPieces - i ), emWhite );
+			break;
+		}
+		EM_TextClipped( x + 6, ry, w - 12, p->bolted
+			? va( "%s " S_COLOR_CYAN "on %s%s", p->path, p->bolt, p->loop ? "" : S_COLOR_GREY "  once" )
+			: va( "%s " S_COLOR_GREY "at %+i %+i %+i%s", p->path, (int)p->offset[0], (int)p->offset[1], (int)p->offset[2], p->loop ? "" : "  once" ), emWhite );
+	}
+
+	y += EM_VIEW_H + 4;
+	EM_TextClipped( x, y, w, va( S_COLOR_YELLOW "%s " S_COLOR_GREY "%i effects: %i placed, %i bolted", em.constructs[em.construct], em.numCPieces, placed, bolted ), emWhite );
+
+	// who the bolted ones go on, picked now as for one effect
+	y += 16;
+	if ( bolted ) {
+		EM_Label( x, y, "On" );
+		if ( EM_Button( EM_CTRL_X, y, 74, "Me", (qboolean)( em.target == EM_TARGET_ME ), qtrue ) )
+			em.target = EM_TARGET_ME;
+		if ( EM_Button( EM_CTRL_X + 78, y, 74, "Player...", (qboolean)( em.target == EM_TARGET_PLAYER ), qtrue ) )
+			EM_OpenPicker( EM_PICKER_PLAYER );
+		if ( EM_Button( EM_CTRL_X + 156, y, 72, "NPC...", (qboolean)( em.target == EM_TARGET_NPC ), qtrue ) )
+			EM_OpenPicker( EM_PICKER_NPC );
+		y += 18;
+		EM_TextClipped( EM_CTRL_X, y, EM_CTRL_W, EM_TargetLabel(), emWhite );
+	}
+	if ( placed ) {
+		y += 20;
+		EM_TextClipped( x, y, w, S_COLOR_GREY "The placed ones go where you click in the free camera, the wheel turns them", emWhite );
+	}
+
+	EM_DrawNameAndWaiting();
+	EM_DrawCommandLines( bolted && !targetOk ? "Pick an NPC with a targetname" : NULL );
+	if ( EM_Button( x, EM_BUTTON_Y, 80, "Send  (Enter)", qfalse, (qboolean)( bolted && targetOk ) ) )
+		EM_ApplyConstructBolts( qfalse );
+	if ( EM_Button( x + 84, EM_BUTTON_Y, 82, "Add to waiting", qfalse, (qboolean)( bolted && targetOk ) ) )
+		EM_ApplyConstructBolts( qtrue );
+	if ( EM_Button( x + w - 116, EM_BUTTON_Y, 116, "Place in world...", qfalse, (qboolean)( placed > 0 ) ) || ( picked >= 0 && placed ) )
+		EM_StartConstructPlace();
 }
 
 static void EM_DrawEffects( void ) {
@@ -2552,20 +4837,32 @@ static void EM_DrawEffects( void ) {
 	int picked, clicked;
 	int length = 0, repeatDelay = 0;
 
-	// folders and effects
-	EM_Field( EM_F_SEARCH, EM_FOLDER_X, EM_SEARCH_Y, EM_FOLDER_W + EM_EFFECT_W + 4, "Type to search all effects" );
-	em.folderList.sel = em.fields[EM_F_SEARCH][0] ? -1 : em.folder;
-	EM_List( &em.folderList, em.numFolders, EM_FOLDER_X, EM_LIST_Y, EM_FOLDER_W, EM_LIST_H, EM_DrawFolderRow, &clicked );
-	if ( clicked >= 0 ) {
-		EM_SetFolder( clicked );
-		if ( em.numView )
-			EM_SelectEffect( em.view[0] );
+	// folders and effects, of the kind the filter bar lets through
+	const float searchW = EM_FOLDER_W + EM_EFFECT_W + 4 - EM_FILTER_COUNT * ( EM_FILTER_W + 4 );
+
+	EM_Field( EM_F_SEARCH, EM_FOLDER_X, EM_SEARCH_Y, searchW, "Type to search all effects" );
+	for ( int i = 0; i < EM_FILTER_COUNT; i++ ) {
+		if ( EM_Button( EM_FOLDER_X + searchW + 4 + i * ( EM_FILTER_W + 4 ), EM_SEARCH_Y, EM_FILTER_W, emFilterNames[i], (qboolean)( em.filter == i ), qtrue ) ) {
+			EM_SetFilter( (emFilter_t)i );
+			EM_SelectRow( 0 );
+		}
+	}
+	em.folderList.sel = em.fields[EM_F_SEARCH][0] ? -1 : em.row;
+	EM_List( &em.folderList, em.numRows, EM_FOLDER_X, EM_LIST_Y, EM_FOLDER_W, EM_LIST_H, EM_DrawFolderRow, &clicked );
+	if ( clicked >= 0 && clicked < em.numRows ) {
+		EM_SetRow( clicked );
+		EM_SelectRow( 0 );
 	}
 	picked = EM_List( &em.effectList, em.numView, EM_EFFECT_X, EM_LIST_Y, EM_EFFECT_W, EM_LIST_H, EM_DrawEffectRow, &clicked );
 	if ( clicked >= 0 && clicked < em.numView )
-		EM_SelectEffect( em.view[clicked] );
-	if ( !em.numView )
-		EM_Text( EM_EFFECT_X + 4, EM_LIST_Y + 1, em.numEffects ? "No effects match" : "No effects found", emDim );
+		EM_SelectRow( clicked );
+	if ( !em.numView ) {
+		EM_Text( EM_EFFECT_X + 4, EM_LIST_Y + 1, EM_ConstructShown() ? "None yet: see the right" : em.numEffects ? "No effects match" : "No effects found", emDim );
+	}
+	if ( EM_ConstructShown() ) {
+		EM_DrawConstructPanel( picked );
+		return;
+	}
 	e = EM_Effect();
 
 	EM_DrawWindow();
@@ -2642,11 +4939,15 @@ static void EM_DrawEffects( void ) {
 		EM_TextClipped( EM_CTRL_X, y, EM_CTRL_W, S_COLOR_GREY "Empty or 0 0 0 points it straight up", emWhite );
 	}
 
+	EM_DrawNameAndWaiting();
+
 	cmd = EM_BuildCommand();
 	EM_DrawCommandLines( cmd ? va( "Will send: %s", cmd ) : em.where == EM_WHERE_BOLT && em.target == EM_TARGET_NPC && !em.targetName[0] ? "Pick an NPC with a targetname" : NULL );
-	if ( EM_Button( EM_RIGHT_X, EM_BUTTON_Y, EM_RIGHT_W - 124, "Send  (Enter)", qfalse, (qboolean)( cmd != NULL ) ) )
+	if ( EM_Button( EM_RIGHT_X, EM_BUTTON_Y, 80, "Send  (Enter)", qfalse, (qboolean)( cmd != NULL ) ) )
 		EM_Send();
-	if ( EM_Button( EM_RIGHT_X + EM_RIGHT_W - 120, EM_BUTTON_Y, 120, em.where == EM_WHERE_BOLT ? "View in world..." : "Place in world...", qfalse, (qboolean)( e != NULL ) )
+	if ( EM_Button( EM_RIGHT_X + 84, EM_BUTTON_Y, 82, "Add to waiting", qfalse, (qboolean)( cmd != NULL ) ) )
+		EM_AddWaiting();
+	if ( EM_Button( EM_RIGHT_X + EM_RIGHT_W - 116, EM_BUTTON_Y, 116, em.where == EM_WHERE_BOLT ? "View in world..." : "Place in world...", qfalse, (qboolean)( e != NULL ) )
 		|| ( picked >= 0 && e ) )
 		EM_EnterPlace();
 }
@@ -2670,14 +4971,16 @@ static void EM_DrawActive( void ) {
 	const float rx = EM_FOLDER_X + EM_ACTIVE_W + 10, rw = SCREEN_WIDTH - 16 - rx, cx = rx + 66;
 
 	y = EM_SEARCH_Y;
-	if ( EM_Button( rx, y, 70, "Refresh", qfalse, qtrue ) )
+	if ( EM_Button( rx, y, 58, "Refresh", qfalse, qtrue ) )
 		EM_RequestList();
-	if ( EM_Button( rx + 74, y, 104, "Check on map...", qfalse, (qboolean)( em.numActive > 0 ) ) ) {
+	if ( EM_Button( rx + 62, y, 92, "Check on map...", qfalse, (qboolean)( em.numActive > 0 ) ) ) {
 		em.state = EM_PICK;
 		em.focus = EM_F_NONE;
 	}
+	if ( EM_Button( rx + 158, y, 86, "Edit on map...", qfalse, qtrue ) )
+		EM_EnterSelect();
 	if ( em.listTime )
-		EM_TextClipped( rx + 184, y + 2, rw - 184, va( S_COLOR_GREY "%i, %is ago", em.numActive, ( cls.realtime - em.listTime ) / 1000 ), emWhite );
+		EM_TextClipped( rx + 248, y + 2, rw - 248, va( S_COLOR_GREY "%i, %is", em.numActive, ( cls.realtime - em.listTime ) / 1000 ), emWhite );
 
 	y = EM_LIST_Y;
 	EM_Box( rx, y, rw, 34, emPanelLight );
@@ -2723,6 +5026,22 @@ static void EM_DrawActive( void ) {
 		EM_OpenPicker( EM_PICKER_REMOVE_NPC );
 	y += 18;
 	EM_TextClipped( cx, y, rw - 66, S_COLOR_GREY "removes the effects bolted to them", emWhite );
+
+	// names, and states that remember them through rpdump
+	EM_CollectNames();
+	y += 26;
+	EM_Label( rx, y, "Named" );
+	if ( EM_Button( cx, y, w * 2 + 4, "Remove by name...", qfalse, (qboolean)( em.numNames > 0 ) ) )
+		EM_OpenPicker( EM_PICKER_REMOVE_NAME );
+	EM_TextClipped( cx + ( w + 4 ) * 2, y + 2, w, va( S_COLOR_GREY "%i name%s", em.numNames, em.numNames == 1 ? "" : "s" ), emWhite );
+	y += 20;
+	EM_Label( rx, y, "State" );
+	if ( EM_Button( cx, y, w * 1.5f + 2, "Save...", qfalse, (qboolean)( EM_StateCount() > 0 ) ) )
+		EM_StartNaming( EM_NAMING_STATE );
+	if ( EM_Button( cx + w * 1.5f + 6, y, w * 1.5f + 2, "Reload...", qfalse, qtrue ) )
+		EM_OpenPicker( EM_PICKER_STATE );
+	y += 18;
+	EM_TextClipped( cx, y, rw - 66, S_COLOR_GREY "Save before rpdump, reload after: names come back", emWhite );
 
 	if ( em.lastCmd[0] ) {
 		EM_TextClipped( rx, EM_BUTTON_Y - 17, rw,
@@ -2784,7 +5103,8 @@ static void EM_DrawPickerModel( float x, float y, float w, float h ) {
 
 static void EM_DrawPicker( void ) {
 	static const char *titles[] = { "", "Bolt to which player?", "Bolt to which NPC?", "Pick a tag or bone",
-		"Remove the effects bolted to which player?", "Remove the effects bolted to which NPC?" };
+		"Remove the effects bolted to which player?", "Remove the effects bolted to which NPC?",
+		"Remove the effects with which name?", "Reload which state?" };
 	const qboolean bolts = (qboolean)( em.picker == EM_PICKER_BOLT );
 	const float x = bolts ? EM_PICKER_BOLT_X : EM_PICKER_X, y = EM_PICKER_Y, h = EM_PICKER_H;
 	const float w = EM_PICKER_W + ( bolts ? EM_PICKER_PREVIEW_W : 0.0f ), lw = EM_PICKER_W - 16;
@@ -2813,6 +5133,47 @@ static void EM_DrawPicker( void ) {
 		EM_ChoosePicker( em.pickerView[picked] );
 	else if ( EM_Clicked( 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT ) && !EM_InRect( x, y, w, h ) )
 		em.picker = EM_PICKER_NONE;
+}
+
+// typing a name, over whatever shows
+static void EM_DrawNaming( void ) {
+	const float bw = 360, bx = ( SCREEN_WIDTH - bw ) * 0.5f, by = SCREEN_HEIGHT * 0.5f + 30;
+	const qboolean state = (qboolean)( em.naming == EM_NAMING_STATE );
+	const char *field = em.fields[EM_ActiveField()];
+	const char *title, *hint, *note = NULL;
+
+	if ( em.naming == EM_NAMING_CONSTRUCT ) {
+		title = em.constructFromSelection ? va( "Save the %i selected effects as a construct named:", EM_NumSelected() )
+			: va( "Save the %i effects waiting as a construct named:", em.numWaiting );
+		hint = S_COLOR_GREY "Enter saves, Esc cancels; bolted ones go on whoever is picked when it's used";
+		if ( field[0] && FS_FileExists( va( "%s/%s%s", EM_CONSTRUCT_DIR, field, EM_SAVE_EXT ) ) )
+			note = S_COLOR_YELLOW "A construct with this name is there already; Enter replaces it";
+	} else if ( state ) {
+		title = va( "Save the state of %i effects sent or named as:", EM_StateCount() );
+		hint = S_COLOR_GREY "Enter saves, Esc cancels";
+		if ( field[0] && FS_FileExists( va( "%s/%s%s", EM_STATE_DIR, field, EM_SAVE_EXT ) ) )
+			note = S_COLOR_YELLOW "A state with this name is there already; Enter replaces it";
+	} else {
+		const int others = field[0] ? EM_CountTagged( field ) : 0;
+
+		if ( em.state == EM_PLACE && em.selecting ) {
+			title = va( "Name the %i selected effects:", EM_NumSelected() );
+			hint = S_COLOR_GREY "Enter names them; empty takes the name off; Esc cancels";
+		} else {
+			title = em.numWaiting ? va( "Name the %i effects waiting, then send them:", em.numWaiting ) : "Name the effect, then send it:";
+			hint = S_COLOR_GREY "Enter names and sends; empty sends with no name; Esc cancels";
+		}
+		if ( others )
+			note = va( S_COLOR_YELLOW "%i effects on the map are named %s; these join them", others, field );
+	}
+
+	EM_Box( bx, by, bw, note ? 58 : 46, emPanelOpaque );
+	EM_TextClipped( bx + 8, by + 4, bw - 16, title, emWhite );
+	EM_Box( bx + 8, by + 18, bw - 16, 16, emPanelLight );
+	EM_Text( bx + 12, by + 21, va( "%s%s", field, ( cls.realtime >> 8 ) & 1 ? "_" : "" ), emWhite );
+	EM_TextClipped( bx + 8, by + 36, bw - 16, hint, emWhite );
+	if ( note )
+		EM_TextClipped( bx + 8, by + 48, bw - 16, note, emWhite );
 }
 
 static void EM_DrawBrowse( void ) {
@@ -2847,6 +5208,9 @@ static void EM_DrawBrowse( void ) {
 	// the server's answer to the last command
 	if ( em.reply[0] && cls.realtime - em.replyTime < 8000 )
 		EM_TextClipped( EM_RIGHT_X, 14, EM_RIGHT_W, va( S_COLOR_YELLOW "Server: " S_COLOR_WHITE "%s", em.reply ), emWhite );
+	// and the manager's own
+	if ( em.message[0] && cls.realtime - em.messageTime < EM_MESSAGE_MS )
+		EM_TextClipped( EM_FOLDER_X, 29, SCREEN_WIDTH - EM_FOLDER_X * 2, em.message, emWhite );
 
 	switch ( em.tab ) {
 	case EM_TAB_EFFECTS:	EM_DrawEffects();	break;
@@ -2867,6 +5231,8 @@ static void EM_DrawBrowse( void ) {
 		em.wheel = wheel;
 		EM_DrawPicker();
 	}
+	if ( em.naming != EM_NAMING_NONE )
+		EM_DrawNaming();
 
 	// a click on nothing leaves the text box
 	if ( em.click )
@@ -2877,9 +5243,121 @@ static void EM_DrawBrowse( void ) {
 	re->DrawStretchPic( em.cursorX, em.cursorY, 32, 32, 0, 0, 1, 1, cls.cursorShader );
 }
 
+// what a handle is, for the panel
+static const char *EM_HandleLabel( int h ) {
+	emHandle_t hd;
+
+	if ( !EM_GetHandle( h, &hd ) )
+		return "";
+	if ( !hd.active ) {
+		return va( "%s%s  " S_COLOR_GREY "(waiting)", em.waiting[h].path,
+			em.waiting[h].tag[0] ? va( S_COLOR_GREEN "  %s" S_COLOR_WHITE, em.waiting[h].tag ) : "" );
+	}
+	return va( S_COLOR_CYAN "%i " S_COLOR_WHITE "%s%s%s", hd.active->num, hd.active->path,
+		hd.active->tag[0] ? va( S_COLOR_GREEN "  %s" S_COLOR_WHITE, hd.active->tag ) : "",
+		hd.active->deleted ? S_COLOR_RED "  removed" : EM_ActiveEdited( hd.active ) ? S_COLOR_MAGENTA "  moved" : "" );
+}
+
+static void EM_DrawSelect( void ) {
+	static const char *help[] = {
+		"LMB            select (Shift adds), or put down",
+		"RMB / F        pick up; lock or follow",
+		"Wheel Z X Q E  turn: yaw, pitch, roll",
+		"R              straight up (no angles)",
+		"Arrows PgUp/Dn nudge",
+		"Del            remove",
+		"U              undo (selection, or all)",
+		"Enter          send all changes",
+		"Shift+Enter    name the selection",
+		"K              save the selection as a construct",
+		"I              send on putting down / on Enter",
+		"L              read the map's effects again",
+		"G              cycle snap",
+		"V              back to putting effects down",
+		"WASD Space C   fly (Shift fast, Ctrl slow)",
+		"Tab / Esc      cancel a move, manager",
+		"H              hide this help",
+	};
+	const float x = 10, w = 280, cx = SCREEN_WIDTH * 0.5f, cy = SCREEN_HEIGHT * 0.5f;
+	const int count = EM_NumSelected();
+	int moved, removed, lines, first = -1;
+	float y = 10;
+	const char *status;
+	emHandle_t hd;
+
+	// crosshair
+	EM_Fill( cx - 6, cy - 0.5f, 12, 1, emWhite );
+	EM_Fill( cx - 0.5f, cy - 6, 1, 12, emWhite );
+
+	for ( int h = EM_FirstHandle(); h < EM_EndHandle() && first < 0; h = EM_NextHandle( h ) ) {
+		if ( EM_GetHandle( h, &hd ) && *hd.selected )
+			first = h;
+	}
+	if ( em.carrying )
+		status = va( S_COLOR_MAGENTA "MOVING %s", em.carryLocked ? S_COLOR_YELLOW "LOCKED" : S_COLOR_GREEN "FOLLOWING" );
+	else if ( count )
+		status = va( S_COLOR_CYAN "%i selected", count );
+	else
+		status = S_COLOR_GREY "nothing selected";
+
+	EM_PendingChanges( &moved, &removed );
+	lines = 4 + ( moved + removed + em.numWaiting ? 1 : 0 ) + ( count == 1 ? 1 : 0 );
+	EM_Box( x, y, w, lines * EM_ROW_H + 8, emPanel );
+	y += 4;
+	EM_Text( x + 6, y, va( "Effect Manager  " S_COLOR_WHITE "SELECT  %s", status ), emWhite ); y += EM_ROW_H;
+	EM_TextClipped( x + 6, y, w - 12, em.instant ? "Sends each move as it's put down  " S_COLOR_GREY "(I)"
+		: S_COLOR_YELLOW "Sends the changes on Enter  " S_COLOR_GREY "(I)", emWhite ); y += EM_ROW_H;
+	if ( moved + removed + em.numWaiting ) {
+		EM_TextClipped( x + 6, y, w - 12, va( S_COLOR_YELLOW "Not sent: %i moved, %i removed, %i new", moved, removed, em.numWaiting ), emWhite );
+		y += EM_ROW_H;
+	}
+	if ( first >= 0 ) {
+		EM_TextClipped( x + 6, y, w - 12, count == 1 ? EM_HandleLabel( first ) : va( "%i effects", count ), emAccent );
+		y += EM_ROW_H;
+		if ( count == 1 && EM_GetHandle( first, &hd ) ) {
+			EM_TextClipped( x + 6, y, w - 12, va( "At %i %i %i, %s", (int)floorf( hd.pos[0] + 0.5f ), (int)floorf( hd.pos[1] + 0.5f ), (int)floorf( hd.pos[2] + 0.5f ),
+				*hd.haveAngles ? va( "angles %i %i %i", EM_NormalizeAngle( hd.angles[PITCH] ), EM_NormalizeAngle( hd.angles[YAW] ), EM_NormalizeAngle( hd.angles[ROLL] ) )
+				: hd.active && !hd.active->placed ? S_COLOR_GREY "angles unknown, goes back straight up" : "straight up" ), emWhite );
+			y += EM_ROW_H;
+		}
+	} else {
+		EM_TextClipped( x + 6, y, w - 12, S_COLOR_GREY "Aim at an effect's marker and click it", emWhite );
+		y += EM_ROW_H;
+	}
+	EM_Text( x + 6, y, va( "Snap    %i deg / %i units", emSnaps[em.snap].angle, emSnaps[em.snap].grid ), emWhite ); y += EM_ROW_H;
+	EM_Text( x + 6, y, va( S_COLOR_GREY "%i on the map, %i waiting", em.numActive, em.numWaiting ), emWhite ); y += EM_ROW_H;
+
+	if ( !em.hideHelp ) {
+		y += 8;
+		EM_Box( x, y, w, ARRAY_LEN( help ) * EM_ROW_H + 8, emPanel );
+		y += 4;
+		for ( size_t i = 0; i < ARRAY_LEN( help ); i++, y += EM_ROW_H )
+			EM_Text( x + 6, y, help[i], emDim );
+	}
+
+	// what is under the crosshair, and what happened last
+	EM_Box( 10, SCREEN_HEIGHT - 40, SCREEN_WIDTH - 20, 30, emPanel );
+	if ( em.hover >= 0 )
+		EM_TextClipped( 16, SCREEN_HEIGHT - 37, SCREEN_WIDTH - 32, EM_HandleLabel( em.hover ), emWhite );
+	else if ( em.numQueue )
+		EM_TextClipped( 16, SCREEN_HEIGHT - 37, SCREEN_WIDTH - 32, va( S_COLOR_YELLOW "Sending, %i commands to go (the server takes about one a second)", em.numQueue ), emWhite );
+	if ( em.message[0] && cls.realtime - em.messageTime < EM_MESSAGE_MS ) {
+		EM_TextClipped( 16, SCREEN_HEIGHT - 24, SCREEN_WIDTH - 32, em.message, emWhite );
+	} else if ( em.lastCmd[0] ) {
+		EM_TextClipped( 16, SCREEN_HEIGHT - 24, SCREEN_WIDTH - 32,
+			va( "%sSent: %s", cls.realtime - em.sentTime < 1500 ? S_COLOR_GREEN : S_COLOR_GREY, em.lastCmd ), emWhite );
+	}
+
+	if ( em.naming != EM_NAMING_NONE )
+		EM_DrawNaming();
+}
+
 static void EM_DrawPlace( void ) {
 	static const char *help[] = {
-		"LMB / Enter    send",
+		"LMB            send, or put down to wait (I)",
+		"Enter          send what waits, or this one",
+		"Shift+Enter    name it, then send",
+		"U              take back the last put down",
 		"RMB / F        lock or follow crosshair",
 		"Wheel          yaw",
 		"Z / X          pitch",
@@ -2889,24 +5367,34 @@ static void EM_DrawPlace( void ) {
 		"M              once / loop",
 		"G              cycle snap",
 		"Arrows PgUp/Dn nudge (locks)",
+		"V              select and move effects",
 		"WASD Space C   fly (Shift fast, Ctrl slow)",
 		"Tab / Esc      back to the manager",
 		"H              hide this help",
 	};
 	static const char *boltHelp[] = {
-		"LMB / Enter    send",
+		"LMB            send, or keep to wait (I)",
+		"Enter          send what waits, or this one",
+		"Shift+Enter    name it, then send",
+		"U              take back the last kept",
 		"M              once / loop",
+		"V              select and move effects",
 		"WASD Space C   fly (Shift fast, Ctrl slow)",
 		"Tab / Esc      back to the manager",
 		"H              hide this help",
 	};
 	const qboolean bolted = (qboolean)( em.where == EM_WHERE_BOLT );
+
+	if ( em.selecting ) {
+		EM_DrawSelect();
+		return;
+	}
 	const float x = 10, w = 260, cx = SCREEN_WIDTH * 0.5f, cy = SCREEN_HEIGHT * 0.5f;
 	const emEffect_t *e = EM_Effect();
-	const char *cmd = EM_BuildCommand();
+	const char *cmd = em.handConstruct ? NULL : EM_BuildCommand();
 	float y = 10;
 	vec3_t angles;
-	int lines = bolted ? 5 : 6;
+	int lines = ( bolted ? 5 : 6 ) + 2;
 
 	if ( !bolted ) {
 		EM_Fill( cx - 6, cy - 0.5f, 12, 1, emWhite );
@@ -2920,7 +5408,14 @@ static void EM_DrawPlace( void ) {
 	else
 		EM_Text( x + 6, y, va( "Effect Manager  %s  " S_COLOR_WHITE "%s", em.locked ? S_COLOR_YELLOW "LOCKED" : S_COLOR_GREEN "FOLLOWING", em.loop ? "loop" : "once" ), emWhite );
 	y += EM_ROW_H;
-	EM_TextClipped( x + 6, y, w - 12, e ? e->path : "", emAccent ); y += EM_ROW_H;
+	EM_TextClipped( x + 6, y, w - 12, em.instant ? "A click sends it right away  " S_COLOR_GREY "(I)"
+		: S_COLOR_YELLOW "A click keeps it, Enter sends  " S_COLOR_GREY "(I)", emWhite ); y += EM_ROW_H;
+	EM_TextClipped( x + 6, y, w - 12, em.numWaiting ? va( S_COLOR_GREEN "%i waiting to be sent", em.numWaiting ) : S_COLOR_GREY "none waiting", emWhite ); y += EM_ROW_H;
+	if ( em.handConstruct )
+		EM_TextClipped( x + 6, y, w - 12, va( "construct %s, %i effects, turned %i", em.handName, em.numHand, em.handYaw ), emAccent );
+	else
+		EM_TextClipped( x + 6, y, w - 12, e ? va( "%s%s", e->path, em.fields[EM_F_NAME][0] ? va( S_COLOR_GREEN "  %s", em.fields[EM_F_NAME] ) : "" ) : "", emAccent );
+	y += EM_ROW_H;
 	if ( bolted ) {
 		EM_TextClipped( x + 6, y, w - 12, va( "On   %s", EM_TargetLabel() ), emWhite ); y += EM_ROW_H;
 		EM_TextClipped( x + 6, y, w - 12, va( "Bolt %s", em.fields[EM_F_BOLT] ), emWhite ); y += EM_ROW_H;
@@ -2949,11 +5444,18 @@ static void EM_DrawPlace( void ) {
 
 	// what will be sent, and what was sent last
 	EM_Box( 10, SCREEN_HEIGHT - 40, SCREEN_WIDTH - 20, 30, emPanel );
-	EM_TextClipped( 16, SCREEN_HEIGHT - 37, SCREEN_WIDTH - 32, cmd ? cmd : S_COLOR_GREY "Nothing to send yet", emWhite );
-	if ( em.lastCmd[0] ) {
+	EM_TextClipped( 16, SCREEN_HEIGHT - 37, SCREEN_WIDTH - 32, cmd ? cmd : em.handConstruct
+		? va( S_COLOR_GREY "A click puts construct %s down, the wheel turns it, R straightens it", em.handName ) : S_COLOR_GREY "Nothing to send yet", emWhite );
+	if ( em.message[0] && cls.realtime - em.messageTime < EM_MESSAGE_MS ) {
+		EM_TextClipped( 16, SCREEN_HEIGHT - 24, SCREEN_WIDTH - 32, em.message, emWhite );
+	} else if ( em.lastCmd[0] ) {
 		EM_TextClipped( 16, SCREEN_HEIGHT - 24, SCREEN_WIDTH - 32,
-			va( "%sSent: %s", cls.realtime - em.sentTime < 1500 ? S_COLOR_GREEN : S_COLOR_GREY, em.lastCmd ), emWhite );
+			va( "%sSent: %s%s", cls.realtime - em.sentTime < 1500 ? S_COLOR_GREEN : S_COLOR_GREY, em.lastCmd,
+				em.numQueue ? va( S_COLOR_YELLOW "   %i more to go", em.numQueue ) : "" ), emWhite );
 	}
+
+	if ( em.naming != EM_NAMING_NONE )
+		EM_DrawNaming();
 }
 
 // numbers over the active effects in view, checked ones highlighted
