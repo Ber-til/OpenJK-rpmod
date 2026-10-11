@@ -349,8 +349,10 @@ typedef union {
 	struct {
 		unsigned char	color;
 		char			character;
+		unsigned char	fade;		// 0 drawn solid, up to 255 see-through (chat from far away)
+		unsigned char	unused;
 	} f;
-	unsigned short	compare;
+	unsigned int	compare;
 } conChar_t;
 
 typedef struct {
@@ -379,6 +381,8 @@ typedef struct {
 	int		times[NUM_CON_TIMES];	// cls.realtime time the line was generated
 								// for transparent notify lines
 	vec4_t	color;
+
+	unsigned char	fade;	// what CL_ConsolePrint fades the text with, set by Con_SetPrintFade
 } console_t;
 
 extern	clientStatic_t		cls;
@@ -541,6 +545,7 @@ void Con_Clear_f (void);
 void Con_ToggleConsole_f (void);
 void Con_DrawNotify (void);
 void Con_ClearNotify (void);
+void Con_SetPrintFade( int fade );
 void Con_RunConsole (void);
 void Con_DrawConsole (void);
 void Con_PageUp( void );
@@ -728,6 +733,14 @@ void CL_EffectManager_Draw( void );
 void CL_FighterAssist_Init( void );
 void CL_FighterAssist_Shutdown( void );
 void CL_FighterAssist_FilterCmd( usercmd_t *cmd, qboolean boost );
+
+//
+// cl_chatrange.cpp
+//
+void CL_ChatRange_Init( void );
+void CL_ChatRange_Shutdown( void );
+void CL_ChatRange_ServerCommand( void );
+void CL_ChatRange_CgamePrint( const char *text );
 
 //
 // cl_avi.c

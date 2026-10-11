@@ -931,7 +931,8 @@ intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 		return FloatAsInt( Q_asin( VMF(1) ) );
 
 	case CG_PRINT:
-		Com_Printf( "%s", (const char*)VMA(1) );
+		// chat from far away is faded or kept out of the console
+		CL_ChatRange_CgamePrint( (const char*)VMA(1) );
 		return 0;
 
 	case CG_ERROR:
@@ -1735,6 +1736,17 @@ intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 // Stub function for old RMG system.
 static void RE_InitRendererTerrain ( const char * /*info*/ ) {}
 
+// what the cgame prints; chat from far away is faded or kept out of the console
+static void QDECL CL_CgamePrint( const char *msg, ... ) {
+	va_list argptr;
+	char text[MAXPRINTMSG];
+
+	va_start( argptr, msg );
+	Q_vsnprintf( text, sizeof( text ), msg, argptr );
+	va_end( argptr );
+	CL_ChatRange_CgamePrint( text );
+}
+
 void CL_BindCGame( void ) {
 	static cgameImport_t cgi;
 	cgameExport_t		*ret;
@@ -1745,7 +1757,7 @@ void CL_BindCGame( void ) {
 
 	cgvm = VM_Create( VM_CGAME );
 	if ( cgvm && !cgvm->isLegacy ) {
-		cgi.Print								= Com_Printf;
+		cgi.Print								= CL_CgamePrint;
 		cgi.Error								= Com_Error;
 		cgi.SnapVector							= Sys_SnapVector;
 		cgi.MemoryRemaining						= Hunk_MemoryRemaining;

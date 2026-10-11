@@ -106,6 +106,31 @@ static char Con_ColorCode( int index ) {
 	return index > 9 ? COLOR_WHITE : (char)( '0' + index );
 }
 
+// a colour as drawn with a fade: chat from far away is drawn see-through
+static const float *Con_FadedColor( int index, int fade, qboolean rpmod ) {
+	static vec4_t faded;
+
+	if ( !fade )
+		return Con_Color( index, rpmod );
+	VectorCopy4( Con_Color( index, rpmod ), faded );
+	faded[3] *= ( 255 - fade ) / 255.0f;
+	return faded;
+}
+
+// the fade of a line, for the asian path that draws the line as one string
+static int Con_LineFade( const conChar_t *text, int len ) {
+	for ( int x = 0; x < len; x++ ) {
+		if ( text[x].f.character != CON_BLANK_CHAR )
+			return text[x].f.fade;
+	}
+	return 0;
+}
+
+// the text CL_ConsolePrint prints until this is set back to 0 is faded by this, 1-255
+void Con_SetPrintFade( int fade ) {
+	con.fade = (unsigned char)Com_Clampi( 0, 255, fade );
+}
+
 // set while /colorcodes prints: colour codes still colour the text but stay visible
 static qboolean con_showColorCodes = qfalse;
 
@@ -633,7 +658,7 @@ static void Con_Linefeed (qboolean skipnotify)
 			tms->tm_hour, tms->tm_min, tms->tm_sec);
 
 		for ( i = 0; i < CON_TIMESTAMP_LEN; i++ ) {
-			con.text[line + i].f = { color, timestamp[i] };
+			con.text[line + i].f = { color, timestamp[i], con.fade };
 		}
 	}
 
@@ -720,7 +745,7 @@ void CL_ConsolePrint( const char *txt) {
 				y = con.current % con.totallines;
 			}
 
-			con.text[y * con.rowwidth + CON_TIMESTAMP_LEN + con.x].f = { color, c };
+			con.text[y * con.rowwidth + CON_TIMESTAMP_LEN + con.x].f = { color, c, con.fade };
 			con.x++;
 			break;
 		}
@@ -806,6 +831,7 @@ void Con_DrawNotify (void)
 	int		time;
 	int		skip;
 	int		currentColor;
+	int		currentFade = 0;
 	const char* chattext;
 
 	const qboolean rpmod = Con_RPModColors();
@@ -873,7 +899,7 @@ void Con_DrawNotify (void)
 			// and print...
 			//
 			re->Font_DrawString(cl_conXOffset->integer + con.xadjust * (con.xadjust + con.charWidth), con.yadjust * v, sTemp,
-				Con_Color( currentColor, rpmod ), iFontIndex, -1, fFontScale);
+				Con_FadedColor( currentColor, Con_LineFade( text, lineLimit ), rpmod ), iFontIndex, -1, fFontScale);
 
 			v +=  iPixelHeightToAdvance;
 		}
@@ -883,9 +909,10 @@ void Con_DrawNotify (void)
 				if ( text[x].f.character == ' ' ) {
 					continue;
 				}
-				if ( text[x].f.color != currentColor ) {
+				if ( text[x].f.color != currentColor || text[x].f.fade != currentFade ) {
 					currentColor = text[x].f.color;
-					re->SetColor( Con_Color( currentColor, rpmod ) );
+					currentFade = text[x].f.fade;
+					re->SetColor( Con_FadedColor( currentColor, currentFade, rpmod ) );
 				}
 				if (!cl_conXOffset)
 				{
@@ -942,6 +969,7 @@ void Con_DrawSolidConsole( float frac ) {
 	int				lines;
 //	qhandle_t		conShader;
 	int				currentColor;
+	int				currentFade = 0;
 
 	lines = (int) (cls.glconfig.vidHeight * frac);
 	if (lines <= 0)
@@ -1057,7 +1085,7 @@ void Con_DrawSolidConsole( float frac ) {
 			//
 			// and print...
 			//
-			re->Font_DrawString(con.xadjust*(con.xadjust + con.charWidth), con.yadjust * y, sTemp, Con_Color( currentColor, rpmod ),
+			re->Font_DrawString(con.xadjust*(con.xadjust + con.charWidth), con.yadjust * y, sTemp, Con_FadedColor( currentColor, Con_LineFade( text, con.linewidth + 1 ), rpmod ),
 				iFontIndex, -1, fFontScale);
 		}
 		else
@@ -1067,9 +1095,10 @@ void Con_DrawSolidConsole( float frac ) {
 					continue;
 				}
 
-				if ( text[x].f.color != currentColor ) {
+				if ( text[x].f.color != currentColor || text[x].f.fade != currentFade ) {
 					currentColor = text[x].f.color;
-					re->SetColor( Con_Color( currentColor, rpmod ) );
+					currentFade = text[x].f.fade;
+					re->SetColor( Con_FadedColor( currentColor, currentFade, rpmod ) );
 				}
 				SCR_DrawSmallChar( (x+1)*con.charWidth, y, text[x].f.character );
 			}

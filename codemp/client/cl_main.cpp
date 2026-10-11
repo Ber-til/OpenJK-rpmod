@@ -2741,6 +2741,7 @@ void CL_Init( void ) {
 	CL_EffectManager_Init ();
 
 	CL_FighterAssist_Init ();
+	CL_ChatRange_Init ();
 
 	//
 	// register our variables

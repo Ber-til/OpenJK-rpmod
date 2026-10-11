@@ -503,6 +503,9 @@ rescan:
 
 	// we may want to put a "connect to other server" command here
 
+	// chat from far away stays out of the console
+	CL_ChatRange_ServerCommand();
+
 	// cgame can now act on the command
 	return qtrue;
 }
@@ -520,6 +523,7 @@ void CL_ShutdownCGame( void ) {
 	CL_ShaderManager_Shutdown();
 	CL_EffectManager_Shutdown();
 	CL_FighterAssist_Shutdown();
+	CL_ChatRange_Shutdown();
 
 	if ( !cls.cgameStarted )
 		return;
