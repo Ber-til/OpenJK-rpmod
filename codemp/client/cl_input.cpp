@@ -977,6 +977,10 @@ void CL_MouseEvent( int dx, int dy, int time ) {
 		CL_ShaderManager_MouseEvent( dx, dy );
 	} else if ( Key_GetCatcher( ) & KEYCATCH_EFFECTMANAGER ) {
 		CL_EffectManager_MouseEvent( dx, dy );
+	} else if ( Key_GetCatcher( ) & KEYCATCH_STORYTELLER ) {
+		CL_Storyteller_MouseEvent( dx, dy );
+	} else if ( Key_GetCatcher( ) & KEYCATCH_CINEDITOR ) {
+		CL_RpCinematic_EditorMouseEvent( dx, dy );
 	} else if ( Key_GetCatcher( ) & KEYCATCH_CGAME ) {
 		CGVM_MouseEvent( dx, dy );
 	} else {

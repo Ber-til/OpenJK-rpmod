@@ -1386,6 +1386,29 @@ static const char *NM_SpawnCommand( const nmSpawn_t *s, qboolean atPos ) {
 	return cmd;
 }
 
+// "npc spawn" for the storyteller: a type set up as the form would, at a spot
+const char *CL_NpcManager_SpawnCommand( const char *type, qboolean vehicle, const char *targetname, const char *team,
+	const char *model, const char *scale, const vec3_t pos, int yaw ) {
+	nmSpawn_t s;
+
+	if ( !nm.indexed )
+		NM_BuildIndex();
+	memset( &s, 0, sizeof( s ) );
+	Q_strncpyz( s.type, type, sizeof( s.type ) );
+	s.vehicle = vehicle;
+	Q_strncpyz( s.targetname, targetname, sizeof( s.targetname ) );
+	for ( int i = 0; i < (int)ARRAY_LEN( nmTeamArgs ); i++ ) {
+		if ( !Q_stricmp( team, nmTeamLabels[i] ) || !Q_stricmp( team, nmTeamArgs[i] ) )
+			s.team = (nmTeam_t)i;
+	}
+	// a type the index doesn't know has no model of its own to fall back on
+	Q_strncpyz( s.model, model[0] || NM_FindType( type, vehicle ) ? model : type, sizeof( s.model ) );
+	Q_strncpyz( s.scale, scale, sizeof( s.scale ) );
+	VectorCopy( pos, s.pos );
+	s.yaw = yaw;
+	return NM_SpawnCommand( &s, qtrue );
+}
+
 // the NPC the form describes, at the spot picked for it
 static qboolean NM_FormSpawn( nmSpawn_t *out ) {
 	const nmType_t *t = NM_SelectedType();
@@ -2349,6 +2372,8 @@ static qboolean NM_Open( nmTab_t tab ) {
 	CL_ModelManager_Close();
 	CL_ShaderManager_Close();
 	CL_EffectManager_Close();
+	CL_Storyteller_Close();
+	CL_RpCinematic_EditorClose();
 	if ( !nm.indexed )
 		NM_BuildIndex();
 

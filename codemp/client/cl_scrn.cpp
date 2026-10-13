@@ -465,12 +465,16 @@ void SCR_DrawScreenField( stereoFrame_t stereoFrame ) {
 			CL_NpcManager_Frame();
 			CL_ShaderManager_Frame();
 			CL_EffectManager_Frame();
+			CL_Storyteller_Frame();
+			CL_RpCinematic_Frame();
 			CL_CGameRendering( stereoFrame );
+			CL_RpCinematic_Draw();
 			SCR_DrawDemoRecording();
 			CL_ShaderManager_Draw();
 			CL_ModelManager_Draw();
 			CL_NpcManager_Draw();
 			CL_EffectManager_Draw();
+			CL_Storyteller_Draw();
 			break;
 		}
 	}
@@ -478,6 +482,7 @@ void SCR_DrawScreenField( stereoFrame_t stereoFrame ) {
 	// the menu draws next
 	if ( Key_GetCatcher( ) & KEYCATCH_UI && cls.uiStarted ) {
 		UIVM_Refresh( cls.realtime );
+		CL_RpHooks_Draw();
 	}
 
 	// Engine internal menu

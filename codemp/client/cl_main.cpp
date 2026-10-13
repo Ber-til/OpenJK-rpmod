@@ -171,6 +171,10 @@ not have future usercmd_t executed before it is executed
 void CL_AddReliableCommand( const char *cmd, qboolean isDisconnectCmd ) {
 	int unacknowledged = clc.reliableSequence - clc.reliableAcknowledge;
 
+	// RPMod: what would crash the server stays here
+	if ( !isDisconnectCmd && !CL_RpHooks_AllowCommand( cmd ) )
+		return;
+
 	// if we would be losing an old command that hasn't been acknowledged,
 	// we must drop the connection
 	// also leave one slot open for the disconnect command in this case.
@@ -821,6 +825,8 @@ void CL_Disconnect( qboolean showMainMenu ) {
 	FS_PureServerSetReferencedPaks("", "");
 
 	CL_ClearState ();
+	CL_RpHooks_Disconnect();
+	CL_RpCinematic_Reset();
 
 	// wipe the client connection
 	Com_Memset( &clc, 0, sizeof( clc ) );
@@ -1309,6 +1315,83 @@ void CL_Configstrings_f( void ) {
 		}
 		Com_Printf( "%4i: %s\n", i, cl.gameState.stringData + ofs );
 	}
+}
+
+typedef struct csSection_s {
+	const char	*name;
+	int			start;
+	int			count;
+	int			first;		// 1 where the game hands out indexes from 1, leaving 0 unused, and can run out of them
+} csSection_t;
+
+static const csSection_t csSections[] = {
+	{ "Server info",	CS_SERVERINFO,		1,							0 },
+	{ "System info",	CS_SYSTEMINFO,		1,							0 },
+	{ "Game state",		CS_MUSIC,			CS_AMBIENT_SET - CS_MUSIC,	0 },
+	{ "Ambient sets",	CS_AMBIENT_SET,		MAX_AMBIENT_SETS,			1 },
+	{ "Siege",			CS_SIEGE_STATE,		CS_MODELS - CS_SIEGE_STATE,	0 },
+	{ "Models",			CS_MODELS,			MAX_MODELS,					1 },
+	{ "Sky portal",		CS_SKYBOXORG,		1,							0 },
+	{ "Sounds",			CS_SOUNDS,			MAX_SOUNDS,					1 },
+	{ "Icons",			CS_ICONS,			MAX_ICONS,					1 },
+	{ "Players",		CS_PLAYERS,			MAX_CLIENTS,				0 },
+	{ "G2 bones",		CS_G2BONES,			MAX_G2BONES,				1 },
+	{ "Locations",		CS_LOCATIONS,		MAX_LOCATIONS,				1 },
+	{ "Particles",		CS_PARTICLES,		MAX_LOCATIONS,				1 },
+	{ "Effects",		CS_EFFECTS,			MAX_FX,						1 },
+	{ "Light styles",	CS_LIGHT_STYLES,	MAX_LIGHT_STYLES * 3,		0 },
+	{ "Terrains",		CS_TERRAINS,		MAX_TERRAINS,				0 },
+	{ "BSP models",		CS_BSP_MODELS,		MAX_SUB_BSP,				0 },
+	{ "Other",			CS_MAX,				MAX_CONFIGSTRINGS - CS_MAX,	0 },
+};
+
+static const char *CL_UsageColor( int used, int max ) {
+	if ( used * 10 >= max * 9 )
+		return S_COLOR_RED;
+	if ( used * 4 >= max * 3 )
+		return S_COLOR_YELLOW;
+	return S_COLOR_WHITE;
+}
+
+/*
+==================
+CL_ConfigstringUsage_f
+
+How full the configstrings are: past MAX_GAMESTATE_CHARS in all, every client is dropped
+==================
+*/
+void CL_ConfigstringUsage_f( void ) {
+	const int total = cl.gameState.dataCount;
+	const int left = MAX_GAMESTATE_CHARS - total;
+
+	if ( cls.state != CA_ACTIVE ) {
+		Com_Printf( "Not connected to a server.\n" );
+		return;
+	}
+
+	Com_Printf( "%-14s %9s %7s\n", "Section", "Used", "Chars" );
+	for ( size_t s = 0; s < ARRAY_LEN( csSections ); s++ ) {
+		const csSection_t *section = &csSections[s];
+		const int slots = section->count - section->first;
+		int used = 0, chars = 0;
+
+		if ( slots <= 0 )
+			continue;
+		for ( int i = section->start; i < section->start + section->count; i++ ) {
+			const int ofs = cl.gameState.stringOffsets[i];
+
+			if ( !ofs )
+				continue;
+			used++;
+			chars += strlen( cl.gameState.stringData + ofs ) + 1;
+		}
+		Com_Printf( "%s%-14s %4i/%-4i %7i\n", section->first ? CL_UsageColor( used, slots ) : S_COLOR_WHITE, section->name, used, slots, chars );
+	}
+
+	Com_Printf( "%s%i of %i characters used (%i%%), %i free\n", CL_UsageColor( total, MAX_GAMESTATE_CHARS ),
+		total, MAX_GAMESTATE_CHARS, total * 100 / MAX_GAMESTATE_CHARS, left > 0 ? left : 0 );
+	Com_Printf( "Past %i in all, everyone is disconnected; models, sounds and effects are only freed on a map change\n",
+		MAX_GAMESTATE_CHARS );
 }
 
 /*
@@ -2739,6 +2822,9 @@ void CL_Init( void ) {
 	CL_NpcManager_Init ();
 	CL_ShaderManager_Init ();
 	CL_EffectManager_Init ();
+	CL_Storyteller_Init ();
+	CL_RpHooks_Init ();
+	CL_RpCinematic_Init ();
 
 	CL_FighterAssist_Init ();
 	CL_ChatRange_Init ();
@@ -2882,11 +2968,13 @@ void CL_Init( void ) {
 	Cmd_AddCommand( "npcmanager", CL_NpcManager_f, "Spawn NPCs and manage the ones in the map with RPMod's npc command" );
 	Cmd_AddCommand( "shadermanager", CL_ShaderManager_f, "Find the shaders of what you look at" );
 	Cmd_AddCommand( "effectmanager", CL_EffectManager_f, "Preview effects and play them with RPMod's rpeffect command" );
+	Cmd_AddCommand( "storyteller", CL_Storyteller_f, "Assemble a mission out of steps and play it" );
 	Cmd_AddCommand ("record", CL_Record_f, "Record a demo" );
 	Cmd_AddCommand ("demo", CL_PlayDemo_f, "Playback a demo" );
 	Cmd_SetCommandCompletionFunc( "demo", CL_CompleteDemoName );
 	Cmd_AddCommand ("stoprecord", CL_StopRecord_f, "Stop recording a demo" );
 	Cmd_AddCommand ("configstrings", CL_Configstrings_f, "Prints the configstrings list" );
+	Cmd_AddCommand ("csusage", CL_ConfigstringUsage_f, "Prints how full the configstrings are, by section" );
 	Cmd_AddCommand ("clientinfo", CL_Clientinfo_f, "Prints the userinfo variables" );
 	Cmd_AddCommand ("snd_restart", CL_Snd_Restart_f, "Restart sound" );
 	Cmd_AddCommand ("vid_restart", CL_Vid_Restart_f, "Restart the renderer - or change the resolution" );
@@ -2961,6 +3049,9 @@ void CL_Shutdown( void ) {
 	Cmd_RemoveCommand ("npcmanager");
 	Cmd_RemoveCommand ("shadermanager");
 	Cmd_RemoveCommand ("configstrings");
+	Cmd_RemoveCommand ("csusage");
+	CL_RpHooks_Shutdown();
+	CL_RpCinematic_Shutdown();
 	Cmd_RemoveCommand ("clientinfo");
 	Cmd_RemoveCommand ("snd_restart");
 	Cmd_RemoveCommand ("vid_restart");

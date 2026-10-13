@@ -660,7 +660,9 @@ void CL_ModelManager_Draw( void );
 #define KEYCATCH_NPCMANAGER		0x0020	// engine only, the NPC manager owns keyboard and mouse
 #define KEYCATCH_SHADERMANAGER	0x0040	// engine only, the shader manager owns keyboard and mouse
 #define KEYCATCH_EFFECTMANAGER	0x0080	// engine only, the effect manager owns keyboard and mouse
-#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELMANAGER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER )	// mods never see or clear these
+#define KEYCATCH_STORYTELLER	0x0100	// engine only, the storyteller owns keyboard and mouse
+#define KEYCATCH_CINEDITOR		0x0200	// engine only, the camera editor owns keyboard and mouse
+#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELMANAGER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER | KEYCATCH_STORYTELLER | KEYCATCH_CINEDITOR )	// mods never see or clear these
 
 void CL_NpcManager_Init( void );
 void CL_NpcManager_Shutdown( void );
@@ -677,6 +679,8 @@ void CL_NpcManager_RequestList( void );
 qboolean CL_NpcManager_Waiting( void );
 int CL_NpcManager_NumNpcs( void );
 qboolean CL_NpcManager_GetNpc( int index, int *num, const char **type, const char **name );
+const char *CL_NpcManager_SpawnCommand( const char *type, qboolean vehicle, const char *targetname, const char *team,
+	const char *model, const char *scale, const vec3_t pos, int yaw );
 qboolean CL_NpcManager_RenderScene( const refdef_t *fd );
 qboolean CL_NpcManager_Camera( vec3_t origin, vec3_t angles );
 qboolean CL_NpcManager_FilterEntity( const refEntity_t *ent );
@@ -726,6 +730,52 @@ qboolean CL_EffectManager_RenderScene( const refdef_t *fd );
 qboolean CL_EffectManager_Camera( vec3_t origin, vec3_t angles );
 qboolean CL_EffectManager_ServerPrint( const char *text );
 void CL_EffectManager_Draw( void );
+
+// cl_rphooks.cpp
+qboolean CL_RpHooks_ServerCommand( qboolean *replaced );
+qboolean CL_RpHooks_AllowCommand( const char *cmd );
+int CL_RpHooks_LongestWord( const char *text );
+void CL_RpHooks_Init( void );
+void CL_RpHooks_Shutdown( void );
+void CL_RpHooks_Disconnect( void );
+void CL_RpHooks_Draw( void );
+
+// cl_rpcinematic.cpp
+void CL_RpCinematic_Init( void );
+void CL_RpCinematic_Shutdown( void );
+void CL_RpCinematic_Reset( void );
+void CL_RpCinematic_Stop( void );
+void CL_RpCinematic_Hook( char **argv, int argc );
+qboolean CL_RpCinematic_Active( void );
+qboolean CL_RpCinematic_Hide2D( float x, float y, float w, float h );
+qboolean CL_RpCinematic_RenderScene( const refdef_t *fd );
+qboolean CL_RpCinematic_Camera( vec3_t origin, vec3_t angles );
+const refEntity_t *CL_RpCinematic_Entity( const refEntity_t *ent, refEntity_t *copy );
+void CL_RpCinematic_Draw( void );
+void CL_RpCinematic_Frame( void );
+qboolean CL_RpCinematic_ShotHook( const char *name, char *hook, int size, int *ms );
+void CL_RpCinematic_Edit( const char *name, qboolean fromStoryteller );
+void CL_RpCinematic_EditorClose( void );
+qboolean CL_RpCinematic_EditorActive( void );
+void CL_RpCinematic_EditorKeyEvent( int key, qboolean down );
+void CL_RpCinematic_EditorCharEvent( int ch );
+void CL_RpCinematic_EditorMouseEvent( int dx, int dy );
+void CL_RpCinematic_EditorEscape( void );
+
+// cl_storyteller.cpp
+void CL_Storyteller_Init( void );
+void CL_Storyteller_Shutdown( void );
+void CL_Storyteller_f( void );
+qboolean CL_Storyteller_Active( void );
+void CL_Storyteller_Close( void );
+void CL_Storyteller_KeyEvent( int key, qboolean down );
+void CL_Storyteller_CharEvent( int ch );
+void CL_Storyteller_MouseEvent( int dx, int dy );
+void CL_Storyteller_Escape( void );
+void CL_Storyteller_Frame( void );
+void CL_Storyteller_Draw( void );
+void CL_Storyteller_Open( void );
+void CL_Storyteller_ShotSaved( const char *name );
 
 //
 // cl_fighterassist.cpp

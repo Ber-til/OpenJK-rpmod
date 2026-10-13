@@ -2354,6 +2354,8 @@ static qboolean MM_Open( void ) {
 	CL_NpcManager_Close();
 	CL_ShaderManager_Close();
 	CL_EffectManager_Close();
+	CL_Storyteller_Close();
+	CL_RpCinematic_EditorClose();
 
 	mm.font = re->RegisterFont( "arialnb" );
 	if ( !mm.font )
