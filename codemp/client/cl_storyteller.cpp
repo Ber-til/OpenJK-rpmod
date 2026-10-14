@@ -336,6 +336,7 @@ static struct {
 
 	// the armed stories, and the list a trigger step picks from
 	stList_t	armedList;
+	int			armTimes;			// the "Arm: N times" button's
 	stChoose_t	chooseKind;
 	stList_t	chooseList;
 
@@ -559,18 +560,6 @@ static const char *ST_PosArgs( const stStep_t *s ) {
 }
 
 // a part of a hook's header: its separators would cut it up
-static const char *ST_HookPart( const char *in ) {
-	static char out[4][ST_VALUE_LEN];
-	static int index;
-	char *o = out[index++ & 3];
-	int len = 0;
-
-	for ( ; *in && len < ST_VALUE_LEN - 1; in++ )
-		o[len++] = ( *in == '/' || *in == ':' ) ? ' ' : *in;
-	o[len] = '\0';
-	return o;
-}
-
 // RPMod's server crashes on a centre print word longer than a line: the storyteller keeps them
 // well under the client's own limit
 #define ST_MAX_WORD		30
@@ -687,10 +676,7 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 			*error = "Type what the NPC says";
 			return NULL;
 		}
-		// an empty part would make a // the server takes for a comment
-		Com_sprintf( cmd, sizeof( cmd ), "rpnotify -1 1 cmd:npc/talk/%s/%s/%s/%s: %s", ST_HookPart( v[0] ),
-			ST_HookPart( v[1][0] ? v[1] : v[0] ), ST_HookPart( v[2][0] ? v[2] : "^7" ), ST_HasEmote( s ) ? ST_HookPart( v[3] ) : "none", v[4] );
-		return cmd;
+		return CL_RpHooks_NpcTalkCommand( v[0], v[1], v[2], ST_HasEmote( s ) ? v[3] : "", v[4] );
 
 	case ST_A_OBJECTIVE:
 		if ( !v[1][0] && Q_stricmp( v[0], "clear" ) && Q_stricmp( v[0], "title" ) ) {
@@ -905,6 +891,7 @@ When someone comes
 
 #define ST_MAX_MAPENTS	1024
 #define ST_MAX_ARMED	16
+#define ST_MAX_ARM_TIMES	99
 
 // the map's brush entities, read from its entity string: triggers, doors, buttons...
 typedef struct {
@@ -927,7 +914,7 @@ typedef struct {
 	char		map[MAX_QPATH];		// it goes with the map
 	stStep_t	*steps;
 	int			numSteps;
-	qboolean	again;				// every time, not once
+	int			limit;				// times it plays, 0 = every time
 	int			times;				// set off so far
 	stRun_t		run;
 } stArmed_t;
@@ -1626,8 +1613,32 @@ static int ST_FindArmed( const char *name ) {
 	return -1;
 }
 
-// a copy of the story waits for its first step; one by that name already armed is replaced
-static qboolean ST_Arm( const char *name, const stStep_t *steps, int numSteps, qboolean again ) {
+// "once", "every time" or "3 times"
+static const char *ST_ArmedHow( int limit ) {
+	static char out[32];
+
+	if ( !limit )
+		return "every time";
+	if ( limit == 1 )
+		return "once";
+	Com_sprintf( out, sizeof( out ), "%i times", limit );
+	return out;
+}
+
+// an armed one, its plays and how many there were
+static const char *ST_ArmedState( const stArmed_t *a ) {
+	static char out[64];
+
+	if ( a->limit > 1 )
+		Com_sprintf( out, sizeof( out ), "%s, %i left", ST_ArmedHow( a->limit ), a->limit - a->times );
+	else
+		Com_sprintf( out, sizeof( out ), "%s, set off %i time%s", ST_ArmedHow( a->limit ), a->times, a->times == 1 ? "" : "s" );
+	return out;
+}
+
+// a copy of the story waits for its first step, to play limit times (0 every time); one by that
+// name already armed is replaced
+static qboolean ST_Arm( const char *name, const stStep_t *steps, int numSteps, int limit ) {
 	const char *why = ST_ArmProblem( steps, numSteps );
 	int i = ST_FindArmed( name );
 	stArmed_t *a;
@@ -1656,10 +1667,11 @@ static qboolean ST_Arm( const char *name, const stStep_t *steps, int numSteps, q
 	a->steps = (stStep_t *)Z_Malloc( numSteps * sizeof( stStep_t ), TAG_GENERAL, qfalse );
 	memcpy( a->steps, steps, numSteps * sizeof( stStep_t ) );
 	a->numSteps = numSteps;
-	a->again = again;
+	a->limit = limit;
 	ST_StartRun( &a->run, 0 );
-	ST_Message( va( S_COLOR_GREEN "Armed %s: it plays %s", name, again ? "every time it's set off" : "the next time it's set off" ) );
-	Com_Printf( S_COLOR_GREEN "Storyteller: " S_COLOR_WHITE "armed %s (%s)\n", name, again ? "every time" : "once" );
+	ST_Message( va( S_COLOR_GREEN "Armed %s: it plays %s", name, !limit ? "every time it's set off" : limit == 1 ? "the next time it's set off"
+		: va( "the next %i times it's set off", limit ) ) );
+	Com_Printf( S_COLOR_GREEN "Storyteller: " S_COLOR_WHITE "armed %s (%s)\n", name, ST_ArmedHow( limit ) );
 	return qtrue;
 }
 
@@ -1682,8 +1694,11 @@ static void ST_RunArmed( void ) {
 		if ( !ST_Play( &a->run, a->steps, a->numSteps, a->name ) )
 			continue;
 		a->times++;
-		if ( a->again ) {
+		if ( !a->limit ) {
 			Com_Printf( S_COLOR_GREEN "Storyteller (%s): " S_COLOR_WHITE "played, armed again\n", a->name );
+			ST_StartRun( &a->run, 0 );
+		} else if ( a->times < a->limit ) {
+			Com_Printf( S_COLOR_GREEN "Storyteller (%s): " S_COLOR_WHITE "played %i of %i times, armed again\n", a->name, a->times, a->limit );
 			ST_StartRun( &a->run, 0 );
 		} else {
 			Com_Printf( S_COLOR_GREEN "Storyteller (%s): " S_COLOR_WHITE "played, disarmed\n", a->name );
@@ -1836,7 +1851,7 @@ static qboolean ST_Load( const char *name ) {
 }
 
 // a saved story armed, by the console
-static void ST_ArmSaved( const char *name, qboolean again ) {
+static void ST_ArmSaved( const char *name, int limit ) {
 	stStep_t *steps = (stStep_t *)Z_Malloc( ST_MAX_STEPS * sizeof( stStep_t ), TAG_GENERAL, qfalse );
 	int skipped;
 	const int count = ST_ReadStory( name, steps, ST_MAX_STEPS, &skipped );
@@ -1844,7 +1859,7 @@ static void ST_ArmSaved( const char *name, qboolean again ) {
 	if ( count < 0 )
 		Com_Printf( "Storyteller: no story called %s\n", name );
 	else
-		ST_Arm( name, steps, count, again );
+		ST_Arm( name, steps, count, limit );
 	Z_Free( steps );
 }
 static int QDECL ST_CompareNames( const void *a, const void *b ) {
@@ -2018,6 +2033,11 @@ static qboolean ST_PickOpen( void ) {
 	}
 }
 
+// a manager opened from a step: what it sends goes in the story
+qboolean CL_Storyteller_Picking( void ) {
+	return (qboolean)( st.pick != ST_PICK_NONE && ST_PickOpen() );
+}
+
 // a manager about to send a command: qtrue keeps it for the story. Lists only read, they go
 qboolean CL_Storyteller_Capture( const char *cmd ) {
 	const char *last;
@@ -2140,6 +2160,30 @@ static qboolean ST_NpcStep( char **argv, int argc, stStep_t *s ) {
 	return qtrue;
 }
 
+// rpnotify -1 1 cmd:npc/talk/<npc>/<name>/<colour>/<emote>: <text>, as NPC talk sends it
+static qboolean ST_TalkStep( const char *cmd, stStep_t *s ) {
+	static const char prefix[] = "rpnotify -1 1 cmd:npc/talk/";
+	const char *p = cmd + strlen( prefix ), *colon;
+
+	if ( Q_stricmpn( cmd, prefix, strlen( prefix ) ) || !( colon = strchr( p, ':' ) ) )
+		return qfalse;
+	s->action = ST_A_NPC_TALK;
+	ST_SetDefaults( s );
+	// NPC, name, colour and emote, then the text
+	for ( int part = 0; part < 4 && p < colon; part++ ) {
+		const char *end = p;
+
+		while ( end < colon && *end != '/' )
+			end++;
+		Q_strncpyz( s->values[part], p, Q_min( ST_VALUE_LEN, (int)( end - p ) + 1 ) );
+		p = end < colon ? end + 1 : end;
+	}
+	for ( p = colon + 1; *p == ' '; p++ )
+		;
+	Q_strncpyz( s->values[4], p, ST_VALUE_LEN );
+	return qtrue;
+}
+
 // a manager's command as a step of its own kind, or one that runs it as it is
 static void ST_StepFromCommand( const char *cmd, stStep_t *s ) {
 	char line[MAX_STRING_CHARS];
@@ -2199,6 +2243,8 @@ static void ST_StepFromCommand( const char *cmd, stStep_t *s ) {
 		}
 	}
 	if ( argc >= 3 && !Q_stricmp( argv[0], "npc" ) && ST_NpcStep( argv, argc, s ) )
+		return;
+	if ( ST_TalkStep( cmd, s ) )
 		return;
 	// rpsound once|add|local <sound> [all | -1 | <player> | <x y z>]
 	if ( argc >= 3 && !Q_stricmp( argv[0], "rpsound" )
@@ -2367,7 +2413,17 @@ void CL_Storyteller_f( void ) {
 		if ( ST_Save( name ) )
 			Com_Printf( "Storyteller: saved %s\n", name );
 	} else if ( !Q_stricmp( arg, "arm" ) && Cmd_Argc() >= 3 ) {
-		ST_ArmSaved( Cmd_Argv( 2 ), (qboolean)( !Q_stricmp( Cmd_Argv( 3 ), "again" ) ) );
+		const char *how = Cmd_Argv( 3 );
+
+		// once, again for every time, or a number of times
+		if ( !how[0] )
+			ST_ArmSaved( Cmd_Argv( 2 ), 1 );
+		else if ( !Q_stricmp( how, "again" ) )
+			ST_ArmSaved( Cmd_Argv( 2 ), 0 );
+		else if ( ST_IsNumber( how ) && atoi( how ) >= 1 )
+			ST_ArmSaved( Cmd_Argv( 2 ), atoi( how ) );
+		else
+			Com_Printf( "Storyteller: arm it once, again (every time), or a number of times\n" );
 	} else if ( !Q_stricmp( arg, "disarm" ) ) {
 		const char *name = Cmd_Argv( 2 );
 		const int i = ST_FindArmed( name );
@@ -2386,7 +2442,7 @@ void CL_Storyteller_f( void ) {
 		Com_Printf( "Storyteller: %i armed\n", stNumArmed );
 		for ( int i = 0; i < stNumArmed; i++ ) {
 			const stArmed_t *a = &stArmed[i];
-			Com_Printf( "  %s: %s, set off %i time%s, %s\n", a->name, a->again ? "every time" : "once", a->times, a->times == 1 ? "" : "s",
+			Com_Printf( "  %s: %s, %s\n", a->name, ST_ArmedState( a ),
 				ST_AtTrigger( &a->run, a->steps, a->numSteps ) ? "waiting" : "playing" );
 		}
 	} else if ( !Q_stricmp( arg, "list" ) ) {
@@ -2402,8 +2458,8 @@ void CL_Storyteller_f( void ) {
 		Com_Printf( "       storyteller load <name>      load a saved story\n" );
 		Com_Printf( "       storyteller save <name>      save the story\n" );
 		Com_Printf( "       storyteller list             list the saved stories\n" );
-		Com_Printf( "       storyteller arm <name> [again]  arm a saved story: it plays when its first step is set off,\n" );
-		Com_Printf( "                                    once, or every time with again\n" );
+		Com_Printf( "       storyteller arm <name> [again|<times>]  arm a saved story: it plays when its first step\n" );
+		Com_Printf( "                                    is set off, once, every time with again, or that many times\n" );
 		Com_Printf( "       storyteller disarm [name|all]  disarm one, or all\n" );
 		Com_Printf( "       storyteller armed            list the armed stories\n" );
 		Com_Printf( "       storyteller close            close the storyteller\n" );
@@ -3098,6 +3154,8 @@ static void ST_OpenArmed( void ) {
 	st.armedList.sel = stNumArmed ? 0 : -1;
 	st.armedList.scroll = 0;
 	st.armedList.lastClickRow = -1;
+	if ( st.armTimes < 2 )
+		st.armTimes = 2;
 }
 
 static void ST_OpenChoose( stChoose_t kind ) {
@@ -3201,8 +3259,7 @@ static void ST_DrawChoosePopup( void ) {
 static void ST_DrawArmedRow( int row, float x, float y, float w ) {
 	const stArmed_t *a = &stArmed[row];
 
-	ST_TextClipped( x, y, w, va( "%s" S_COLOR_GREY "  %s, set off %i time%s, %s", a->name, a->again ? "every time" : "once",
-		a->times, a->times == 1 ? "" : "s", ST_AtTrigger( &a->run, a->steps, a->numSteps ) ? "waiting" : S_COLOR_GREEN "playing" ), stWhite );
+	ST_TextClipped( x, y, w, va( "%s" S_COLOR_GREY "  %s, %s", a->name, ST_ArmedState( a ), ST_AtTrigger( &a->run, a->steps, a->numSteps ) ? "waiting" : S_COLOR_GREEN "playing" ), stWhite );
 }
 
 static void ST_DrawArmedPopup( void ) {
@@ -3220,15 +3277,23 @@ static void ST_DrawArmedPopup( void ) {
 		const float bw = ( w - 20 ) * 0.5f;
 
 		if ( ST_Button( x + 8, y + 54, bw, "Arm: once", qfalse, qtrue ) )
-			ST_Arm( name, st.steps, st.numSteps, qfalse );
+			ST_Arm( name, st.steps, st.numSteps, 1 );
 		if ( ST_Button( x + 12 + bw, y + 54, bw, "Arm: every time", qfalse, qtrue ) )
-			ST_Arm( name, st.steps, st.numSteps, qtrue );
+			ST_Arm( name, st.steps, st.numSteps, 0 );
+		// a number of times, set with - and +
+		if ( ST_Button( x + 8, y + 76, 22, "-", qfalse, (qboolean)( st.armTimes > 2 ) ) )
+			st.armTimes--;
+		ST_Text( x + 8 + ( bw - ST_TextWidth( va( "%i", st.armTimes ) ) ) * 0.5f, y + 78, va( "%i", st.armTimes ), stWhite );
+		if ( ST_Button( x + bw - 14, y + 76, 22, "+", qfalse, (qboolean)( st.armTimes < ST_MAX_ARM_TIMES ) ) )
+			st.armTimes++;
+		if ( ST_Button( x + 12 + bw, y + 76, bw, va( "Arm: %i times", st.armTimes ), qfalse, qtrue ) )
+			ST_Arm( name, st.steps, st.numSteps, st.armTimes );
 	}
 
 	if ( !stNumArmed )
-		ST_Text( x + 8, y + 84, S_COLOR_GREY "Nothing armed yet", stWhite );
+		ST_Text( x + 8, y + 106, S_COLOR_GREY "Nothing armed yet", stWhite );
 	else
-		ST_List( &st.armedList, stNumArmed, x + 8, y + 82, w - 16, h - 140, ST_DrawArmedRow, NULL );
+		ST_List( &st.armedList, stNumArmed, x + 8, y + 104, w - 16, h - 162, ST_DrawArmedRow, NULL );
 	ST_TextWrapped( x + 8, y + h - 52, w - 16, S_COLOR_GREY "A copy: arm it again after changing it. Disarmed when the map changes.", stWhite, 2 );
 
 	if ( ST_Button( x + 8, y + h - 22, 80, "Disarm", qfalse, haveSel ) ) {

@@ -748,6 +748,7 @@ void CL_RpHooks_Shutdown( void );
 void CL_RpHooks_Disconnect( void );
 void CL_RpHooks_Draw( void );
 void CL_RpHooks_DrawSubtitles( void );
+const char *CL_RpHooks_NpcTalkCommand( const char *npc, const char *name, const char *color, const char *emote, const char *text );
 
 // cl_rpcinematic.cpp
 void CL_RpCinematic_Init( void );
@@ -804,6 +805,7 @@ void CL_Storyteller_Draw( void );
 void CL_Storyteller_Open( void );
 void CL_Storyteller_ShotSaved( const char *name );
 qboolean CL_Storyteller_Capture( const char *cmd );
+qboolean CL_Storyteller_Picking( void );
 
 //
 // cl_fighterassist.cpp

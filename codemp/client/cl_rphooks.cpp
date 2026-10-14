@@ -148,6 +148,29 @@ static rhResult_t RH_Npc( char **argv, int argc, const char *message ) {
 	return RH_REPLACED;
 }
 
+// a part of the hook, with what would end it early made spaces
+static const char *RH_HookPart( const char *in ) {
+	static char out[4][MAX_QPATH];
+	static int index;
+	char *o = out[index++ & 3];
+	int len = 0;
+
+	for ( ; *in && len < MAX_QPATH - 1; in++ )
+		o[len++] = ( *in == '/' || *in == ':' ) ? ' ' : *in;
+	o[len] = '\0';
+	return o;
+}
+
+// the command that has everyone with this client see the NPC say it: the storyteller's NPC talk
+// and the NPC manager's. An empty part would make a // the server takes for a comment
+const char *CL_RpHooks_NpcTalkCommand( const char *npc, const char *name, const char *color, const char *emote, const char *text ) {
+	static char cmd[MAX_STRING_CHARS];
+
+	Com_sprintf( cmd, sizeof( cmd ), "rpnotify -1 1 cmd:npc/talk/%s/%s/%s/%s: %s", RH_HookPart( npc ), RH_HookPart( name[0] ? name : npc ),
+		RH_HookPart( color[0] ? color : "^7" ), emote[0] ? RH_HookPart( emote ) : "none", text );
+	return cmd;
+}
+
 static struct {
 	char		title[RH_OBJECTIVE_LEN];	// "" for RH_OBJ_TITLE
 	struct {

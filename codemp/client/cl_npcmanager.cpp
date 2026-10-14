@@ -57,7 +57,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define NM_MAX_QUEUE		512
 #define NM_CMD_LEN			256
 #define NM_POOL_SIZE		( 512 * 1024 )
-#define NM_FIELD_LEN		64
+#define NM_FIELD_LEN		160		// long enough for a line an NPC says
 #define NM_MESSAGE_MS		5000
 
 #define NM_LIST_TIMEOUT		2500	// ms without the list header before giving up on it
@@ -214,6 +214,8 @@ typedef enum {
 	NM_F_NPC_SEARCH,
 	NM_F_EMOTE,
 	NM_F_DIALOG,
+	NM_F_TALK_TEXT,		// what the NPC says, and as who
+	NM_F_TALK_NAME,
 	NM_F_PICKER_SEARCH,
 	NM_F_SAVE_NAME,
 	NM_F_TELE_X,		// the teleport box, in this order
@@ -359,6 +361,9 @@ static const char *nmEmotes[] = {
 	"ematease2",
 };
 
+// the name's colour codes, white first
+static const char nmTalkColors[] = "7123456890";
+
 static const char *nmTeamArgs[] = { "0", "player", "enemy" };
 static const char *nmTeamLabels[] = { "Default", "Player (blue)", "Enemy (red)" };
 
@@ -443,6 +448,8 @@ static struct {
 	nmList_t	npcList;
 	int			selNum;			// entity number of the selected NPC, -1 = none
 	nmApply_t	apply;
+	int			talkColor;		// of the name, in nmTalkColors
+	qboolean	talkEmote;		// talking plays emtalk on it
 	nmConfirm_t	confirm;
 	int			confirmTime;
 
@@ -1877,6 +1884,27 @@ static void NM_SendManage( const char *cmd, qboolean refresh ) {
 		NM_RefreshSoon();
 }
 
+// the name it talks as when none is typed: its targetname, or its type
+static const char *NM_TalkName( const nmNpc_t *npc ) {
+	if ( nm.fields[NM_F_TALK_NAME][0] )
+		return nm.fields[NM_F_TALK_NAME];
+	return npc ? ( npc->name[0] ? npc->name : npc->type ) : "";
+}
+
+// the selection says it in chat, as the storyteller's NPC talk step does
+static void NM_Talk( void ) {
+	const nmNpc_t *npc = NM_SelectedNpc();
+	const char *target = NM_ApplyTarget( qfalse ), *emote = nm.talkEmote ? "emtalk" : "";
+
+	if ( !target || !nm.fields[NM_F_TALK_TEXT][0] )
+		return;
+	NM_SendManage( CL_RpHooks_NpcTalkCommand( target, NM_TalkName( npc ), va( "^%c", nmTalkColors[nm.talkColor] ), emote, nm.fields[NM_F_TALK_TEXT] ), qfalse );
+	// a story's NPC talk step plays the emote itself; it waits its turn behind the line
+	if ( emote[0] && !CL_Storyteller_Picking() )
+		NM_Queue( va( "npc emote %s %s", emote, target ) );
+	nm.fields[NM_F_TALK_TEXT][0] = '\0';
+}
+
 static void NM_Teleport( const vec3_t pos, int yaw ) {
 	const char *target = NM_ApplyTarget( qfalse );
 
@@ -2776,6 +2804,8 @@ static qboolean NM_FieldAllows( nmField_t f, int ch ) {
 	// these go on the command line as single arguments
 	if ( f == NM_F_TARGETNAME || f == NM_F_MODEL || f == NM_F_EMOTE || f == NM_F_DIALOG )
 		return (qboolean)( ch > ' ' && ch < 127 && ch != '"' && ch != ';' );
+	if ( f == NM_F_TALK_TEXT || f == NM_F_TALK_NAME )
+		return (qboolean)( ch >= ' ' && ch < 127 && ch != '"' );
 	return (qboolean)( ch >= ' ' && ch < 127 );
 }
 
@@ -2978,6 +3008,8 @@ void CL_NpcManager_KeyEvent( int key, qboolean down ) {
 		if ( nm.picker != NM_PICKER_NONE ) {
 			if ( nm.pickerList.sel < nm.numPickerView )
 				NM_ChoosePicker( nm.pickerView[nm.pickerList.sel] );
+		} else if ( f == NM_F_TALK_TEXT || f == NM_F_TALK_NAME ) {
+			NM_Talk();
 		} else if ( f == NM_F_EMOTE || f == NM_F_DIALOG ) {
 			const char *target = NM_ApplyTarget( qtrue );
 
@@ -3257,7 +3289,7 @@ static void NM_DrawPickerRow( int row, float x, float y, float w ) {
 
 static void NM_DrawCommandLines( const char *preview ) {
 	if ( nm.numQueue ) {
-		NM_TextClipped( NM_RIGHT_X, NM_BUTTON_Y - 30, NM_RIGHT_W, va( S_COLOR_YELLOW "Spawning, %i of %i to go (the server takes about one a second)",
+		NM_TextClipped( NM_RIGHT_X, NM_BUTTON_Y - 30, NM_RIGHT_W, va( S_COLOR_YELLOW "Sending, %i of %i to go (the server takes about one a second)",
 			nm.numQueue, nm.queueTotal ), nmWhite );
 	} else if ( preview ) {
 		NM_TextClipped( NM_RIGHT_X, NM_BUTTON_Y - 30, NM_RIGHT_W, va( S_COLOR_GREY "%s", preview ), nmWhite );
@@ -3724,6 +3756,20 @@ static void NM_DrawManage( void ) {
 		NM_SendManage( va( "npc hologram projector %s", targetAll ), qfalse );
 	if ( NM_Button( NM_CTRL_X + ( w + 4 ) * 2, y, w, "Off", qfalse, (qboolean)( targetAll != NULL ) ) )
 		NM_SendManage( va( "npc hologram off %s", targetAll ), qfalse );
+
+	y += 20;
+	NM_Label( y, "Talk" );
+	NM_Field( NM_F_TALK_TEXT, NM_CTRL_X, y, NM_CTRL_W - 44, "what it says, Enter to say it" );
+	if ( NM_Button( NM_CTRL_X + NM_CTRL_W - 40, y, 40, "Say", qfalse, (qboolean)( target != NULL && nm.fields[NM_F_TALK_TEXT][0] ) ) )
+		NM_Talk();
+	y += 20;
+	NM_Label( y, "  as" );
+	NM_Field( NM_F_TALK_NAME, NM_CTRL_X, y, w * 2 + 4, npc ? NM_TalkName( npc ) : "name" );
+	// a click takes the next colour
+	if ( NM_Button( NM_CTRL_X + ( w + 4 ) * 2, y, 40, va( "^%cColor", nmTalkColors[nm.talkColor] ), qfalse, qtrue ) )
+		nm.talkColor = ( nm.talkColor + 1 ) % ( ARRAY_LEN( nmTalkColors ) - 1 );
+	if ( NM_Button( NM_CTRL_X + ( w + 4 ) * 2 + 44, y, w, "emtalk", nm.talkEmote, qtrue ) )
+		nm.talkEmote = (qboolean)!nm.talkEmote;
 
 	y += 20;
 	NM_Label( y, "Score" );
