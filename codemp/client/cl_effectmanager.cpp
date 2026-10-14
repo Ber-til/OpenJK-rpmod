@@ -1622,6 +1622,9 @@ COMMANDS
 */
 
 static void EM_Queue( const char *cmd, qboolean echo ) {
+	// opened from the storyteller, it goes in the story instead
+	if ( CL_Storyteller_Capture( cmd ) )
+		return;
 	if ( em.numQueue >= EM_MAX_QUEUE ) {
 		Com_Printf( S_COLOR_YELLOW "Effect manager: too many commands waiting, dropped %s\n", cmd );
 		return;
@@ -3247,9 +3250,16 @@ static void EM_Open( void ) {
 		Com_Printf( "Effect manager: join a server first\n" );
 		return;
 	}
+	// for RPMod's admins: whoever else can't run what it makes
+	if ( !CL_RpAdmin_Allow( "Effect manager", "effectmanager" ) )
+		return;
 	CL_ModelManager_Close();
 	CL_NpcManager_Close();
 	CL_ShaderManager_Close();
+	CL_MapEditor_Close();
+	CL_Storyteller_Close();
+	CL_RpCinematic_EditorClose();
+	CL_SoundManager_Close();
 	EM_CheckMap();
 	EM_ListConstructs();
 	if ( !em.indexed ) {
@@ -3323,6 +3333,32 @@ void CL_EffectManager_Shutdown( void ) {
 
 qboolean CL_EffectManager_Active( void ) {
 	return (qboolean)( em.state != EM_OFF );
+}
+
+// the effects RPMod listed last, for the storyteller; the list is read with the manager closed too
+void CL_EffectManager_RequestList( void ) {
+	if ( cls.state == CA_ACTIVE )
+		EM_RequestList();
+}
+
+int CL_EffectManager_NumActive( void ) {
+	return em.numActive;
+}
+
+qboolean CL_EffectManager_GetActive( int index, int *num, const char **path, vec3_t origin ) {
+	if ( index < 0 || index >= em.numActive )
+		return qfalse;
+	*num = em.active[index].num;
+	*path = em.active[index].path;
+	VectorCopy( em.active[index].origin, origin );
+	return qtrue;
+}
+
+// opened from a storyteller step
+void CL_EffectManager_OpenForStory( void ) {
+	EM_Open();
+	if ( em.state != EM_OFF )
+		EM_Message( S_COLOR_GREEN "For the story: what you send here goes in it as steps, not to the server" );
 }
 
 /*

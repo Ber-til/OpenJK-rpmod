@@ -171,6 +171,13 @@ not have future usercmd_t executed before it is executed
 void CL_AddReliableCommand( const char *cmd, qboolean isDisconnectCmd ) {
 	int unacknowledged = clc.reliableSequence - clc.reliableAcknowledge;
 
+	// RPMod: what would crash the server stays here
+	if ( !isDisconnectCmd && !CL_RpHooks_AllowCommand( cmd ) )
+		return;
+	// an emote's animation is watched for, a Help click shows one
+	if ( !isDisconnectCmd )
+		CL_EmotePreview_Command( cmd );
+
 	// if we would be losing an old command that hasn't been acknowledged,
 	// we must drop the connection
 	// also leave one slot open for the disconnect command in this case.
@@ -821,6 +828,9 @@ void CL_Disconnect( qboolean showMainMenu ) {
 	FS_PureServerSetReferencedPaks("", "");
 
 	CL_ClearState ();
+	CL_RpHooks_Disconnect();
+	CL_RpAdmin_Disconnect();
+	CL_RpCinematic_Reset();
 
 	// wipe the client connection
 	Com_Memset( &clc, 0, sizeof( clc ) );
@@ -1309,6 +1319,83 @@ void CL_Configstrings_f( void ) {
 		}
 		Com_Printf( "%4i: %s\n", i, cl.gameState.stringData + ofs );
 	}
+}
+
+typedef struct csSection_s {
+	const char	*name;
+	int			start;
+	int			count;
+	int			first;		// 1 where the game hands out indexes from 1, leaving 0 unused, and can run out of them
+} csSection_t;
+
+static const csSection_t csSections[] = {
+	{ "Server info",	CS_SERVERINFO,		1,							0 },
+	{ "System info",	CS_SYSTEMINFO,		1,							0 },
+	{ "Game state",		CS_MUSIC,			CS_AMBIENT_SET - CS_MUSIC,	0 },
+	{ "Ambient sets",	CS_AMBIENT_SET,		MAX_AMBIENT_SETS,			1 },
+	{ "Siege",			CS_SIEGE_STATE,		CS_MODELS - CS_SIEGE_STATE,	0 },
+	{ "Models",			CS_MODELS,			MAX_MODELS,					1 },
+	{ "Sky portal",		CS_SKYBOXORG,		1,							0 },
+	{ "Sounds",			CS_SOUNDS,			MAX_SOUNDS,					1 },
+	{ "Icons",			CS_ICONS,			MAX_ICONS,					1 },
+	{ "Players",		CS_PLAYERS,			MAX_CLIENTS,				0 },
+	{ "G2 bones",		CS_G2BONES,			MAX_G2BONES,				1 },
+	{ "Locations",		CS_LOCATIONS,		MAX_LOCATIONS,				1 },
+	{ "Particles",		CS_PARTICLES,		MAX_LOCATIONS,				1 },
+	{ "Effects",		CS_EFFECTS,			MAX_FX,						1 },
+	{ "Light styles",	CS_LIGHT_STYLES,	MAX_LIGHT_STYLES * 3,		0 },
+	{ "Terrains",		CS_TERRAINS,		MAX_TERRAINS,				0 },
+	{ "BSP models",		CS_BSP_MODELS,		MAX_SUB_BSP,				0 },
+	{ "Other",			CS_MAX,				MAX_CONFIGSTRINGS - CS_MAX,	0 },
+};
+
+static const char *CL_UsageColor( int used, int max ) {
+	if ( used * 10 >= max * 9 )
+		return S_COLOR_RED;
+	if ( used * 4 >= max * 3 )
+		return S_COLOR_YELLOW;
+	return S_COLOR_WHITE;
+}
+
+/*
+==================
+CL_ConfigstringUsage_f
+
+How full the configstrings are: past MAX_GAMESTATE_CHARS in all, every client is dropped
+==================
+*/
+void CL_ConfigstringUsage_f( void ) {
+	const int total = cl.gameState.dataCount;
+	const int left = MAX_GAMESTATE_CHARS - total;
+
+	if ( cls.state != CA_ACTIVE ) {
+		Com_Printf( "Not connected to a server.\n" );
+		return;
+	}
+
+	Com_Printf( "%-14s %9s %7s\n", "Section", "Used", "Chars" );
+	for ( size_t s = 0; s < ARRAY_LEN( csSections ); s++ ) {
+		const csSection_t *section = &csSections[s];
+		const int slots = section->count - section->first;
+		int used = 0, chars = 0;
+
+		if ( slots <= 0 )
+			continue;
+		for ( int i = section->start; i < section->start + section->count; i++ ) {
+			const int ofs = cl.gameState.stringOffsets[i];
+
+			if ( !ofs )
+				continue;
+			used++;
+			chars += strlen( cl.gameState.stringData + ofs ) + 1;
+		}
+		Com_Printf( "%s%-14s %4i/%-4i %7i\n", section->first ? CL_UsageColor( used, slots ) : S_COLOR_WHITE, section->name, used, slots, chars );
+	}
+
+	Com_Printf( "%s%i of %i characters used (%i%%), %i free\n", CL_UsageColor( total, MAX_GAMESTATE_CHARS ),
+		total, MAX_GAMESTATE_CHARS, total * 100 / MAX_GAMESTATE_CHARS, left > 0 ? left : 0 );
+	Com_Printf( "Past %i in all, everyone is disconnected; models, sounds and effects are only freed on a map change\n",
+		MAX_GAMESTATE_CHARS );
 }
 
 /*
@@ -2180,6 +2267,29 @@ CL_Frame
 static unsigned int frameCount;
 static float avgFrametime=0.0;
 extern void SE_CheckForLanguageUpdates(void);
+cvar_t	*cl_ratioFix;
+
+// widescreen: the 640x480 everything 2D is laid out in, made narrower to look as on a 4:3 screen.
+// The fonts are the renderer's r_aspectCorrectFonts, which follows cl_ratioFix
+static void CL_UpdateRatioFix( void ) {
+	static int fixCount = -1;
+	const qboolean on = (qboolean)( cl_ratioFix->integer != 0 );
+
+	if ( on && cls.glconfig.vidWidth > 0 && cls.glconfig.vidHeight > 0 )
+		cls.widthRatioCoef = Q_min( 1.0f, (float)( SCREEN_WIDTH * cls.glconfig.vidHeight ) / (float)( SCREEN_HEIGHT * cls.glconfig.vidWidth ) );
+	else
+		cls.widthRatioCoef = 1.0f;
+
+	if ( fixCount == cl_ratioFix->modificationCount )
+		return;
+	// turned on, the fonts go along; one set by hand to 2 is left be. Turned off, they go back
+	if ( on && !Cvar_VariableIntegerValue( "r_aspectCorrectFonts" ) )
+		Cvar_Set( "r_aspectCorrectFonts", "1" );
+	else if ( !on && fixCount != -1 )
+		Cvar_Set( "r_aspectCorrectFonts", "0" );
+	fixCount = cl_ratioFix->modificationCount;
+}
+
 void CL_Frame ( int msec ) {
 	qboolean takeVideoFrame = qfalse;
 
@@ -2188,6 +2298,7 @@ void CL_Frame ( int msec ) {
 	}
 
 	SE_CheckForLanguageUpdates();	// will take zero time to execute unless language changes, then will reload strings.
+	CL_UpdateRatioFix();
 									//	of course this still doesn't work for menus...
 
 	if ( cls.state == CA_DISCONNECTED && !( Key_GetCatcher( ) & KEYCATCH_UI )
@@ -2739,6 +2850,17 @@ void CL_Init( void ) {
 	CL_NpcManager_Init ();
 	CL_ShaderManager_Init ();
 	CL_EffectManager_Init ();
+	CL_MapEditor_Init ();
+	CL_Storyteller_Init ();
+	CL_SoundManager_Init ();
+	CL_RpHooks_Init ();
+	CL_RpAdmin_Init ();
+	cl_ratioFix = Cvar_Get( "cl_ratioFix", "1", CVAR_ARCHIVE_ND, "Widescreen: text, and the engine's own, as on a 4:3 screen instead of stretched" );
+	cls.widthRatioCoef = 1.0f;
+	CL_RadialMenu_Init ();
+	CL_SaberStyle_Init ();
+	CL_EmotePreview_Init ();
+	CL_RpCinematic_Init ();
 
 	CL_FighterAssist_Init ();
 	CL_ChatRange_Init ();
@@ -2882,11 +3004,16 @@ void CL_Init( void ) {
 	Cmd_AddCommand( "npcmanager", CL_NpcManager_f, "Spawn NPCs and manage the ones in the map with RPMod's npc command" );
 	Cmd_AddCommand( "shadermanager", CL_ShaderManager_f, "Find the shaders of what you look at" );
 	Cmd_AddCommand( "effectmanager", CL_EffectManager_f, "Preview effects and play them with RPMod's rpeffect command" );
+	Cmd_AddCommand( "mapedit", CL_MapEditor_f, "Edit the map on this screen: its entities, models, lights, triggers and light styles" );
+	Cmd_AddCommand( "storyteller", CL_Storyteller_f, "Assemble a mission out of steps and play it" );
+	Cmd_AddCommand( "soundmanager", CL_SoundManager_f, "Hear sounds and play them with RPMod's rpsound command" );
+	Cmd_AddCommand( "musicmanager", CL_MusicManager_f, "Hear music and play it for everyone with RPMod's rpmusic command" );
 	Cmd_AddCommand ("record", CL_Record_f, "Record a demo" );
 	Cmd_AddCommand ("demo", CL_PlayDemo_f, "Playback a demo" );
 	Cmd_SetCommandCompletionFunc( "demo", CL_CompleteDemoName );
 	Cmd_AddCommand ("stoprecord", CL_StopRecord_f, "Stop recording a demo" );
 	Cmd_AddCommand ("configstrings", CL_Configstrings_f, "Prints the configstrings list" );
+	Cmd_AddCommand ("csusage", CL_ConfigstringUsage_f, "Prints how full the configstrings are, by section" );
 	Cmd_AddCommand ("clientinfo", CL_Clientinfo_f, "Prints the userinfo variables" );
 	Cmd_AddCommand ("snd_restart", CL_Snd_Restart_f, "Restart sound" );
 	Cmd_AddCommand ("vid_restart", CL_Vid_Restart_f, "Restart the renderer - or change the resolution" );
@@ -2961,6 +3088,17 @@ void CL_Shutdown( void ) {
 	Cmd_RemoveCommand ("npcmanager");
 	Cmd_RemoveCommand ("shadermanager");
 	Cmd_RemoveCommand ("configstrings");
+	Cmd_RemoveCommand ("csusage");
+	CL_RpHooks_Shutdown();
+	Cmd_RemoveCommand( "toolaccess" );
+	Cmd_RemoveCommand( "+radial" );
+	Cmd_RemoveCommand( "-radial" );
+	Cmd_RemoveCommand( "radial" );
+	Cmd_RemoveCommand( "radialsettings" );
+	Cmd_RemoveCommand( "saberstyles" );
+	Cmd_RemoveCommand( "saberstyle" );
+	Cmd_RemoveCommand( "emotepreview" );
+	CL_RpCinematic_Shutdown();
 	Cmd_RemoveCommand ("clientinfo");
 	Cmd_RemoveCommand ("snd_restart");
 	Cmd_RemoveCommand ("vid_restart");

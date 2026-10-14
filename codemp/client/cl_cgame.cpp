@@ -412,6 +412,21 @@ rescan:
 	Cmd_TokenizeString( s );
 	cmd = Cmd_Argv(0);
 
+	// hooks hidden in RPMod's centre prints never show; some hand the cgame another command
+	{
+		qboolean replaced;
+		if ( !CL_RpHooks_ServerCommand( &replaced ) )
+			return qfalse;
+		if ( replaced )
+			return qtrue;
+	}
+
+	// the admin check reads rpstatus, and hides the reply it asked for
+	if ( !strcmp( cmd, "print" ) && CL_RpAdmin_ServerPrint( Cmd_Argv( 1 ) ) ) {
+		Cmd_TokenizeString( "print \"\"" );
+		return qtrue;
+	}
+
 	// the shader manager shows the answer to its rpshader commands
 	if ( !strcmp( cmd, "print" ) )
 		CL_ShaderManager_ServerPrint( Cmd_Argv( 1 ) );
@@ -430,6 +445,12 @@ rescan:
 
 	// the effect manager does the same with "rpeffect list"
 	if ( !strcmp( cmd, "print" ) && CL_EffectManager_ServerPrint( Cmd_Argv( 1 ) ) ) {
+		Cmd_TokenizeString( "print \"\"" );
+		return qtrue;
+	}
+
+	// and the sound manager with "rpsound list"
+	if ( !strcmp( cmd, "print" ) && CL_SoundManager_ServerPrint( Cmd_Argv( 1 ) ) ) {
 		Cmd_TokenizeString( "print \"\"" );
 		return qtrue;
 	}
@@ -522,6 +543,12 @@ void CL_ShutdownCGame( void ) {
 	CL_NpcManager_Shutdown();
 	CL_ShaderManager_Shutdown();
 	CL_EffectManager_Shutdown();
+	CL_MapEditor_Shutdown();
+	CL_Storyteller_Shutdown();
+	CL_SoundManager_Shutdown();
+	CL_RadialMenu_Shutdown();
+	CL_EmotePreview_Shutdown();
+	CL_RpCinematic_Reset();
 	CL_FighterAssist_Shutdown();
 	CL_ChatRange_Shutdown();
 

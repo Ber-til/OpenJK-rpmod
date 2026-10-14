@@ -471,7 +471,7 @@ void Field_VariableSizeDraw( field_t *edit, int x, int y, int size, qboolean sho
 		} else {
 			str[0] = cursorChar;
 			str[1] = 0;
-			SCR_DrawBigString( x + ( edit->cursor - prestep - i ) * size, y, str, 1.0, qfalse );
+			SCR_DrawBigString( x + (int)( ( edit->cursor - prestep - i ) * size * cls.widthRatioCoef ), y, str, 1.0, qfalse );
 		}
 	}
 }
@@ -1343,6 +1343,10 @@ void CL_KeyDownEvent( int key, unsigned time )
 			return;
 		}
 
+		// a radial menu open closes
+		if ( CL_RadialMenu_Escape() )
+			return;
+
 		// the model placer steps back a level, unless a menu is open over it
 		if ( ( Key_GetCatcher() & KEYCATCH_MODELMANAGER ) && !( Key_GetCatcher() & KEYCATCH_UI ) ) {
 			CL_ModelManager_Escape();
@@ -1358,6 +1362,26 @@ void CL_KeyDownEvent( int key, unsigned time )
 		}
 		if ( ( Key_GetCatcher() & KEYCATCH_EFFECTMANAGER ) && !( Key_GetCatcher() & KEYCATCH_UI ) ) {
 			CL_EffectManager_Escape();
+			return;
+		}
+		if ( ( Key_GetCatcher() & KEYCATCH_MAPEDITOR ) && !( Key_GetCatcher() & KEYCATCH_UI ) ) {
+			CL_MapEditor_Escape();
+			return;
+		}
+		if ( ( Key_GetCatcher() & KEYCATCH_STORYTELLER ) && !( Key_GetCatcher() & KEYCATCH_UI ) ) {
+			CL_Storyteller_Escape();
+			return;
+		}
+		if ( ( Key_GetCatcher() & KEYCATCH_SOUNDMANAGER ) && !( Key_GetCatcher() & KEYCATCH_UI ) ) {
+			CL_SoundManager_Escape();
+			return;
+		}
+		if ( ( Key_GetCatcher() & KEYCATCH_CINEDITOR ) && !( Key_GetCatcher() & KEYCATCH_UI ) ) {
+			CL_RpCinematic_EditorEscape();
+			return;
+		}
+		if ( ( Key_GetCatcher() & KEYCATCH_RADIALMENU ) && !( Key_GetCatcher() & KEYCATCH_UI ) ) {
+			CL_RadialMenu_SettingsEscape();
 			return;
 		}
 
@@ -1382,6 +1406,10 @@ void CL_KeyDownEvent( int key, unsigned time )
 		if ( !cls.cursorActive ) UIVM_KeyEvent( key, qtrue );
 		return;
 	}
+
+	// an open radial menu takes the number keys and the mouse buttons, the rest work as usual
+	if ( CL_RadialMenu_KeyDown( key ) )
+		return;
 
 	// send the bound action
 	if ( !cls.cursorActive ) CL_ParseBinding( key, qtrue, time );
@@ -1413,6 +1441,26 @@ void CL_KeyDownEvent( int key, unsigned time )
 	// effect manager
 	else if ( Key_GetCatcher() & KEYCATCH_EFFECTMANAGER ) {
 		CL_EffectManager_KeyEvent( key, qtrue );
+	}
+	// map editor
+	else if ( Key_GetCatcher() & KEYCATCH_MAPEDITOR ) {
+		CL_MapEditor_KeyEvent( key, qtrue );
+	}
+	// storyteller
+	else if ( Key_GetCatcher() & KEYCATCH_STORYTELLER ) {
+		CL_Storyteller_KeyEvent( key, qtrue );
+	}
+	// sound and music managers
+	else if ( Key_GetCatcher() & KEYCATCH_SOUNDMANAGER ) {
+		CL_SoundManager_KeyEvent( key, qtrue );
+	}
+	// camera editor
+	else if ( Key_GetCatcher() & KEYCATCH_CINEDITOR ) {
+		CL_RpCinematic_EditorKeyEvent( key, qtrue );
+	}
+	// radial menu settings
+	else if ( Key_GetCatcher() & KEYCATCH_RADIALMENU ) {
+		CL_RadialMenu_KeyEvent( key, qtrue );
 	}
 	// cgame
 	else if ( Key_GetCatcher() & KEYCATCH_CGAME ) {
@@ -1462,6 +1510,11 @@ void CL_KeyUpEvent( int key, unsigned time )
 	CL_NpcManager_KeyEvent( key, qfalse );
 	CL_ShaderManager_KeyEvent( key, qfalse );
 	CL_EffectManager_KeyEvent( key, qfalse );
+	CL_MapEditor_KeyEvent( key, qfalse );
+	CL_Storyteller_KeyEvent( key, qfalse );
+	CL_SoundManager_KeyEvent( key, qfalse );
+	CL_RpCinematic_EditorKeyEvent( key, qfalse );
+	CL_RadialMenu_KeyEvent( key, qfalse );
 
 	if ( Key_GetCatcher( ) & KEYCATCH_UI && cls.uiStarted )
 		UIVM_KeyEvent( key, qfalse );
@@ -1502,6 +1555,11 @@ void CL_CharEvent( int key ) {
 	else if ( Key_GetCatcher() & KEYCATCH_NPCMANAGER )	CL_NpcManager_CharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_SHADERMANAGER )	CL_ShaderManager_CharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_EFFECTMANAGER )	CL_EffectManager_CharEvent( key );
+	else if ( Key_GetCatcher() & KEYCATCH_MAPEDITOR )	CL_MapEditor_CharEvent( key );
+	else if ( Key_GetCatcher() & KEYCATCH_STORYTELLER )	CL_Storyteller_CharEvent( key );
+	else if ( Key_GetCatcher() & KEYCATCH_SOUNDMANAGER )	CL_SoundManager_CharEvent( key );
+	else if ( Key_GetCatcher() & KEYCATCH_CINEDITOR )	CL_RpCinematic_EditorCharEvent( key );
+	else if ( Key_GetCatcher() & KEYCATCH_RADIALMENU )	CL_RadialMenu_CharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_CGAME )		CGVM_KeyEvent( key|K_CHAR_FLAG, qtrue );
 	else if ( Key_GetCatcher() & KEYCATCH_MESSAGE )		Field_CharEvent( &chatField, key );
 	else if ( cls.state == CA_DISCONNECTED )			Field_CharEvent( &g_consoleField, key );
