@@ -471,6 +471,7 @@ void SCR_DrawScreenField( stereoFrame_t stereoFrame ) {
 			CL_RadialMenu_Frame();
 			CL_SaberStyle_Frame();
 			CL_RpAdmin_Frame();
+			CL_EmotePreview_Frame();
 			CL_RpCinematic_Frame();
 			CL_CGameRendering( stereoFrame );
 			CL_RpCinematic_Draw();
@@ -492,6 +493,7 @@ void SCR_DrawScreenField( stereoFrame_t stereoFrame ) {
 	if ( Key_GetCatcher( ) & KEYCATCH_UI && cls.uiStarted ) {
 		UIVM_Refresh( cls.realtime );
 		CL_RpHooks_Draw();
+		CL_EmotePreview_Draw();
 	}
 
 	// Engine internal menu

@@ -174,6 +174,9 @@ void CL_AddReliableCommand( const char *cmd, qboolean isDisconnectCmd ) {
 	// RPMod: what would crash the server stays here
 	if ( !isDisconnectCmd && !CL_RpHooks_AllowCommand( cmd ) )
 		return;
+	// an emote's animation is watched for, a Help click shows one
+	if ( !isDisconnectCmd )
+		CL_EmotePreview_Command( cmd );
 
 	// if we would be losing an old command that hasn't been acknowledged,
 	// we must drop the connection
@@ -2830,6 +2833,7 @@ void CL_Init( void ) {
 	CL_RpAdmin_Init ();
 	CL_RadialMenu_Init ();
 	CL_SaberStyle_Init ();
+	CL_EmotePreview_Init ();
 	CL_RpCinematic_Init ();
 
 	CL_FighterAssist_Init ();
@@ -3067,6 +3071,7 @@ void CL_Shutdown( void ) {
 	Cmd_RemoveCommand( "radialsettings" );
 	Cmd_RemoveCommand( "saberstyles" );
 	Cmd_RemoveCommand( "saberstyle" );
+	Cmd_RemoveCommand( "emotepreview" );
 	CL_RpCinematic_Shutdown();
 	Cmd_RemoveCommand ("clientinfo");
 	Cmd_RemoveCommand ("snd_restart");

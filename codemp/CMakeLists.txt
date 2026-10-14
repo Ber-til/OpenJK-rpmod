@@ -475,6 +475,7 @@ if(BuildMPEngine)
 		"${MPDir}/client/cl_radialmenu.cpp"
 		"${MPDir}/client/cl_saberstyle.cpp"
 		"${MPDir}/client/cl_rpadmin.cpp"
+		"${MPDir}/client/cl_emotepreview.cpp"
 		"${MPDir}/client/cl_rphooks.cpp"
 		"${MPDir}/client/cl_rpcinematic.cpp"
 		"${MPDir}/client/cl_ui.cpp"

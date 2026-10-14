@@ -1507,7 +1507,7 @@ static int NM_PreviewScale( const nmType_t *t ) {
 }
 
 // the bind pose bounds of a .glm's first LOD, or why it can't be shown
-static const char *NM_GlmBounds( const char *path, vec3_t mins, vec3_t maxs ) {
+const char *CL_GlmBounds( const char *path, vec3_t mins, vec3_t maxs ) {
 	byte *buf;
 	const mdxmHeader_t *header;
 	const mdxmLODSurfOffset_t *indexes;
@@ -1765,7 +1765,7 @@ static void NM_PreviewUpdate( const nmType_t *t, const char *pick ) {
 	}
 
 	Com_sprintf( glm, sizeof( glm ), "models/players/%s/model.glm", name );
-	nm.previewError = NM_GlmBounds( glm, nm.previewMins, nm.previewMaxs );
+	nm.previewError = CL_GlmBounds( glm, nm.previewMins, nm.previewMaxs );
 	if ( nm.previewError )
 		return;
 

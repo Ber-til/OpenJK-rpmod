@@ -842,6 +842,14 @@ void CL_SaberStyle_Init( void );
 qboolean CL_SaberStyle_Cycle( void );
 void CL_SaberStyle_Frame( void );
 
+// cl_emotepreview.cpp
+void CL_EmotePreview_Init( void );
+void CL_EmotePreview_Shutdown( void );
+void CL_EmotePreview_Command( const char *cmd );
+void CL_EmotePreview_Frame( void );
+void CL_EmotePreview_Draw( void );
+const char *CL_GlmBounds( const char *path, vec3_t mins, vec3_t maxs );
+
 // cl_rpadmin.cpp
 void CL_RpAdmin_Init( void );
 void CL_RpAdmin_Disconnect( void );

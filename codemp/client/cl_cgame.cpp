@@ -547,6 +547,7 @@ void CL_ShutdownCGame( void ) {
 	CL_Storyteller_Shutdown();
 	CL_SoundManager_Shutdown();
 	CL_RadialMenu_Shutdown();
+	CL_EmotePreview_Shutdown();
 	CL_RpCinematic_Reset();
 	CL_FighterAssist_Shutdown();
 	CL_ChatRange_Shutdown();
