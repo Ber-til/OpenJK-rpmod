@@ -245,6 +245,11 @@ typedef struct refexport_s {
 		float				(*Font_StrLenPixels)					( const char *text, const int iFontIndex, const float scale );
 		// a model's G2API_SetSkin skin and its own; the client's shader manager can't read the instance
 		void				(*G2API_GetSkins)						( CGhoul2Info_v &ghoul2, int modelIndex, qhandle_t *customSkin, qhandle_t *skin );
+		// the client's map editor: the world's triangles, by surface and triangle in the bsp's own order.
+		// Hide them all at once (count 0 shows them all again), or take some as a model, around origin,
+		// drawn as the world draws them. Its handle lasts until the next map
+		void				(*HideWorldTriangles)					( const int *surfaces, const int *triangles, int count );
+		qhandle_t			(*WorldPieceModel)						( const int *surfaces, const int *triangles, int count, const vec3_t origin );
 	} ext;
 
 } refexport_t;

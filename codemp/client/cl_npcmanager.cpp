@@ -2349,6 +2349,7 @@ static qboolean NM_Open( nmTab_t tab ) {
 	CL_ModelManager_Close();
 	CL_ShaderManager_Close();
 	CL_EffectManager_Close();
+	CL_MapEditor_Close();
 	if ( !nm.indexed )
 		NM_BuildIndex();
 

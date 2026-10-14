@@ -3250,6 +3250,7 @@ static void EM_Open( void ) {
 	CL_ModelManager_Close();
 	CL_NpcManager_Close();
 	CL_ShaderManager_Close();
+	CL_MapEditor_Close();
 	EM_CheckMap();
 	EM_ListConstructs();
 	if ( !em.indexed ) {
