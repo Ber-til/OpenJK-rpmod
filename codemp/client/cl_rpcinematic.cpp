@@ -2171,6 +2171,11 @@ qboolean CL_RpCinematic_Active( void ) {
 	return rc.active;
 }
 
+// the HUD hidden, chat box and all: what's said shows as subtitles instead
+qboolean CL_RpCinematic_Subtitles( void ) {
+	return (qboolean)( rc.active && !rc.showHud );
+}
+
 // the editor's own camera is what's seen, not a preview
 static qboolean CE_Viewing( void ) {
 	return (qboolean)( ce.open && !ce.preview );
@@ -2263,7 +2268,7 @@ void CL_RpCinematic_Draw( void ) {
 		re->DrawStretchPic( 0, SCREEN_HEIGHT - h, SCREEN_WIDTH, h, 0, 0, 0, 0, cls.whiteShader );
 		re->SetColor( NULL );
 	}
-	if ( rc.active && !rc.showHud && !CE_Viewing() )
+	if ( CL_RpCinematic_Subtitles() && !CE_Viewing() )
 		CL_RpHooks_DrawSubtitles();
 	if ( ce.open )
 		CE_DrawEditor();

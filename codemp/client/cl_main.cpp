@@ -171,6 +171,9 @@ not have future usercmd_t executed before it is executed
 void CL_AddReliableCommand( const char *cmd, qboolean isDisconnectCmd ) {
 	int unacknowledged = clc.reliableSequence - clc.reliableAcknowledge;
 
+	// your chat said by the NPC chosen with npcmanager select
+	if ( !isDisconnectCmd )
+		cmd = CL_NpcManager_OutgoingChat( cmd );
 	// RPMod: what would crash the server stays here
 	if ( !isDisconnectCmd && !CL_RpHooks_AllowCommand( cmd ) )
 		return;
@@ -2855,7 +2858,7 @@ void CL_Init( void ) {
 	CL_SoundManager_Init ();
 	CL_RpHooks_Init ();
 	CL_RpAdmin_Init ();
-	cl_ratioFix = Cvar_Get( "cl_ratioFix", "1", CVAR_ARCHIVE_ND, "Widescreen: text, and the engine's own, as on a 4:3 screen instead of stretched" );
+	cl_ratioFix = Cvar_Get( "cl_ratioFix", "0", CVAR_ARCHIVE_ND, "Widescreen: text, and the engine's own, as on a 4:3 screen instead of stretched" );
 	cls.widthRatioCoef = 1.0f;
 	CL_RadialMenu_Init ();
 	CL_SaberStyle_Init ();

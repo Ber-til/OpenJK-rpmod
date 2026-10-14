@@ -1906,6 +1906,74 @@ static void NM_Talk( void ) {
 	nm.fields[NM_F_TALK_TEXT][0] = '\0';
 }
 
+// npcmanager select: what you say in chat said by an NPC instead, until unselected or the map
+// changes (its NPCs gone with it)
+static struct {
+	char		target[MAX_QPATH];		// its targetname or entity number, "" for none
+	char		name[MAX_QPATH];		// what it's called in chat, colour codes and all
+	char		map[MAX_QPATH];			// cl.mapname it was chosen in
+} nmSpeak;
+
+// talking through an NPC is NPC talk: an admin's, with experimental features on
+static qboolean NM_TalkAllowed( void ) {
+	if ( cls.state != CA_ACTIVE ) {
+		Com_Printf( "NPC manager: not in game\n" );
+		return qfalse;
+	}
+	if ( !CL_RpAdmin_Allow( "NPC manager", NM_TOGGLE_CMD ) )
+		return qfalse;
+	if ( !CL_RpHooks_Experimental() ) {
+		Com_Printf( S_COLOR_YELLOW "NPC talk is experimental: press TOGGLE EXPERIMENTAL in the npcmanager's Manage tab first\n" );
+		return qfalse;
+	}
+	return qtrue;
+}
+
+// the name an NPC talks as when none is given: for an entity number, its targetname or type
+// if the list has it
+static const char *NM_DefaultTalkName( const char *target ) {
+	if ( Q_isanumber( target ) ) {
+		const nmNpc_t *npc = NM_FindNpc( atoi( target ) );
+
+		if ( npc )
+			return npc->name[0] ? npc->name : npc->type;
+	}
+	return target;
+}
+
+static void NM_SpeakOff( const char *why ) {
+	if ( !nmSpeak.target[0] )
+		return;
+	Com_Printf( "NPC manager: you talk as yourself again%s\n", why );
+	nmSpeak.target[0] = '\0';
+}
+
+// a command on its way to the server: say, with an NPC selected, is that NPC talking
+const char *CL_NpcManager_OutgoingChat( const char *cmd ) {
+	char text[MAX_STRING_CHARS];
+	const char *said;
+	int len;
+
+	if ( !nmSpeak.target[0] || Q_stricmpn( cmd, "say ", 4 ) )
+		return cmd;
+	if ( strcmp( nmSpeak.map, cl.mapname ) ) {
+		NM_SpeakOff( " (the map changed)" );
+		return cmd;
+	}
+	// the console's say may have it in quotes, the chat box's doesn't
+	for ( said = cmd + 4; *said == ' '; )
+		said++;
+	Q_strncpyz( text, said, sizeof( text ) );
+	len = strlen( text );
+	if ( len >= 2 && text[0] == '"' && text[len - 1] == '"' ) {
+		text[len - 1] = '\0';
+		memmove( text, text + 1, len - 1 );
+	}
+	if ( !text[0] )
+		return cmd;
+	return CL_RpHooks_NpcTalkCommand( nmSpeak.target, nmSpeak.name, "", "", text );
+}
+
 static void NM_Teleport( const vec3_t pos, int yaw ) {
 	const char *target = NM_ApplyTarget( qfalse );
 
@@ -2557,6 +2625,35 @@ void CL_NpcManager_f( void ) {
 		NM_StartConstruct( name );
 		if ( nm.pick == NM_PICK_NONE )
 			Com_Printf( "%s\n", nm.message );
+	} else if ( !Q_stricmp( arg, "talk" ) && Cmd_Argc() >= 4 ) {
+		const char *target = Cmd_Argv( 2 );
+
+		if ( !NM_TalkAllowed() )
+			return;
+		// as the selected one's name, if it's the one selected
+		NM_Send( CL_RpHooks_NpcTalkCommand( target, !Q_stricmp( target, nmSpeak.target ) ? nmSpeak.name : NM_DefaultTalkName( target ),
+			"", "", Cmd_ArgsFrom( 3 ) ), qfalse );
+	} else if ( !Q_stricmp( arg, "select" ) || !Q_stricmp( arg, "unselect" ) ) {
+		if ( !Q_stricmp( arg, "unselect" ) || !Q_stricmp( Cmd_Argv( 2 ), "off" ) ) {
+			if ( !nmSpeak.target[0] )
+				Com_Printf( "NPC manager: no NPC selected to talk through\n" );
+			NM_SpeakOff( "" );
+			return;
+		}
+		if ( Cmd_Argc() < 3 ) {
+			if ( nmSpeak.target[0] )
+				Com_Printf( "NPC manager: your chat goes through NPC %s, as %s" S_COLOR_WHITE "\n", nmSpeak.target, nmSpeak.name );
+			else
+				Com_Printf( "NPC manager: no NPC selected to talk through; npcmanager select <npc> [display name]\n" );
+			return;
+		}
+		if ( !NM_TalkAllowed() )
+			return;
+		Q_strncpyz( nmSpeak.target, Cmd_Argv( 2 ), sizeof( nmSpeak.target ) );
+		Q_strncpyz( nmSpeak.name, Cmd_Argc() >= 4 ? Cmd_ArgsFrom( 3 ) : NM_DefaultTalkName( nmSpeak.target ), sizeof( nmSpeak.name ) );
+		Q_strncpyz( nmSpeak.map, cl.mapname, sizeof( nmSpeak.map ) );
+		Com_Printf( "NPC manager: what you say in chat is now said by NPC %s, as %s" S_COLOR_WHITE "; npcmanager select off to talk as yourself\n",
+			nmSpeak.target, nmSpeak.name );
 	} else if ( !Q_stricmp( arg, "savednpc" ) || !Q_stricmp( arg, "constructnpc" ) ) {
 		// the lines of a saved file being exec'd; its first line read them all
 	} else {
@@ -2565,6 +2662,9 @@ void CL_NpcManager_f( void ) {
 		Com_Printf( "       npcmanager manage                open on the NPCs in the map\n" );
 		Com_Printf( "       npcmanager loadnpc <name>        put a saved NPC in the spawn form\n" );
 		Com_Printf( "       npcmanager loadconstruct <name>  pick up an NPC construct to put down\n" );
+		Com_Printf( "       npcmanager talk <npc> <message>  the NPC (targetname or number) says it in chat\n" );
+		Com_Printf( "       npcmanager select <npc> [name]   what you say in chat is said by the NPC, as name\n" );
+		Com_Printf( "       npcmanager select off            talk as yourself again (unselect does too)\n" );
 		Com_Printf( "       npcmanager reindex               rescan the filesystem for NPC types and models\n" );
 		Com_Printf( "       npcmanager close                 close the NPC manager\n" );
 		Com_Printf( "Saved NPCs are in the %s folder of the game folder, constructs in %s; both can be exec'd\n", NM_NPC_DIR, NM_CONSTRUCT_DIR );
