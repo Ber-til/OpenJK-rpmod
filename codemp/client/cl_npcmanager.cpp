@@ -3409,9 +3409,12 @@ static void NM_DrawSpawn( void ) {
 	nm.rowList.sel = nm.fields[NM_F_TYPE_SEARCH][0] ? -1 : nm.row;
 	{
 		const int before = nm.rowList.sel;
+		// the list puts "none" on the first row: only a click picks one, and leaves the search
+		const qboolean clicked = (qboolean)( nm.click && nm.clickX >= NM_LEFT_X && nm.clickX < NM_LEFT_X + NM_TREE_W
+			&& nm.clickY >= NM_TYPE_LIST_Y && nm.clickY < NM_TYPE_LIST_Y + NM_TYPE_LIST_H );
 
 		NM_List( &nm.rowList, nm.numRows, NM_LEFT_X, NM_TYPE_LIST_Y, NM_TREE_W, NM_TYPE_LIST_H, NM_DrawTreeRow );
-		if ( nm.rowList.sel != before && nm.rowList.sel >= 0 )
+		if ( nm.rowList.sel != before && nm.rowList.sel >= 0 && ( before >= 0 || clicked ) )
 			NM_SetRow( nm.rowList.sel );
 	}
 	NM_RebuildTypeView();
