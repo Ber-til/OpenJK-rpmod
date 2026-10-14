@@ -1106,6 +1106,11 @@ static void SM_SetStatus( const char *text ) {
 }
 
 static void SM_Send( const char *cmd ) {
+	// opened from the storyteller, it goes in the story instead
+	if ( CL_Storyteller_Capture( cmd ) ) {
+		SM_SetStatus( va( "In the story: %s", cmd ) );
+		return;
+	}
 	CL_AddReliableCommand( cmd, qfalse );
 	sm.sentTime = cls.realtime;
 	sm.reply[0] = '\0';
@@ -1589,6 +1594,9 @@ static void SM_Open( void ) {
 	CL_NpcManager_Close();
 	CL_EffectManager_Close();
 	CL_MapEditor_Close();
+	CL_Storyteller_Close();
+	CL_RpCinematic_EditorClose();
+	CL_SoundManager_Close();
 
 	sm.font = re->RegisterFont( "arialnb" );
 	if ( !sm.font )
@@ -1620,6 +1628,13 @@ void CL_ShaderManager_Close( void ) {
 
 qboolean CL_ShaderManager_Active( void ) {
 	return (qboolean)( sm.state != SM_OFF );
+}
+
+// opened from a storyteller step
+void CL_ShaderManager_OpenForStory( void ) {
+	SM_Open();
+	if ( sm.state != SM_OFF )
+		SM_SetStatus( S_COLOR_GREEN "For the story: what you send here goes in it as steps, not to the server" );
 }
 
 /*

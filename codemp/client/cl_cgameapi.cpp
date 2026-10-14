@@ -317,8 +317,13 @@ void FX_FeedTrail( effectTrailArgStruct_t *a ); //FxPrimitives.cpp
 
 // the model placer re-aims the main view and hides the view weapon on the way to the renderer
 static void CL_R_AddRefEntityToScene( const refEntity_t *ent ) {
+	refEntity_t copy;
+
 	if ( CL_ModelManager_FilterEntity( ent ) || CL_ShaderManager_FilterEntity( ent ) || CL_EffectManager_FilterEntity( ent )
 		|| CL_NpcManager_FilterEntity( ent ) || CL_MapEditor_FilterEntity( ent ) )
+		return;
+	ent = CL_RpCinematic_Entity( ent, &copy );
+	if ( !ent )
 		return;
 	CL_ShaderManager_AddEntity( ent );
 	CL_EffectManager_AddEntity( ent );
@@ -329,28 +334,28 @@ static void CL_R_RenderScene( const refdef_t *fd ) {
 	// the map editor's models and lights are in every main view
 	CL_MapEditor_AddToScene( fd );
 	if ( !CL_NpcManager_RenderScene( fd ) && !CL_ShaderManager_RenderScene( fd ) && !CL_EffectManager_RenderScene( fd )
-		&& !CL_MapEditor_RenderScene( fd ) )
+		&& !CL_MapEditor_RenderScene( fd ) && !CL_RpCinematic_RenderScene( fd ) )
 		CL_ModelManager_RenderScene( fd );
 }
 
-// the map editor leaves out the cgame's HUD, but not what covers the whole screen
+// the map editor, and a cinematic hiding the HUD, leave out the cgame's 2D, but not what covers the whole screen
 static void CL_R_DrawStretchPic( float x, float y, float w, float h, float s1, float t1, float s2, float t2, qhandle_t hShader ) {
-	if ( !CL_MapEditor_Hide2D( x, y, w, h ) )
+	if ( !CL_MapEditor_Hide2D( x, y, w, h ) && !CL_RpCinematic_Hide2D( x, y, w, h ) )
 		re->DrawStretchPic( x, y, w, h, s1, t1, s2, t2, hShader );
 }
 
 static void CL_R_DrawRotatePic( float x, float y, float w, float h, float s1, float t1, float s2, float t2, float a, qhandle_t hShader ) {
-	if ( !CL_MapEditor_Hide2D( x, y, w, h ) )
+	if ( !CL_MapEditor_Hide2D( x, y, w, h ) && !CL_RpCinematic_Hide2D( x, y, w, h ) )
 		re->DrawRotatePic( x, y, w, h, s1, t1, s2, t2, a, hShader );
 }
 
 static void CL_R_DrawRotatePic2( float x, float y, float w, float h, float s1, float t1, float s2, float t2, float a, qhandle_t hShader ) {
-	if ( !CL_MapEditor_Hide2D( x, y, w, h ) )
+	if ( !CL_MapEditor_Hide2D( x, y, w, h ) && !CL_RpCinematic_Hide2D( x, y, w, h ) )
 		re->DrawRotatePic2( x, y, w, h, s1, t1, s2, t2, a, hShader );
 }
 
 static void CL_R_Font_DrawString( int ox, int oy, const char *text, const float *rgba, const int setIndex, int iCharLimit, const float scale ) {
-	if ( !CL_MapEditor_Hide2D( 0, 0, 0, 0 ) )
+	if ( !CL_MapEditor_Hide2D( 0, 0, 0, 0 ) && !CL_RpCinematic_Hide2D( 0, 0, 0, 0 ) )
 		re->Font_DrawString( ox, oy, text, rgba, setIndex, iCharLimit, scale );
 }
 
@@ -367,7 +372,7 @@ static void CL_FX_AddScheduledEffects( qboolean portal ) {
 
 	if ( !portal && cgameView && ( CL_ModelManager_Camera( origin, angles ) || CL_ShaderManager_Camera( origin, angles )
 		|| CL_EffectManager_Camera( origin, angles ) || CL_NpcManager_Camera( origin, angles )
-		|| CL_MapEditor_Camera( origin, angles ) ) ) {
+		|| CL_MapEditor_Camera( origin, angles ) || CL_RpCinematic_Camera( origin, angles ) ) ) {
 		view = *cgameView;
 		VectorCopy( origin, view.vieworg );
 		AnglesToAxis( angles, view.viewaxis );

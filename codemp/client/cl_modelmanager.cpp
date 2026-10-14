@@ -1125,6 +1125,9 @@ static int MM_CommandGap( void ) {
 }
 
 static void MM_Queue( const char *cmd, int seq ) {
+	// opened from the storyteller, it goes in the story instead
+	if ( !seq && CL_Storyteller_Capture( cmd ) )
+		return;
 	if ( mm.numQueue >= MM_MAX_QUEUE ) {
 		Com_Printf( S_COLOR_YELLOW "Model manager: too many commands waiting, dropped %s\n", cmd );
 		return;
@@ -2355,6 +2358,9 @@ static qboolean MM_Open( void ) {
 	CL_ShaderManager_Close();
 	CL_EffectManager_Close();
 	CL_MapEditor_Close();
+	CL_Storyteller_Close();
+	CL_RpCinematic_EditorClose();
+	CL_SoundManager_Close();
 
 	mm.font = re->RegisterFont( "arialnb" );
 	if ( !mm.font )
@@ -2392,6 +2398,12 @@ static void MM_Close( void ) {
 void CL_ModelManager_Close( void ) {
 	if ( mm.state != MM_OFF )
 		MM_Close();
+}
+
+// opened from a storyteller step
+void CL_ModelManager_OpenForStory( void ) {
+	if ( MM_Open() )
+		MM_Message( S_COLOR_GREEN "For the story: what you send here goes in it as steps, not to the server" );
 }
 
 static void MM_LoadSave( const char *name ) {
