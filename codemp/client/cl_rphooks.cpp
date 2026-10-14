@@ -68,7 +68,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define RH_OBJ_SCALE		0.8f
 #define RH_OBJ_BULLET		"- "
 
-// NPC talk during a cinematic with the HUD hidden, where the chat box can't be seen
+// NPC talk and players' chat during a cinematic with the HUD hidden, where the chat box can't be seen
 #define RH_MAX_SUBS			3
 #define RH_SUB_LEN			512
 #define RH_SUB_W			480.0f
@@ -106,18 +106,22 @@ static qboolean RH_IsTalk( const char *verb ) {
 static struct {
 	char		text[RH_SUB_LEN];
 	int			until;			// cls.realtime it's gone by
+	float		alpha;			// chat from far away fainter, as in the chat box
 }			rhSubs[RH_MAX_SUBS];	// oldest first
 
 // as long as it takes to read, the oldest making way when there are too many
-static void RH_AddSubtitle( const char *text ) {
+static void RH_AddSubtitle( const char *text, float alpha ) {
 	int ms = 3000 + 60 * (int)strlen( text );
 
-	if ( rhSubs[RH_MAX_SUBS - 1].text[0] )
+	if ( rhSubs[RH_MAX_SUBS - 1].text[0] ) {
 		memmove( &rhSubs[0], &rhSubs[1], sizeof( rhSubs[0] ) * ( RH_MAX_SUBS - 1 ) );
+		rhSubs[RH_MAX_SUBS - 1].text[0] = '\0';
+	}
 	for ( int i = 0; i < RH_MAX_SUBS; i++ ) {
 		if ( !rhSubs[i].text[0] ) {
 			Q_strncpyz( rhSubs[i].text, text, sizeof( rhSubs[i].text ) );
 			rhSubs[i].until = cls.realtime + Q_min( ms, 10000 );
+			rhSubs[i].alpha = alpha;
 			break;
 		}
 	}
@@ -144,7 +148,7 @@ static rhResult_t RH_Npc( char **argv, int argc, const char *message ) {
 	if ( !message[0] )
 		return RH_DROP;
 
-	RH_AddSubtitle( va( "%s%s" S_COLOR_WHITE ": %s", color, name, message ) );
+	RH_AddSubtitle( va( "%s%s" S_COLOR_WHITE ": %s", color, name, message ), 1.0f );
 	// chat as the game sends it, from right next to us so RPMod's chat range lets it through
 	Com_sprintf( cmd, sizeof( cmd ), "chat \"%s%s" S_COLOR_WHITE "\x19: " S_COLOR_GREEN "%s\" 0", color, name, message );
 	Cmd_TokenizeString( cmd );
@@ -417,6 +421,82 @@ static void RH_Fill( float x, float y, float w, float h, const float *color ) {
 	re->SetColor( NULL );
 }
 
+// RPMod's colours: ^ and any digit or letter, where the renderer only knows the digits (and
+// some of them otherwise). Taken from RPMod's own colour chart
+static const byte rhPalette[62][3] = {
+	{   0,   0,   0 }, { 255,   0,   0 }, {   0, 255,   0 }, { 255, 255,   0 }, {   0,   0, 255 }, {   0, 255, 255 },	// 0 1 2 3 4 5
+	{ 255,   0, 255 }, { 255, 255, 255 }, { 255, 127,   0 }, { 127,   0, 204 }, {  63,   0, 255 }, {   0,   0, 140 },	// 6 7 8 9 a b
+	{  64,  64,  64 }, { 255, 255, 204 }, { 239, 204,   0 }, { 255, 211,   0 }, { 255, 239,   0 }, { 255, 255, 119 },	// c d e f g h
+	{ 249, 216,  94 }, { 255, 214,   0 }, { 193, 175, 145 }, { 127, 127,   0 }, { 224,  17,  94 }, { 255,  20, 147 },	// i j k l m n
+	{ 255, 112, 255 }, { 102,   2,  61 }, { 119,  81, 168 }, { 112,  40,  99 }, { 119,  22,  73 }, { 142, 150, 119 },	// o p q r s t
+	{ 135, 168, 107 }, {  86, 130,   2 }, { 172, 253,  45 }, {  68,  76,  56 }, {   0,  86,  63 }, { 137, 153,  91 },	// u v w x y z
+	{ 150,  73,   0 }, { 255, 204, 163 }, {   0, 204, 204 }, {   0,   0, 127 }, {  79,  38, 130 }, { 255, 191, 204 },	// A B C D E F
+	{   0, 122, 165 }, {   0,  73,  84 }, { 247, 130, 119 }, {   0, 127, 127 }, { 127,   0,   0 }, { 163,  89,  81 },	// G H I J K L
+	{  63, 130, 109 }, { 127,   0, 255 }, { 191, 191, 191 }, {  53,  68,  79 }, { 102, 153, 204 }, { 226,  66,  51 },	// M N O P Q R
+	{ 196,  96,  15 }, { 216, 142,  89 }, { 232,  96,   0 }, { 204, 204, 255 }, { 175, 224, 229 }, { 173, 216, 229 },	// S T U V W X
+	{ 137, 206, 239 }, {   0,   0, 255 },	// Y Z
+};
+
+static qboolean RH_IsCode( const char *p ) {
+	return (qboolean)( p[0] == Q_COLOR_ESCAPE && p[1] && isalnum( (unsigned char)p[1] ) );
+}
+
+static const byte *RH_CodeColor( char c ) {
+	if ( c >= '0' && c <= '9' )
+		return rhPalette[c - '0'];
+	if ( c >= 'a' && c <= 'z' )
+		return rhPalette[10 + c - 'a'];
+	return rhPalette[36 + c - 'A'];
+}
+
+// the text as it's seen, the colour codes left out
+static void RH_Plain( const char *in, char *out, int size ) {
+	int len = 0;
+
+	for ( ; *in && len < size - 1; in++ ) {
+		if ( RH_IsCode( in ) ) {
+			in++;
+			continue;
+		}
+		out[len++] = *in;
+	}
+	out[len] = '\0';
+}
+
+static int RH_TextWidth( const char *text, int font, float scale ) {
+	char plain[MAX_STRING_CHARS];
+
+	RH_Plain( text, plain, sizeof( plain ) );
+	return re->Font_StrLenPixels( plain, font, scale );
+}
+
+// drawn a stretch of one colour at a time; color is the colour before the first code, and its
+// alpha goes for all of it
+static void RH_DrawText( float x, float y, const char *text, const float *color, int font, float scale ) {
+	char run[MAX_STRING_CHARS];
+	vec4_t rgba;
+	int len = 0;
+
+	VectorCopy4( color, rgba );
+	for ( ;; text++ ) {
+		if ( !*text || RH_IsCode( text ) ) {
+			if ( len ) {
+				run[len] = '\0';
+				re->Font_DrawString( (int)x, (int)y, run, rgba, font, -1, scale );
+				x += re->Font_StrLenPixels( run, font, scale );
+				len = 0;
+			}
+			if ( !*text )
+				break;
+			const byte *c = RH_CodeColor( *++text );
+			VectorSet( rgba, c[0] / 255.0f, c[1] / 255.0f, c[2] / 255.0f );
+			continue;
+		}
+		if ( len < (int)sizeof( run ) - 1 )
+			run[len++] = *text;
+	}
+}
+
 // text broken at spaces to fit the width, each line's colour carried on to the next; how many lines.
 // Drawn only with draw, otherwise just counted
 static int RH_WrapEx( int font, float x, float y, float w, float scale, float rowH, const char *text, const float *color,
@@ -432,7 +512,7 @@ static int RH_WrapEx( int font, float x, float y, float w, float scale, float ro
 		while ( text[len] && start + len < (int)sizeof( line ) - 1 ) {
 			line[start + len] = text[len];
 			line[start + len + 1] = '\0';
-			if ( re->Font_StrLenPixels( line, font, scale ) > w )
+			if ( RH_TextWidth( line, font, scale ) > w )
 				break;
 			if ( text[len] == ' ' || !text[len + 1] )
 				fit = len + 1;
@@ -446,15 +526,15 @@ static int RH_WrapEx( int font, float x, float y, float w, float scale, float ro
 
 		if ( draw ) {
 			const float ly = y + lines * rowH;
-			const float lw = (float)re->Font_StrLenPixels( line, font, scale );
+			const float lw = (float)RH_TextWidth( line, font, scale );
 			const float lx = center ? x + ( w - lw ) * 0.5f : x;
 
-			re->Font_DrawString( (int)lx, (int)ly, line, color, font | STYLE_DROPSHADOW, -1, scale );
+			RH_DrawText( lx, ly, line, color, font | STYLE_DROPSHADOW, scale );
 			if ( strike )
 				RH_Fill( lx, ly + re->Font_HeightPixels( font, scale ) * 0.55f, lw, 1.0f, color );
 		}
 		for ( int i = 0; i < fit; i++ ) {
-			if ( Q_IsColorString( text + i ) ) {
+			if ( RH_IsCode( text + i ) ) {
 				colorCode[0] = text[i];
 				colorCode[1] = text[i + 1];
 				colorCode[2] = '\0';
@@ -477,7 +557,73 @@ static int RH_Font( void ) {
 	return font ? font : cls.menuFont;
 }
 
-// NPCs talking, at the bottom of the screen: the cinematic hides the chat box with the HUD
+// how RPMod's chat box shows chat from this far away (its rpc_chatRange_* cvars): qfalse
+// if it leaves it out, else how solid
+static qboolean RH_ChatRange( float distance, float *alpha ) {
+	const int mode = Cvar_VariableIntegerValue( "rpc_chatRange_mode" );
+	const float min = Cvar_VariableValue( "rpc_chatRange_min" );
+	const float max = Cvar_VariableValue( "rpc_chatRange_max" );
+	const float minAlpha = Com_Clamp( 0.0f, 100.0f, Cvar_VariableValue( "rpc_chatRange_alpha" ) ) / 100.0f;
+
+	*alpha = 1.0f;
+	if ( mode == 3 )
+		return (qboolean)( distance <= min );
+	if ( mode == 2 && distance > max )
+		return qfalse;
+	if ( ( mode != 1 && mode != 2 ) || distance <= min )
+		return qtrue;
+	*alpha = 1.0f - ( max > min ? Q_min( 1.0f, ( distance - min ) / ( max - min ) ) : 1.0f ) * ( 1.0f - minAlpha );
+	return qtrue;
+}
+
+// a player's chat about to reach the cgame: during a cinematic with the HUD hidden it's a
+// subtitle too, as NPC talk is. "chat" "name\x19: message" <distance>, "lchat" "name"
+// "location" "colour" "message" <distance>; the distance is RPMod's, elsewhere a client number
+void CL_RpHooks_ChatSubtitle( void ) {
+	const char *cmd = Cmd_Argv( 0 ), *num;
+	char name[MAX_STRING_CHARS], message[MAX_STRING_CHARS];
+	float alpha = 1.0f;
+
+	if ( !CL_RpCinematic_Subtitles() )
+		return;
+	if ( !strcmp( cmd, "chat" ) || !strcmp( cmd, "tchat" ) ) {
+		const char *text = Cmd_Argv( 1 ), *sep = strstr( text, "\x19:" );
+
+		if ( Cmd_Argc() < 2 || !text[0] )
+			return;
+		num = Cmd_Argv( 2 );
+		if ( sep ) {
+			Q_strncpyz( name, text, Q_min( (int)sizeof( name ), (int)( sep - text ) + 1 ) );
+			text = sep + 2;
+		} else {
+			name[0] = '\0';
+		}
+		while ( *text == ' ' )
+			text++;
+		Q_strncpyz( message, text, sizeof( message ) );
+	} else if ( !strcmp( cmd, "lchat" ) || !strcmp( cmd, "ltchat" ) ) {
+		if ( Cmd_Argc() < 5 || !Cmd_Argv( 4 )[0] )
+			return;
+		Q_strncpyz( name, Cmd_Argv( 1 ), sizeof( name ) );
+		Q_strncpyz( message, Cmd_Argv( 4 ), sizeof( message ) );
+		num = Cmd_Argv( 5 );
+	} else {
+		return;
+	}
+
+	if ( !Q_stricmp( FS_GetCurrentGameDir(), "rpmod" ) && isdigit( (unsigned char)num[0] ) && !RH_ChatRange( (float)atoi( num ), &alpha ) )
+		return;
+	// the chat's own green left off, to read as NPC talk does
+	if ( !Q_stricmpn( message, S_COLOR_GREEN, 2 ) )
+		memmove( message, message + 2, strlen( message + 2 ) + 1 );
+	if ( name[0] )
+		RH_AddSubtitle( va( "%s" S_COLOR_WHITE ": %s", name, message ), alpha );
+	else
+		RH_AddSubtitle( message, alpha );
+}
+
+// NPCs talking and players' chat, at the bottom of the screen: the cinematic hides the chat
+// box with the HUD
 void CL_RpHooks_DrawSubtitles( void ) {
 	const int font = RH_Font();
 	const float rowH = re->Font_HeightPixels( font, RH_SUB_SCALE ) + 2.0f;
@@ -491,8 +637,9 @@ void CL_RpHooks_DrawSubtitles( void ) {
 
 		if ( !rhSubs[i].text[0] || left <= 0 )
 			continue;
+		color[3] = rhSubs[i].alpha;
 		if ( left < RH_SUB_FADE_MS )
-			color[3] = (float)left / RH_SUB_FADE_MS;
+			color[3] *= (float)left / RH_SUB_FADE_MS;
 		y -= RH_WrapEx( font, 0, 0, RH_SUB_W, RH_SUB_SCALE, rowH, rhSubs[i].text, color, qfalse, qtrue, qfalse ) * rowH;
 		RH_WrapEx( font, x, y, RH_SUB_W, RH_SUB_SCALE, rowH, rhSubs[i].text, color, qfalse, qtrue, qtrue );
 		y -= 2.0f;

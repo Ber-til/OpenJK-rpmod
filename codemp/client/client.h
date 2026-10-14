@@ -676,6 +676,7 @@ void CL_ModelManager_Draw( void );
 void CL_NpcManager_Init( void );
 void CL_NpcManager_Shutdown( void );
 void CL_NpcManager_f( void );
+const char *CL_NpcManager_OutgoingChat( const char *cmd );
 qboolean CL_NpcManager_Active( void );
 void CL_NpcManager_Frame( void );
 void CL_NpcManager_Close( void );
@@ -775,6 +776,7 @@ void CL_RpHooks_Shutdown( void );
 void CL_RpHooks_Disconnect( void );
 void CL_RpHooks_Draw( void );
 void CL_RpHooks_DrawSubtitles( void );
+void CL_RpHooks_ChatSubtitle( void );
 // the features sent as cmd: hooks, which only players with this client see: off until turned on
 // in a tool's TOGGLE EXPERIMENTAL, for the session
 #define RP_EXPERIMENTAL_LABEL	"TOGGLE EXPERIMENTAL"
@@ -792,6 +794,7 @@ void CL_RpCinematic_Reset( void );
 void CL_RpCinematic_Stop( void );
 void CL_RpCinematic_Hook( char **argv, int argc );
 qboolean CL_RpCinematic_Active( void );
+qboolean CL_RpCinematic_Subtitles( void );
 qboolean CL_RpCinematic_Hide2D( float x, float y, float w, float h );
 qboolean CL_RpCinematic_RenderScene( const refdef_t *fd );
 qboolean CL_RpCinematic_Camera( vec3_t origin, vec3_t angles );

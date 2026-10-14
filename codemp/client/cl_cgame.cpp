@@ -526,6 +526,8 @@ rescan:
 
 	// chat from far away stays out of the console
 	CL_ChatRange_ServerCommand();
+	// during a cinematic with the HUD hidden, chat is a subtitle
+	CL_RpHooks_ChatSubtitle();
 
 	// cgame can now act on the command
 	return qtrue;

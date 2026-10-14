@@ -14,26 +14,11 @@ on:
       - "**.md"
       - ".gitignore"
       - "docs/*"
-  release:
-    types: [published]
 
 jobs:
   msvc:
-    name: Windows ${{ matrix.arch }} ${{ matrix.build_type }} (${{ matrix.portable }})
+    name: Windows x86 Release
     runs-on: windows-2022
-    strategy:
-      matrix:
-        arch: [x86, x86_64]
-        build_type: [Debug, Release]
-        portable: [Portable, Non-Portable]
-        exclude:
-          - build_type: Debug
-            portable: Portable
-        include:
-          - arch: x86
-            platform: Win32
-          - arch: x86_64
-            platform: x64
 
     steps:
       - uses: actions/checkout@v4
@@ -58,50 +43,27 @@ jobs:
       - name: Configure CMake
         shell: bash
         working-directory: ${{ github.workspace }}/build
-        run: |
-          OPTIONS="-DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DCMAKE_INSTALL_PREFIX=bin"
-          if [ "${{ matrix.portable }}" == "Portable" ]; then
-            OPTIONS+=" -DBuildPortableVersion=ON"
-          else
-            OPTIONS+=" -DBuildPortableVersion=OFF"
-          fi
-          OPTIONS+=" -DBuildJK2SPEngine=ON -DBuildJK2SPGame=ON -DBuildJK2SPRdVanilla=ON"
-          cmake $GITHUB_WORKSPACE -A ${{ matrix.platform }} $OPTIONS
+        run: cmake $GITHUB_WORKSPACE -A Win32 -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=bin -DBuildPortableVersion=OFF
 
       - name: Build
         working-directory: ${{ github.workspace }}/build
         shell: bash
-        run: cmake --build . --config ${{ matrix.build_type }} -j $NUMBER_OF_PROCESSORS
+        run: cmake --build . --config Release -j $NUMBER_OF_PROCESSORS
 
       - name: Install
-        if: ${{ matrix.build_type == 'Release' }}
         working-directory: ${{ github.workspace }}/build
         shell: bash
-        run: cmake --install . --config ${{ matrix.build_type }}
+        run: cmake --install . --config Release
 
       - uses: actions/upload-artifact@v4
-        if: ${{ matrix.build_type == 'Release' }}
         with:
-          name: OpenJK-windows-${{ matrix.arch }}-${{ matrix.build_type }}-${{ matrix.portable }}
+          name: OpenJK-windows-x86-Release-Non-Portable
           path: ${{ github.workspace }}/build/bin/JediAcademy
           if-no-files-found: error
 
-      - uses: actions/upload-artifact@v4
-        if: ${{ matrix.build_type == 'Release' }}
-        with:
-          name: OpenJO-windows-${{ matrix.arch }}-${{ matrix.build_type }}-${{ matrix.portable }}
-          path: ${{ github.workspace }}/build/bin/JediOutcast
-          if-no-files-found: error
-
   ubuntu:
-    name: Ubuntu ${{ matrix.arch }} ${{ matrix.build_type }} (${{ matrix.portable }})
+    name: Ubuntu x86 Release
     runs-on: ubuntu-22.04
-    strategy:
-      fail-fast: false
-      matrix:
-        arch: [x86, x86_64]
-        build_type: [Debug, Release]
-        portable: [Non-Portable]
 
     steps:
       - uses: actions/checkout@v4
@@ -119,34 +81,20 @@ jobs:
 
       - name: Create Build Environment
         run: |
-          if [ ${{ matrix.arch }} == "x86" ]; then
-            sudo dpkg --add-architecture i386
-            sudo apt-get -qq update
-            sudo apt-get -y install aptitude
-            sudo apt-get -y install gcc-multilib g++-multilib ninja-build
-            sudo apt-get -y install --allow-downgrades libpcre2-8-0:i386 libjpeg-dev:i386 libpng-dev:i386 libcurl4-openssl-dev:i386
-            sudo aptitude -y install libglib2.0-dev:i386 libsdl2-dev:i386
-          else
-            sudo apt-get -qq update
-            sudo apt-get install libjpeg-dev libpng-dev zlib1g-dev libsdl2-dev
-          fi
+          sudo dpkg --add-architecture i386
+          sudo apt-get -qq update
+          sudo apt-get -y install aptitude
+          sudo apt-get -y install gcc-multilib g++-multilib ninja-build
+          sudo apt-get -y install --allow-downgrades libpcre2-8-0:i386 libjpeg-dev:i386 libpng-dev:i386 libcurl4-openssl-dev:i386
+          sudo aptitude -y install libglib2.0-dev:i386 libsdl2-dev:i386
           cmake -E make_directory ${{ github.workspace }}/build
 
       - name: Configure CMake
         shell: bash
         working-directory: ${{ github.workspace }}/build
         run: |
-          OPTIONS="-DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/install"
-          if [ "${{ matrix.portable }}" == "Portable" ]; then
-            OPTIONS+=" -DUseInternalLibs=ON -DBuildPortableVersion=ON"
-          else
-            OPTIONS+=" -DUseInternalLibs=OFF -DBuildPortableVersion=OFF"
-          fi
-          if [ ${{ matrix.arch }} == "x86" ]; then
-            OPTIONS+=" -DCMAKE_TOOLCHAIN_FILE=cmake/Toolchains/linux-i686.cmake"
-          fi
-          OPTIONS+=" -DBuildJK2SPEngine=ON -DBuildJK2SPGame=ON -DBuildJK2SPRdVanilla=ON"
-          cmake $GITHUB_WORKSPACE $OPTIONS
+          cmake $GITHUB_WORKSPACE -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/install \
+            -DUseInternalLibs=OFF -DBuildPortableVersion=OFF -DCMAKE_TOOLCHAIN_FILE=cmake/Toolchains/linux-i686.cmake
 
       - name: Build
         working-directory: ${{ github.workspace }}/build
@@ -154,46 +102,27 @@ jobs:
         run: cmake --build . -j $(nproc)
 
       - name: Install
-        if: ${{ matrix.build_type == 'Release' }}
         working-directory: ${{ github.workspace }}/build
         shell: bash
         run: cmake --install .
 
       - name: Create OpenJK binary archive
-        if: ${{ matrix.build_type == 'Release' }}
         working-directory: ${{ github.workspace }}/install/JediAcademy
         shell: bash
-        run: tar -czvf OpenJK-linux-${{ matrix.arch }}-${{ matrix.build_type }}-${{ matrix.portable }}.tar.gz *
-
-      - name: Create OpenJO binary archive
-        if: ${{ matrix.build_type == 'Release' }}
-        working-directory: ${{ github.workspace }}/install/JediOutcast
-        shell: bash
-        run: tar -czvf OpenJO-linux-${{ matrix.arch }}-${{ matrix.build_type }}-${{ matrix.portable }}.tar.gz *
+        run: tar -czvf OpenJK-linux-x86-Release-Non-Portable.tar.gz *
 
       - uses: actions/upload-artifact@v4
-        if: ${{ matrix.build_type == 'Release' }}
         with:
-          name: OpenJK-linux-${{ matrix.arch }}-${{ matrix.build_type }}-${{ matrix.portable }}
-          path: ${{github.workspace}}/install/JediAcademy/OpenJK-linux-${{ matrix.arch }}-${{ matrix.build_type }}-${{ matrix.portable }}.tar.gz
-          if-no-files-found: error
-
-      - uses: actions/upload-artifact@v4
-        if: ${{ matrix.build_type == 'Release' }}
-        with:
-          name: OpenJO-linux-${{ matrix.arch }}-${{ matrix.build_type }}-${{ matrix.portable }}
-          path: ${{github.workspace}}/install/JediOutcast/OpenJO-linux-${{ matrix.arch }}-${{ matrix.build_type }}-${{ matrix.portable }}.tar.gz
+          name: OpenJK-linux-x86-Release-Non-Portable
+          path: ${{ github.workspace }}/install/JediAcademy/OpenJK-linux-x86-Release-Non-Portable.tar.gz
           if-no-files-found: error
 
   macos:
-    name: macOS ${{ matrix.arch }} ${{ matrix.build_type }} (${{ matrix.portable}})
+    name: macOS ${{ matrix.arch }} Release
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
-        runner: [macos-15-intel, macos-15]
-        build_type: [Debug, Release]
-        portable: [Non-Portable]
         include:
           - runner: macos-15-intel
             arch: x86_64
@@ -223,14 +152,8 @@ jobs:
         shell: bash
         working-directory: ${{ github.workspace }}/build
         run: |
-          OPTIONS="-DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/install"
-          if [ "${{ matrix.portable }}" == "Portable" ]; then
-            OPTIONS+=" -DUseInternalLibs=ON -DBuildPortableVersion=ON"
-          else
-            OPTIONS+=" -DUseInternalLibs=OFF -DBuildPortableVersion=OFF"
-          fi
-          OPTIONS+=" -DBuildJK2SPEngine=ON -DBuildJK2SPGame=ON -DBuildJK2SPRdVanilla=ON"
-          cmake $GITHUB_WORKSPACE $OPTIONS
+          cmake $GITHUB_WORKSPACE -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/install \
+            -DUseInternalLibs=OFF -DBuildPortableVersion=OFF
 
       - name: Build
         working-directory: ${{ github.workspace }}/build
@@ -238,35 +161,19 @@ jobs:
         run: cmake --build . -j $(getconf _NPROCESSORS_ONLN)
 
       - name: Install
-        if: ${{ matrix.build_type == 'Release' }}
         working-directory: ${{ github.workspace }}/build
         shell: bash
         run: cmake --install .
 
       - name: Create OpenJK binary archive
-        if: ${{ matrix.build_type == 'Release' }}
         working-directory: ${{ github.workspace }}/install/JediAcademy
         shell: bash
-        run: tar -czvf openjk-macos-${{ matrix.arch }}-${{ matrix.build_type }}-${{ matrix.portable }}.tar.gz *
-
-      - name: Create OpenJO binary archive
-        if: ${{ matrix.build_type == 'Release' }}
-        working-directory: ${{ github.workspace }}/install/JediOutcast
-        shell: bash
-        run: tar -czvf openjo_sp-macos-${{ matrix.arch }}-${{ matrix.build_type }}-${{ matrix.portable }}.tar.gz *
+        run: tar -czvf openjk-macos-${{ matrix.arch }}-Release-Non-Portable.tar.gz *
 
       - uses: actions/upload-artifact@v4
-        if: ${{ matrix.build_type == 'Release' }}
         with:
-          name: OpenJK-macos-${{ matrix.arch }}-${{ matrix.build_type }}-${{ matrix.portable }}
-          path: ${{ github.workspace }}/install/JediAcademy/openjk-macos-${{ matrix.arch }}-${{ matrix.build_type }}-${{ matrix.portable }}.tar.gz
-          if-no-files-found: error
-
-      - uses: actions/upload-artifact@v4
-        if: ${{ matrix.build_type == 'Release' }}
-        with:
-          name: OpenJO-macos-${{ matrix.arch }}-${{ matrix.build_type }}-${{ matrix.portable }}
-          path: ${{ github.workspace }}/install/JediOutcast/openjo_sp-macos-${{ matrix.arch }}-${{ matrix.build_type }}-${{ matrix.portable }}.tar.gz
+          name: OpenJK-macos-${{ matrix.arch }}-Release-Non-Portable
+          path: ${{ github.workspace }}/install/JediAcademy/openjk-macos-${{ matrix.arch }}-Release-Non-Portable.tar.gz
           if-no-files-found: error
 
   create-latest:
@@ -284,18 +191,9 @@ jobs:
       - name: Create binary archives
         run: |
           7z a -r OpenJK-windows-x86.zip ./OpenJK-windows-x86-Release-Non-Portable/* '-x!msvcp*.*' '-x!vcruntime*.*' '-x!concrt*.*'
-          7z a -r OpenJK-windows-x86_64.zip ./OpenJK-windows-x86_64-Release-Non-Portable/* '-x!msvcp*.*' '-x!vcruntime*.*' '-x!concrt*.*'
           mv ./OpenJK-linux-x86-Release-Non-Portable/* OpenJK-linux-x86.tar.gz
-          mv ./OpenJK-linux-x86_64-Release-Non-Portable/* OpenJK-linux-x86_64.tar.gz
           mv ./OpenJK-macos-x86_64-Release-Non-Portable/* OpenJK-macos-x86_64.tar.gz
           mv ./OpenJK-macos-arm64-Release-Non-Portable/* OpenJK-macos-arm64.tar.gz
-
-          7z a -r OpenJO-windows-x86.zip ./OpenJO-windows-x86-Release-Non-Portable/* '-x!msvcp*.*' '-x!vcruntime*.*' '-x!concrt*.*'
-          7z a -r OpenJO-windows-x86_64.zip ./OpenJO-windows-x86_64-Release-Non-Portable/* '-x!msvcp*.*' '-x!vcruntime*.*' '-x!concrt*.*'
-          mv ./OpenJO-linux-x86-Release-Non-Portable/* OpenJO-linux-x86.tar.gz
-          mv ./OpenJO-linux-x86_64-Release-Non-Portable/* OpenJO-linux-x86_64.tar.gz
-          mv ./OpenJO-macos-x86_64-Release-Non-Portable/* OpenJO-macos-x86_64.tar.gz
-          mv ./OpenJO-macos-arm64-Release-Non-Portable/* OpenJO-macos-arm64.tar.gz
 
       - name: Create latest build
         uses: marvinpinto/action-automatic-releases@d68defdd11f9dcc7f52f35c1b7c236ee7513bcc1 # latest
@@ -307,59 +205,3 @@ jobs:
           files: |
             *.zip
             *.tar.gz
-
-  create-release:
-    if: github.event_name == 'release'
-    needs: [msvc, ubuntu, macos]
-    runs-on: ubuntu-22.04
-
-    strategy:
-      matrix:
-        include:
-          - artifact_dir: OpenJK-windows-x86-Release-Non-Portable/JediAcademy
-            artifact_name: OpenJK-windows-x86.zip
-            zip: true
-
-          - artifact_dir: OpenJK-windows-x86_64-Release-Non-Portable/JediAcademy
-            artifact_name: OpenJK-windows-x86_64.zip
-            zip: true
-
-          - artifact_dir: OpenJK-linux-x86-Release-Non-Portable
-            artifact_name: OpenJK-linux-x86.tar.gz
-            zip: false
-
-          - artifact_dir: OpenJK-linux-x86_64-Release-Non-Portable
-            artifact_name: OpenJK-linux-x86_64.tar.gz
-            zip: false
-
-          - artifact_dir: OpenJK-macos-x86_64-Release-Non-Portable
-            artifact_name: OpenJK-macos-x86_64.tar.gz
-            zip: false
-
-          - artifact_dir: OpenJK-macos-arm64-Release-Non-Portable
-            artifact_name: OpenJK-macos-arm64.tar.gz
-            zip: false
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Download Artifacts
-        uses: actions/download-artifact@v4
-
-      - name: Create archive
-        run: |
-          if [ "${{ matrix.zip }}" == "true" ]; then
-            7z a -r ${{ matrix.artifact_name }} ./${{ matrix.artifact_dir }}/* '-x!msvcp*.*' '-x!vcruntime*.*' '-x!concrt*.*'
-          else
-            mv ./${{ matrix.artifact_dir }}/* ${{ matrix.artifact_name }}
-          fi
-
-      - name: Upload archives
-        uses: svenstaro/upload-release-action@v2
-        with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          tag: ${{ github.ref }}
-          overwrite: true
-          file: ${{ matrix.artifact_name }}
