@@ -660,7 +660,8 @@ void CL_ModelManager_Draw( void );
 #define KEYCATCH_NPCMANAGER		0x0020	// engine only, the NPC manager owns keyboard and mouse
 #define KEYCATCH_SHADERMANAGER	0x0040	// engine only, the shader manager owns keyboard and mouse
 #define KEYCATCH_EFFECTMANAGER	0x0080	// engine only, the effect manager owns keyboard and mouse
-#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELMANAGER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER )	// mods never see or clear these
+#define KEYCATCH_MAPEDITOR		0x0400	// engine only, the map editor owns keyboard and mouse
+#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELMANAGER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER | KEYCATCH_MAPEDITOR )	// mods never see or clear these
 
 void CL_NpcManager_Init( void );
 void CL_NpcManager_Shutdown( void );
@@ -726,6 +727,26 @@ qboolean CL_EffectManager_RenderScene( const refdef_t *fd );
 qboolean CL_EffectManager_Camera( vec3_t origin, vec3_t angles );
 qboolean CL_EffectManager_ServerPrint( const char *text );
 void CL_EffectManager_Draw( void );
+
+// cl_mapeditor.cpp
+void CL_MapEditor_Init( void );
+void CL_MapEditor_Shutdown( void );
+void CL_MapEditor_f( void );
+void CL_MapEditor_Open( void );
+void CL_MapEditor_Close( void );
+qboolean CL_MapEditor_Active( void );
+void CL_MapEditor_KeyEvent( int key, qboolean down );
+void CL_MapEditor_CharEvent( int ch );
+void CL_MapEditor_MouseEvent( int dx, int dy );
+void CL_MapEditor_Escape( void );
+void CL_MapEditor_Frame( void );
+void CL_MapEditor_Draw( void );
+void CL_MapEditor_AddToScene( const refdef_t *fd );
+qboolean CL_MapEditor_RenderScene( const refdef_t *fd );
+qboolean CL_MapEditor_Camera( vec3_t origin, vec3_t angles );
+qboolean CL_MapEditor_FilterEntity( const refEntity_t *ent );
+qboolean CL_MapEditor_Hide2D( float x, float y, float w, float h );
+int CL_MapEditor_LightStyle( int style, int color );
 
 //
 // cl_fighterassist.cpp

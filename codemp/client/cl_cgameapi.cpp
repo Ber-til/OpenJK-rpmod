@@ -318,7 +318,7 @@ void FX_FeedTrail( effectTrailArgStruct_t *a ); //FxPrimitives.cpp
 // the model placer re-aims the main view and hides the view weapon on the way to the renderer
 static void CL_R_AddRefEntityToScene( const refEntity_t *ent ) {
 	if ( CL_ModelManager_FilterEntity( ent ) || CL_ShaderManager_FilterEntity( ent ) || CL_EffectManager_FilterEntity( ent )
-		|| CL_NpcManager_FilterEntity( ent ) )
+		|| CL_NpcManager_FilterEntity( ent ) || CL_MapEditor_FilterEntity( ent ) )
 		return;
 	CL_ShaderManager_AddEntity( ent );
 	CL_EffectManager_AddEntity( ent );
@@ -326,8 +326,37 @@ static void CL_R_AddRefEntityToScene( const refEntity_t *ent ) {
 }
 
 static void CL_R_RenderScene( const refdef_t *fd ) {
-	if ( !CL_NpcManager_RenderScene( fd ) && !CL_ShaderManager_RenderScene( fd ) && !CL_EffectManager_RenderScene( fd ) )
+	// the map editor's models and lights are in every main view
+	CL_MapEditor_AddToScene( fd );
+	if ( !CL_NpcManager_RenderScene( fd ) && !CL_ShaderManager_RenderScene( fd ) && !CL_EffectManager_RenderScene( fd )
+		&& !CL_MapEditor_RenderScene( fd ) )
 		CL_ModelManager_RenderScene( fd );
+}
+
+// the map editor leaves out the cgame's HUD, but not what covers the whole screen
+static void CL_R_DrawStretchPic( float x, float y, float w, float h, float s1, float t1, float s2, float t2, qhandle_t hShader ) {
+	if ( !CL_MapEditor_Hide2D( x, y, w, h ) )
+		re->DrawStretchPic( x, y, w, h, s1, t1, s2, t2, hShader );
+}
+
+static void CL_R_DrawRotatePic( float x, float y, float w, float h, float s1, float t1, float s2, float t2, float a, qhandle_t hShader ) {
+	if ( !CL_MapEditor_Hide2D( x, y, w, h ) )
+		re->DrawRotatePic( x, y, w, h, s1, t1, s2, t2, a, hShader );
+}
+
+static void CL_R_DrawRotatePic2( float x, float y, float w, float h, float s1, float t1, float s2, float t2, float a, qhandle_t hShader ) {
+	if ( !CL_MapEditor_Hide2D( x, y, w, h ) )
+		re->DrawRotatePic2( x, y, w, h, s1, t1, s2, t2, a, hShader );
+}
+
+static void CL_R_Font_DrawString( int ox, int oy, const char *text, const float *rgba, const int setIndex, int iCharLimit, const float scale ) {
+	if ( !CL_MapEditor_Hide2D( 0, 0, 0, 0 ) )
+		re->Font_DrawString( ox, oy, text, rgba, setIndex, iCharLimit, scale );
+}
+
+// the map editor's light styles over the server's
+static void CL_R_SetLightStyle( int style, int color ) {
+	re->SetLightStyle( style, CL_MapEditor_LightStyle( style, color ) );
 }
 
 // effects are culled against cgame's view; with a tool's free camera looking
@@ -337,7 +366,8 @@ static void CL_FX_AddScheduledEffects( qboolean portal ) {
 	vec3_t origin, angles;
 
 	if ( !portal && cgameView && ( CL_ModelManager_Camera( origin, angles ) || CL_ShaderManager_Camera( origin, angles )
-		|| CL_EffectManager_Camera( origin, angles ) || CL_NpcManager_Camera( origin, angles ) ) ) {
+		|| CL_EffectManager_Camera( origin, angles ) || CL_NpcManager_Camera( origin, angles )
+		|| CL_MapEditor_Camera( origin, angles ) ) ) {
 		view = *cgameView;
 		VectorCopy( origin, view.vieworg );
 		AnglesToAxis( angles, view.viewaxis );
@@ -1162,7 +1192,7 @@ intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 		return re->Font_HeightPixels( args[1], VMF(2) );
 
 	case CG_R_FONT_DRAWSTRING:
-		re->Font_DrawString( args[1], args[2], (const char *)VMA(3), (const float *) VMA(4), args[5], args[6], VMF(7) );
+		CL_R_Font_DrawString( args[1], args[2], (const char *)VMA(3), (const float *) VMA(4), args[5], args[6], VMF(7) );
 		return 0;
 
 	case CG_LANGUAGE_ISASIAN:
@@ -1218,7 +1248,7 @@ intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 		return 0;
 
 	case CG_R_DRAWSTRETCHPIC:
-		re->DrawStretchPic( VMF(1), VMF(2), VMF(3), VMF(4), VMF(5), VMF(6), VMF(7), VMF(8), args[9] );
+		CL_R_DrawStretchPic( VMF(1), VMF(2), VMF(3), VMF(4), VMF(5), VMF(6), VMF(7), VMF(8), args[9] );
 		return 0;
 
 	case CG_R_MODELBOUNDS:
@@ -1229,11 +1259,11 @@ intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 		return re->LerpTag( (orientation_t *)VMA(1), args[2], args[3], args[4], VMF(5), (const char *)VMA(6) );
 
 	case CG_R_DRAWROTATEPIC:
-		re->DrawRotatePic( VMF(1), VMF(2), VMF(3), VMF(4), VMF(5), VMF(6), VMF(7), VMF(8), VMF(9), args[10] );
+		CL_R_DrawRotatePic( VMF(1), VMF(2), VMF(3), VMF(4), VMF(5), VMF(6), VMF(7), VMF(8), VMF(9), args[10] );
 		return 0;
 
 	case CG_R_DRAWROTATEPIC2:
-		re->DrawRotatePic2( VMF(1), VMF(2), VMF(3), VMF(4), VMF(5), VMF(6), VMF(7), VMF(8), VMF(9), args[10] );
+		CL_R_DrawRotatePic2( VMF(1), VMF(2), VMF(3), VMF(4), VMF(5), VMF(6), VMF(7), VMF(8), VMF(9), args[10] );
 		return 0;
 
 	case CG_R_SETRANGEFOG:
@@ -1361,7 +1391,7 @@ intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 		return 0;
 
 	case CG_R_SET_LIGHT_STYLE:
-		re->SetLightStyle(args[1], args[2]);
+		CL_R_SetLightStyle(args[1], args[2]);
 		return 0;
 
 	case CG_R_GET_BMODEL_VERTS:
@@ -1822,10 +1852,10 @@ void CL_BindCGame( void ) {
 		cgi.R_AutomapElevationAdjustment		= re->AutomapElevationAdjustment;
 		cgi.R_ClearDecals						= re->ClearDecals;
 		cgi.R_ClearScene						= re->ClearScene;
-		cgi.R_DrawStretchPic					= re->DrawStretchPic;
-		cgi.R_DrawRotatePic						= re->DrawRotatePic;
-		cgi.R_DrawRotatePic2					= re->DrawRotatePic2;
-		cgi.R_Font_DrawString					= re->Font_DrawString;
+		cgi.R_DrawStretchPic					= CL_R_DrawStretchPic;
+		cgi.R_DrawRotatePic						= CL_R_DrawRotatePic;
+		cgi.R_DrawRotatePic2					= CL_R_DrawRotatePic2;
+		cgi.R_Font_DrawString					= CL_R_Font_DrawString;
 		cgi.R_Font_HeightPixels					= re->Font_HeightPixels;
 		cgi.R_Font_StrLenChars					= re->Font_StrLenChars;
 		cgi.R_Font_StrLenPixels					= re->Font_StrLenPixels;
@@ -1851,7 +1881,7 @@ void CL_BindCGame( void ) {
 		cgi.R_RemapShader						= CL_ShaderManager_RemapShader;
 		cgi.R_RenderScene						= CL_R_RenderScene;
 		cgi.R_SetColor							= re->SetColor;
-		cgi.R_SetLightStyle						= re->SetLightStyle;
+		cgi.R_SetLightStyle						= CL_R_SetLightStyle;
 		cgi.R_SetRangedFog						= re->SetRangedFog;
 		cgi.R_SetRefractionProperties			= re->SetRefractionProperties;
 		cgi.R_WorldEffectCommand				= re->WorldEffectCommand;

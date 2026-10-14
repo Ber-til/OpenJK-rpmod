@@ -522,6 +522,7 @@ void CL_ShutdownCGame( void ) {
 	CL_NpcManager_Shutdown();
 	CL_ShaderManager_Shutdown();
 	CL_EffectManager_Shutdown();
+	CL_MapEditor_Shutdown();
 	CL_FighterAssist_Shutdown();
 	CL_ChatRange_Shutdown();
 

@@ -465,12 +465,14 @@ void SCR_DrawScreenField( stereoFrame_t stereoFrame ) {
 			CL_NpcManager_Frame();
 			CL_ShaderManager_Frame();
 			CL_EffectManager_Frame();
+			CL_MapEditor_Frame();
 			CL_CGameRendering( stereoFrame );
 			SCR_DrawDemoRecording();
 			CL_ShaderManager_Draw();
 			CL_ModelManager_Draw();
 			CL_NpcManager_Draw();
 			CL_EffectManager_Draw();
+			CL_MapEditor_Draw();
 			break;
 		}
 	}

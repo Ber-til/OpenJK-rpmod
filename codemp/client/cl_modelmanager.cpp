@@ -2354,6 +2354,7 @@ static qboolean MM_Open( void ) {
 	CL_NpcManager_Close();
 	CL_ShaderManager_Close();
 	CL_EffectManager_Close();
+	CL_MapEditor_Close();
 
 	mm.font = re->RegisterFont( "arialnb" );
 	if ( !mm.font )
