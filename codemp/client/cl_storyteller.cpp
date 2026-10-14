@@ -218,6 +218,17 @@ typedef enum {
 	ST_POPUP_LOAD
 } stPopup_t;
 
+typedef enum {
+	ST_PICK_NONE,
+	ST_PICK_MODEL,
+	ST_PICK_EFFECT,
+	ST_PICK_SHADER,
+	ST_PICK_NPC_SPAWN,
+	ST_PICK_NPC_MANAGE
+} stPick_t;
+
+#define ST_MAX_PICKED	64
+
 #define ST_F_NONE		-1
 #define ST_F_SAVE_NAME	-2
 
@@ -268,6 +279,12 @@ static struct {
 	int			sent;			// commands sent this run
 	qboolean	extraDue;		// the step's own command is out, its second one isn't
 	int			shotUntil;		// a camera shot plays until then
+
+	// a manager opened from a step: what it sends comes back as steps
+	stPick_t	pick;
+	int			pickStep;		// the step it was opened from
+	char		picked[ST_MAX_PICKED][MAX_STRING_CHARS];
+	int			numPicked;
 
 	char		message[MAX_STRING_CHARS];
 	int			messageTime;
@@ -447,19 +464,41 @@ static const char *ST_HookPart( const char *in ) {
 // well under the client's own limit
 #define ST_MAX_WORD		30
 
-// long words broken up with spaces
-static const char *ST_ShortWords( const char *in ) {
+// the server breaks centre prints into lines and a line loses the colour before it, so each word
+// gets the colour it's in: "^5this is ^7a test" goes as "^5this ^5is ^7a ^7test". Long words
+// are broken up with spaces
+static const char *ST_CenterText( const char *in ) {
 	static char out[MAX_STRING_CHARS];
+	char color[2] = { 0, 0 };
 	int len = 0, run = 0;
+	qboolean wordStart = qtrue;
 
-	for ( ; *in && len < (int)sizeof( out ) - 2; in++ ) {
+	for ( ; *in && len < (int)sizeof( out ) - 5; in++ ) {
 		if ( *in == ' ' ) {
-			run = 0;
-		} else if ( ++run > ST_MAX_WORD ) {
 			out[len++] = ' ';
-			run = 1;
+			run = 0;
+			wordStart = qtrue;
+			continue;
+		}
+		if ( run >= ST_MAX_WORD ) {
+			out[len++] = ' ';
+			run = 0;
+			wordStart = qtrue;
+		}
+		if ( wordStart && color[0] && !Q_IsColorString( in ) ) {
+			out[len++] = color[0];
+			out[len++] = color[1];
+			run += 2;
+		}
+		wordStart = qfalse;
+		if ( Q_IsColorString( in ) ) {
+			color[0] = in[0];
+			color[1] = in[1];
+			out[len++] = *in++;
+			run++;
 		}
 		out[len++] = *in;
+		run++;
 	}
 	out[len] = '\0';
 	return out;
@@ -513,7 +552,7 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 			*error = "Type the text to show";
 			return NULL;
 		}
-		Com_sprintf( cmd, sizeof( cmd ), "rpcentersay %s %i %s", v[0][0] ? v[0] : "all", ST_Round( ST_Number( s, 1 ) ), ST_ShortWords( v[2] ) );
+		Com_sprintf( cmd, sizeof( cmd ), "rpcentersay %s %i %s", v[0][0] ? v[0] : "all", ST_Round( ST_Number( s, 1 ) ), ST_CenterText( v[2] ) );
 		return cmd;
 
 	case ST_A_NPC_TALK:
@@ -1234,6 +1273,280 @@ void CL_Storyteller_ShotSaved( const char *name ) {
 	}
 }
 
+/*
+===============================================================================
+
+Picking with the managers
+
+===============================================================================
+*/
+
+// a step's manager, opened on the world; what it would send the server comes back here
+static void ST_StartPick( stPick_t pick ) {
+	st.pick = pick;
+	st.pickStep = st.stepList.sel;
+	st.numPicked = 0;
+	if ( pick == ST_PICK_MODEL )
+		CL_ModelManager_OpenForStory();
+	else if ( pick == ST_PICK_EFFECT )
+		CL_EffectManager_OpenForStory();
+	else if ( pick == ST_PICK_SHADER )
+		CL_ShaderManager_OpenForStory();
+	else
+		CL_NpcManager_OpenForStory( (qboolean)( pick == ST_PICK_NPC_MANAGE ) );
+}
+
+static qboolean ST_PickOpen( void ) {
+	switch ( st.pick ) {
+	case ST_PICK_MODEL:		return CL_ModelManager_Active();
+	case ST_PICK_EFFECT:	return CL_EffectManager_Active();
+	case ST_PICK_SHADER:	return CL_ShaderManager_Active();
+	case ST_PICK_NPC_SPAWN:
+	case ST_PICK_NPC_MANAGE:	return CL_NpcManager_Active();
+	default:				return qfalse;
+	}
+}
+
+// a manager about to send a command: qtrue keeps it for the story. Lists only read, they go
+qboolean CL_Storyteller_Capture( const char *cmd ) {
+	const char *last;
+
+	if ( st.pick == ST_PICK_NONE || !ST_PickOpen() )
+		return qfalse;
+	last = strrchr( cmd, ' ' );
+	if ( last && !Q_stricmp( last, " list" ) )
+		return qfalse;
+	if ( st.numPicked < ST_MAX_PICKED )
+		Q_strncpyz( st.picked[st.numPicked++], cmd, sizeof( st.picked[0] ) );
+	return qtrue;
+}
+
+static qboolean ST_IsNumber( const char *s ) {
+	if ( *s == '-' || *s == '+' )
+		s++;
+	if ( !*s )
+		return qfalse;
+	for ( ; *s; s++ ) {
+		if ( !isdigit( (unsigned char)*s ) && *s != '.' )
+			return qfalse;
+	}
+	return qtrue;
+}
+
+static qboolean ST_AllNumbers( char **argv, int from, int to ) {
+	for ( int i = from; i < to; i++ ) {
+		if ( !ST_IsNumber( argv[i] ) )
+			return qfalse;
+	}
+	return qtrue;
+}
+
+static void ST_Join( char **argv, int from, int to, char *out, int size ) {
+	out[0] = '\0';
+	for ( int i = from; i < to; i++ )
+		Q_strcat( out, size, va( i > from ? " %s" : "%s", argv[i] ) );
+}
+
+// the NPC manager's commands: npc spawn, tele, and the ones the NPC command step runs
+static qboolean ST_NpcStep( char **argv, int argc, stStep_t *s ) {
+	const char *verb = argv[1], *target = argv[argc - 1], *command = NULL;
+	char value[ST_VALUE_LEN] = "";
+
+	// npc spawn [vehicle] <type> [<targetname> [<team> [<model> [<x y z yaw> [<scale>]]]]]
+	if ( !Q_stricmp( verb, "spawn" ) ) {
+		int at = 2;
+		qboolean vehicle = qfalse;
+
+		if ( !Q_stricmp( argv[at], "vehicle" ) && argc > 3 ) {
+			vehicle = qtrue;
+			at++;
+		}
+		if ( argc - at > 9 || ( argc - at >= 5 && !ST_AllNumbers( argv, at + 4, argc ) ) )
+			return qfalse;
+		s->action = ST_A_NPC_SPAWN;
+		ST_SetDefaults( s );
+		Q_strncpyz( s->values[0], argv[at], ST_VALUE_LEN );
+		Q_strncpyz( s->values[3], vehicle ? "yes" : "no", ST_VALUE_LEN );
+		if ( argc > at + 1 )
+			Q_strncpyz( s->values[1], argv[at + 1], ST_VALUE_LEN );
+		if ( argc > at + 2 )
+			Q_strncpyz( s->values[2], !Q_stricmp( argv[at + 2], "player" ) || !Q_stricmp( argv[at + 2], "enemy" ) ? argv[at + 2] : "default", ST_VALUE_LEN );
+		if ( argc > at + 3 )
+			Q_strncpyz( s->values[4], argv[at + 3], ST_VALUE_LEN );
+		if ( argc >= at + 8 ) {
+			for ( int i = 0; i < 4; i++ )
+				Q_strncpyz( s->values[6 + i], argv[at + 4 + i], ST_VALUE_LEN );
+		} else {
+			// in front of the player: where the storyteller stands now
+			ST_FillHere( s );
+		}
+		if ( argc == at + 9 )
+			Q_strncpyz( s->values[5], argv[at + 8], ST_VALUE_LEN );
+		return qtrue;
+	}
+
+	// npc tele <x y z yaw> <target>
+	if ( !Q_stricmp( verb, "tele" ) ) {
+		if ( argc != 7 || !ST_AllNumbers( argv, 2, 6 ) )
+			return qfalse;
+		s->action = ST_A_NPC_TELE;
+		Q_strncpyz( s->values[0], target, ST_VALUE_LEN );
+		for ( int i = 0; i < 4; i++ )
+			Q_strncpyz( s->values[1 + i], argv[2 + i], ST_VALUE_LEN );
+		return qtrue;
+	}
+
+	if ( !Q_stricmp( verb, "kill" ) && argc == 3 && Q_stricmp( target, "spawners" ) ) {
+		command = "kill";
+	} else if ( !Q_stricmp( verb, "freeze" ) && argc == 4 && ( !strcmp( argv[3], "1" ) || !strcmp( argv[3], "0" ) ) ) {
+		command = !strcmp( argv[3], "1" ) ? "freeze" : "unfreeze";
+		target = argv[2];
+	} else if ( ( !Q_stricmp( verb, "emote" ) || !Q_stricmp( verb, "dialog" ) ) && argc >= 4 ) {
+		// the emote or dialog, then the target
+		ST_Join( argv, 2, argc - 1, value, sizeof( value ) );
+		if ( !Q_stricmp( value, "none" ) ) {
+			command = !Q_stricmp( verb, "emote" ) ? "stop emote" : "no dialog";
+			value[0] = '\0';
+		} else {
+			command = !Q_stricmp( verb, "emote" ) ? "emote" : "dialog";
+		}
+	} else if ( !Q_stricmp( verb, "follow" ) && argc == 4 ) {
+		if ( !Q_stricmp( argv[2], "none" ) )
+			command = "stop following";
+		else if ( atoi( argv[2] ) == clc.clientNum && ST_IsNumber( argv[2] ) )
+			command = "follow me";
+	} else if ( !Q_stricmp( verb, "hologram" ) && argc == 4 ) {
+		if ( !Q_stricmp( argv[2], "normal" ) )			command = "hologram";
+		else if ( !Q_stricmp( argv[2], "projector" ) )	command = "projector";
+		else if ( !Q_stricmp( argv[2], "off" ) )		command = "no hologram";
+	}
+	if ( !command )
+		return qfalse;
+	s->action = ST_A_NPC_CMD;
+	Q_strncpyz( s->values[0], target, ST_VALUE_LEN );
+	Q_strncpyz( s->values[1], command, ST_VALUE_LEN );
+	Q_strncpyz( s->values[2], value, ST_VALUE_LEN );
+	return qtrue;
+}
+
+// a manager's command as a step of its own kind, or one that runs it as it is
+static void ST_StepFromCommand( const char *cmd, stStep_t *s ) {
+	char line[MAX_STRING_CHARS];
+	char *argv[16];
+	int argc;
+
+	memset( s, 0, sizeof( *s ) );
+	s->enabled = qtrue;
+	Q_strncpyz( line, cmd, sizeof( line ) );
+	argc = ST_SplitLine( line, argv, ARRAY_LEN( argv ) );
+
+	// rpmodel add <model> <x y z> <pitch yaw roll> <scale> <solid>
+	if ( argc == 10 && !Q_stricmp( argv[0], "rpmodel" ) && !Q_stricmp( argv[1], "add" ) && ST_AllNumbers( argv, 3, 10 ) ) {
+		s->action = ST_A_MODEL;
+		for ( int i = 0; i < 8; i++ )
+			Q_strncpyz( s->values[i], argv[i + 2], ST_VALUE_LEN );
+		Q_strncpyz( s->values[8], atoi( argv[9] ) ? "yes" : "no", ST_VALUE_LEN );
+		return;
+	}
+	// rpeffect once|add <effect> [<x y z> [<pitch yaw roll>]]; one at the player, with no spot or
+	// 0 0 0, is where the storyteller stands now
+	if ( ( argc == 3 || argc == 6 || argc == 9 ) && !Q_stricmp( argv[0], "rpeffect" )
+		&& ( !Q_stricmp( argv[1], "once" ) || !Q_stricmp( argv[1], "add" ) ) && ST_AllNumbers( argv, 3, argc ) ) {
+		s->action = ST_A_EFFECT;
+		Q_strncpyz( s->values[0], argv[2], ST_VALUE_LEN );
+		Q_strncpyz( s->values[1], !Q_stricmp( argv[1], "add" ) ? "loop" : "once", ST_VALUE_LEN );
+		for ( int i = 0; i < 6; i++ )
+			Q_strncpyz( s->values[i + 2], i + 3 < argc ? argv[i + 3] : "0", ST_VALUE_LEN );
+		if ( argc == 3 || ( !atof( argv[3] ) && !atof( argv[4] ) && !atof( argv[5] ) ) ) {
+			char yaw[ST_VALUE_LEN];
+
+			// its own angles, not the way the storyteller looks
+			Q_strncpyz( yaw, s->values[6], sizeof( yaw ) );
+			ST_FillHere( s );
+			Q_strncpyz( s->values[6], yaw, ST_VALUE_LEN );
+		}
+		return;
+	}
+	// the effect manager's presets
+	if ( argc >= 2 && !Q_stricmp( argv[0], "rpeffect" ) ) {
+		const char *screen = NULL;
+
+		if ( argc == 2 && !Q_stricmp( argv[1], "fadeout" ) )										screen = "fade out";
+		else if ( argc == 3 && !Q_stricmp( argv[1], "remove" ) && !Q_stricmp( argv[2], "fadeout" ) )	screen = "fade in";
+		else if ( argc == 2 && !Q_stricmp( argv[1], "alarm" ) )										screen = "alarm";
+		else if ( argc == 3 && !Q_stricmp( argv[1], "remove" ) && !Q_stricmp( argv[2], "alarm" ) )	screen = "stop alarm";
+		else if ( argc == 4 && !Q_stricmp( argv[1], "camerashake" ) )								screen = "camera shake";
+		if ( screen ) {
+			s->action = ST_A_SCREEN;
+			ST_SetDefaults( s );
+			Q_strncpyz( s->values[0], screen, ST_VALUE_LEN );
+			if ( argc == 4 ) {
+				Q_strncpyz( s->values[1], argv[2], ST_VALUE_LEN );
+				Q_strncpyz( s->values[2], argv[3], ST_VALUE_LEN );
+			}
+			return;
+		}
+	}
+	if ( argc >= 3 && !Q_stricmp( argv[0], "npc" ) && ST_NpcStep( argv, argc, s ) )
+		return;
+	// rpshader remap <from> <to> [<time offset>]
+	if ( ( argc == 4 || argc == 5 ) && !Q_stricmp( argv[0], "rpshader" ) && !Q_stricmp( argv[1], "remap" ) ) {
+		s->action = ST_A_SHADER;
+		Q_strncpyz( s->values[0], argv[2], ST_VALUE_LEN );
+		Q_strncpyz( s->values[1], argv[3], ST_VALUE_LEN );
+		if ( argc == 5 )
+			Q_strncpyz( s->values[2], argv[4], ST_VALUE_LEN );
+		return;
+	}
+	s->action = ST_A_COMMAND;
+	Q_strncpyz( s->values[0], cmd, ST_VALUE_LEN );
+}
+
+// what the manager sent, into the story: the first fills the step it was opened from if it's
+// that kind, the rest go after it
+static void ST_TakePicked( void ) {
+	int from = st.pickStep;
+
+	if ( from < 0 || from >= st.numSteps )
+		from = st.numSteps - 1;
+	ST_SelectStep( from );
+	for ( int i = 0; i < st.numPicked; i++ ) {
+		stStep_t step;
+
+		ST_StepFromCommand( st.picked[i], &step );
+		if ( i == 0 && from >= 0 && st.steps[from].action == step.action ) {
+			step.enabled = st.steps[from].enabled;
+			st.steps[from] = step;
+			ST_Changed();
+			continue;
+		}
+		if ( st.numSteps >= ST_MAX_STEPS ) {
+			ST_Message( S_COLOR_RED "The story is full" );
+			break;
+		}
+		ST_AddStep( step.action );
+		st.steps[st.stepList.sel] = step;
+	}
+	ST_Message( va( S_COLOR_GREEN "%i step%s from the manager", st.numPicked, st.numPicked == 1 ? "" : "s" ) );
+}
+
+// every frame: once the manager has sent something, or was closed, back to the story
+static void ST_PickFrame( void ) {
+	if ( st.pick == ST_PICK_NONE )
+		return;
+	if ( ST_PickOpen() && !st.numPicked )
+		return;
+	CL_ModelManager_Close();
+	CL_EffectManager_Close();
+	CL_ShaderManager_Close();
+	CL_NpcManager_Close();
+	st.pick = ST_PICK_NONE;
+	// another tool opened from it stays
+	if ( !( Key_GetCatcher() & KEYCATCH_ENGINETOOLS ) && ST_Open() && st.numPicked )
+		ST_TakePicked();
+	st.numPicked = 0;
+}
+
 void CL_Storyteller_Init( void ) {
 	memset( &st, 0, sizeof( st ) );
 	st.stepList.sel = -1;
@@ -1252,6 +1565,7 @@ qboolean CL_Storyteller_Active( void ) {
 }
 
 void CL_Storyteller_Frame( void ) {
+	ST_PickFrame();
 	ST_RunFrame();
 }
 
@@ -1860,6 +2174,25 @@ static void ST_DrawEdit( void ) {
 				ST_Changed();
 			else
 				ST_Message( S_COLOR_YELLOW "Aim at a surface first" );
+		}
+		y += ST_CTRL_H + 6;
+	}
+
+	if ( s->action == ST_A_MODEL || s->action == ST_A_EFFECT || s->action == ST_A_SCREEN || s->action == ST_A_SHADER ) {
+		const char *label = s->action == ST_A_MODEL ? "Place it with the model manager"
+			: s->action == ST_A_SHADER ? "Pick it with the shader manager" : "Pick it in the effect manager";
+
+		if ( ST_Button( ST_EDIT_X, y, ST_EDIT_W, label, qfalse, qtrue ) ) {
+			ST_StartPick( s->action == ST_A_MODEL ? ST_PICK_MODEL : s->action == ST_A_SHADER ? ST_PICK_SHADER : ST_PICK_EFFECT );
+			return;
+		}
+		y += ST_CTRL_H + 6;
+	}
+
+	if ( s->action == ST_A_NPC_SPAWN || s->action == ST_A_NPC_TELE || s->action == ST_A_NPC_CMD ) {
+		if ( ST_Button( ST_EDIT_X, y, ST_EDIT_W, s->action == ST_A_NPC_SPAWN ? "Place it with the NPC manager" : "Pick it in the NPC manager", qfalse, qtrue ) ) {
+			ST_StartPick( s->action == ST_A_NPC_SPAWN ? ST_PICK_NPC_SPAWN : ST_PICK_NPC_MANAGE );
+			return;
 		}
 		y += ST_CTRL_H + 6;
 	}

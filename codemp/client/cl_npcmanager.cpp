@@ -1270,6 +1270,9 @@ static int NM_CommandGap( void ) {
 }
 
 static void NM_Send( const char *cmd, qboolean echo ) {
+	// opened from the storyteller, it goes in the story instead
+	if ( CL_Storyteller_Capture( cmd ) )
+		return;
 	CL_AddReliableCommand( cmd, qfalse );
 	// the queue waits for this one too
 	nm.nextSend = cls.realtime + NM_CommandGap();
@@ -1298,6 +1301,10 @@ static void NM_RefreshSoon( void ) {
 }
 
 static void NM_Queue( const char *cmd ) {
+	// opened from the storyteller, it goes in the story instead; the queue would only
+	// send it after the manager closed
+	if ( CL_Storyteller_Capture( cmd ) )
+		return;
 	if ( nm.numQueue >= NM_MAX_QUEUE ) {
 		Com_Printf( S_COLOR_YELLOW "NPC manager: too many spawns waiting, dropped %s\n", cmd );
 		return;
@@ -2411,6 +2418,12 @@ void CL_NpcManager_Close( void ) {
 	NM_ReleaseKeys();
 	NM_PreviewFree();	// never called while drawing
 	Key_SetCatcher( Key_GetCatcher() & ~KEYCATCH_NPCMANAGER );
+}
+
+// opened from a storyteller step, on spawning or on the map's NPCs
+void CL_NpcManager_OpenForStory( qboolean manage ) {
+	if ( NM_Open( manage ? NM_TAB_MANAGE : NM_TAB_SPAWN ) )
+		NM_Message( S_COLOR_GREEN "For the story: what you send here goes in it as steps, not to the server" );
 }
 
 void CL_NpcManager_Init( void ) {

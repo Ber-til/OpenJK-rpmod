@@ -1622,6 +1622,9 @@ COMMANDS
 */
 
 static void EM_Queue( const char *cmd, qboolean echo ) {
+	// opened from the storyteller, it goes in the story instead
+	if ( CL_Storyteller_Capture( cmd ) )
+		return;
 	if ( em.numQueue >= EM_MAX_QUEUE ) {
 		Com_Printf( S_COLOR_YELLOW "Effect manager: too many commands waiting, dropped %s\n", cmd );
 		return;
@@ -3325,6 +3328,13 @@ void CL_EffectManager_Shutdown( void ) {
 
 qboolean CL_EffectManager_Active( void ) {
 	return (qboolean)( em.state != EM_OFF );
+}
+
+// opened from a storyteller step
+void CL_EffectManager_OpenForStory( void ) {
+	EM_Open();
+	if ( em.state != EM_OFF )
+		EM_Message( S_COLOR_GREEN "For the story: what you send here goes in it as steps, not to the server" );
 }
 
 /*

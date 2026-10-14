@@ -2257,6 +2257,8 @@ void CL_RpCinematic_Draw( void ) {
 		re->DrawStretchPic( 0, SCREEN_HEIGHT - h, SCREEN_WIDTH, h, 0, 0, 0, 0, cls.whiteShader );
 		re->SetColor( NULL );
 	}
+	if ( rc.active && !rc.showHud && !CE_Viewing() )
+		CL_RpHooks_DrawSubtitles();
 	if ( ce.open )
 		CE_DrawEditor();
 }

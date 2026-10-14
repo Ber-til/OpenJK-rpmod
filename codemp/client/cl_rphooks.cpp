@@ -65,6 +65,14 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define RH_OBJ_SCALE		0.8f
 #define RH_OBJ_BULLET		"- "
 
+// NPC talk during a cinematic with the HUD hidden, where the chat box can't be seen
+#define RH_MAX_SUBS			3
+#define RH_SUB_LEN			512
+#define RH_SUB_W			480.0f
+#define RH_SUB_SCALE		1.0f
+#define RH_SUB_BOTTOM		10.0f		// above the bottom of the screen
+#define RH_SUB_FADE_MS		500
+
 typedef enum {
 	RH_PASS,		// not a hook, the cgame gets it
 	RH_DROP,		// a hook, the cgame never hears of it
@@ -92,6 +100,26 @@ static qboolean RH_IsTalk( const char *verb ) {
 	return (qboolean)( !Q_stricmp( verb, "talk" ) || !Q_stricmp( verb, "say" ) );
 }
 
+static struct {
+	char		text[RH_SUB_LEN];
+	int			until;			// cls.realtime it's gone by
+}			rhSubs[RH_MAX_SUBS];	// oldest first
+
+// as long as it takes to read, the oldest making way when there are too many
+static void RH_AddSubtitle( const char *text ) {
+	int ms = 3000 + 60 * (int)strlen( text );
+
+	if ( rhSubs[RH_MAX_SUBS - 1].text[0] )
+		memmove( &rhSubs[0], &rhSubs[1], sizeof( rhSubs[0] ) * ( RH_MAX_SUBS - 1 ) );
+	for ( int i = 0; i < RH_MAX_SUBS; i++ ) {
+		if ( !rhSubs[i].text[0] ) {
+			Q_strncpyz( rhSubs[i].text, text, sizeof( rhSubs[i].text ) );
+			rhSubs[i].until = cls.realtime + Q_min( ms, 10000 );
+			break;
+		}
+	}
+}
+
 // cmd:npc/talk/<npc>/<name>/<colour>/<emote>: <message>
 static rhResult_t RH_Npc( char **argv, int argc, const char *message ) {
 	char cmd[MAX_STRING_CHARS];
@@ -113,6 +141,7 @@ static rhResult_t RH_Npc( char **argv, int argc, const char *message ) {
 	if ( !message[0] )
 		return RH_DROP;
 
+	RH_AddSubtitle( va( "%s%s" S_COLOR_WHITE ": %s", color, name, message ) );
 	// chat as the game sends it, from right next to us so RPMod's chat range lets it through
 	Com_sprintf( cmd, sizeof( cmd ), "chat \"%s%s" S_COLOR_WHITE "\x19: " S_COLOR_GREEN "%s\" 0", color, name, message );
 	Cmd_TokenizeString( cmd );
@@ -349,7 +378,8 @@ static void RH_Fill( float x, float y, float w, float h, const float *color ) {
 
 // text broken at spaces to fit the width, each line's colour carried on to the next; how many lines.
 // Drawn only with draw, otherwise just counted
-static int RH_Wrap( int font, float x, float y, const char *text, const float *color, qboolean strike, qboolean draw ) {
+static int RH_WrapEx( int font, float x, float y, float w, float scale, float rowH, const char *text, const float *color,
+	qboolean strike, qboolean center, qboolean draw ) {
 	char line[RH_OBJECTIVE_LEN + 2];
 	char colorCode[3] = "";
 	int lines = 0;
@@ -361,7 +391,7 @@ static int RH_Wrap( int font, float x, float y, const char *text, const float *c
 		while ( text[len] && start + len < (int)sizeof( line ) - 1 ) {
 			line[start + len] = text[len];
 			line[start + len + 1] = '\0';
-			if ( re->Font_StrLenPixels( line, font, RH_OBJ_SCALE ) > RH_OBJ_W - RH_OBJ_PAD * 2 )
+			if ( re->Font_StrLenPixels( line, font, scale ) > w )
 				break;
 			if ( text[len] == ' ' || !text[len + 1] )
 				fit = len + 1;
@@ -374,12 +404,13 @@ static int RH_Wrap( int font, float x, float y, const char *text, const float *c
 		line[start + fit] = '\0';
 
 		if ( draw ) {
-			const float ly = y + lines * RH_OBJ_ROW_H;
-			re->Font_DrawString( (int)x, (int)ly, line, color, font | STYLE_DROPSHADOW, -1, RH_OBJ_SCALE );
-			if ( strike ) {
-				const float w = (float)re->Font_StrLenPixels( line, font, RH_OBJ_SCALE );
-				RH_Fill( x, ly + re->Font_HeightPixels( font, RH_OBJ_SCALE ) * 0.55f, w, 1.0f, color );
-			}
+			const float ly = y + lines * rowH;
+			const float lw = (float)re->Font_StrLenPixels( line, font, scale );
+			const float lx = center ? x + ( w - lw ) * 0.5f : x;
+
+			re->Font_DrawString( (int)lx, (int)ly, line, color, font | STYLE_DROPSHADOW, -1, scale );
+			if ( strike )
+				RH_Fill( lx, ly + re->Font_HeightPixels( font, scale ) * 0.55f, lw, 1.0f, color );
 		}
 		for ( int i = 0; i < fit; i++ ) {
 			if ( Q_IsColorString( text + i ) ) {
@@ -396,6 +427,37 @@ static int RH_Wrap( int font, float x, float y, const char *text, const float *c
 	return lines;
 }
 
+static int RH_Wrap( int font, float x, float y, const char *text, const float *color, qboolean strike, qboolean draw ) {
+	return RH_WrapEx( font, x, y, RH_OBJ_W - RH_OBJ_PAD * 2, RH_OBJ_SCALE, RH_OBJ_ROW_H, text, color, strike, qfalse, draw );
+}
+
+static int RH_Font( void ) {
+	const int font = re->RegisterFont( "arialnb" );
+	return font ? font : cls.menuFont;
+}
+
+// NPCs talking, at the bottom of the screen: the cinematic hides the chat box with the HUD
+void CL_RpHooks_DrawSubtitles( void ) {
+	const int font = RH_Font();
+	const float rowH = re->Font_HeightPixels( font, RH_SUB_SCALE ) + 2.0f;
+	const float x = ( SCREEN_WIDTH - RH_SUB_W ) * 0.5f;
+	float y = SCREEN_HEIGHT - RH_SUB_BOTTOM;
+
+	// the newest at the bottom, the ones before it above
+	for ( int i = RH_MAX_SUBS - 1; i >= 0; i-- ) {
+		vec4_t color = { 1.0f, 1.0f, 1.0f, 1.0f };
+		const int left = rhSubs[i].until - cls.realtime;
+
+		if ( !rhSubs[i].text[0] || left <= 0 )
+			continue;
+		if ( left < RH_SUB_FADE_MS )
+			color[3] = (float)left / RH_SUB_FADE_MS;
+		y -= RH_WrapEx( font, 0, 0, RH_SUB_W, RH_SUB_SCALE, rowH, rhSubs[i].text, color, qfalse, qtrue, qfalse ) * rowH;
+		RH_WrapEx( font, x, y, RH_SUB_W, RH_SUB_SCALE, rowH, rhSubs[i].text, color, qfalse, qtrue, qtrue );
+		y -= 2.0f;
+	}
+}
+
 // the objectives, while the menu is up in game
 void CL_RpHooks_Draw( void ) {
 	char plain[RH_OBJECTIVE_LEN];
@@ -404,9 +466,7 @@ void CL_RpHooks_Draw( void ) {
 
 	if ( !rhObj.count || cls.state != CA_ACTIVE || !( Key_GetCatcher() & KEYCATCH_UI ) )
 		return;
-	font = re->RegisterFont( "arialnb" );
-	if ( !font )
-		font = cls.menuFont;
+	font = RH_Font();
 
 	for ( int i = 0; i < rhObj.count; i++ )
 		lines += RH_Wrap( font, 0, 0, va( RH_OBJ_BULLET "%s", rhObj.items[i].text ), rhObjText, qfalse, qfalse );
@@ -495,6 +555,7 @@ void CL_RpHooks_Shutdown( void ) {
 void CL_RpHooks_Disconnect( void ) {
 	memset( &rhObj, 0, sizeof( rhObj ) );
 	memset( &rhLast, 0, sizeof( rhLast ) );
+	memset( &rhSubs, 0, sizeof( rhSubs ) );
 }
 
 // the server command just tokenized: qfalse keeps it from the cgame

@@ -643,6 +643,7 @@ void CL_ModelManager_Shutdown( void );
 void CL_ModelManager_f( void );
 qboolean CL_ModelManager_Active( void );
 void CL_ModelManager_Close( void );
+void CL_ModelManager_OpenForStory( void );
 void CL_ModelManager_KeyEvent( int key, qboolean down );
 void CL_ModelManager_CharEvent( int ch );
 void CL_ModelManager_MouseEvent( int dx, int dy );
@@ -670,6 +671,7 @@ void CL_NpcManager_f( void );
 qboolean CL_NpcManager_Active( void );
 void CL_NpcManager_Frame( void );
 void CL_NpcManager_Close( void );
+void CL_NpcManager_OpenForStory( qboolean manage );
 void CL_NpcManager_KeyEvent( int key, qboolean down );
 void CL_NpcManager_CharEvent( int ch );
 void CL_NpcManager_MouseEvent( int dx, int dy );
@@ -700,6 +702,7 @@ qboolean CL_ShaderManager_RenderScene( const refdef_t *fd );
 qboolean CL_ShaderManager_FilterEntity( const refEntity_t *ent );
 qboolean CL_ShaderManager_Active( void );
 void CL_ShaderManager_Close( void );
+void CL_ShaderManager_OpenForStory( void );
 void CL_ShaderManager_KeyEvent( int key, qboolean down );
 void CL_ShaderManager_CharEvent( int ch );
 void CL_ShaderManager_MouseEvent( int dx, int dy );
@@ -719,6 +722,7 @@ void CL_EffectManager_Shutdown( void );
 void CL_EffectManager_f( void );
 qboolean CL_EffectManager_Active( void );
 void CL_EffectManager_Close( void );
+void CL_EffectManager_OpenForStory( void );
 void CL_EffectManager_KeyEvent( int key, qboolean down );
 void CL_EffectManager_CharEvent( int ch );
 void CL_EffectManager_MouseEvent( int dx, int dy );
@@ -739,6 +743,7 @@ void CL_RpHooks_Init( void );
 void CL_RpHooks_Shutdown( void );
 void CL_RpHooks_Disconnect( void );
 void CL_RpHooks_Draw( void );
+void CL_RpHooks_DrawSubtitles( void );
 
 // cl_rpcinematic.cpp
 void CL_RpCinematic_Init( void );
@@ -776,6 +781,7 @@ void CL_Storyteller_Frame( void );
 void CL_Storyteller_Draw( void );
 void CL_Storyteller_Open( void );
 void CL_Storyteller_ShotSaved( const char *name );
+qboolean CL_Storyteller_Capture( const char *cmd );
 
 //
 // cl_fighterassist.cpp
