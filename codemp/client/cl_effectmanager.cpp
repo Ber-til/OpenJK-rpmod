@@ -3250,6 +3250,9 @@ static void EM_Open( void ) {
 		Com_Printf( "Effect manager: join a server first\n" );
 		return;
 	}
+	// for RPMod's admins: whoever else can't run what it makes
+	if ( !CL_RpAdmin_Allow( "Effect manager", "effectmanager" ) )
+		return;
 	CL_ModelManager_Close();
 	CL_NpcManager_Close();
 	CL_ShaderManager_Close();

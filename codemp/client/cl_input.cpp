@@ -275,6 +275,9 @@ void IN_GenCMD18( void )
 
 void IN_GenCMD19( void )
 {
+	// the styles picked with saberstyles, or straight to one
+	if ( CL_SaberStyle_Cycle() )
+		return;
 	if (Cvar_VariableIntegerValue("d_saberStanceDebug"))
 	{
 		Com_Printf("SABERSTANCEDEBUG: Gencmd on client set successfully.\n");
@@ -985,8 +988,12 @@ void CL_MouseEvent( int dx, int dy, int time ) {
 		CL_SoundManager_MouseEvent( dx, dy );
 	} else if ( Key_GetCatcher( ) & KEYCATCH_CINEDITOR ) {
 		CL_RpCinematic_EditorMouseEvent( dx, dy );
+	} else if ( Key_GetCatcher( ) & KEYCATCH_RADIALMENU ) {
+		CL_RadialMenu_SettingsMouseEvent( dx, dy );
 	} else if ( Key_GetCatcher( ) & KEYCATCH_CGAME ) {
 		CGVM_MouseEvent( dx, dy );
+	} else if ( CL_RadialMenu_MouseEvent( dx, dy ) ) {
+		// a radial menu open: the mouse points at its items
 	} else {
 		cl.mouseDx[cl.mouseIndex] += dx;
 		cl.mouseDy[cl.mouseIndex] += dy;

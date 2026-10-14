@@ -421,6 +421,12 @@ rescan:
 			return qtrue;
 	}
 
+	// the admin check reads rpstatus, and hides the reply it asked for
+	if ( !strcmp( cmd, "print" ) && CL_RpAdmin_ServerPrint( Cmd_Argv( 1 ) ) ) {
+		Cmd_TokenizeString( "print \"\"" );
+		return qtrue;
+	}
+
 	// the shader manager shows the answer to its rpshader commands
 	if ( !strcmp( cmd, "print" ) )
 		CL_ShaderManager_ServerPrint( Cmd_Argv( 1 ) );
@@ -540,6 +546,7 @@ void CL_ShutdownCGame( void ) {
 	CL_MapEditor_Shutdown();
 	CL_Storyteller_Shutdown();
 	CL_SoundManager_Shutdown();
+	CL_RadialMenu_Shutdown();
 	CL_RpCinematic_Reset();
 	CL_FighterAssist_Shutdown();
 	CL_ChatRange_Shutdown();

@@ -1343,6 +1343,10 @@ void CL_KeyDownEvent( int key, unsigned time )
 			return;
 		}
 
+		// a radial menu open closes
+		if ( CL_RadialMenu_Escape() )
+			return;
+
 		// the model placer steps back a level, unless a menu is open over it
 		if ( ( Key_GetCatcher() & KEYCATCH_MODELMANAGER ) && !( Key_GetCatcher() & KEYCATCH_UI ) ) {
 			CL_ModelManager_Escape();
@@ -1376,6 +1380,10 @@ void CL_KeyDownEvent( int key, unsigned time )
 			CL_RpCinematic_EditorEscape();
 			return;
 		}
+		if ( ( Key_GetCatcher() & KEYCATCH_RADIALMENU ) && !( Key_GetCatcher() & KEYCATCH_UI ) ) {
+			CL_RadialMenu_SettingsEscape();
+			return;
+		}
 
 		// escape always gets out of CGAME stuff
 		if ( Key_GetCatcher() & KEYCATCH_CGAME ) {
@@ -1398,6 +1406,10 @@ void CL_KeyDownEvent( int key, unsigned time )
 		if ( !cls.cursorActive ) UIVM_KeyEvent( key, qtrue );
 		return;
 	}
+
+	// an open radial menu takes the number keys and the mouse buttons, the rest work as usual
+	if ( CL_RadialMenu_KeyDown( key ) )
+		return;
 
 	// send the bound action
 	if ( !cls.cursorActive ) CL_ParseBinding( key, qtrue, time );
@@ -1445,6 +1457,10 @@ void CL_KeyDownEvent( int key, unsigned time )
 	// camera editor
 	else if ( Key_GetCatcher() & KEYCATCH_CINEDITOR ) {
 		CL_RpCinematic_EditorKeyEvent( key, qtrue );
+	}
+	// radial menu settings
+	else if ( Key_GetCatcher() & KEYCATCH_RADIALMENU ) {
+		CL_RadialMenu_KeyEvent( key, qtrue );
 	}
 	// cgame
 	else if ( Key_GetCatcher() & KEYCATCH_CGAME ) {
@@ -1498,6 +1514,7 @@ void CL_KeyUpEvent( int key, unsigned time )
 	CL_Storyteller_KeyEvent( key, qfalse );
 	CL_SoundManager_KeyEvent( key, qfalse );
 	CL_RpCinematic_EditorKeyEvent( key, qfalse );
+	CL_RadialMenu_KeyEvent( key, qfalse );
 
 	if ( Key_GetCatcher( ) & KEYCATCH_UI && cls.uiStarted )
 		UIVM_KeyEvent( key, qfalse );
@@ -1542,6 +1559,7 @@ void CL_CharEvent( int key ) {
 	else if ( Key_GetCatcher() & KEYCATCH_STORYTELLER )	CL_Storyteller_CharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_SOUNDMANAGER )	CL_SoundManager_CharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_CINEDITOR )	CL_RpCinematic_EditorCharEvent( key );
+	else if ( Key_GetCatcher() & KEYCATCH_RADIALMENU )	CL_RadialMenu_CharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_CGAME )		CGVM_KeyEvent( key|K_CHAR_FLAG, qtrue );
 	else if ( Key_GetCatcher() & KEYCATCH_MESSAGE )		Field_CharEvent( &chatField, key );
 	else if ( cls.state == CA_DISCONNECTED )			Field_CharEvent( &g_consoleField, key );

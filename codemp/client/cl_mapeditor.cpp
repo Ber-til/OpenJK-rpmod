@@ -34,7 +34,21 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 //
 // RPMod has no server side for any of it yet, so only this screen sees the edits. They
 // are kept in mapedits/<map>.ent, written as entities a server could spawn later, and
-// come back with the map whenever rpc_mapEdits is on.
+// come back with the map whenever rpc_mapEdits is on. Layouts are more of them kept by
+// name, in mapedits/<map>/<name>.ent, to load when wanted.
+//
+// Shared, an admin's edits go to everyone on the map with this client, hidden in rpnotify
+// prints (see cl_rphooks.cpp):
+//   cmd:map/begin/<id>/<parts>: <map>      a batch of edits for that map
+//   cmd:map/add/<id>/<part>: <edit> | <edit> | ...
+//   cmd:map/end/<id>/<parts>               shown in place of the player's own until
+//                                          cmd:map/clear: <map>, or another map
+// An edit is m (a model), p (a map prop), l (a light), s (a light style) or h (a hidden
+// brush entity), then its numbers; a model's path and a style's letters come last, with
+// spaces put in so no word is long, and taken out again. Triggers stay with whoever made
+// them: a print never runs a command. Only what's drawn changes: walls hidden still block,
+// props moved don't, as the server knows nothing of it. Players who join later see the
+// edits once they're shared again.
 
 #include "client.h"
 #include "qcommon/cm_public.h"
@@ -43,6 +57,12 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define ME_DIR				"mapedits"
 #define ME_EXT				".ent"
 #define ME_HEADER			"// map edits, made with /mapedit; only this screen sees them for now\n"
+#define ME_MAX_LAYOUTS		64
+#define ME_SHARE_HOOK		"map"
+#define ME_SHARE_LEN		700			// a hook's edits, well inside what RPMod passes on
+#define ME_SHARE_WORD		32			// longer words go in pieces: RPMod chokes on long ones
+#define ME_MAX_SHARE		96			// hooks waiting to go
+#define ME_SHARE_BUF		( ME_MAX_SHARE * ( ME_SHARE_LEN + 4 ) )
 
 #define ME_MAX_ENTS			2048
 #define ME_MAX_KV			64
@@ -201,7 +221,8 @@ typedef enum {
 	ME_FIELD_FILTER,		// the map's entities, by class or name
 	ME_FIELD_SEARCH,		// the models
 	ME_FIELD_COMMAND,		// a trigger's
-	ME_FIELD_PATTERN		// a light style's
+	ME_FIELD_PATTERN,		// a light style's
+	ME_FIELD_LAYOUT			// a layout's name
 } meField_t;
 
 typedef struct {
@@ -298,11 +319,29 @@ typedef struct {
 	int			numLines;
 	char		message[MAX_STRING_CHARS];
 	int			messageTime;
+
+	// layouts: edits kept by name, the panel showing them in place of a tab
+	qboolean	showLayouts;
+	char		layoutName[MAX_QPATH];
+	char		layouts[ME_MAX_LAYOUTS][MAX_QPATH];
+	int			numLayouts, layoutScroll, layoutSel;
+	int			confirmTime;
+	qboolean	experimentalBox;	// the warning before turning experimental features on
+
+	// shared: ours going out, a paced hook at a time; someone's coming in
+	char		share[ME_MAX_SHARE][ME_SHARE_LEN + 64];
+	int			numShare, shareSent, nextShare;
+	int			shareId;			// ours, left alone when it comes back
+	qboolean	shared;				// what's shown is someone's, not ours
+	int			rxId, rxParts, rxGot;
+	char		rxBuf[ME_SHARE_BUF];
+	int			rxLen;
 } meState_t;
 
 static meState_t me;
 static char meNamePool[ME_NAME_POOL];
 static cvar_t *rpc_mapEdits;
+static cvar_t *rpc_mapShare;
 
 static vec4_t meWhite		= { 1.0f, 1.0f, 1.0f, 1.0f };
 static vec4_t mePanel		= { 0.0f, 0.0f, 0.0f, 0.7f };
@@ -312,6 +351,7 @@ static vec4_t meHighlight	= { 0.2f, 0.45f, 0.8f, 0.85f };
 static vec4_t meHoverBox	= { 0.28f, 0.28f, 0.28f, 0.9f };
 static vec4_t meBorder		= { 0.5f, 0.5f, 0.5f, 0.8f };
 static vec4_t meDim			= { 0.65f, 0.65f, 0.65f, 1.0f };
+static vec4_t mePanelOpaque	= { 0.05f, 0.05f, 0.05f, 0.95f };	// a box over the rest, which would show through
 
 static const byte meTriggerColor[4]	= { 255, 140, 30, 255 };
 static const byte meBrushColor[4]	= { 70, 140, 255, 255 };
@@ -1234,13 +1274,41 @@ Saving and loading
 ===============================================================================
 */
 
-static const char *ME_Path( void ) {
-	char name[MAX_QPATH];
+// maps/mp/ffa3.bsp: mp/ffa3
+static const char *ME_MapBase( void ) {
+	static char name[MAX_QPATH];
 
-	// maps/mp/ffa3.bsp: mapedits/mp/ffa3.ent
 	Q_strncpyz( name, !Q_stricmpn( cl.mapname, "maps/", 5 ) ? cl.mapname + 5 : cl.mapname, sizeof( name ) );
 	COM_StripExtension( name, name, sizeof( name ) );
-	return va( ME_DIR "/%s" ME_EXT, name );
+	return name;
+}
+
+// mapedits/mp/ffa3.ent
+static const char *ME_Path( void ) {
+	return va( ME_DIR "/%s" ME_EXT, ME_MapBase() );
+}
+
+// mapedits/mp/ffa3/<name>.ent
+static const char *ME_LayoutDir( void ) {
+	return va( ME_DIR "/%s", ME_MapBase() );
+}
+
+static const char *ME_LayoutPath( const char *name ) {
+	return va( ME_DIR "/%s/%s" ME_EXT, ME_MapBase(), name );
+}
+
+static qboolean ME_LayoutChar( int ch ) {
+	return (qboolean)( isalnum( ch ) || ch == '_' || ch == '-' );
+}
+
+static qboolean ME_LayoutNameOk( const char *name ) {
+	if ( !name[0] )
+		return qfalse;
+	for ( ; *name; name++ ) {
+		if ( !ME_LayoutChar( *name ) )
+			return qfalse;
+	}
+	return qtrue;
 }
 
 static void ME_Print( fileHandle_t f, const char *key, const char *value ) {
@@ -1251,16 +1319,17 @@ static const char *ME_Vec( const vec3_t v ) {
 	return va( "%g %g %g", ME_Round( v[0] * 10.0f ) / 10.0f, ME_Round( v[1] * 10.0f ) / 10.0f, ME_Round( v[2] * 10.0f ) / 10.0f );
 }
 
-static qboolean ME_Save( void ) {
+// the edits written to the file; how many, -1 if it couldn't be
+static int ME_SaveTo( const char *path ) {
 	fileHandle_t f;
 	int count = 0;
 
 	if ( !me.map[0] )
-		return qfalse;
-	f = FS_FOpenFileWrite( ME_Path() );
+		return -1;
+	f = FS_FOpenFileWrite( path );
 	if ( !f ) {
 		ME_Message( S_COLOR_RED "Couldn't write the file" );
-		return qfalse;
+		return -1;
 	}
 	FS_Printf( f, "%s", ME_HEADER );
 	for ( int i = 0; i < me.numItems; i++ ) {
@@ -1331,6 +1400,15 @@ static qboolean ME_Save( void ) {
 		count++;
 	}
 	FS_FCloseFile( f );
+	return count;
+}
+
+// the map's own file, what comes back with it
+static qboolean ME_Save( void ) {
+	const int count = ME_SaveTo( ME_Path() );
+
+	if ( count < 0 )
+		return qfalse;
 	me.dirty = qfalse;
 	ME_Message( va( S_COLOR_GREEN "Saved %i edits to %s", count, ME_Path() ) );
 	return qtrue;
@@ -1423,15 +1501,19 @@ static void ME_LoadEntity( const meKv_t *kv, int num ) {
 	}
 }
 
-static void ME_Load( void ) {
+// the edits in the file in place of the ones shown; qfalse if there's no file
+static qboolean ME_LoadFrom( const char *path ) {
 	static meKv_t kv[32];
 	const char *p;
 	char *buf, *token;
 	int num;
 
 	ME_Clear();
-	if ( FS_ReadFile( ME_Path(), (void **)&buf ) <= 0 || !buf )
-		return;
+	me.shared = qfalse;
+	if ( FS_ReadFile( path, (void **)&buf ) <= 0 || !buf ) {
+		ME_RebuildHidden();
+		return qfalse;
+	}
 	p = buf;
 	COM_BeginParseSession( "mapedit" );
 	for ( ;; ) {
@@ -1455,6 +1537,376 @@ static void ME_Load( void ) {
 	}
 	FS_FreeFile( buf );
 	ME_RebuildHidden();
+	return qtrue;
+}
+
+static void ME_Load( void ) {
+	ME_LoadFrom( ME_Path() );
+}
+
+/*
+===============================================================================
+
+Layouts
+
+===============================================================================
+*/
+
+static void ME_ListLayouts( void ) {
+	char list[16384], *p;
+	int count;
+
+	me.numLayouts = 0;
+	if ( !me.map[0] )
+		return;
+	count = FS_GetFileList( ME_LayoutDir(), ME_EXT, list, sizeof( list ) );
+	for ( p = list; count-- > 0 && me.numLayouts < ME_MAX_LAYOUTS; p += strlen( p ) + 1 ) {
+		Q_strncpyz( me.layouts[me.numLayouts], p, sizeof( me.layouts[0] ) );
+		COM_StripExtension( me.layouts[me.numLayouts], me.layouts[me.numLayouts], sizeof( me.layouts[0] ) );
+		if ( me.layouts[me.numLayouts][0] )
+			me.numLayouts++;
+	}
+	if ( me.layoutSel >= me.numLayouts )
+		me.layoutSel = -1;
+}
+
+static void ME_SaveLayout( const char *name ) {
+	int count;
+
+	if ( !ME_LayoutNameOk( name ) ) {
+		ME_Message( S_COLOR_YELLOW "Name it with letters, numbers, - and _" );
+		return;
+	}
+	count = ME_SaveTo( ME_LayoutPath( name ) );
+	if ( count < 0 )
+		return;
+	ME_Message( va( S_COLOR_GREEN "Saved %i edits as %s", count, name ) );
+	ME_ListLayouts();
+}
+
+static void ME_LoadLayout( const char *name ) {
+	if ( !ME_LayoutNameOk( name ) || !ME_LoadFrom( ME_LayoutPath( name ) ) ) {
+		ME_Message( va( S_COLOR_YELLOW "No layout %s", name ) );
+		ME_Load();
+		return;
+	}
+	// what's shown isn't what comes back with the map until it's saved
+	me.dirty = qtrue;
+	ME_Message( va( S_COLOR_GREEN "Loaded %s: Save keeps it as this map's edits", name ) );
+}
+
+static void ME_DeleteLayout( const char *name ) {
+	if ( !ME_LayoutNameOk( name ) )
+		return;
+	FS_HomeRemove( ME_LayoutPath( name ) );
+	ME_Message( va( "Deleted %s", name ) );
+	ME_ListLayouts();
+}
+
+/*
+===============================================================================
+
+Sharing: our edits to everyone on the map with this client, theirs to us
+
+===============================================================================
+*/
+
+static void ME_CheckMap( void );
+
+// what the server lets through: one command a second, unless it says otherwise
+static int ME_CommandGap( void ) {
+	const char *info = cl.gameState.stringData + cl.gameState.stringOffsets[CS_SERVERINFO];
+	const char *flood = Info_ValueForKey( info, "sv_floodProtect" );
+	int value;
+
+	if ( !flood[0] )
+		return 1100;
+	value = atoi( flood );
+	if ( value <= 0 )
+		return 0;
+	return ( value == 1 ? 1000 : value ) + 100;
+}
+
+// a word, a space put in after each / and every ME_SHARE_WORD characters
+static void ME_AppendSplit( char *out, int size, const char *word ) {
+	int len = strlen( out ), run = 0;
+
+	for ( ; *word && len < size - 2; word++ ) {
+		out[len++] = *word;
+		run++;
+		if ( word[1] && ( *word == '/' || run >= ME_SHARE_WORD ) ) {
+			out[len++] = ' ';
+			run = 0;
+		}
+	}
+	out[len] = '\0';
+}
+
+static void ME_QueueShare( const char *hook ) {
+	if ( me.numShare < ME_MAX_SHARE )
+		Q_strncpyz( me.share[me.numShare++], hook, sizeof( me.share[0] ) );
+}
+
+// one edit for a hook; "" if it isn't shared
+static const char *ME_ShareItem( const meItem_t *it ) {
+	static char out[ME_SHARE_LEN];
+
+	out[0] = '\0';
+	if ( it->kind == ME_ITEM_MODEL ) {
+		Q_strcat( out, sizeof( out ), va( "m %s", ME_Vec( it->org ) ) );
+		Q_strcat( out, sizeof( out ), va( " %s %g ", ME_Vec( it->ang ), it->scale ) );
+		ME_AppendSplit( out, sizeof( out ), it->model );
+	} else if ( it->kind == ME_ITEM_PROP ) {
+		Q_strcat( out, sizeof( out ), va( "p %s", ME_Vec( it->pivot ) ) );
+		Q_strcat( out, sizeof( out ), va( " %s", ME_Vec( it->org ) ) );
+		Q_strcat( out, sizeof( out ), va( " %s %g %i", ME_Vec( it->ang ), it->scale, it->removed ? 1 : 0 ) );
+		for ( int j = 0; j < it->numSeeds; j++ )
+			Q_strcat( out, sizeof( out ), va( " %i:%i", it->seeds[j][0], it->seeds[j][1] ) );
+	} else if ( it->kind == ME_ITEM_LIGHT ) {
+		Q_strcat( out, sizeof( out ), va( "l %s %i %g %g %g %i", ME_Vec( it->org ), ME_Round( it->radius ),
+			it->color[0], it->color[1], it->color[2], it->style ) );
+	}
+	return out;
+}
+
+// everything shown, to everyone: begin, the edits a hook at a time, end
+static void ME_Share( void ) {
+	char part[ME_SHARE_LEN + 1] = "";
+	const char *edits[ME_MAX_ITEMS + MAX_LIGHT_STYLES + ME_MAX_HIDDEN];
+	static char styleText[MAX_LIGHT_STYLES][MAX_QPATH * 2 + 32];
+	static char itemText[ME_MAX_ITEMS][ME_SHARE_LEN];
+	static char hideText[ME_MAX_HIDDEN][16];
+	int numHide = 0;
+	int numEdits = 0, numParts = 0, first;
+
+	if ( cls.state != CA_ACTIVE || !me.map[0] )
+		return;
+	if ( !CL_RpHooks_Experimental() ) {
+		ME_Message( S_COLOR_YELLOW RP_EXPERIMENTAL_OFF ", in Layouts" );
+		return;
+	}
+	if ( me.shareSent < me.numShare ) {
+		ME_Message( S_COLOR_YELLOW "Still sending the last share" );
+		return;
+	}
+
+	for ( int i = 0; i < me.numItems; i++ ) {
+		const char *edit = ME_ShareItem( &me.items[i] );
+
+		if ( edit[0] ) {
+			Q_strncpyz( itemText[i], edit, sizeof( itemText[i] ) );
+			edits[numEdits++] = itemText[i];
+		}
+	}
+	for ( int i = 0; i < MAX_LIGHT_STYLES; i++ ) {
+		const meStyle_t *s = &me.styles[i];
+
+		if ( !s->override )
+			continue;
+		Com_sprintf( styleText[i], sizeof( styleText[i] ), "s %i %g %g %g ", i, s->color[0], s->color[1], s->color[2] );
+		ME_AppendSplit( styleText[i], sizeof( styleText[i] ), s->pattern[0] ? s->pattern : "z" );
+		edits[numEdits++] = styleText[i];
+	}
+	for ( int i = 0; i < me.numEnts && numHide < ME_MAX_HIDDEN; i++ ) {
+		if ( me.ents[i].hidden && me.ents[i].bmodel ) {
+			Com_sprintf( hideText[numHide], sizeof( hideText[0] ), "h %i", me.ents[i].bmodel );
+			edits[numEdits++] = hideText[numHide++];
+		}
+	}
+
+	me.numShare = me.shareSent = 0;
+	me.shareId = 1 + ( ( cls.realtime ^ ( rand() << 8 ) ) & 0xffff );
+	first = me.numShare;
+	ME_QueueShare( "" );		// the begin, once the parts are counted
+	for ( int i = 0; i < numEdits; i++ ) {
+		if ( part[0] && strlen( part ) + strlen( edits[i] ) + 3 > ME_SHARE_LEN ) {
+			ME_QueueShare( va( "cmd:" ME_SHARE_HOOK "/add/%i/%i: %s", me.shareId, ++numParts, part ) );
+			part[0] = '\0';
+		}
+		Q_strcat( part, sizeof( part ), va( "%s%s", part[0] ? " | " : "", edits[i] ) );
+	}
+	if ( part[0] )
+		ME_QueueShare( va( "cmd:" ME_SHARE_HOOK "/add/%i/%i: %s", me.shareId, ++numParts, part ) );
+	ME_QueueShare( va( "cmd:" ME_SHARE_HOOK "/end/%i/%i", me.shareId, numParts ) );
+	Com_sprintf( me.share[first], sizeof( me.share[0] ), "cmd:" ME_SHARE_HOOK "/begin/%i/%i: %s", me.shareId, numParts, me.map );
+	if ( me.numShare == ME_MAX_SHARE ) {
+		me.numShare = 0;
+		ME_Message( S_COLOR_RED "Too many edits to share at once" );
+		return;
+	}
+	me.nextShare = 0;
+	ME_Message( va( S_COLOR_GREEN "Sharing %i edits in %i hooks", numEdits, me.numShare ) );
+}
+
+// everyone back to their own edits
+static void ME_Unshare( void ) {
+	if ( cls.state != CA_ACTIVE || !me.map[0] )
+		return;
+	if ( !CL_RpHooks_Experimental() ) {
+		ME_Message( S_COLOR_YELLOW RP_EXPERIMENTAL_OFF ", in Layouts" );
+		return;
+	}
+	// what's still going isn't wanted now
+	me.numShare = me.shareSent = 0;
+	ME_QueueShare( va( "cmd:" ME_SHARE_HOOK "/clear: %s", me.map ) );
+	me.nextShare = 0;
+	ME_Message( "Taking the shared edits away from everyone" );
+}
+
+static void ME_RunShare( void ) {
+	if ( me.shareSent >= me.numShare || cls.realtime < me.nextShare )
+		return;
+	CL_AddReliableCommand( va( "rpnotify -1 1 %s", me.share[me.shareSent++] ), qfalse );
+	me.nextShare = cls.realtime + ME_CommandGap();
+	if ( me.shareSent == me.numShare )
+		ME_Message( S_COLOR_GREEN "Shared with everyone on the map with this client" );
+}
+
+// the edit's words put back together: spaces were put in to keep them short
+static void ME_Unsplit( const char *in, char *out, int size ) {
+	int len = 0;
+
+	for ( ; *in && len < size - 1; in++ ) {
+		if ( *in != ' ' )
+			out[len++] = *in;
+	}
+	out[len] = '\0';
+}
+
+// one shared edit, as an entity from the file
+static void ME_ApplyShared( const char *edit ) {
+	meKv_t kv[8];
+	float f[12];
+	int n = 0, used = 0;
+	char rest[MAX_QPATH * 2];
+
+	while ( *edit == ' ' )
+		edit++;
+	memset( kv, 0, sizeof( kv ) );
+#define ME_KV( k, v ) ( Q_strncpyz( kv[n].key, k, sizeof( kv[n].key ) ), Q_strncpyz( kv[n].value, v, sizeof( kv[n].value ) ), n++ )
+	switch ( *edit ) {
+	case 'm':
+		if ( sscanf( edit + 1, "%f %f %f %f %f %f %f %n", &f[0], &f[1], &f[2], &f[3], &f[4], &f[5], &f[6], &used ) < 7 || !used )
+			return;
+		ME_Unsplit( edit + 1 + used, rest, sizeof( rest ) );
+		ME_KV( "classname", "misc_model_static" );
+		ME_KV( "model", rest );
+		ME_KV( "origin", va( "%g %g %g", f[0], f[1], f[2] ) );
+		ME_KV( "angles", va( "%g %g %g", f[3], f[4], f[5] ) );
+		ME_KV( "modelscale", va( "%g", f[6] ) );
+		break;
+	case 'p':
+		if ( sscanf( edit + 1, "%f %f %f %f %f %f %f %f %f %f %f %n", &f[0], &f[1], &f[2], &f[3], &f[4], &f[5], &f[6], &f[7], &f[8],
+			&f[9], &f[10], &used ) < 11 || !used )
+			return;
+		ME_KV( "classname", "rpm_prop" );
+		ME_KV( "from", va( "%g %g %g", f[0], f[1], f[2] ) );
+		ME_KV( "origin", va( "%g %g %g", f[3], f[4], f[5] ) );
+		ME_KV( "angles", va( "%g %g %g", f[6], f[7], f[8] ) );
+		ME_KV( "modelscale", va( "%g", f[9] ) );
+		ME_KV( "removed", f[10] != 0.0f ? "1" : "0" );
+		ME_KV( "seeds", edit + 1 + used );
+		break;
+	case 'l':
+		if ( sscanf( edit + 1, "%f %f %f %f %f %f %f %f", &f[0], &f[1], &f[2], &f[3], &f[4], &f[5], &f[6], &f[7] ) < 8 )
+			return;
+		ME_KV( "classname", "rpm_light" );
+		ME_KV( "origin", va( "%g %g %g", f[0], f[1], f[2] ) );
+		ME_KV( "radius", va( "%g", f[3] ) );
+		ME_KV( "_color", va( "%g %g %g", f[4], f[5], f[6] ) );
+		ME_KV( "style", va( "%i", (int)f[7] ) );
+		break;
+	case 's':
+		if ( sscanf( edit + 1, "%f %f %f %f %n", &f[0], &f[1], &f[2], &f[3], &used ) < 4 || !used )
+			return;
+		ME_Unsplit( edit + 1 + used, rest, sizeof( rest ) );
+		ME_KV( "classname", "rpm_lightstyle" );
+		ME_KV( "style", va( "%i", (int)f[0] ) );
+		ME_KV( "_color", va( "%g %g %g", f[1], f[2], f[3] ) );
+		ME_KV( "value", rest );
+		break;
+	case 'h':
+		if ( sscanf( edit + 1, "%f", &f[0] ) < 1 )
+			return;
+		ME_KV( "classname", "rpm_hide" );
+		ME_KV( "model", va( "*%i", (int)f[0] ) );
+		break;
+	default:
+		return;
+	}
+#undef ME_KV
+	ME_LoadEntity( kv, n );
+}
+
+// the batch in, in place of what's shown
+static void ME_ApplyBatch( void ) {
+	char *p = me.rxBuf, *end;
+	int before;
+
+	// ours aren't lost under theirs
+	if ( me.dirty && !me.shared ) {
+		ME_Save();
+		Com_Printf( "Map editor: your edits were saved before the shared ones came in\n" );
+	}
+	ME_Clear();
+	for ( ; *p; p = end ) {
+		end = strchr( p, '|' );
+		if ( end )
+			*end++ = '\0';
+		else
+			end = p + strlen( p );
+		ME_ApplyShared( p );
+	}
+	ME_RebuildHidden();
+	me.shared = qtrue;
+	me.dirty = qfalse;
+	before = me.rxParts - me.rxGot;
+	ME_Message( va( S_COLOR_GREEN "Map edits shared with you: %i%s", me.numItems, before > 0 ? va( S_COLOR_YELLOW ", %i parts missing", before ) : "" ) );
+	Com_Printf( "%s\n", me.message );
+	me.rxId = 0;
+}
+
+// cmd:map/<verb>/<id>/<n>: <text>
+void CL_MapEditor_Hook( char **argv, int argc, const char *message ) {
+	const char *verb = argc >= 1 ? argv[0] : "";
+	const int id = argc >= 2 ? atoi( argv[1] ) : 0;
+
+	if ( !rpc_mapShare->integer || cls.state != CA_ACTIVE )
+		return;
+	ME_CheckMap();
+	if ( !me.map[0] )
+		return;
+
+	if ( !Q_stricmp( verb, "clear" ) ) {
+		if ( me.shared && !Q_stricmp( message, me.map ) ) {
+			ME_Load();
+			ME_Message( "The shared map edits were taken away" );
+			Com_Printf( "%s\n", me.message );
+		}
+		return;
+	}
+	// ours, back from the server
+	if ( !id || id == me.shareId )
+		return;
+	if ( !Q_stricmp( verb, "begin" ) ) {
+		me.rxId = Q_stricmp( message, me.map ) ? 0 : id;
+		me.rxParts = argc >= 3 ? atoi( argv[2] ) : 0;
+		me.rxGot = 0;
+		me.rxLen = 0;
+		me.rxBuf[0] = '\0';
+	} else if ( !Q_stricmp( verb, "add" ) && id == me.rxId ) {
+		const int len = strlen( message );
+
+		if ( me.rxLen + len + 2 < (int)sizeof( me.rxBuf ) ) {
+			memcpy( me.rxBuf + me.rxLen, message, len );
+			me.rxLen += len;
+			me.rxBuf[me.rxLen++] = '|';
+			me.rxBuf[me.rxLen] = '\0';
+		}
+		me.rxGot++;
+	} else if ( !Q_stricmp( verb, "end" ) && id == me.rxId ) {
+		ME_ApplyBatch();
+	}
 }
 
 // a new map: its entities, its styles, and the edits made for it
@@ -1481,9 +1933,13 @@ static void ME_CheckMap( void ) {
 		Com_Printf( S_COLOR_YELLOW "Map editor: the edits for %s weren't saved\n", me.map );
 	me.reparse = qfalse;
 	Q_strncpyz( me.map, cl.mapname, sizeof( me.map ) );
+	me.numShare = me.shareSent = 0;
+	me.rxId = 0;
+	me.layoutSel = -1;
 	ME_ParseEnts();
 	ME_ScanStyles();
 	ME_Load();
+	ME_ListLayouts();
 	me.entScroll = me.styleScroll = 0;
 	memset( me.itemScroll, 0, sizeof( me.itemScroll ) );
 }
@@ -1548,6 +2004,9 @@ void CL_MapEditor_Open( void ) {
 		Com_Printf( "Map editor: join a server first\n" );
 		return;
 	}
+	// for RPMod's admins: whoever else can't run what it makes
+	if ( !CL_RpAdmin_Allow( "Map editor", "mapedit" ) )
+		return;
 	CL_ModelManager_Close();
 	CL_NpcManager_Close();
 	CL_ShaderManager_Close();
@@ -1859,6 +2318,9 @@ static char *ME_FieldBuffer( int *size ) {
 			return NULL;
 		*size = sizeof( me.styles[me.sel].pattern );
 		return me.styles[me.sel].pattern;
+	case ME_FIELD_LAYOUT:
+		*size = sizeof( me.layoutName );
+		return me.layoutName;
 	default:
 		return NULL;
 	}
@@ -1869,7 +2331,7 @@ static void ME_FieldEdited( void ) {
 		me.entScroll = 0;
 	else if ( me.field == ME_FIELD_SEARCH )
 		me.searchScroll = 0;
-	else
+	else if ( me.field != ME_FIELD_LAYOUT )
 		ME_Changed();
 }
 
@@ -1886,6 +2348,15 @@ void CL_MapEditor_KeyEvent( int key, qboolean down ) {
 	}
 	if ( ME_IsToggleKey( key ) ) {
 		CL_MapEditor_Close();
+		return;
+	}
+	// the warning only takes clicks
+	if ( me.experimentalBox ) {
+		if ( key == A_MOUSE1 ) {
+			me.click = qtrue;
+			me.clickX = me.cursorX;
+			me.clickY = me.cursorY;
+		}
 		return;
 	}
 
@@ -1932,6 +2403,8 @@ void CL_MapEditor_KeyEvent( int key, qboolean down ) {
 			buf[len - 1] = '\0';
 			ME_FieldEdited();
 		} else if ( key == A_ENTER || key == A_KP_ENTER ) {
+			if ( me.field == ME_FIELD_LAYOUT )
+				ME_SaveLayout( me.layoutName );
 			me.field = ME_FIELD_NONE;
 		}
 		return;
@@ -1979,6 +2452,8 @@ static qboolean ME_FieldChar( int field, int ch ) {
 	switch ( field ) {
 	case ME_FIELD_PATTERN:
 		return (qboolean)( ch >= 'a' && ch <= 'z' );
+	case ME_FIELD_LAYOUT:
+		return ME_LayoutChar( ch );
 	case ME_FIELD_COMMAND:
 		// an entity's value can't hold a quote
 		return (qboolean)( ch >= ' ' && ch < 127 && ch != '"' );
@@ -1991,7 +2466,7 @@ void CL_MapEditor_CharEvent( int ch ) {
 	int size, len;
 	char *buf;
 
-	if ( !me.open || !me.field || me.flying )
+	if ( !me.open || !me.field || me.flying || me.experimentalBox )
 		return;
 	if ( me.field == ME_FIELD_PATTERN && ch >= 'A' && ch <= 'Z' )
 		ch += 'a' - 'A';
@@ -2019,7 +2494,9 @@ void CL_MapEditor_MouseEvent( int dx, int dy ) {
 
 // escape backs out one level: the text box, carrying, the selection, then the editor
 void CL_MapEditor_Escape( void ) {
-	if ( me.field ) {
+	if ( me.experimentalBox ) {
+		me.experimentalBox = qfalse;
+	} else if ( me.field ) {
 		me.field = ME_FIELD_NONE;
 	} else if ( me.grabbing ) {
 		ME_CancelGrab();
@@ -2144,6 +2621,7 @@ void CL_MapEditor_Frame( void ) {
 	if ( me.propsDirty || me.propsShown != ME_Shown() )
 		ME_ApplyProps();
 	ME_RunTriggers();
+	ME_RunShare();
 	if ( me.open )
 		ME_EditorFrame();
 }
@@ -3117,10 +3595,141 @@ static void ME_DrawLabels( void ) {
 	}
 }
 
+// the edits kept by name, and shared with everyone
+static void ME_DrawLayouts( float x, float y, float w ) {
+	const float half = ( w - 4 ) * 0.5f;
+	const qboolean armed = (qboolean)( me.confirmTime && cls.realtime - me.confirmTime < 3000 );
+	const qboolean experimental = CL_RpHooks_Experimental();
+	const qboolean sending = (qboolean)( me.shareSent < me.numShare );
+	const int rows = 10;
+	int clicked;
+
+	ME_Text( x, y, "Layouts, kept by name", meWhite );
+	y += ME_ROW_H + 2;
+	ME_TextBox( x, y, w - 64, ME_FIELD_LAYOUT, me.layoutName, "a name for these edits" );
+	if ( ME_Button( x + w - 60, y, 60, "Save as", qfalse, ME_LayoutNameOk( me.layoutName ) ) )
+		ME_SaveLayout( me.layoutName );
+	y += ME_CTRL_H + ME_GAP;
+	clicked = ME_ListRows( x, y, w, rows, me.numLayouts, &me.layoutScroll );
+	if ( me.layoutSel >= 0 )
+		ME_RowHighlight( x, y, w, me.layoutSel, me.layoutScroll, rows );
+	for ( int r = 0; r < rows && me.layoutScroll + r < me.numLayouts; r++ )
+		ME_TextClipped( x + 4, y + 1 + r * ME_ROW_H, w - 8, me.layouts[me.layoutScroll + r], meWhite );
+	if ( !me.numLayouts )
+		ME_Text( x + 4, y + 1, S_COLOR_GREY "None for this map yet", meWhite );
+	if ( clicked >= 0 ) {
+		me.layoutSel = clicked;
+		me.confirmTime = 0;
+		Q_strncpyz( me.layoutName, me.layouts[clicked], sizeof( me.layoutName ) );
+	}
+	y += rows * ME_ROW_H + 6;
+	if ( ME_Button( x, y, half, "Load", qfalse, (qboolean)( me.layoutSel >= 0 ) ) )
+		ME_LoadLayout( me.layouts[me.layoutSel] );
+	if ( ME_Button( x + half + 4, y, half, armed ? "Click again" : "Delete", armed, (qboolean)( me.layoutSel >= 0 ) ) ) {
+		if ( armed ) {
+			me.confirmTime = 0;
+			ME_DeleteLayout( me.layouts[me.layoutSel] );
+		} else {
+			me.confirmTime = cls.realtime;
+		}
+	}
+	y += ME_CTRL_H + ME_GAP;
+	if ( ME_Button( x, y, w, "Back to this map's saved edits", qfalse, qtrue ) ) {
+		ME_Load();
+		ME_Message( "Back to the saved edits" );
+	}
+	y += ME_CTRL_H + ME_GAP + 10;
+
+	ME_Text( x, y, "Everyone on the map with this client", meWhite );
+	y += ME_ROW_H + 2;
+	if ( ME_Button( x, y, w, RP_EXPERIMENTAL_LABEL, experimental, qtrue ) ) {
+		if ( experimental ) {
+			CL_RpHooks_SetExperimental( qfalse );
+			ME_Message( "Experimental features off" );
+		} else {
+			me.experimentalBox = qtrue;
+			me.field = ME_FIELD_NONE;
+		}
+	}
+	y += ME_CTRL_H + ME_GAP;
+	// off, either of them asks first
+	if ( ME_Button( x, y, half, sending ? va( "Sending %i/%i", me.shareSent, me.numShare ) : "Share", sending, (qboolean)!sending ) ) {
+		if ( experimental )
+			ME_Share();
+		else
+			me.experimentalBox = qtrue;
+	}
+	if ( ME_Button( x + half + 4, y, half, "Unshare", qfalse, qtrue ) ) {
+		if ( experimental )
+			ME_Unshare();
+		else
+			me.experimentalBox = qtrue;
+	}
+	y += ME_CTRL_H + ME_GAP;
+	if ( me.shared ) {
+		ME_TextClipped( x, y, w, S_COLOR_CYAN "Showing edits shared with you", meWhite );
+		y += ME_ROW_H + 2;
+	}
+	ME_Text( x, y, S_COLOR_GREY "Models, props, lights, styles and", meWhite );
+	ME_Text( x, y + ME_ROW_H, S_COLOR_GREY "hidden brushes go; triggers stay here.", meWhite );
+	ME_Text( x, y + ME_ROW_H * 2, S_COLOR_GREY "Only the look changes: no collision.", meWhite );
+	ME_Text( x, y + ME_ROW_H * 3, S_COLOR_GREY "Who joins later needs it shared again.", meWhite );
+}
+
+// the warning, over the world: OK turns experimental features on for the session
+static void ME_DrawExperimentalBox( void ) {
+	const float w = 320, h = 120, x = ( ME_PANEL_X - w ) * 0.5f, y = 160;
+	char text[MAX_STRING_CHARS], *line = text;
+	float ly = y + 24;
+
+	ME_Box( x, y, w, h, mePanelOpaque );
+	ME_Text( x + 8, y + 6, S_COLOR_YELLOW "Experimental features", meWhite );
+	// wrapped by words
+	Q_strncpyz( text, RP_EXPERIMENTAL_WARNING, sizeof( text ) );
+	while ( *line && ly < y + h - 34 ) {
+		char *end = line, *lastSpace = NULL, keep;
+
+		while ( *end ) {
+			if ( *end == ' ' ) {
+				keep = *end;
+				*end = '\0';
+				const qboolean fits = (qboolean)( ME_TextWidth( line ) <= w - 16 );
+				*end = keep;
+				if ( !fits )
+					break;
+				lastSpace = end;
+			}
+			end++;
+		}
+		if ( *end && lastSpace )
+			end = lastSpace;
+		keep = *end;
+		*end = '\0';
+		ME_Text( x + 8, ly, line, meWhite );
+		*end = keep;
+		line = *end ? end + 1 : end;
+		ly += ME_ROW_H;
+	}
+	if ( ME_Button( x + 8, y + h - 24, 80, "OK", qfalse, qtrue ) ) {
+		CL_RpHooks_SetExperimental( qtrue );
+		ME_Message( S_COLOR_YELLOW "Experimental features on, for this session" );
+		me.experimentalBox = qfalse;
+		return;
+	}
+	if ( ME_Button( x + w - 88, y + h - 24, 80, "Cancel", qfalse, qtrue ) )
+		me.experimentalBox = qfalse;
+}
+
 static void ME_DrawEditor( void ) {
 	const float x = ME_PANEL_X + 6, w = ME_PANEL_W - 12;
 	const float third = ( w - 8 ) / 3.0f, tabW = ( w - 4.0f * ( ME_NUM_TABS - 1 ) ) / ME_NUM_TABS;
+	// the warning sits on top and gets the clicks first, but is drawn last
+	const qboolean popup = me.experimentalBox, click = me.click;
+	const int wheel = me.wheel;
 	float y = 8;
+
+	if ( popup )
+		me.click = qfalse, me.wheel = 0;
 
 	ME_DrawLabels();
 
@@ -3146,32 +3755,44 @@ static void ME_DrawEditor( void ) {
 	}
 
 	ME_Fill( ME_PANEL_X, 0, ME_PANEL_W, SCREEN_HEIGHT, mePanel );
-	ME_Text( x, y, va( "Edits%s", me.dirty ? S_COLOR_YELLOW " (not saved)" : "" ), meWhite );
+	ME_Text( x, y, va( "Edits%s", me.shared ? S_COLOR_CYAN " (shared with you)" : me.dirty ? S_COLOR_YELLOW " (not saved)" : "" ), meWhite );
 	y += ME_ROW_H + 2;
 	if ( ME_Button( x, y, third, "Save", qfalse, qtrue ) )
 		ME_Save();
-	if ( ME_Button( x + third + 4, y, third, "Reload", qfalse, qtrue ) ) {
-		ME_Load();
-		ME_Message( "Back to the saved edits" );
+	if ( ME_Button( x + third + 4, y, third, "Layouts", me.showLayouts, qtrue ) ) {
+		me.showLayouts = (qboolean)!me.showLayouts;
+		me.field = ME_FIELD_NONE;
+		if ( me.showLayouts )
+			ME_ListLayouts();
 	}
 	if ( ME_Button( x + ( third + 4 ) * 2, y, third, rpc_mapEdits->integer ? "Always on" : "Editor only", (qboolean)( rpc_mapEdits->integer != 0 ), qtrue ) )
 		Cvar_SetValue( "rpc_mapEdits", rpc_mapEdits->integer ? 0 : 1 );
 	y += ME_CTRL_H + ME_GAP + 4;
 
 	for ( int i = 0; i < ME_NUM_TABS; i++ ) {
-		if ( ME_Button( x + i * ( tabW + 4 ), y, tabW, meTabNames[i], (qboolean)( me.tab == i ), qtrue ) ) {
+		if ( ME_Button( x + i * ( tabW + 4 ), y, tabW, meTabNames[i], (qboolean)( me.tab == i && !me.showLayouts ), qtrue ) ) {
 			me.tab = i;
+			me.showLayouts = qfalse;
 			me.field = ME_FIELD_NONE;
 		}
 	}
 	y += ME_CTRL_H + ME_GAP + 6;
 
-	switch ( me.tab ) {
+	if ( me.showLayouts )
+		ME_DrawLayouts( x, y, w );
+	else switch ( me.tab ) {
 	case ME_TAB_MAP:		ME_DrawMapTab( x, y, w );		break;
 	case ME_TAB_MODELS:		ME_DrawModelsTab( x, y, w );	break;
 	case ME_TAB_LIGHTS:		ME_DrawLightsTab( x, y, w );	break;
 	case ME_TAB_TRIGGERS:	ME_DrawTriggersTab( x, y, w );	break;
 	default:				ME_DrawStylesTab( x, y, w );	break;
+	}
+
+	if ( popup && me.experimentalBox ) {
+		me.click = click;
+		me.wheel = wheel;
+		ME_DrawExperimentalBox();
+		me.click = qfalse;
 	}
 
 	// a click that's left: on the world it picks, on the panel it leaves the text box
@@ -3221,15 +3842,38 @@ void CL_MapEditor_f( void ) {
 	}
 	ME_CheckMap();
 	if ( !Q_stricmp( arg, "save" ) ) {
-		if ( ME_Save() )
-			Com_Printf( "%s\n", me.message );
+		if ( Cmd_Argv( 2 )[0] )
+			ME_SaveLayout( Cmd_Argv( 2 ) );
+		else
+			ME_Save();
+		Com_Printf( "%s\n", me.message );
+	} else if ( !Q_stricmp( arg, "load" ) && Cmd_Argv( 2 )[0] ) {
+		ME_LoadLayout( Cmd_Argv( 2 ) );
+		Com_Printf( "%s\n", me.message );
 	} else if ( !Q_stricmp( arg, "reload" ) ) {
 		ME_Load();
 		Com_Printf( "Map edits reloaded from %s\n", ME_Path() );
+	} else if ( !Q_stricmp( arg, "layouts" ) ) {
+		ME_ListLayouts();
+		Com_Printf( "Layouts for %s, in %s:\n", me.map, ME_LayoutDir() );
+		for ( int i = 0; i < me.numLayouts; i++ )
+			Com_Printf( "  %s\n", me.layouts[i] );
+		if ( !me.numLayouts )
+			Com_Printf( "  none\n" );
+	} else if ( !Q_stricmp( arg, "share" ) ) {
+		ME_Share();
+		Com_Printf( "%s\n", me.message );
+	} else if ( !Q_stricmp( arg, "unshare" ) ) {
+		ME_Unshare();
+		Com_Printf( "%s\n", me.message );
 	} else {
 		Com_Printf( "mapedit : open or close the map editor\n"
-			"mapedit save : keep the edits, in %s\n"
+			"mapedit save [name] : keep the edits, in %s, or as a layout of that name\n"
+			"mapedit load <name> : a layout in place of the edits shown\n"
+			"mapedit layouts : the layouts kept for this map\n"
 			"mapedit reload : back to the saved edits\n"
+			"mapedit share : the edits to everyone on the map with this client (experimental)\n"
+			"mapedit unshare : everyone back to their own\n"
 			"mapedit on|off : show them outside the editor too, or not\n", ME_Path() );
 	}
 }
@@ -3245,6 +3889,8 @@ void CL_MapEditor_Init( void ) {
 	for ( int i = 0; i < MAX_LIGHT_STYLES; i++ )
 		VectorSet( me.styles[i].color, 1, 1, 1 );
 	rpc_mapEdits = Cvar_Get( "rpc_mapEdits", "1", CVAR_ARCHIVE_ND, "Show the map edits made with /mapedit outside the editor too" );
+	rpc_mapShare = Cvar_Get( "rpc_mapShare", "1", CVAR_ARCHIVE_ND, "Show the map edits an admin shares with everyone" );
+	me.layoutSel = -1;
 }
 
 // the cgame is going, maybe to another map: the renderer's handles go with it

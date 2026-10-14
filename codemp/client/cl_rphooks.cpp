@@ -41,6 +41,9 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 //
 //   cmd:cin/<verb>/...
 //     a cinematic camera for everyone with this client; see cl_rpcinematic.cpp.
+//
+//   cmd:map/<verb>/...
+//     an admin's map edits, shown to everyone on the map; see cl_mapeditor.cpp.
 //     cmd:startcinematic and cmd:endcinematic start and end one too.
 //
 // Hooks only ever show things: nothing a server sends here runs a command.
@@ -347,6 +350,10 @@ static rhResult_t RH_Run( const char *text ) {
 		return RH_Objective( argv + 1, argc - 1, message );
 	if ( !Q_stricmp( argv[0], "cin" ) || !Q_stricmp( argv[0], "cinematic" ) ) {
 		CL_RpCinematic_Hook( argv + 1, argc - 1 );
+		return RH_DROP;
+	}
+	if ( !Q_stricmp( argv[0], "map" ) ) {
+		CL_MapEditor_Hook( argv + 1, argc - 1, message );
 		return RH_DROP;
 	}
 	if ( !Q_stricmp( argv[0], "startcinematic" ) || !Q_stricmp( argv[0], "endcinematic" ) ) {
