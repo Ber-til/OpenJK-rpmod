@@ -826,6 +826,7 @@ void CL_Disconnect( qboolean showMainMenu ) {
 
 	CL_ClearState ();
 	CL_RpHooks_Disconnect();
+	CL_RpAdmin_Disconnect();
 	CL_RpCinematic_Reset();
 
 	// wipe the client connection
@@ -2826,6 +2827,9 @@ void CL_Init( void ) {
 	CL_Storyteller_Init ();
 	CL_SoundManager_Init ();
 	CL_RpHooks_Init ();
+	CL_RpAdmin_Init ();
+	CL_RadialMenu_Init ();
+	CL_SaberStyle_Init ();
 	CL_RpCinematic_Init ();
 
 	CL_FighterAssist_Init ();
@@ -3056,6 +3060,13 @@ void CL_Shutdown( void ) {
 	Cmd_RemoveCommand ("configstrings");
 	Cmd_RemoveCommand ("csusage");
 	CL_RpHooks_Shutdown();
+	Cmd_RemoveCommand( "toolaccess" );
+	Cmd_RemoveCommand( "+radial" );
+	Cmd_RemoveCommand( "-radial" );
+	Cmd_RemoveCommand( "radial" );
+	Cmd_RemoveCommand( "radialsettings" );
+	Cmd_RemoveCommand( "saberstyles" );
+	Cmd_RemoveCommand( "saberstyle" );
 	CL_RpCinematic_Shutdown();
 	Cmd_RemoveCommand ("clientinfo");
 	Cmd_RemoveCommand ("snd_restart");

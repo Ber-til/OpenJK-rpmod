@@ -665,7 +665,8 @@ void CL_ModelManager_Draw( void );
 #define KEYCATCH_CINEDITOR		0x0200	// engine only, the camera editor owns keyboard and mouse
 #define KEYCATCH_MAPEDITOR		0x0400	// engine only, the map editor owns keyboard and mouse
 #define KEYCATCH_SOUNDMANAGER	0x0800	// engine only, the sound or the music manager owns keyboard and mouse
-#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELMANAGER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER | KEYCATCH_MAPEDITOR | KEYCATCH_STORYTELLER | KEYCATCH_CINEDITOR | KEYCATCH_SOUNDMANAGER )	// mods never see or clear these
+#define KEYCATCH_RADIALMENU		0x1000	// engine only, the radial menus' settings own keyboard and mouse
+#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELMANAGER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER | KEYCATCH_MAPEDITOR | KEYCATCH_STORYTELLER | KEYCATCH_CINEDITOR | KEYCATCH_SOUNDMANAGER | KEYCATCH_RADIALMENU )	// mods never see or clear these
 
 void CL_NpcManager_Init( void );
 void CL_NpcManager_Shutdown( void );
@@ -775,6 +776,7 @@ void CL_RpHooks_DrawSubtitles( void );
 #define RP_EXPERIMENTAL_WARNING	"These features are a work in progress. They should not be used on Temple, and can only be viewed by the people currently in-game with OpenJK-rpmod installed and up to date."
 #define RP_EXPERIMENTAL_OFF		"Experimental: turn it on with " RP_EXPERIMENTAL_LABEL
 qboolean CL_RpHooks_Experimental( void );
+void CL_MapEditor_Hook( char **argv, int argc, const char *message );
 void CL_RpHooks_SetExperimental( qboolean on );
 const char *CL_RpHooks_NpcTalkCommand( const char *npc, const char *name, const char *color, const char *emote, const char *text );
 
@@ -818,6 +820,34 @@ void CL_SoundManager_Escape( void );
 void CL_SoundManager_Frame( void );
 qboolean CL_SoundManager_ServerPrint( const char *text );
 void CL_SoundManager_Draw( void );
+
+// cl_radialmenu.cpp
+void CL_RadialMenu_Init( void );
+void CL_RadialMenu_Shutdown( void );
+qboolean CL_RadialMenu_Active( void );
+qboolean CL_RadialMenu_MouseEvent( int dx, int dy );
+qboolean CL_RadialMenu_KeyDown( int key );
+qboolean CL_RadialMenu_Escape( void );
+void CL_RadialMenu_Frame( void );
+void CL_RadialMenu_Draw( void );
+void CL_RadialMenu_CloseSettings( void );
+void CL_RadialMenu_KeyEvent( int key, qboolean down );
+void CL_RadialMenu_CharEvent( int ch );
+void CL_RadialMenu_SettingsMouseEvent( int dx, int dy );
+void CL_RadialMenu_SettingsEscape( void );
+void CL_RadialMenu_DrawSettings( void );
+
+// cl_saberstyle.cpp
+void CL_SaberStyle_Init( void );
+qboolean CL_SaberStyle_Cycle( void );
+void CL_SaberStyle_Frame( void );
+
+// cl_rpadmin.cpp
+void CL_RpAdmin_Init( void );
+void CL_RpAdmin_Disconnect( void );
+qboolean CL_RpAdmin_Allow( const char *tool, const char *command );
+qboolean CL_RpAdmin_ServerPrint( const char *text );
+void CL_RpAdmin_Frame( void );
 
 void CL_Storyteller_Init( void );
 void CL_Storyteller_Shutdown( void );

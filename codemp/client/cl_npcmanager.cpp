@@ -2405,6 +2405,9 @@ static qboolean NM_Open( nmTab_t tab ) {
 		Com_Printf( "NPC manager: join a server first\n" );
 		return qfalse;
 	}
+	// for RPMod's admins: whoever else can't run what it makes
+	if ( !CL_RpAdmin_Allow( "NPC manager", "npcmanager" ) )
+		return qfalse;
 	CL_ModelManager_Close();
 	CL_ShaderManager_Close();
 	CL_EffectManager_Close();

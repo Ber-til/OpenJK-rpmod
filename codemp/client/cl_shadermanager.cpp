@@ -1590,6 +1590,9 @@ static void SM_Open( void ) {
 		Com_Printf( "Shader manager: join a server first\n" );
 		return;
 	}
+	// for RPMod's admins: whoever else can't run what it makes
+	if ( !CL_RpAdmin_Allow( "Shader manager", "shadermanager" ) )
+		return;
 	CL_ModelManager_Close();
 	CL_NpcManager_Close();
 	CL_EffectManager_Close();
