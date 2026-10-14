@@ -465,6 +465,7 @@ void SCR_DrawScreenField( stereoFrame_t stereoFrame ) {
 			CL_NpcManager_Frame();
 			CL_ShaderManager_Frame();
 			CL_EffectManager_Frame();
+			CL_MapEditor_Frame();
 			CL_Storyteller_Frame();
 			CL_SoundManager_Frame();
 			CL_RpCinematic_Frame();
@@ -475,6 +476,7 @@ void SCR_DrawScreenField( stereoFrame_t stereoFrame ) {
 			CL_ModelManager_Draw();
 			CL_NpcManager_Draw();
 			CL_EffectManager_Draw();
+			CL_MapEditor_Draw();
 			CL_Storyteller_Draw();
 			CL_SoundManager_Draw();
 			break;

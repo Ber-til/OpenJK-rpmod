@@ -537,6 +537,7 @@ void CL_ShutdownCGame( void ) {
 	CL_NpcManager_Shutdown();
 	CL_ShaderManager_Shutdown();
 	CL_EffectManager_Shutdown();
+	CL_MapEditor_Shutdown();
 	CL_Storyteller_Shutdown();
 	CL_SoundManager_Shutdown();
 	CL_RpCinematic_Reset();

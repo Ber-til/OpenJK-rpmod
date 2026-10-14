@@ -1977,6 +1977,7 @@ static qboolean ST_Open( void ) {
 	CL_EffectManager_Close();
 	CL_RpCinematic_EditorClose();
 	CL_SoundManager_Close();
+	CL_MapEditor_Close();
 
 	st.font = re->RegisterFont( "arialnb" );
 	if ( !st.font )

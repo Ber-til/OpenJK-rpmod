@@ -2822,6 +2822,7 @@ void CL_Init( void ) {
 	CL_NpcManager_Init ();
 	CL_ShaderManager_Init ();
 	CL_EffectManager_Init ();
+	CL_MapEditor_Init ();
 	CL_Storyteller_Init ();
 	CL_SoundManager_Init ();
 	CL_RpHooks_Init ();
@@ -2969,6 +2970,7 @@ void CL_Init( void ) {
 	Cmd_AddCommand( "npcmanager", CL_NpcManager_f, "Spawn NPCs and manage the ones in the map with RPMod's npc command" );
 	Cmd_AddCommand( "shadermanager", CL_ShaderManager_f, "Find the shaders of what you look at" );
 	Cmd_AddCommand( "effectmanager", CL_EffectManager_f, "Preview effects and play them with RPMod's rpeffect command" );
+	Cmd_AddCommand( "mapedit", CL_MapEditor_f, "Edit the map on this screen: its entities, models, lights, triggers and light styles" );
 	Cmd_AddCommand( "storyteller", CL_Storyteller_f, "Assemble a mission out of steps and play it" );
 	Cmd_AddCommand( "soundmanager", CL_SoundManager_f, "Hear sounds and play them with RPMod's rpsound command" );
 	Cmd_AddCommand( "musicmanager", CL_MusicManager_f, "Hear music and play it for everyone with RPMod's rpmusic command" );

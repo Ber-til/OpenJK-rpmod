@@ -1388,6 +1388,10 @@ qboolean	R_GetEntityToken( char *buffer, int size );
 
 model_t		*R_AllocModel( void );
 
+extern int	tr_worldLoads;
+void		RE_HideWorldTriangles( const int *surfaces, const int *triangles, int count );
+qhandle_t	RE_WorldPieceModel( const int *surfaces, const int *triangles, int count, const vec3_t origin );
+
 void    	R_Init( void );
 
 image_t		*R_FindImageFile( const char *name, qboolean mipmap, qboolean allowPicmip, qboolean allowTC, int glWrapClampMode );

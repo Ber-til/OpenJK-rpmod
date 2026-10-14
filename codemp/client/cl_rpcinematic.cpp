@@ -1233,6 +1233,7 @@ void CL_RpCinematic_Edit( const char *name, qboolean fromStoryteller ) {
 	CL_EffectManager_Close();
 	CL_Storyteller_Close();
 	CL_SoundManager_Close();
+	CL_MapEditor_Close();
 
 	ce.font = re->RegisterFont( "arialnb" );
 	if ( !ce.font )

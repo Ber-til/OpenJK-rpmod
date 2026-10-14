@@ -935,6 +935,7 @@ static qboolean SM_Open( smOpen_t which ) {
 	CL_EffectManager_Close();
 	CL_Storyteller_Close();
 	CL_RpCinematic_EditorClose();
+	CL_MapEditor_Close();
 
 	sm.font = re->RegisterFont( "arialnb" );
 	if ( !sm.font )

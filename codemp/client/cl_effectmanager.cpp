@@ -3253,6 +3253,7 @@ static void EM_Open( void ) {
 	CL_ModelManager_Close();
 	CL_NpcManager_Close();
 	CL_ShaderManager_Close();
+	CL_MapEditor_Close();
 	CL_Storyteller_Close();
 	CL_RpCinematic_EditorClose();
 	CL_SoundManager_Close();
