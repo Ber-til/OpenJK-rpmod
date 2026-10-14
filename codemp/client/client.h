@@ -748,6 +748,13 @@ void CL_RpHooks_Shutdown( void );
 void CL_RpHooks_Disconnect( void );
 void CL_RpHooks_Draw( void );
 void CL_RpHooks_DrawSubtitles( void );
+// the features sent as cmd: hooks, which only players with this client see: off until turned on
+// in a tool's TOGGLE EXPERIMENTAL, for the session
+#define RP_EXPERIMENTAL_LABEL	"TOGGLE EXPERIMENTAL"
+#define RP_EXPERIMENTAL_WARNING	"These features are a work in progress. They should not be used on Temple, and can only be viewed by the people currently in-game with OpenJK-rpmod installed and up to date."
+#define RP_EXPERIMENTAL_OFF		"Experimental: turn it on with " RP_EXPERIMENTAL_LABEL
+qboolean CL_RpHooks_Experimental( void );
+void CL_RpHooks_SetExperimental( qboolean on );
 const char *CL_RpHooks_NpcTalkCommand( const char *npc, const char *name, const char *color, const char *emote, const char *text );
 
 // cl_rpcinematic.cpp

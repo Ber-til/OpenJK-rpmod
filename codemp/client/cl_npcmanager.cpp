@@ -409,6 +409,7 @@ static struct {
 	int			numConstructNpcs;
 	nmSaving_t	saving;						// the name box is open
 	qboolean	teleBox;					// the box to teleport to typed coordinates is open
+	qboolean	experimentalBox;			// the warning before turning experimental features on
 
 	// spawn tab
 	nmShow_t	show;
@@ -1896,7 +1897,7 @@ static void NM_Talk( void ) {
 	const nmNpc_t *npc = NM_SelectedNpc();
 	const char *target = NM_ApplyTarget( qfalse ), *emote = nm.talkEmote ? "emtalk" : "";
 
-	if ( !target || !nm.fields[NM_F_TALK_TEXT][0] )
+	if ( !target || !nm.fields[NM_F_TALK_TEXT][0] || !CL_RpHooks_Experimental() )
 		return;
 	NM_SendManage( CL_RpHooks_NpcTalkCommand( target, NM_TalkName( npc ), va( "^%c", nmTalkColors[nm.talkColor] ), emote, nm.fields[NM_F_TALK_TEXT] ), qfalse );
 	// a story's NPC talk step plays the emote itself; it waits its turn behind the line
@@ -2925,6 +2926,8 @@ void CL_NpcManager_KeyEvent( int key, qboolean down ) {
 		return;
 	}
 
+	if ( nm.experimentalBox && key != A_MOUSE1 )
+		return;
 	f = NM_ActiveField();
 	if ( nm.saving != NM_SAVING_NONE && nm.picker == NM_PICKER_NONE ) {
 		// only the name box takes keys
@@ -3029,7 +3032,7 @@ void CL_NpcManager_CharEvent( int ch ) {
 	nmField_t f;
 	int len;
 
-	if ( !nm.open || nm.pick != NM_PICK_NONE || ( nm.preview && nm.picker == NM_PICKER_NONE ) )
+	if ( !nm.open || nm.pick != NM_PICK_NONE || nm.experimentalBox || ( nm.preview && nm.picker == NM_PICKER_NONE ) )
 		return;
 	f = NM_ActiveField();
 	len = strlen( nm.fields[f] );
@@ -3052,7 +3055,9 @@ void CL_NpcManager_MouseEvent( int dx, int dy ) {
 
 // escape backs out one level: picker, picking, a text box, then the manager
 void CL_NpcManager_Escape( void ) {
-	if ( nm.picker != NM_PICKER_NONE )
+	if ( nm.experimentalBox )
+		nm.experimentalBox = qfalse;
+	else if ( nm.picker != NM_PICKER_NONE )
 		nm.picker = NM_PICKER_NONE;
 	else if ( nm.saving != NM_SAVING_NONE )
 		nm.saving = NM_SAVING_NONE;
@@ -3498,6 +3503,49 @@ static void NM_DrawSpawn( void ) {
 }
 
 // typing where to teleport to
+static void NM_DrawExperimentalBox( void ) {
+	const float w = 320, h = 120, x = ( SCREEN_WIDTH - w ) * 0.5f, y = 160;
+	char text[MAX_STRING_CHARS], *line = text;
+	float ly = y + 24;
+
+	NM_Box( x, y, w, h, nmPanelOpaque );
+	NM_Text( x + 8, y + 6, S_COLOR_YELLOW "Experimental features", nmWhite );
+	// wrapped by words
+	Q_strncpyz( text, RP_EXPERIMENTAL_WARNING, sizeof( text ) );
+	while ( *line && ly < y + h - 34 ) {
+		char *end = line, *lastSpace = NULL, keep;
+
+		while ( *end ) {
+			if ( *end == ' ' ) {
+				keep = *end;
+				*end = '\0';
+				const qboolean fits = (qboolean)( NM_TextWidth( line ) <= w - 16 );
+				*end = keep;
+				if ( !fits )
+					break;
+				lastSpace = end;
+			}
+			end++;
+		}
+		if ( *end && lastSpace )
+			end = lastSpace;
+		keep = *end;
+		*end = '\0';
+		NM_Text( x + 8, ly, line, nmWhite );
+		*end = keep;
+		line = *end ? end + 1 : end;
+		ly += 13;
+	}
+	if ( NM_Button( x + 8, y + h - 24, 80, "OK", qfalse, qtrue ) ) {
+		CL_RpHooks_SetExperimental( qtrue );
+		NM_Message( S_COLOR_YELLOW "Experimental features on, for this session" );
+		nm.experimentalBox = qfalse;
+		return;
+	}
+	if ( NM_Button( x + w - 88, y + h - 24, 80, "Cancel", qfalse, qtrue ) )
+		nm.experimentalBox = qfalse;
+}
+
 static void NM_DrawTeleBox( void ) {
 	static const char *labels[] = { "X", "Y", "Z", "Yaw" };
 	const float w = 300, h = 118, x = ( SCREEN_WIDTH - w ) * 0.5f, y = 160, fw = ( w - 16 - 3 * 6 ) / 4;
@@ -3637,6 +3685,7 @@ static void NM_DrawPreview( void ) {
 }
 
 static void NM_DrawManage( void ) {
+	const qboolean experimental = CL_RpHooks_Experimental();
 	const nmNpc_t *npc;
 	const char *target, *targetAll;
 	float y, w;
@@ -3759,16 +3808,26 @@ static void NM_DrawManage( void ) {
 
 	y += 20;
 	NM_Label( y, "Talk" );
-	NM_Field( NM_F_TALK_TEXT, NM_CTRL_X, y, NM_CTRL_W - 44, "what it says, Enter to say it" );
-	if ( NM_Button( NM_CTRL_X + NM_CTRL_W - 40, y, 40, "Say", qfalse, (qboolean)( target != NULL && nm.fields[NM_F_TALK_TEXT][0] ) ) )
+	if ( experimental ) {
+		NM_Field( NM_F_TALK_TEXT, NM_CTRL_X, y, NM_CTRL_W - 44, "what it says, Enter to say it" );
+	} else {
+		NM_Box( NM_CTRL_X, y, NM_CTRL_W - 44, NM_CTRL_H, nmPanelLight );
+		NM_TextClipped( NM_CTRL_X + 4, y + 2, NM_CTRL_W - 52, RP_EXPERIMENTAL_OFF ", top right", nmDim );
+	}
+	if ( NM_Button( NM_CTRL_X + NM_CTRL_W - 40, y, 40, "Say", qfalse, (qboolean)( experimental && target != NULL && nm.fields[NM_F_TALK_TEXT][0] ) ) )
 		NM_Talk();
 	y += 20;
 	NM_Label( y, "  as" );
-	NM_Field( NM_F_TALK_NAME, NM_CTRL_X, y, w * 2 + 4, npc ? NM_TalkName( npc ) : "name" );
+	if ( experimental ) {
+		NM_Field( NM_F_TALK_NAME, NM_CTRL_X, y, w * 2 + 4, npc ? NM_TalkName( npc ) : "name" );
+	} else {
+		NM_Box( NM_CTRL_X, y, w * 2 + 4, NM_CTRL_H, nmPanelLight );
+		NM_TextClipped( NM_CTRL_X + 4, y + 2, w * 2 - 4, npc ? NM_TalkName( npc ) : "name", nmDim );
+	}
 	// a click takes the next colour
-	if ( NM_Button( NM_CTRL_X + ( w + 4 ) * 2, y, 40, va( "^%cColor", nmTalkColors[nm.talkColor] ), qfalse, qtrue ) )
+	if ( NM_Button( NM_CTRL_X + ( w + 4 ) * 2, y, 40, experimental ? va( "^%cColor", nmTalkColors[nm.talkColor] ) : "Color", qfalse, experimental ) )
 		nm.talkColor = ( nm.talkColor + 1 ) % ( ARRAY_LEN( nmTalkColors ) - 1 );
-	if ( NM_Button( NM_CTRL_X + ( w + 4 ) * 2 + 44, y, w, "emtalk", nm.talkEmote, qtrue ) )
+	if ( NM_Button( NM_CTRL_X + ( w + 4 ) * 2 + 44, y, w, "emtalk", (qboolean)( experimental && nm.talkEmote ), experimental ) )
 		nm.talkEmote = (qboolean)!nm.talkEmote;
 
 	y += 20;
@@ -3975,14 +4034,16 @@ void CL_NpcManager_Draw( void ) {
 		return;
 	}
 
-	// the picker, the name box and the preview sit on top and get the clicks first, but are drawn last
+	// the warning, the picker, the name box and the preview sit on top and get the clicks first,
+	// but are drawn last
+	qboolean experimentalOpen = nm.experimentalBox;
 	qboolean pickerOpen = (qboolean)( nm.picker != NM_PICKER_NONE );
 	qboolean savingOpen = (qboolean)( nm.saving != NM_SAVING_NONE && !pickerOpen );
 	qboolean teleOpen = (qboolean)( nm.teleBox && !pickerOpen && !savingOpen );
 	qboolean previewOpen = (qboolean)( nm.preview && !pickerOpen && !savingOpen && !teleOpen );
 	qboolean click = nm.click;
 	int wheel = nm.wheel;
-	if ( pickerOpen || savingOpen || teleOpen || previewOpen )
+	if ( experimentalOpen || pickerOpen || savingOpen || teleOpen || previewOpen )
 		nm.click = qfalse, nm.wheel = 0;
 
 	NM_Fill( 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, nmPanel );
@@ -3991,10 +4052,19 @@ void CL_NpcManager_Draw( void ) {
 		NM_SetTab( NM_TAB_SPAWN );
 	if ( NM_Button( 184, 12, 70, "Manage", (qboolean)( nm.tab == NM_TAB_MANAGE ), qtrue ) )
 		NM_SetTab( NM_TAB_MANAGE );
+	if ( NM_Button( NM_RIGHT_X + NM_RIGHT_W - 120, 12, 120, RP_EXPERIMENTAL_LABEL, CL_RpHooks_Experimental(), qtrue ) ) {
+		if ( CL_RpHooks_Experimental() ) {
+			CL_RpHooks_SetExperimental( qfalse );
+			NM_Message( "Experimental features off" );
+		} else {
+			nm.experimentalBox = qtrue;
+			nm.focus = NM_F_NONE;
+		}
+	}
 
 	// the server's answer to the last command
 	if ( nm.reply[0] && cls.realtime - nm.replyTime < 8000 )
-		NM_TextClipped( NM_RIGHT_X, 14, NM_RIGHT_W, va( S_COLOR_YELLOW "Server: " S_COLOR_WHITE "%s", nm.reply ), nmWhite );
+		NM_TextClipped( NM_RIGHT_X, 14, NM_RIGHT_W - 124, va( S_COLOR_YELLOW "Server: " S_COLOR_WHITE "%s", nm.reply ), nmWhite );
 	// and the manager's own
 	if ( nm.message[0] && cls.realtime - nm.messageTime < NM_MESSAGE_MS )
 		NM_TextClipped( NM_RIGHT_X, 29, NM_RIGHT_W, nm.message, nmWhite );
@@ -4009,7 +4079,11 @@ void CL_NpcManager_Draw( void ) {
 		Key_GetKey( NM_TOGGLE_CMD ) >= 0 ? "Your npcmanager bind closes" : "Tip: bind a key to npcmanager" );
 	NM_Text( NM_LEFT_X, 452, buf, nmWhite );
 
-	if ( pickerOpen && nm.picker != NM_PICKER_NONE ) {
+	if ( experimentalOpen ) {
+		nm.click = click;
+		nm.wheel = wheel;
+		NM_DrawExperimentalBox();
+	} else if ( pickerOpen && nm.picker != NM_PICKER_NONE ) {
 		nm.click = click;
 		nm.wheel = wheel;
 		NM_DrawPicker();

@@ -148,6 +148,17 @@ static rhResult_t RH_Npc( char **argv, int argc, const char *message ) {
 	return RH_REPLACED;
 }
 
+static qboolean rhExperimental;
+
+qboolean CL_RpHooks_Experimental( void ) {
+	return rhExperimental;
+}
+
+void CL_RpHooks_SetExperimental( qboolean on ) {
+	rhExperimental = on;
+	Com_Printf( "Experimental features %s\n", on ? S_COLOR_YELLOW "on" S_COLOR_WHITE " for this session" : "off" );
+}
+
 // a part of the hook, with what would end it early made spaces
 static const char *RH_HookPart( const char *in ) {
 	static char out[4][MAX_QPATH];

@@ -1208,6 +1208,10 @@ static void CE_SendShot( void ) {
 		CE_Message( S_COLOR_RED "The shot is too long to send: take a spot or two out" );
 		return;
 	}
+	if ( !CL_RpHooks_Experimental() ) {
+		CE_Message( S_COLOR_YELLOW RP_EXPERIMENTAL_OFF " in the storyteller or NPC manager" );
+		return;
+	}
 	CL_AddReliableCommand( va( "rpnotify -1 1 cmd:%s", hook ), qfalse );
 	CE_Message( S_COLOR_GREEN "Sent to everyone" );
 }
@@ -2135,9 +2139,9 @@ static void CE_DrawEditor( void ) {
 				(qboolean)( have && !ce.shot.orbit && ce.sel > 0 ) ) )
 				CE_Preview( qtrue );
 			y += CE_CTRL_H + CE_GAP;
-			if ( CE_Button( x, y, half, "Play for everyone", qfalse, (qboolean)( have && len <= RC_MAX_HOOK ) ) )
+			if ( CE_Button( x, y, half, "Play for everyone", qfalse, (qboolean)( have && len <= RC_MAX_HOOK && CL_RpHooks_Experimental() ) ) )
 				CE_SendShot();
-			if ( CE_Button( x + half + 4, y, half, "End for everyone", qfalse, qtrue ) ) {
+			if ( CE_Button( x + half + 4, y, half, "End for everyone", qfalse, CL_RpHooks_Experimental() ) ) {
 				CL_AddReliableCommand( "rpnotify -1 1 cmd:cin/end", qfalse );
 				CE_Message( S_COLOR_GREEN "Sent the end to everyone" );
 			}
@@ -2357,6 +2361,10 @@ static void CL_CinCam_f( void ) {
 	}
 	if ( local ) {
 		RC_RunLocal( hook );
+		return;
+	}
+	if ( !CL_RpHooks_Experimental() ) {
+		Com_Printf( S_COLOR_YELLOW "Not sent: " RP_EXPERIMENTAL_OFF " in the storyteller or NPC manager\n" );
 		return;
 	}
 	// the server takes a // for a comment

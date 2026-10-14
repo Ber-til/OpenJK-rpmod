@@ -246,7 +246,8 @@ typedef enum {
 	ST_POPUP_SAVE,
 	ST_POPUP_LOAD,
 	ST_POPUP_ARMED,
-	ST_POPUP_CHOOSE
+	ST_POPUP_CHOOSE,
+	ST_POPUP_EXPERIMENTAL	// the warning before turning them on
 } stPopup_t;
 
 // what the choose popup lists
@@ -608,6 +609,30 @@ static qboolean ST_HasEmote( const stStep_t *s ) {
 	return (qboolean)( s->values[3][0] && Q_stricmp( s->values[3], "none" ) );
 }
 
+// sent as cmd: hooks, which only players with this client see
+static qboolean ST_Experimental( stAction_t action ) {
+	switch ( action ) {
+	case ST_A_NPC_TALK:
+	case ST_A_OBJECTIVE:
+	case ST_A_CIN_START:
+	case ST_A_CAM_SHOT:
+	case ST_A_CAM_FOV:
+	case ST_A_CIN_BARS:
+	case ST_A_CIN_END:
+		return qtrue;
+	default:
+		return qfalse;
+	}
+}
+
+// an action from the list can go in the story
+static qboolean ST_CanAdd( stAction_t action ) {
+	if ( !ST_Experimental( action ) || CL_RpHooks_Experimental() )
+		return qtrue;
+	ST_Message( S_COLOR_YELLOW RP_EXPERIMENTAL_OFF ", top right" );
+	return qfalse;
+}
+
 // what a step sends after its command, NULL if nothing
 static const char *ST_StepExtra( const stStep_t *s ) {
 	static char cmd[MAX_STRING_CHARS];
@@ -629,6 +654,10 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 	*error = NULL;
 	cmd[0] = '\0';
 
+	if ( ST_Experimental( s->action ) && !CL_RpHooks_Experimental() ) {
+		*error = RP_EXPERIMENTAL_OFF;
+		return NULL;
+	}
 	if ( !ST_HavePos( s ) ) {
 		*error = "Set the spot: X, Y and Z";
 		return NULL;
@@ -2539,6 +2568,8 @@ void CL_Storyteller_KeyEvent( int key, qboolean down ) {
 		CL_Storyteller_Close();
 		return;
 	}
+	if ( st.popup == ST_POPUP_EXPERIMENTAL && key != A_MOUSE1 )
+		return;
 
 	switch ( key ) {
 	case A_MOUSE1:
@@ -2621,7 +2652,8 @@ void CL_Storyteller_KeyEvent( int key, qboolean down ) {
 		break;
 	case A_ENTER:
 	case A_KP_ENTER:
-		if ( st.actionList.sel >= 0 && st.actionList.sel < st.numActionRows && !st.actionRows[st.actionList.sel].header )
+		if ( st.actionList.sel >= 0 && st.actionList.sel < st.numActionRows && !st.actionRows[st.actionList.sel].header
+			&& ST_CanAdd( st.actionRows[st.actionList.sel].action ) )
 			ST_AddStep( st.actionRows[st.actionList.sel].action );
 		break;
 	default:
@@ -2885,6 +2917,8 @@ static void ST_DrawActionRow( int row, float x, float y, float w ) {
 
 	if ( r->header )
 		ST_Text( x, y, va( S_COLOR_YELLOW "%s", r->header ), stWhite );
+	else if ( ST_Experimental( r->action ) && !CL_RpHooks_Experimental() )
+		ST_TextClipped( x + 8, y, w - 8, va( S_COLOR_GREY "%s", stActions[r->action].name ), stWhite );
 	else
 		ST_TextClipped( x + 8, y, w - 8, stActions[r->action].name, stWhite );
 }
@@ -2917,7 +2951,7 @@ static void ST_DrawActions( void ) {
 	if ( st.actionList.sel >= 0 && st.actionList.sel < st.numActionRows && st.actionRows[st.actionList.sel].header
 		&& st.actionList.sel + 1 < st.numActionRows )
 		st.actionList.sel++;
-	if ( picked >= 0 && !st.actionRows[picked].header )
+	if ( picked >= 0 && !st.actionRows[picked].header && ST_CanAdd( st.actionRows[picked].action ) )
 		ST_AddStep( st.actionRows[picked].action );
 
 	if ( st.actionList.sel < 0 || st.actionList.sel >= st.numActionRows )
@@ -2925,9 +2959,13 @@ static void ST_DrawActions( void ) {
 	r = &st.actionRows[st.actionList.sel];
 	if ( r->header )
 		return;
-	if ( ST_Button( ST_ACTIONS_X, listY + ST_ACTIONS_H + 4, ST_ACTIONS_W, va( "Add \"%s\"", stActions[r->action].name ), qfalse, qtrue ) )
+	const qboolean off = (qboolean)( ST_Experimental( r->action ) && !CL_RpHooks_Experimental() );
+
+	if ( ST_Button( ST_ACTIONS_X, listY + ST_ACTIONS_H + 4, ST_ACTIONS_W, va( "Add \"%s\"", stActions[r->action].name ), qfalse, (qboolean)!off ) )
 		ST_AddStep( r->action );
-	ST_TextWrapped( ST_ACTIONS_X, listY + ST_ACTIONS_H + 24, ST_ACTIONS_W, stActions[r->action].desc, stDim, 7 );
+	ST_TextWrapped( ST_ACTIONS_X, listY + ST_ACTIONS_H + 24, ST_ACTIONS_W,
+		off ? va( S_COLOR_YELLOW "Experimental, off: " RP_EXPERIMENTAL_LABEL " turns it on. " S_COLOR_GREY "%s", stActions[r->action].desc )
+		: stActions[r->action].desc, stDim, 7 );
 }
 
 static void ST_DrawSteps( void ) {
@@ -3312,8 +3350,28 @@ static void ST_DrawArmedPopup( void ) {
 		st.popup = ST_POPUP_NONE;
 }
 
+static void ST_DrawExperimentalPopup( void ) {
+	const float x = ST_POPUP_X, y = 160, w = ST_POPUP_W, h = 120;
+
+	ST_Box( x, y, w, h, stPanelOpaque );
+	ST_Text( x + 8, y + 8, S_COLOR_YELLOW "Experimental features", stWhite );
+	ST_TextWrapped( x + 8, y + 26, w - 16, RP_EXPERIMENTAL_WARNING, stWhite, 5 );
+	if ( ST_Button( x + 8, y + h - 22, 80, "OK", qfalse, qtrue ) ) {
+		CL_RpHooks_SetExperimental( qtrue );
+		ST_Message( S_COLOR_YELLOW "Experimental features on, for this session" );
+		st.popup = ST_POPUP_NONE;
+	}
+	if ( ST_Button( x + w - 88, y + h - 22, 80, "Cancel", qfalse, qtrue ) )
+		st.popup = ST_POPUP_NONE;
+}
+
 static void ST_DrawPopup( void ) {
 	const float x = ST_POPUP_X, w = ST_POPUP_W;
+
+	if ( st.popup == ST_POPUP_EXPERIMENTAL ) {
+		ST_DrawExperimentalPopup();
+		return;
+	}
 
 	if ( st.popup == ST_POPUP_ARMED ) {
 		ST_DrawArmedPopup();
@@ -3445,7 +3503,16 @@ void CL_Storyteller_Draw( void ) {
 		: va( S_COLOR_GREY "unsaved story%s", st.dirty ? S_COLOR_YELLOW " *" : "" ), stWhite );
 	status = ST_Status();
 	if ( status )
-		ST_TextClipped( ST_EDIT_X - 100, 14, ST_EDIT_W + 100 - 76, status, stWhite );
+		ST_TextClipped( ST_EDIT_X - 100, 14, ST_EDIT_W + 100 - 76 - 124, status, stWhite );
+	if ( ST_Button( ST_EDIT_X + ST_EDIT_W - 74 - 120, 12, 120, RP_EXPERIMENTAL_LABEL, CL_RpHooks_Experimental(), qtrue ) ) {
+		if ( CL_RpHooks_Experimental() ) {
+			CL_RpHooks_SetExperimental( qfalse );
+			ST_Message( "Experimental features off" );
+		} else {
+			st.popup = ST_POPUP_EXPERIMENTAL;
+			st.focus = ST_F_NONE;
+		}
+	}
 	if ( ST_Button( ST_EDIT_X + ST_EDIT_W - 70, 12, 70, va( "Armed (%i)", stNumArmed ), (qboolean)( stNumArmed > 0 ), qtrue ) )
 		ST_OpenArmed();
 	if ( st.message[0] && cls.realtime - st.messageTime < ST_MESSAGE_MS )
