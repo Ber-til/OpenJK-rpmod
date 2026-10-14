@@ -90,6 +90,7 @@ static void SCR_DrawChar( int x, int y, float size, int ch ) {
 	int row, col;
 	float frow, fcol;
 	float	ax, ay, aw, ah;
+	const float width = size * cls.widthRatioCoef;
 
 	ch &= 255;
 
@@ -103,7 +104,7 @@ static void SCR_DrawChar( int x, int y, float size, int ch ) {
 
 	ax = x;
 	ay = y;
-	aw = size;
+	aw = width;
 	ah = size;
 
 	row = ch>>4;
@@ -175,7 +176,7 @@ Coordinates are at 640 by 480 virtual resolution
 void SCR_DrawStringExt( int x, int y, float size, const char *string, float *setColor, qboolean forceColor, qboolean noColorEscape ) {
 	vec4_t		color;
 	const char	*s;
-	int			xx;
+	float		xx;
 
 	// draw the drop shadow
 	color[0] = color[1] = color[2] = 0;
@@ -188,8 +189,8 @@ void SCR_DrawStringExt( int x, int y, float size, const char *string, float *set
 			s += 2;
 			continue;
 		}
-		SCR_DrawChar( xx+2, y+2, size, *s );
-		xx += size;
+		SCR_DrawChar( (int)xx+2, y+2, size, *s );
+		xx += size * cls.widthRatioCoef;
 		s++;
 	}
 
@@ -210,8 +211,8 @@ void SCR_DrawStringExt( int x, int y, float size, const char *string, float *set
 				continue;
 			}
 		}
-		SCR_DrawChar( xx, y, size, *s );
-		xx += size;
+		SCR_DrawChar( (int)xx, y, size, *s );
+		xx += size * cls.widthRatioCoef;
 		s++;
 	}
 	re->SetColor( NULL );

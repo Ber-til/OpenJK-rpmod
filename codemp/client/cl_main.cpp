@@ -2267,6 +2267,29 @@ CL_Frame
 static unsigned int frameCount;
 static float avgFrametime=0.0;
 extern void SE_CheckForLanguageUpdates(void);
+cvar_t	*cl_ratioFix;
+
+// widescreen: the 640x480 everything 2D is laid out in, made narrower to look as on a 4:3 screen.
+// The fonts are the renderer's r_aspectCorrectFonts, which follows cl_ratioFix
+static void CL_UpdateRatioFix( void ) {
+	static int fixCount = -1;
+	const qboolean on = (qboolean)( cl_ratioFix->integer != 0 );
+
+	if ( on && cls.glconfig.vidWidth > 0 && cls.glconfig.vidHeight > 0 )
+		cls.widthRatioCoef = Q_min( 1.0f, (float)( SCREEN_WIDTH * cls.glconfig.vidHeight ) / (float)( SCREEN_HEIGHT * cls.glconfig.vidWidth ) );
+	else
+		cls.widthRatioCoef = 1.0f;
+
+	if ( fixCount == cl_ratioFix->modificationCount )
+		return;
+	// turned on, the fonts go along; one set by hand to 2 is left be. Turned off, they go back
+	if ( on && !Cvar_VariableIntegerValue( "r_aspectCorrectFonts" ) )
+		Cvar_Set( "r_aspectCorrectFonts", "1" );
+	else if ( !on && fixCount != -1 )
+		Cvar_Set( "r_aspectCorrectFonts", "0" );
+	fixCount = cl_ratioFix->modificationCount;
+}
+
 void CL_Frame ( int msec ) {
 	qboolean takeVideoFrame = qfalse;
 
@@ -2275,6 +2298,7 @@ void CL_Frame ( int msec ) {
 	}
 
 	SE_CheckForLanguageUpdates();	// will take zero time to execute unless language changes, then will reload strings.
+	CL_UpdateRatioFix();
 									//	of course this still doesn't work for menus...
 
 	if ( cls.state == CA_DISCONNECTED && !( Key_GetCatcher( ) & KEYCATCH_UI )
@@ -2831,6 +2855,8 @@ void CL_Init( void ) {
 	CL_SoundManager_Init ();
 	CL_RpHooks_Init ();
 	CL_RpAdmin_Init ();
+	cl_ratioFix = Cvar_Get( "cl_ratioFix", "1", CVAR_ARCHIVE_ND, "Widescreen: text, and the engine's own, as on a 4:3 screen instead of stretched" );
+	cls.widthRatioCoef = 1.0f;
 	CL_RadialMenu_Init ();
 	CL_SaberStyle_Init ();
 	CL_EmotePreview_Init ();

@@ -1546,6 +1546,9 @@ void RE_Font_DrawString(int ox, int oy, const char *psText, const float *rgba, c
 	qhandle_t			hShader;
 	float				fScale = fScaleIn;
 	int					iFontHandle = iFontHandleIn;
+	// r_aspectCorrectFonts: each letter drawn as narrow as on a 4:3 screen, not just closer together
+	const float			fAspect = r_aspectCorrectFonts->integer && glConfig.vidWidth > 0
+							? Q_min( 1.0f, (float)( SCREEN_WIDTH * glConfig.vidHeight ) / (float)( SCREEN_HEIGHT * glConfig.vidWidth ) ) : 1.0f;
 
 	assert (psText);
 
@@ -1661,7 +1664,8 @@ void RE_Font_DrawString(int ox, int oy, const char *psText, const float *rgba, c
 			break;
 		case 32:						// Space
 			pLetter = curfont->GetLetter(' ');
-			fx += curfont->mbRoundCalcs ? Round(pLetter->horizAdvance * fScale) : pLetter->horizAdvance * fScale;
+			// as narrow as the letters, as RE_Font_StrLenPixels measures it
+			fx += ( curfont->mbRoundCalcs ? Round(pLetter->horizAdvance * fScale) : pLetter->horizAdvance * fScale ) * fAspect;
 			bNextTextWouldOverflow = ( iMaxPixelWidth != -1 && ((fx-fox) > (float)iMaxPixelWidth) ) ? qtrue : qfalse; // yeuch
 			break;
 		case '_':	// has a special word-break usage if in Thai (and followed by a thai char), and should not be displayed, else treat as normal
@@ -1716,9 +1720,9 @@ void RE_Font_DrawString(int ox, int oy, const char *psText, const float *rgba, c
 					fy += 3.0f; // I'm sick and tired of going round in circles trying to do this legally, so bollocks to it
 				}
 
-				RE_StretchPic(curfont->mbRoundCalcs ? fx + Round(pLetter->horizOffset * fThisScale) : fx + pLetter->horizOffset * fThisScale, // float x
+				RE_StretchPic(curfont->mbRoundCalcs ? fx + Round(pLetter->horizOffset * fThisScale) * fAspect : fx + pLetter->horizOffset * fThisScale * fAspect, // float x
 								(uiLetter > (unsigned)g_iNonScaledCharRange) ? fy - fAsianYAdjust : fy,	// float y
-								curfont->mbRoundCalcs ? Round(pLetter->width * fThisScale) : pLetter->width * fThisScale,	// float w
+								curfont->mbRoundCalcs ? Round(pLetter->width * fThisScale) * fAspect : pLetter->width * fThisScale * fAspect,	// float w
 								curfont->mbRoundCalcs ? Round(pLetter->height * fThisScale) : pLetter->height * fThisScale, // float h
 								pLetter->s,						// float s1
 								pLetter->t,						// float t1

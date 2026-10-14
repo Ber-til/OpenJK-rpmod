@@ -340,6 +340,9 @@ typedef struct clientStatic_s {
 
 	// Engine menu
 	int			menuFont;
+
+	// cl_ratioFix: how much narrower than 640 wide the screen's 640x480 is, 1 if not at all
+	float		widthRatioCoef;
 } clientStatic_t;
 
 #define	CON_TEXTSIZE	0x30000 //was 32768
@@ -386,6 +389,8 @@ typedef struct {
 } console_t;
 
 extern	clientStatic_t		cls;
+
+extern	cvar_t	*cl_ratioFix;
 
 extern	refexport_t		*re;		// interface to refresh .dll
 

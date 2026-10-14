@@ -471,7 +471,7 @@ void Field_VariableSizeDraw( field_t *edit, int x, int y, int size, qboolean sho
 		} else {
 			str[0] = cursorChar;
 			str[1] = 0;
-			SCR_DrawBigString( x + ( edit->cursor - prestep - i ) * size, y, str, 1.0, qfalse );
+			SCR_DrawBigString( x + (int)( ( edit->cursor - prestep - i ) * size * cls.widthRatioCoef ), y, str, 1.0, qfalse );
 		}
 	}
 }
