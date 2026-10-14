@@ -663,7 +663,8 @@ void CL_ModelManager_Draw( void );
 #define KEYCATCH_EFFECTMANAGER	0x0080	// engine only, the effect manager owns keyboard and mouse
 #define KEYCATCH_STORYTELLER	0x0100	// engine only, the storyteller owns keyboard and mouse
 #define KEYCATCH_CINEDITOR		0x0200	// engine only, the camera editor owns keyboard and mouse
-#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELMANAGER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER | KEYCATCH_STORYTELLER | KEYCATCH_CINEDITOR )	// mods never see or clear these
+#define KEYCATCH_SOUNDMANAGER	0x0800	// engine only, the sound or the music manager owns keyboard and mouse
+#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELMANAGER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER | KEYCATCH_STORYTELLER | KEYCATCH_CINEDITOR | KEYCATCH_SOUNDMANAGER )	// mods never see or clear these
 
 void CL_NpcManager_Init( void );
 void CL_NpcManager_Shutdown( void );
@@ -723,6 +724,9 @@ void CL_EffectManager_f( void );
 qboolean CL_EffectManager_Active( void );
 void CL_EffectManager_Close( void );
 void CL_EffectManager_OpenForStory( void );
+void CL_EffectManager_RequestList( void );
+int CL_EffectManager_NumActive( void );
+qboolean CL_EffectManager_GetActive( int index, int *num, const char **path, vec3_t origin );
 void CL_EffectManager_KeyEvent( int key, qboolean down );
 void CL_EffectManager_CharEvent( int ch );
 void CL_EffectManager_MouseEvent( int dx, int dy );
@@ -768,6 +772,24 @@ void CL_RpCinematic_EditorMouseEvent( int dx, int dy );
 void CL_RpCinematic_EditorEscape( void );
 
 // cl_storyteller.cpp
+// cl_soundmanager.cpp
+void CL_SoundManager_Init( void );
+void CL_SoundManager_Shutdown( void );
+void CL_SoundManager_f( void );
+void CL_MusicManager_f( void );
+qboolean CL_SoundManager_Active( void );
+qboolean CL_MusicManager_Active( void );
+void CL_SoundManager_Close( void );
+void CL_SoundManager_OpenForStory( void );
+void CL_MusicManager_OpenForStory( void );
+void CL_SoundManager_KeyEvent( int key, qboolean down );
+void CL_SoundManager_CharEvent( int ch );
+void CL_SoundManager_MouseEvent( int dx, int dy );
+void CL_SoundManager_Escape( void );
+void CL_SoundManager_Frame( void );
+qboolean CL_SoundManager_ServerPrint( const char *text );
+void CL_SoundManager_Draw( void );
+
 void CL_Storyteller_Init( void );
 void CL_Storyteller_Shutdown( void );
 void CL_Storyteller_f( void );

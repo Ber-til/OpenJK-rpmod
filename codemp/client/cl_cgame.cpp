@@ -443,6 +443,12 @@ rescan:
 		return qtrue;
 	}
 
+	// and the sound manager with "rpsound list"
+	if ( !strcmp( cmd, "print" ) && CL_SoundManager_ServerPrint( Cmd_Argv( 1 ) ) ) {
+		Cmd_TokenizeString( "print \"\"" );
+		return qtrue;
+	}
+
 	if ( !strcmp( cmd, "disconnect" ) ) {
 		char strEd[MAX_STRINGED_SV_STRING];
 		CL_CheckSVStringEdRef(strEd, Cmd_Argv(1));
@@ -532,6 +538,7 @@ void CL_ShutdownCGame( void ) {
 	CL_ShaderManager_Shutdown();
 	CL_EffectManager_Shutdown();
 	CL_Storyteller_Shutdown();
+	CL_SoundManager_Shutdown();
 	CL_RpCinematic_Reset();
 	CL_FighterAssist_Shutdown();
 	CL_ChatRange_Shutdown();

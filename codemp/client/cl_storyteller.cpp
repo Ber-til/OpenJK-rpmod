@@ -28,6 +28,12 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 // keeps playing with the panel closed. Stories are saved in storyteller/*.story,
 // one step a line: its action, 1 or 0 for whether it runs, and its settings.
 //
+// "When someone comes" waits for a player or NPC to come into a map trigger, or near a
+// spot or an effect, or for a door or button to move. A story starting with it can be
+// armed: a copy of it waits in the background and plays when that happens, once or
+// every time, several at once. Only who the server sends this client can be seen, so
+// the storyteller has to be near enough; the server could do it everywhere one day.
+//
 // This lives in the engine rather than cgame so it works whatever cgame the
 // server's mod ships (RPMod loads its own).
 
@@ -82,6 +88,7 @@ typedef struct {
 typedef enum {
 	ST_A_WAIT,
 	ST_A_PAUSE,
+	ST_A_TRIGGER,
 	ST_A_COMMAND,
 	ST_A_SAY,
 	ST_A_CENTER,
@@ -94,6 +101,8 @@ typedef enum {
 	ST_A_EFFECT,
 	ST_A_SCREEN,
 	ST_A_SHADER,
+	ST_A_SOUND,
+	ST_A_MUSIC,
 	ST_A_CIN_START,
 	ST_A_CAM_SHOT,
 	ST_A_CAM_FOV,
@@ -120,6 +129,15 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ "Seconds", ST_K_NUMBER, "2", NULL } } },
 	{ "pause", "Wait for me", "Flow", "Stops until you press Continue, or run /storyteller continue (bind it to a key). The note shows while it waits.", -1, -1, 1, {
 		{ "Note", ST_K_TEXT, "", NULL } } },
+	{ "trigger", "When someone comes", "Flow", "Waits until someone comes into a map trigger or near a spot or an effect, or a door moves. A story starting with it can be armed. Only people near you are seen.", 5, -1, 8, {
+		{ "Where", ST_K_CHOICE, "map trigger", "map trigger|near a spot|near an effect|door or button" },
+		{ "Which", ST_K_TEXT, "", NULL },
+		{ "Who", ST_K_CHOICE, "any player", "any player|any NPC|anyone|me|named" },
+		{ "Name", ST_K_TEXT, "", NULL },
+		{ "Radius", ST_K_NUMBER, "96", NULL },
+		{ "X", ST_K_NUMBER, "", NULL },
+		{ "Y", ST_K_NUMBER, "", NULL },
+		{ "Z", ST_K_NUMBER, "", NULL } } },
 	{ "command", "Run a command", "Flow", "Runs it as if typed in the console, e.g. rpcinematic intro, or exec mission.cfg. Separate several with ;", -1, -1, 1, {
 		{ "Command", ST_K_TEXT, "", NULL } } },
 	{ "say", "Say", "Speech", "Says this in chat, as you.", -1, -1, 1, {
@@ -185,6 +203,17 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ "From", ST_K_TEXT, "", NULL },
 		{ "To", ST_K_TEXT, "", NULL },
 		{ "Time offset", ST_K_NUMBER, "", NULL } } },
+	{ "sound", "Play sound", "World", "Plays a sound with rpsound: once, looping (until removed) or local, to everyone, you, a player or at a spot. Pick it in the sound manager to hear it first.", 4, -1, 7, {
+		{ "Sound", ST_K_TEXT, "", NULL },
+		{ "Play", ST_K_CHOICE, "once", "once|loop|local" },
+		{ "To", ST_K_CHOICE, "everyone", "everyone|me|player|spot" },
+		{ "Player", ST_K_TEXT, "", NULL },
+		{ "X", ST_K_NUMBER, "", NULL },
+		{ "Y", ST_K_NUMBER, "", NULL },
+		{ "Z", ST_K_NUMBER, "", NULL } } },
+	{ "music", "Change music", "World", "Changes the music for everyone with rpmusic: a file from the music folder, the map's own again, or none. Pick it in the music manager to hear it first.", -1, -1, 2, {
+		{ "Do", ST_K_CHOICE, "play", "play|map default|none" },
+		{ "Music", ST_K_TEXT, "", NULL } } },
 	{ "cinstart", "Start cinematic", "Cinematic", "Takes everyone with this client from their own view to the cinematic camera, starting where each of them looks from. Camera shots start one too. Players can leave it with /cincam stop.", -1, -1, 2, {
 		{ "HUD", ST_K_CHOICE, "hide", "hide|show" },
 		{ "Bars", ST_K_CHOICE, "on", "on|off" } } },
@@ -215,8 +244,38 @@ typedef struct {
 typedef enum {
 	ST_POPUP_NONE,
 	ST_POPUP_SAVE,
-	ST_POPUP_LOAD
+	ST_POPUP_LOAD,
+	ST_POPUP_ARMED,
+	ST_POPUP_CHOOSE
 } stPopup_t;
+
+// what the choose popup lists
+typedef enum {
+	ST_CHOOSE_TRIGGER,
+	ST_CHOOSE_DOOR,
+	ST_CHOOSE_EFFECT
+} stChoose_t;
+
+#define ST_MAX_PEOPLE	128
+
+// a story playing: the one being edited, or an armed one
+typedef struct {
+	qboolean	running;
+	int			pc;				// the step being run
+	int			stepStart;		// when a wait began, 0 = not yet
+	qboolean	waiting;		// at a "wait for me"
+	qboolean	goOn;			// told to go on past it
+	int			sent;			// commands sent this run
+	qboolean	extraDue;		// the step's own command is out, its second one isn't
+	int			shotUntil;		// a camera shot plays until then
+
+	// at a "when someone comes": who was in at the last look, so only someone new sets it off
+	qboolean	watching;
+	int			inside[ST_MAX_PEOPLE];
+	int			numInside;
+	int			moverTime, moverATime;	// the door's last move
+	char		by[MAX_QPATH];			// who set it off
+} stRun_t;
 
 typedef enum {
 	ST_PICK_NONE,
@@ -224,7 +283,9 @@ typedef enum {
 	ST_PICK_EFFECT,
 	ST_PICK_SHADER,
 	ST_PICK_NPC_SPAWN,
-	ST_PICK_NPC_MANAGE
+	ST_PICK_NPC_MANAGE,
+	ST_PICK_SOUND,
+	ST_PICK_MUSIC
 } stPick_t;
 
 #define ST_MAX_PICKED	64
@@ -270,15 +331,13 @@ static struct {
 	int			confirmTime;
 
 	// playing
-	qboolean	running;
-	int			pc;				// the step being run
-	int			stepStart;		// when a wait began, 0 = not yet
-	qboolean	waiting;		// at a "wait for me"
-	qboolean	goOn;			// told to go on past it
-	int			nextSend;
-	int			sent;			// commands sent this run
-	qboolean	extraDue;		// the step's own command is out, its second one isn't
-	int			shotUntil;		// a camera shot plays until then
+	stRun_t		run;
+	int			nextSend;		// for every story: the server's flood protection is per client
+
+	// the armed stories, and the list a trigger step picks from
+	stList_t	armedList;
+	stChoose_t	chooseKind;
+	stList_t	chooseList;
 
 	// a manager opened from a step: what it sends comes back as steps
 	stPick_t	pick;
@@ -289,6 +348,9 @@ static struct {
 	char		message[MAX_STRING_CHARS];
 	int			messageTime;
 } st;
+
+static void ST_OpenArmed( void );
+static void ST_OpenChoose( stChoose_t kind );
 
 static vec4_t stWhite		= { 1.0f, 1.0f, 1.0f, 1.0f };
 static vec4_t stPanel		= { 0.0f, 0.0f, 0.0f, 0.65f };
@@ -421,8 +483,57 @@ static qboolean ST_FillAim( stStep_t *s ) {
 	return qtrue;
 }
 
+static qboolean ST_TriggerNear( const stStep_t *s ) {
+	return (qboolean)!Q_stricmpn( s->values[0], "near", 4 );
+}
+
+static qboolean ST_TriggerEffect( const stStep_t *s ) {
+	return (qboolean)!Q_stricmp( s->values[0], "near an effect" );
+}
+
+static qboolean ST_TriggerDoor( const stStep_t *s ) {
+	return (qboolean)!Q_stricmp( s->values[0], "door or button" );
+}
+
+// "*12" as the map's inline model 12, 0 if it isn't one
+static int ST_ModelNum( const char *which ) {
+	const int m = atoi( which[0] == '*' ? which + 1 : which );
+
+	return ( m > 0 && m < CM_NumInlineModels() ) ? m : 0;
+}
+
+// a "when someone comes" step shows only what its kind of trigger uses
+static qboolean ST_FieldShown( const stStep_t *s, int field ) {
+	if ( s->action == ST_A_SOUND ) {
+		if ( field == 3 )
+			return (qboolean)!Q_stricmp( s->values[2], "player" );
+		if ( field >= 4 )
+			return (qboolean)!Q_stricmp( s->values[2], "spot" );
+		return qtrue;
+	}
+	if ( s->action == ST_A_MUSIC )
+		return (qboolean)( field != 1 || !Q_stricmp( s->values[0], "play" ) );
+	if ( s->action != ST_A_TRIGGER )
+		return qtrue;
+	switch ( field ) {
+	case 1:		return (qboolean)( !ST_TriggerNear( s ) || ST_TriggerEffect( s ) );
+	case 2:		return (qboolean)!ST_TriggerDoor( s );
+	case 3:		return (qboolean)( !ST_TriggerDoor( s ) && !Q_stricmp( s->values[2], "named" ) );
+	case 4:
+	case 5:
+	case 6:
+	case 7:		return ST_TriggerNear( s );
+	default:	return qtrue;
+	}
+}
+
 static qboolean ST_HavePos( const stStep_t *s ) {
 	const stActionDef_t *def = ST_Def( s );
+
+	if ( s->action == ST_A_TRIGGER && !ST_TriggerNear( s ) )
+		return qtrue;
+	if ( s->action == ST_A_SOUND && Q_stricmp( s->values[2], "spot" ) )
+		return qtrue;
 
 	if ( def->posField < 0 )
 		return qtrue;
@@ -537,6 +648,18 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 	switch ( s->action ) {
 	case ST_A_WAIT:
 	case ST_A_PAUSE:
+		return NULL;
+
+	case ST_A_TRIGGER:
+		if ( !ST_TriggerNear( s ) && !ST_ModelNum( v[1] ) ) {
+			*error = ST_TriggerDoor( s ) ? "Pick the door or button: aim at it, or pick it from the list"
+				: "Pick the trigger: stand in it, or pick it from the list";
+			return NULL;
+		}
+		if ( !ST_TriggerDoor( s ) && !Q_stricmp( v[2], "named" ) && !v[3][0] ) {
+			*error = "Type the player's or the NPC's name, or the NPC's number";
+			return NULL;
+		}
 		return NULL;
 
 	case ST_A_SAY:
@@ -703,6 +826,59 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 		}
 		return cmd;
 
+	case ST_A_SOUND: {
+		const char *verb = !Q_stricmp( v[1], "loop" ) ? "add" : !Q_stricmp( v[1], "local" ) ? "local" : "once";
+		const int len = strlen( v[0] );
+
+		if ( !v[0][0] ) {
+			*error = "Type the sound, e.g. ambience/thunder1.wav, or pick it in the sound manager";
+			return NULL;
+		}
+		// the engine plays an mp3 sound once and no more, so a looping one would go quiet
+		if ( !strcmp( verb, "add" ) && len > 4 && !Q_stricmp( v[0] + len - 4, ".mp3" ) ) {
+			*error = "An mp3 only plays once in this engine: loop a .wav, or play this once";
+			return NULL;
+		}
+		if ( !Q_stricmp( v[2], "player" ) ) {
+			if ( !v[3][0] ) {
+				*error = "Type the player's number";
+				return NULL;
+			}
+			Com_sprintf( cmd, sizeof( cmd ), "rpsound %s %s %s", verb, v[0], v[3] );
+		} else if ( !Q_stricmp( v[2], "spot" ) ) {
+			if ( strcmp( verb, "add" ) ) {
+				*error = "Only a looping sound plays at a spot";
+				return NULL;
+			}
+			Com_sprintf( cmd, sizeof( cmd ), "rpsound add %s %s", v[0], ST_PosArgs( s ) );
+		} else if ( !Q_stricmp( v[2], "me" ) ) {
+			if ( !strcmp( verb, "add" ) ) {
+				*error = "A looping sound goes to everyone, a player or a spot";
+				return NULL;
+			}
+			Com_sprintf( cmd, sizeof( cmd ), "rpsound %s %s", verb, v[0] );
+		} else {
+			if ( !strcmp( verb, "local" ) ) {
+				*error = "A local sound goes to you or a player";
+				return NULL;
+			}
+			Com_sprintf( cmd, sizeof( cmd ), "rpsound %s %s all", verb, v[0] );
+		}
+		return cmd;
+	}
+
+	case ST_A_MUSIC:
+		if ( !Q_stricmp( v[0], "map default" ) )
+			return "rpmusic default";
+		if ( !Q_stricmp( v[0], "none" ) )
+			return "rpmusic none";
+		if ( !v[1][0] ) {
+			*error = "Type the music, e.g. kejim/impbaseb_explore.mp3, or pick it in the music manager";
+			return NULL;
+		}
+		Com_sprintf( cmd, sizeof( cmd ), "rpmusic %s", v[1] );
+		return cmd;
+
 	case ST_A_SHADER:
 		if ( !v[0][0] || !v[1][0] ) {
 			*error = "Type the shader to swap, and the one to put instead";
@@ -719,6 +895,362 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 	}
 }
 
+/*
+===============================================================================
+
+When someone comes
+
+===============================================================================
+*/
+
+#define ST_MAX_MAPENTS	1024
+#define ST_MAX_ARMED	16
+
+// the map's brush entities, read from its entity string: triggers, doors, buttons...
+typedef struct {
+	int			model;
+	char		classname[48];
+	char		targetname[48];
+	qboolean	trigger;
+	vec3_t		mins, maxs;
+} stMapEnt_t;
+
+static struct {
+	char		map[MAX_QPATH];
+	stMapEnt_t	ents[ST_MAX_MAPENTS];
+	int			count;
+} stMap;
+
+// a story armed: a copy of it plays each time its first step is set off
+typedef struct {
+	char		name[MAX_QPATH];
+	char		map[MAX_QPATH];		// it goes with the map
+	stStep_t	*steps;
+	int			numSteps;
+	qboolean	again;				// every time, not once
+	int			times;				// set off so far
+	stRun_t		run;
+} stArmed_t;
+
+static stArmed_t	stArmed[ST_MAX_ARMED];
+static int			stNumArmed;
+
+// a player or an NPC the snapshot has
+typedef struct {
+	int			num;
+	qboolean	npc;
+	vec3_t		org;
+} stPerson_t;
+
+static void ST_ScanMap( void ) {
+	char classname[48], targetname[48], model[16], key[64];
+	const char *p, *token;
+
+	if ( !cl.mapname[0] || !Q_stricmp( stMap.map, cl.mapname ) )
+		return;
+	Q_strncpyz( stMap.map, cl.mapname, sizeof( stMap.map ) );
+	stMap.count = 0;
+
+	p = CM_EntityString();
+	while ( p ) {
+		token = COM_Parse( &p );
+		if ( !token[0] )
+			break;
+		if ( strcmp( token, "{" ) )
+			continue;
+		classname[0] = targetname[0] = model[0] = '\0';
+		for ( ;; ) {
+			token = COM_Parse( &p );
+			if ( !token[0] || !strcmp( token, "}" ) )
+				break;
+			Q_strncpyz( key, token, sizeof( key ) );
+			token = COM_Parse( &p );
+			if ( !Q_stricmp( key, "classname" ) )
+				Q_strncpyz( classname, token, sizeof( classname ) );
+			else if ( !Q_stricmp( key, "targetname" ) )
+				Q_strncpyz( targetname, token, sizeof( targetname ) );
+			else if ( !Q_stricmp( key, "model" ) )
+				Q_strncpyz( model, token, sizeof( model ) );
+		}
+		if ( model[0] != '*' || !ST_ModelNum( model ) || stMap.count >= ST_MAX_MAPENTS )
+			continue;
+
+		stMapEnt_t *e = &stMap.ents[stMap.count++];
+		e->model = ST_ModelNum( model );
+		Q_strncpyz( e->classname, classname, sizeof( e->classname ) );
+		Q_strncpyz( e->targetname, targetname, sizeof( e->targetname ) );
+		e->trigger = (qboolean)!Q_stricmpn( classname, "trigger_", 8 );
+		CM_ModelBounds( CM_InlineModel( e->model ), e->mins, e->maxs );
+	}
+}
+
+static const stMapEnt_t *ST_FindEnt( int model ) {
+	ST_ScanMap();
+	for ( int i = 0; i < stMap.count; i++ ) {
+		if ( stMap.ents[i].model == model )
+			return &stMap.ents[i];
+	}
+	return NULL;
+}
+
+// "trigger_multiple door1 (*12)"
+static const char *ST_EntLabel( const char *which ) {
+	const int m = ST_ModelNum( which );
+	const stMapEnt_t *e = m ? ST_FindEnt( m ) : NULL;
+
+	if ( !e )
+		return which[0] ? which : "?";
+	return va( "%s%s%s (*%i)", e->classname, e->targetname[0] ? " " : "", e->targetname, e->model );
+}
+
+static const char *ST_WhoText( const stStep_t *s ) {
+	const char *who = s->values[2];
+
+	if ( !Q_stricmp( who, "any NPC" ) )		return "an NPC";
+	if ( !Q_stricmp( who, "anyone" ) )		return "anyone";
+	if ( !Q_stricmp( who, "me" ) )			return "you";
+	if ( !Q_stricmp( who, "named" ) )		return s->values[3][0] ? s->values[3] : "someone named";
+	return "a player";
+}
+
+static const char *ST_TriggerSummary( const stStep_t *s ) {
+	if ( ST_TriggerDoor( s ) )
+		return va( "When %s moves", ST_EntLabel( s->values[1] ) );
+	if ( ST_TriggerEffect( s ) )
+		return va( "When %s comes near %s", ST_WhoText( s ), s->values[1][0] ? s->values[1] : "an effect" );
+	if ( ST_TriggerNear( s ) )
+		return va( "When %s comes within %g of %s %s %s", ST_WhoText( s ), ST_Number( s, 4 ) > 0 ? ST_Number( s, 4 ) : 96.0f,
+			s->values[5], s->values[6], s->values[7] );
+	return va( "When %s comes into %s", ST_WhoText( s ), ST_EntLabel( s->values[1] ) );
+}
+
+// a player's box, near enough for an NPC's too
+static const vec3_t stPersonMins = { -15, -15, -24 };
+static const vec3_t stPersonMaxs = { 15, 15, 40 };
+
+static qboolean ST_InTrigger( int model, const vec3_t org ) {
+	trace_t tr;
+
+	CM_BoxTrace( &tr, org, org, stPersonMins, stPersonMaxs, CM_InlineModel( model ), -1, qfalse );
+	return (qboolean)( tr.startsolid || tr.allsolid );
+}
+
+// the smallest of the map's triggers the player stands in, 0 if none
+static int ST_TriggerHere( void ) {
+	float best = 0;
+	int model = 0;
+
+	ST_ScanMap();
+	for ( int i = 0; i < stMap.count; i++ ) {
+		const stMapEnt_t *e = &stMap.ents[i];
+		vec3_t size;
+		float volume;
+
+		if ( !e->trigger || !ST_InTrigger( e->model, cl.snap.ps.origin ) )
+			continue;
+		VectorSubtract( e->maxs, e->mins, size );
+		volume = size[0] * size[1] * size[2];
+		if ( !model || volume < best ) {
+			best = volume;
+			model = e->model;
+		}
+	}
+	return model;
+}
+
+static const entityState_t *ST_SnapEntity( int i ) {
+	return &cl.parseEntities[( cl.snap.parseEntitiesNum + i ) & ( MAX_PARSE_ENTITIES - 1 )];
+}
+
+// the door, button or other brush entity the crosshair is on, 0 if none
+static int ST_AimedMover( void ) {
+	vec3_t start, end, forward;
+	trace_t tr;
+	float best;
+	int model = 0;
+
+	VectorCopy( cl.snap.ps.origin, start );
+	start[2] += cl.snap.ps.viewheight;
+	AngleVectors( cl.viewangles, forward, NULL, NULL );
+	VectorMA( start, 8192, forward, end );
+	CM_BoxTrace( &tr, start, end, vec3_origin, vec3_origin, 0, MASK_SOLID, qfalse );
+	best = tr.fraction;
+
+	ST_ScanMap();
+	for ( int i = 0; i < cl.snap.numEntities; i++ ) {
+		const entityState_t *es = ST_SnapEntity( i );
+		const stMapEnt_t *e;
+
+		if ( es->solid != SOLID_BMODEL || !ST_ModelNum( va( "%i", es->modelindex ) ) )
+			continue;
+		e = ST_FindEnt( es->modelindex );
+		if ( e && e->trigger )
+			continue;
+		CM_TransformedBoxTrace( &tr, start, end, vec3_origin, vec3_origin, CM_InlineModel( es->modelindex ), -1,
+			es->pos.trBase, es->apos.trBase, qfalse );
+		if ( tr.fraction <= best && tr.fraction < 1.0f ) {
+			best = tr.fraction;
+			model = es->modelindex;
+		}
+	}
+	return model;
+}
+
+// the players and NPCs this client can see, the player first
+static int ST_People( stPerson_t *out, int max ) {
+	int n = 0;
+
+	if ( !cl.snap.valid )
+		return 0;
+	if ( cl.snap.ps.pm_type != PM_SPECTATOR ) {
+		out[n].num = cl.snap.ps.clientNum;
+		out[n].npc = qfalse;
+		VectorCopy( cl.snap.ps.origin, out[n].org );
+		n++;
+	}
+	for ( int i = 0; i < cl.snap.numEntities && n < max; i++ ) {
+		const entityState_t *es = ST_SnapEntity( i );
+
+		if ( es->number == cl.snap.ps.clientNum )
+			continue;
+		if ( es->eType == ET_PLAYER && es->number < MAX_CLIENTS )
+			out[n].npc = qfalse;
+		else if ( es->eType == ET_NPC )
+			out[n].npc = qtrue;
+		else
+			continue;
+		out[n].num = es->number;
+		VectorCopy( es->pos.trBase, out[n].org );
+		n++;
+	}
+	return n;
+}
+
+// a player's name, an NPC's targetname or type
+static void ST_PersonName( const stPerson_t *p, char *out, int size ) {
+	if ( !p->npc ) {
+		const char *cs = cl.gameState.stringData + cl.gameState.stringOffsets[CS_PLAYERS + p->num];
+		Q_strncpyz( out, Info_ValueForKey( cs, "n" ), size );
+		return;
+	}
+	for ( int i = 0; i < CL_NpcManager_NumNpcs(); i++ ) {
+		const char *type, *name;
+		int num;
+
+		if ( CL_NpcManager_GetNpc( i, &num, &type, &name ) && num == p->num ) {
+			Q_strncpyz( out, name[0] ? name : type, size );
+			return;
+		}
+	}
+	Com_sprintf( out, size, "NPC %i", p->num );
+}
+
+// a name as typed: a number is an NPC's, a name is matched without colours, in part from 3 letters
+static qboolean ST_NameIs( const stPerson_t *p, const char *want ) {
+	char name[MAX_QPATH], typed[MAX_QPATH];
+
+	if ( !want[0] )
+		return qfalse;
+	if ( Q_isanumber( want ) )
+		return (qboolean)( p->npc && p->num == atoi( want ) );
+	ST_PersonName( p, name, sizeof( name ) );
+	Q_StripColor( name );
+	Q_strncpyz( typed, want, sizeof( typed ) );
+	Q_StripColor( typed );
+	if ( !Q_stricmp( name, typed ) )
+		return qtrue;
+	return (qboolean)( strlen( typed ) >= 3 && Q_stristr( name, typed ) );
+}
+
+static qboolean ST_Counts( const stStep_t *s, const stPerson_t *p ) {
+	const char *who = s->values[2];
+
+	if ( !Q_stricmp( who, "any NPC" ) )		return p->npc;
+	if ( !Q_stricmp( who, "anyone" ) )		return qtrue;
+	if ( !Q_stricmp( who, "me" ) )			return (qboolean)( !p->npc && p->num == cl.snap.ps.clientNum );
+	if ( !Q_stricmp( who, "named" ) )		return ST_NameIs( p, s->values[3] );
+	return (qboolean)!p->npc;
+}
+
+static qboolean ST_Inside( const stStep_t *s, const vec3_t org ) {
+	if ( ST_TriggerNear( s ) ) {
+		vec3_t pos;
+		const float radius = ST_Number( s, 4 ) > 0 ? ST_Number( s, 4 ) : 96.0f;
+
+		ST_GetPos( s, pos );
+		return (qboolean)( Distance( org, pos ) <= radius );
+	}
+	return ST_InTrigger( ST_ModelNum( s->values[1] ), org );
+}
+
+static const entityState_t *ST_FindMover( int model ) {
+	for ( int i = 0; i < cl.snap.numEntities; i++ ) {
+		const entityState_t *es = ST_SnapEntity( i );
+
+		if ( es->solid == SOLID_BMODEL && es->modelindex == model )
+			return es;
+	}
+	return NULL;
+}
+
+static int ST_CommandGap( void );
+
+// a "when someone comes" step, looked at once a frame: qtrue when someone it counts has
+// come in since the last look, or the door started a move. The first look only sees
+// who is in already
+static qboolean ST_TriggerFired( stRun_t *r, const stStep_t *s ) {
+	stPerson_t people[ST_MAX_PEOPLE];
+	int now[ST_MAX_PEOPLE], numNow = 0, n;
+	qboolean fired = qfalse;
+
+	if ( !cl.snap.valid )
+		return qfalse;
+	r->by[0] = '\0';
+
+	if ( ST_TriggerDoor( s ) ) {
+		const entityState_t *es = ST_FindMover( ST_ModelNum( s->values[1] ) );
+
+		// out of sight: it's looked at afresh when it's back
+		if ( !es ) {
+			r->watching = qfalse;
+			return qfalse;
+		}
+		fired = (qboolean)( r->watching && ( es->pos.trTime != r->moverTime || es->apos.trTime != r->moverATime )
+			&& ( es->pos.trType != TR_STATIONARY || es->apos.trType != TR_STATIONARY ) );
+		r->moverTime = es->pos.trTime;
+		r->moverATime = es->apos.trTime;
+		r->watching = qtrue;
+		return fired;
+	}
+
+	// a named NPC is found in the NPC list, asked for once as it starts watching
+	if ( !r->watching && !Q_stricmp( s->values[2], "named" ) && !Q_isanumber( s->values[3] ) ) {
+		CL_NpcManager_RequestList();
+		st.nextSend = Q_max( st.nextSend, cls.realtime + ST_CommandGap() );
+	}
+
+	n = ST_People( people, ST_MAX_PEOPLE );
+	for ( int i = 0; i < n; i++ ) {
+		qboolean was = qfalse;
+
+		if ( !ST_Counts( s, &people[i] ) || !ST_Inside( s, people[i].org ) )
+			continue;
+		now[numNow++] = people[i].num;
+		for ( int j = 0; j < r->numInside; j++ ) {
+			if ( r->inside[j] == people[i].num )
+				was = qtrue;
+		}
+		if ( !was && r->watching && !fired ) {
+			fired = qtrue;
+			ST_PersonName( &people[i], r->by, sizeof( r->by ) );
+		}
+	}
+	memcpy( r->inside, now, numNow * sizeof( now[0] ) );
+	r->numInside = numNow;
+	r->watching = qtrue;
+	return fired;
+}
+
 // one line about a step, for the story list
 static const char *ST_StepSummary( const stStep_t *s ) {
 	static char buf[MAX_STRING_CHARS];
@@ -730,6 +1262,16 @@ static const char *ST_StepSummary( const stStep_t *s ) {
 		break;
 	case ST_A_PAUSE:
 		Com_sprintf( buf, sizeof( buf ), "Wait for me%s%s", s->values[0][0] ? ": " : "", s->values[0] );
+		break;
+	case ST_A_TRIGGER:
+		Q_strncpyz( buf, ST_TriggerSummary( s ), sizeof( buf ) );
+		break;
+	case ST_A_SOUND:
+		Com_sprintf( buf, sizeof( buf ), "Sound %s (%s, %s%s%s)", s->values[0][0] ? s->values[0] : "?", s->values[1], s->values[2],
+			!Q_stricmp( s->values[2], "player" ) ? " " : "", !Q_stricmp( s->values[2], "player" ) ? s->values[3] : "" );
+		break;
+	case ST_A_MUSIC:
+		Com_sprintf( buf, sizeof( buf ), "Music: %s", !Q_stricmp( s->values[0], "play" ) ? ( s->values[1][0] ? s->values[1] : "?" ) : s->values[0] );
 		break;
 	case ST_A_NPC_SPAWN:
 		Com_sprintf( buf, sizeof( buf ), "Spawn %s%s%s", s->values[0][0] ? s->values[0] : "?",
@@ -811,8 +1353,8 @@ static void ST_AddStep( stAction_t action ) {
 	at = ( st.stepList.sel >= 0 && st.stepList.sel < st.numSteps ) ? st.stepList.sel + 1 : st.numSteps;
 	memmove( &st.steps[at + 1], &st.steps[at], ( st.numSteps - at ) * sizeof( st.steps[0] ) );
 	st.numSteps++;
-	if ( st.running && st.pc >= at )
-		st.pc++;
+	if ( st.run.running && st.run.pc >= at )
+		st.run.pc++;
 
 	s = &st.steps[at];
 	s->action = action;
@@ -831,8 +1373,8 @@ static void ST_DeleteStep( void ) {
 		return;
 	memmove( &st.steps[at], &st.steps[at + 1], ( st.numSteps - at - 1 ) * sizeof( st.steps[0] ) );
 	st.numSteps--;
-	if ( st.running && st.pc > at )
-		st.pc--;
+	if ( st.run.running && st.run.pc > at )
+		st.run.pc--;
 	ST_SelectStep( at < st.numSteps ? at : st.numSteps - 1 );
 	ST_Changed();
 }
@@ -844,8 +1386,8 @@ static void ST_CopyStep( void ) {
 		return;
 	memmove( &st.steps[at + 1], &st.steps[at], ( st.numSteps - at ) * sizeof( st.steps[0] ) );
 	st.numSteps++;
-	if ( st.running && st.pc > at )
-		st.pc++;
+	if ( st.run.running && st.run.pc > at )
+		st.run.pc++;
 	ST_SelectStep( at + 1 );
 	ST_Changed();
 }
@@ -859,18 +1401,18 @@ static void ST_MoveStep( int delta ) {
 	tmp = st.steps[at];
 	st.steps[at] = st.steps[to];
 	st.steps[to] = tmp;
-	if ( st.running ) {
-		if ( st.pc == at )
-			st.pc = to;
-		else if ( st.pc == to )
-			st.pc = at;
+	if ( st.run.running ) {
+		if ( st.run.pc == at )
+			st.run.pc = to;
+		else if ( st.run.pc == to )
+			st.run.pc = at;
 	}
 	ST_SelectStep( to );
 	ST_Changed();
 }
 
 static void ST_New( void ) {
-	st.running = qfalse;
+	st.run.running = qfalse;
 	st.numSteps = 0;
 	st.name[0] = '\0';
 	st.dirty = qfalse;
@@ -901,14 +1443,20 @@ static int ST_CommandGap( void ) {
 }
 
 static void ST_Stop( const char *why ) {
-	if ( !st.running )
+	if ( !st.run.running )
 		return;
-	st.running = qfalse;
-	st.waiting = qfalse;
+	st.run.running = qfalse;
+	st.run.waiting = qfalse;
 	if ( why ) {
 		ST_Message( why );
 		Com_Printf( "Storyteller: %s\n", why );
 	}
+}
+
+static void ST_StartRun( stRun_t *r, int from ) {
+	memset( r, 0, sizeof( *r ) );
+	r->running = qtrue;
+	r->pc = from;
 }
 
 static void ST_Run( int from ) {
@@ -920,87 +1468,115 @@ static void ST_Run( int from ) {
 		ST_Message( S_COLOR_YELLOW "Nothing to play: add steps first" );
 		return;
 	}
-	st.running = qtrue;
-	st.pc = from;
-	st.stepStart = 0;
-	st.waiting = st.goOn = qfalse;
-	st.extraDue = qfalse;
-	st.shotUntil = 0;
-	st.sent = 0;
+	ST_StartRun( &st.run, from );
 	ST_Message( from ? va( S_COLOR_GREEN "Playing from step %i", from + 1 ) : S_COLOR_GREEN "Playing" );
 }
 
-static void ST_Continue( void ) {
-	if ( st.running && st.waiting )
-		st.goOn = qtrue;
+static qboolean ST_AnyWaiting( void ) {
+	if ( st.run.running && st.run.waiting )
+		return qtrue;
+	for ( int i = 0; i < stNumArmed; i++ ) {
+		if ( stArmed[i].run.running && stArmed[i].run.waiting )
+			return qtrue;
+	}
+	return qfalse;
 }
 
-// every frame in game, open or not
-static void ST_RunFrame( void ) {
+// every story at a "wait for me" goes on
+static void ST_Continue( void ) {
+	if ( st.run.running && st.run.waiting )
+		st.run.goOn = qtrue;
+	for ( int i = 0; i < stNumArmed; i++ ) {
+		if ( stArmed[i].run.running && stArmed[i].run.waiting )
+			stArmed[i].run.goOn = qtrue;
+	}
+}
+
+// a frame of a story playing; qtrue when it got to its end. An armed one is named in the console
+static qboolean ST_Play( stRun_t *r, stStep_t *steps, int numSteps, const char *armed ) {
+	char prefix[MAX_QPATH + 32];
 	const char *cmd, *error;
 	qboolean local;
 	stStep_t *s;
 
-	while ( st.running ) {
-		if ( cls.realtime < st.shotUntil )
-			return;
-		if ( st.pc >= st.numSteps ) {
-			ST_Stop( va( S_COLOR_GREEN "The story is over (%i command%s sent)", st.sent, st.sent == 1 ? "" : "s" ) );
-			return;
-		}
-		s = &st.steps[st.pc];
+	if ( armed )
+		Com_sprintf( prefix, sizeof( prefix ), "Storyteller (%s): ", armed );
+	else
+		Q_strncpyz( prefix, "Storyteller: ", sizeof( prefix ) );
+
+	while ( r->running ) {
+		if ( cls.realtime < r->shotUntil )
+			return qfalse;
+		if ( r->pc >= numSteps )
+			return qtrue;
+		s = &steps[r->pc];
 		if ( !s->enabled ) {
-			st.pc++;
+			r->pc++;
 			continue;
 		}
 
 		switch ( s->action ) {
 		case ST_A_WAIT:
-			if ( !st.stepStart )
-				st.stepStart = cls.realtime;
-			if ( cls.realtime - st.stepStart < (int)( ST_Number( s, 0 ) * 1000.0f ) )
-				return;
-			st.stepStart = 0;
-			st.pc++;
+			if ( !r->stepStart )
+				r->stepStart = cls.realtime;
+			if ( cls.realtime - r->stepStart < (int)( ST_Number( s, 0 ) * 1000.0f ) )
+				return qfalse;
+			r->stepStart = 0;
+			r->pc++;
 			continue;
 
 		case ST_A_PAUSE:
-			st.waiting = qtrue;
-			if ( !st.goOn )
-				return;
-			st.waiting = st.goOn = qfalse;
-			st.pc++;
+			r->waiting = qtrue;
+			if ( !r->goOn )
+				return qfalse;
+			r->waiting = r->goOn = qfalse;
+			r->pc++;
+			continue;
+
+		case ST_A_TRIGGER:
+			ST_StepCommand( s, &local, &error );
+			if ( error ) {
+				Com_Printf( S_COLOR_YELLOW "%sstep %i skipped: %s\n", prefix, r->pc + 1, error );
+				r->pc++;
+				continue;
+			}
+			if ( !ST_TriggerFired( r, s ) )
+				return qfalse;
+			Com_Printf( S_COLOR_GREEN "%s" S_COLOR_WHITE "step %i set off%s%s\n", prefix, r->pc + 1, r->by[0] ? " by " : "", r->by );
+			r->watching = qfalse;
+			r->numInside = 0;
+			r->pc++;
 			continue;
 
 		default:
 			if ( cls.realtime < st.nextSend )
-				return;
-			if ( st.extraDue ) {
-				st.extraDue = qfalse;
+				return qfalse;
+			if ( r->extraDue ) {
+				r->extraDue = qfalse;
 				cmd = ST_StepExtra( s );
 				if ( cmd ) {
-					Com_Printf( S_COLOR_GREEN "Storyteller: " S_COLOR_WHITE "%s\n", cmd );
+					Com_Printf( S_COLOR_GREEN "%s" S_COLOR_WHITE "%s\n", prefix, cmd );
 					CL_AddReliableCommand( cmd, qfalse );
-					st.sent++;
+					r->sent++;
 					st.nextSend = cls.realtime + ST_CommandGap();
 				}
-				st.pc++;
-				return;
+				r->pc++;
+				return qfalse;
 			}
 			cmd = ST_StepCommand( s, &local, &error );
 			if ( !cmd ) {
-				Com_Printf( S_COLOR_YELLOW "Storyteller: step %i skipped: %s\n", st.pc + 1, error ? error : "nothing to send" );
-				st.pc++;
+				Com_Printf( S_COLOR_YELLOW "%sstep %i skipped: %s\n", prefix, r->pc + 1, error ? error : "nothing to send" );
+				r->pc++;
 				continue;
 			}
-			Com_Printf( S_COLOR_GREEN "Storyteller: " S_COLOR_WHITE "%s\n", cmd );
+			Com_Printf( S_COLOR_GREEN "%s" S_COLOR_WHITE "%s\n", prefix, cmd );
 			if ( local ) {
 				Cbuf_AddText( cmd );
 				Cbuf_AddText( "\n" );
 			} else {
 				CL_AddReliableCommand( cmd, qfalse );
 			}
-			st.sent++;
+			r->sent++;
 			// a console command may well send one too
 			st.nextSend = cls.realtime + ST_CommandGap();
 			if ( s->action == ST_A_CAM_SHOT && Q_stricmp( s->values[1], "no" ) ) {
@@ -1008,15 +1584,119 @@ static void ST_RunFrame( void ) {
 				int ms;
 
 				if ( CL_RpCinematic_ShotHook( s->values[0], hook, sizeof( hook ), &ms ) )
-					st.shotUntil = cls.realtime + ms;
+					r->shotUntil = cls.realtime + ms;
 			}
 			if ( ST_StepExtra( s ) )
-				st.extraDue = qtrue;
+				r->extraDue = qtrue;
 			else
-				st.pc++;
-			return;
+				r->pc++;
+			return qfalse;
 		}
 	}
+	return qfalse;
+}
+
+// what keeps a story from being armed, NULL if nothing
+static const char *ST_ArmProblem( const stStep_t *steps, int numSteps ) {
+	const char *error;
+	qboolean local;
+
+	for ( int i = 0; i < numSteps; i++ ) {
+		if ( !steps[i].enabled )
+			continue;
+		if ( steps[i].action != ST_A_TRIGGER )
+			return "its first step has to be \"When someone comes\"";
+		ST_StepCommand( &steps[i], &local, &error );
+		return error;
+	}
+	return "it has no steps";
+}
+
+static void ST_Disarm( int index ) {
+	Z_Free( stArmed[index].steps );
+	stNumArmed--;
+	memmove( &stArmed[index], &stArmed[index + 1], ( stNumArmed - index ) * sizeof( stArmed[0] ) );
+}
+
+static int ST_FindArmed( const char *name ) {
+	for ( int i = 0; i < stNumArmed; i++ ) {
+		if ( !Q_stricmp( stArmed[i].name, name ) )
+			return i;
+	}
+	return -1;
+}
+
+// a copy of the story waits for its first step; one by that name already armed is replaced
+static qboolean ST_Arm( const char *name, const stStep_t *steps, int numSteps, qboolean again ) {
+	const char *why = ST_ArmProblem( steps, numSteps );
+	int i = ST_FindArmed( name );
+	stArmed_t *a;
+
+	if ( cls.state != CA_ACTIVE )
+		why = "join a server first";
+	if ( why ) {
+		ST_Message( va( S_COLOR_YELLOW "Can't arm %s: %s", name, why ) );
+		Com_Printf( S_COLOR_YELLOW "Storyteller: can't arm %s: %s\n", name, why );
+		return qfalse;
+	}
+	if ( i >= 0 ) {
+		Z_Free( stArmed[i].steps );
+	} else {
+		if ( stNumArmed >= ST_MAX_ARMED ) {
+			ST_Message( va( S_COLOR_YELLOW "%i stories are armed already: disarm one first", ST_MAX_ARMED ) );
+			Com_Printf( S_COLOR_YELLOW "Storyteller: %i stories are armed already\n", ST_MAX_ARMED );
+			return qfalse;
+		}
+		i = stNumArmed++;
+	}
+	a = &stArmed[i];
+	memset( a, 0, sizeof( *a ) );
+	Q_strncpyz( a->name, name, sizeof( a->name ) );
+	Q_strncpyz( a->map, cl.mapname, sizeof( a->map ) );
+	a->steps = (stStep_t *)Z_Malloc( numSteps * sizeof( stStep_t ), TAG_GENERAL, qfalse );
+	memcpy( a->steps, steps, numSteps * sizeof( stStep_t ) );
+	a->numSteps = numSteps;
+	a->again = again;
+	ST_StartRun( &a->run, 0 );
+	ST_Message( va( S_COLOR_GREEN "Armed %s: it plays %s", name, again ? "every time it's set off" : "the next time it's set off" ) );
+	Com_Printf( S_COLOR_GREEN "Storyteller: " S_COLOR_WHITE "armed %s (%s)\n", name, again ? "every time" : "once" );
+	return qtrue;
+}
+
+static qboolean ST_AtTrigger( const stRun_t *r, const stStep_t *steps, int numSteps ) {
+	return (qboolean)( r->pc < numSteps && steps[r->pc].action == ST_A_TRIGGER && cls.realtime >= r->shotUntil );
+}
+
+static void ST_RunArmed( void ) {
+	for ( int i = 0; i < stNumArmed; i++ ) {
+		stArmed_t *a = &stArmed[i];
+
+		// the triggers are the map's
+		if ( Q_stricmp( a->map, cl.mapname ) ) {
+			Com_Printf( S_COLOR_YELLOW "Storyteller: %s disarmed: the map changed\n", a->name );
+			ST_Disarm( i-- );
+			continue;
+		}
+		if ( !a->run.running )
+			ST_StartRun( &a->run, 0 );
+		if ( !ST_Play( &a->run, a->steps, a->numSteps, a->name ) )
+			continue;
+		a->times++;
+		if ( a->again ) {
+			Com_Printf( S_COLOR_GREEN "Storyteller (%s): " S_COLOR_WHITE "played, armed again\n", a->name );
+			ST_StartRun( &a->run, 0 );
+		} else {
+			Com_Printf( S_COLOR_GREEN "Storyteller (%s): " S_COLOR_WHITE "played, disarmed\n", a->name );
+			ST_Disarm( i-- );
+		}
+	}
+}
+
+// every frame in game, open or not
+static void ST_RunFrame( void ) {
+	if ( st.run.running && ST_Play( &st.run, st.steps, st.numSteps, NULL ) )
+		ST_Stop( va( S_COLOR_GREEN "The story is over (%i command%s sent)", st.run.sent, st.run.sent == 1 ? "" : "s" ) );
+	ST_RunArmed();
 }
 
 /*
@@ -1090,18 +1770,17 @@ static int ST_SplitLine( char *line, char **argv, int max ) {
 	return argc;
 }
 
-static qboolean ST_Load( const char *name ) {
+// a saved story's steps; how many, -1 if there is none
+static int ST_ReadStory( const char *name, stStep_t *steps, int max, int *skipped ) {
 	char *buf, *line, *next, *argv[ST_MAX_FIELDS + 2];
-	int len, argc, skipped = 0;
+	int len, argc, count = 0;
 	stStep_t *s;
 
+	*skipped = 0;
 	len = FS_ReadFile( ST_StoryPath( name ), (void **)&buf );
-	if ( len < 0 || !buf ) {
-		ST_Message( va( S_COLOR_RED "No story called %s", name ) );
-		return qfalse;
-	}
+	if ( len < 0 || !buf )
+		return -1;
 
-	ST_New();
 	for ( line = buf; line && *line; line = next ) {
 		next = strchr( line, '\n' );
 		if ( next )
@@ -1120,11 +1799,12 @@ static qboolean ST_Load( const char *name ) {
 			if ( !Q_stricmp( argv[0], stActions[i].key ) )
 				action = i;
 		}
-		if ( action < 0 || st.numSteps >= ST_MAX_STEPS ) {
-			skipped++;
+		if ( action < 0 || count >= max ) {
+			( *skipped )++;
 			continue;
 		}
-		s = &st.steps[st.numSteps++];
+		s = &steps[count++];
+		memset( s, 0, sizeof( *s ) );
 		s->action = (stAction_t)action;
 		s->enabled = (qboolean)( atoi( argv[1] ) != 0 );
 		ST_SetDefaults( s );
@@ -1132,6 +1812,18 @@ static qboolean ST_Load( const char *name ) {
 			Q_strncpyz( s->values[i - 2], argv[i], ST_VALUE_LEN );
 	}
 	FS_FreeFile( buf );
+	return count;
+}
+
+static qboolean ST_Load( const char *name ) {
+	int skipped;
+
+	if ( FS_ReadFile( ST_StoryPath( name ), NULL ) < 0 ) {
+		ST_Message( va( S_COLOR_RED "No story called %s", name ) );
+		return qfalse;
+	}
+	ST_New();
+	st.numSteps = Q_max( 0, ST_ReadStory( name, st.steps, ST_MAX_STEPS, &skipped ) );
 
 	Q_strncpyz( st.name, name, sizeof( st.name ) );
 	st.dirty = qfalse;
@@ -1143,6 +1835,18 @@ static qboolean ST_Load( const char *name ) {
 	return qtrue;
 }
 
+// a saved story armed, by the console
+static void ST_ArmSaved( const char *name, qboolean again ) {
+	stStep_t *steps = (stStep_t *)Z_Malloc( ST_MAX_STEPS * sizeof( stStep_t ), TAG_GENERAL, qfalse );
+	int skipped;
+	const int count = ST_ReadStory( name, steps, ST_MAX_STEPS, &skipped );
+
+	if ( count < 0 )
+		Com_Printf( "Storyteller: no story called %s\n", name );
+	else
+		ST_Arm( name, steps, count, again );
+	Z_Free( steps );
+}
 static int QDECL ST_CompareNames( const void *a, const void *b ) {
 	return Q_stricmp( (const char *)a, (const char *)b );
 }
@@ -1228,6 +1932,7 @@ static qboolean ST_Open( void ) {
 	CL_ShaderManager_Close();
 	CL_EffectManager_Close();
 	CL_RpCinematic_EditorClose();
+	CL_SoundManager_Close();
 
 	st.font = re->RegisterFont( "arialnb" );
 	if ( !st.font )
@@ -1292,6 +1997,10 @@ static void ST_StartPick( stPick_t pick ) {
 		CL_EffectManager_OpenForStory();
 	else if ( pick == ST_PICK_SHADER )
 		CL_ShaderManager_OpenForStory();
+	else if ( pick == ST_PICK_SOUND )
+		CL_SoundManager_OpenForStory();
+	else if ( pick == ST_PICK_MUSIC )
+		CL_MusicManager_OpenForStory();
 	else
 		CL_NpcManager_OpenForStory( (qboolean)( pick == ST_PICK_NPC_MANAGE ) );
 }
@@ -1303,6 +2012,8 @@ static qboolean ST_PickOpen( void ) {
 	case ST_PICK_SHADER:	return CL_ShaderManager_Active();
 	case ST_PICK_NPC_SPAWN:
 	case ST_PICK_NPC_MANAGE:	return CL_NpcManager_Active();
+	case ST_PICK_SOUND:		return CL_SoundManager_Active();
+	case ST_PICK_MUSIC:		return CL_MusicManager_Active();
 	default:				return qfalse;
 	}
 }
@@ -1489,6 +2200,42 @@ static void ST_StepFromCommand( const char *cmd, stStep_t *s ) {
 	}
 	if ( argc >= 3 && !Q_stricmp( argv[0], "npc" ) && ST_NpcStep( argv, argc, s ) )
 		return;
+	// rpsound once|add|local <sound> [all | -1 | <player> | <x y z>]
+	if ( argc >= 3 && !Q_stricmp( argv[0], "rpsound" )
+		&& ( !Q_stricmp( argv[1], "once" ) || !Q_stricmp( argv[1], "add" ) || !Q_stricmp( argv[1], "local" ) )
+		&& ( argc <= 4 || ( argc == 6 && ST_AllNumbers( argv, 3, 6 ) ) ) ) {
+		s->action = ST_A_SOUND;
+		ST_SetDefaults( s );
+		Q_strncpyz( s->values[0], argv[2], ST_VALUE_LEN );
+		Q_strncpyz( s->values[1], !Q_stricmp( argv[1], "add" ) ? "loop" : !Q_stricmp( argv[1], "local" ) ? "local" : "once", ST_VALUE_LEN );
+		if ( argc == 3 ) {
+			Q_strncpyz( s->values[2], !Q_stricmp( argv[1], "add" ) ? "everyone" : "me", ST_VALUE_LEN );
+		} else if ( argc == 4 && ( !Q_stricmp( argv[3], "all" ) || !strcmp( argv[3], "-1" ) ) ) {
+			Q_strncpyz( s->values[2], "everyone", ST_VALUE_LEN );
+		} else if ( argc == 4 ) {
+			Q_strncpyz( s->values[2], "player", ST_VALUE_LEN );
+			Q_strncpyz( s->values[3], argv[3], ST_VALUE_LEN );
+		} else {
+			Q_strncpyz( s->values[2], "spot", ST_VALUE_LEN );
+			for ( int i = 0; i < 3; i++ )
+				Q_strncpyz( s->values[4 + i], argv[3 + i], ST_VALUE_LEN );
+		}
+		return;
+	}
+	// rpmusic <music> | default | reset | none
+	if ( argc == 2 && !Q_stricmp( argv[0], "rpmusic" ) ) {
+		s->action = ST_A_MUSIC;
+		ST_SetDefaults( s );
+		if ( !Q_stricmp( argv[1], "default" ) || !Q_stricmp( argv[1], "reset" ) ) {
+			Q_strncpyz( s->values[0], "map default", ST_VALUE_LEN );
+		} else if ( !Q_stricmp( argv[1], "none" ) ) {
+			Q_strncpyz( s->values[0], "none", ST_VALUE_LEN );
+		} else {
+			Q_strncpyz( s->values[0], "play", ST_VALUE_LEN );
+			Q_strncpyz( s->values[1], argv[1], ST_VALUE_LEN );
+		}
+		return;
+	}
 	// rpshader remap <from> <to> [<time offset>]
 	if ( ( argc == 4 || argc == 5 ) && !Q_stricmp( argv[0], "rpshader" ) && !Q_stricmp( argv[1], "remap" ) ) {
 		s->action = ST_A_SHADER;
@@ -1540,6 +2287,7 @@ static void ST_PickFrame( void ) {
 	CL_EffectManager_Close();
 	CL_ShaderManager_Close();
 	CL_NpcManager_Close();
+	CL_SoundManager_Close();
 	st.pick = ST_PICK_NONE;
 	// another tool opened from it stays
 	if ( !( Key_GetCatcher() & KEYCATCH_ENGINETOOLS ) && ST_Open() && st.numPicked )
@@ -1558,6 +2306,9 @@ void CL_Storyteller_Init( void ) {
 void CL_Storyteller_Shutdown( void ) {
 	CL_Storyteller_Close();
 	ST_Stop( S_COLOR_YELLOW "Stopped: left the map" );
+	// armed ones wait on their first step again, if the map is still theirs
+	for ( int i = 0; i < stNumArmed; i++ )
+		stArmed[i].run.running = qfalse;
 }
 
 qboolean CL_Storyteller_Active( void ) {
@@ -1588,7 +2339,7 @@ void CL_Storyteller_f( void ) {
 	} else if ( !Q_stricmp( arg, "close" ) ) {
 		CL_Storyteller_Close();
 	} else if ( !Q_stricmp( arg, "continue" ) ) {
-		if ( !st.running || !st.waiting )
+		if ( !ST_AnyWaiting() )
 			Com_Printf( "Storyteller: nothing is waiting for you\n" );
 		ST_Continue();
 	} else if ( !Q_stricmp( arg, "play" ) ) {
@@ -1598,7 +2349,7 @@ void CL_Storyteller_f( void ) {
 		}
 		ST_Run( 0 );
 	} else if ( !Q_stricmp( arg, "stop" ) ) {
-		if ( st.running )
+		if ( st.run.running )
 			ST_Stop( S_COLOR_YELLOW "Stopped" );
 	} else if ( !Q_stricmp( arg, "load" ) && Cmd_Argc() >= 3 ) {
 		if ( ST_Load( Cmd_Argv( 2 ) ) )
@@ -1615,6 +2366,29 @@ void CL_Storyteller_f( void ) {
 		}
 		if ( ST_Save( name ) )
 			Com_Printf( "Storyteller: saved %s\n", name );
+	} else if ( !Q_stricmp( arg, "arm" ) && Cmd_Argc() >= 3 ) {
+		ST_ArmSaved( Cmd_Argv( 2 ), (qboolean)( !Q_stricmp( Cmd_Argv( 3 ), "again" ) ) );
+	} else if ( !Q_stricmp( arg, "disarm" ) ) {
+		const char *name = Cmd_Argv( 2 );
+		const int i = ST_FindArmed( name );
+
+		if ( !name[0] || !Q_stricmp( name, "all" ) ) {
+			while ( stNumArmed )
+				ST_Disarm( 0 );
+			Com_Printf( "Storyteller: nothing is armed now\n" );
+		} else if ( i < 0 ) {
+			Com_Printf( "Storyteller: %s isn't armed\n", name );
+		} else {
+			ST_Disarm( i );
+			Com_Printf( "Storyteller: %s disarmed\n", name );
+		}
+	} else if ( !Q_stricmp( arg, "armed" ) ) {
+		Com_Printf( "Storyteller: %i armed\n", stNumArmed );
+		for ( int i = 0; i < stNumArmed; i++ ) {
+			const stArmed_t *a = &stArmed[i];
+			Com_Printf( "  %s: %s, set off %i time%s, %s\n", a->name, a->again ? "every time" : "once", a->times, a->times == 1 ? "" : "s",
+				ST_AtTrigger( &a->run, a->steps, a->numSteps ) ? "waiting" : "playing" );
+		}
 	} else if ( !Q_stricmp( arg, "list" ) ) {
 		ST_RefreshStories();
 		Com_Printf( "Storyteller: %i stor%s\n", st.numStories, st.numStories == 1 ? "y" : "ies" );
@@ -1628,6 +2402,10 @@ void CL_Storyteller_f( void ) {
 		Com_Printf( "       storyteller load <name>      load a saved story\n" );
 		Com_Printf( "       storyteller save <name>      save the story\n" );
 		Com_Printf( "       storyteller list             list the saved stories\n" );
+		Com_Printf( "       storyteller arm <name> [again]  arm a saved story: it plays when its first step is set off,\n" );
+		Com_Printf( "                                    once, or every time with again\n" );
+		Com_Printf( "       storyteller disarm [name|all]  disarm one, or all\n" );
+		Com_Printf( "       storyteller armed            list the armed stories\n" );
 		Com_Printf( "       storyteller close            close the storyteller\n" );
 	}
 }
@@ -1679,7 +2457,7 @@ static void ST_NextField( void ) {
 	if ( !s || st.focus < 0 )
 		return;
 	for ( int i = st.focus + 1; i < ST_Def( s )->numFields; i++ ) {
-		if ( ST_Def( s )->fields[i].kind != ST_K_CHOICE ) {
+		if ( ST_Def( s )->fields[i].kind != ST_K_CHOICE && ST_FieldShown( s, i ) ) {
 			st.focus = i;
 			return;
 		}
@@ -2069,7 +2847,7 @@ static void ST_DrawStepRow( int row, float x, float y, float w ) {
 }
 
 static const float *ST_StepFill( int row ) {
-	return ( st.running && row == st.pc ) ? stRunning : NULL;
+	return ( st.run.running && row == st.run.pc ) ? stRunning : NULL;
 }
 
 static void ST_DrawActions( void ) {
@@ -2141,8 +2919,11 @@ static void ST_DrawEdit( void ) {
 	def = ST_Def( s );
 	ST_Text( ST_EDIT_X, ST_TOP_Y, va( "Step %i" S_COLOR_GREY "  %s", st.stepList.sel + 1, def->name ), stWhite );
 
-	for ( int i = 0; i < def->numFields; i++, y += ST_CTRL_H + 3 ) {
+	for ( int i = 0; i < def->numFields; y += ST_FieldShown( s, i ) ? ST_CTRL_H + 3 : 0, i++ ) {
 		const stFieldDef_t *f = &def->fields[i];
+
+		if ( !ST_FieldShown( s, i ) )
+			continue;
 
 		ST_Text( ST_EDIT_X, y + 2, f->label, stDim );
 		if ( f->kind == ST_K_CHOICE ) {
@@ -2163,7 +2944,31 @@ static void ST_DrawEdit( void ) {
 			st.focus = i;
 	}
 
-	if ( def->posField >= 0 ) {
+	if ( s->action == ST_A_TRIGGER && !ST_TriggerNear( s ) ) {
+		const qboolean door = ST_TriggerDoor( s );
+		const float bw = ( ST_EDIT_W - 4 ) * 0.5f;
+
+		if ( ST_Button( ST_EDIT_X, y, bw, door ? "The one I aim at" : "The one I stand in", qfalse, qtrue ) ) {
+			const int m = door ? ST_AimedMover() : ST_TriggerHere();
+
+			if ( m ) {
+				Com_sprintf( s->values[1], ST_VALUE_LEN, "*%i", m );
+				ST_Changed();
+			} else {
+				ST_Message( door ? S_COLOR_YELLOW "Aim at a door or button first" : S_COLOR_YELLOW "Stand in one of the map's triggers first" );
+			}
+		}
+		if ( ST_Button( ST_EDIT_X + bw + 4, y, bw, "Pick from the list", qfalse, qtrue ) )
+			ST_OpenChoose( door ? ST_CHOOSE_DOOR : ST_CHOOSE_TRIGGER );
+		y += ST_CTRL_H + 6;
+	}
+	if ( s->action == ST_A_TRIGGER && ST_TriggerEffect( s ) ) {
+		if ( ST_Button( ST_EDIT_X, y, ST_EDIT_W, "Pick an effect in the map", qfalse, qtrue ) )
+			ST_OpenChoose( ST_CHOOSE_EFFECT );
+		y += ST_CTRL_H + 6;
+	}
+
+	if ( def->posField >= 0 && ST_FieldShown( s, def->posField ) ) {
 		const float bw = ( ST_EDIT_W - 4 ) * 0.5f;
 		if ( ST_Button( ST_EDIT_X, y, bw, "Where I stand", qfalse, qtrue ) ) {
 			ST_FillHere( s );
@@ -2184,6 +2989,14 @@ static void ST_DrawEdit( void ) {
 
 		if ( ST_Button( ST_EDIT_X, y, ST_EDIT_W, label, qfalse, qtrue ) ) {
 			ST_StartPick( s->action == ST_A_MODEL ? ST_PICK_MODEL : s->action == ST_A_SHADER ? ST_PICK_SHADER : ST_PICK_EFFECT );
+			return;
+		}
+		y += ST_CTRL_H + 6;
+	}
+
+	if ( s->action == ST_A_SOUND || s->action == ST_A_MUSIC ) {
+		if ( ST_Button( ST_EDIT_X, y, ST_EDIT_W, s->action == ST_A_SOUND ? "Pick it in the sound manager" : "Pick it in the music manager", qfalse, qtrue ) ) {
+			ST_StartPick( s->action == ST_A_SOUND ? ST_PICK_SOUND : ST_PICK_MUSIC );
 			return;
 		}
 		y += ST_CTRL_H + 6;
@@ -2230,6 +3043,11 @@ static void ST_DrawEdit( void ) {
 			ST_Text( ST_EDIT_X, y, "Then:", stDim );
 			ST_TextWrappedEx( ST_EDIT_X, y + ST_ROW_H, ST_EDIT_W, cmd, stWhite, 2, qtrue );
 		}
+	} else if ( s->action == ST_A_TRIGGER ) {
+		const int lines = ST_TextWrapped( ST_EDIT_X, y, ST_EDIT_W, va( "%s, then goes on.", ST_TriggerSummary( s ) ), stDim, 3 );
+		ST_TextWrapped( ST_EDIT_X, y + ( lines + 1 ) * ST_ROW_H, ST_EDIT_W, ST_TriggerDoor( s )
+			? "Whoever opens it: your game can't see who used it."
+			: "Someone already in has to leave and come back. Only who your game can see counts.", stDim, 3 );
 	} else if ( s->action == ST_A_WAIT ) {
 		ST_TextWrapped( ST_EDIT_X, y, ST_EDIT_W, va( "Waits %.1f seconds, then goes on.", ST_Number( s, 0 ) ), stDim, 2 );
 	} else if ( s->action == ST_A_PAUSE ) {
@@ -2257,7 +3075,7 @@ static void ST_DrawBar( void ) {
 	if ( ST_Button( ST_ACTIONS_X + 104, y, 46, "Load", qfalse, qtrue ) )
 		ST_OpenLoad();
 
-	if ( !st.running ) {
+	if ( !st.run.running ) {
 		if ( ST_Button( ST_STEPS_X, y, 106, "Play", qfalse, (qboolean)( st.numSteps > 0 ) ) )
 			ST_Run( 0 );
 		if ( ST_Button( ST_STEPS_X + 112, y, 106, "Play from here", qfalse, (qboolean)( s != NULL ) ) )
@@ -2265,7 +3083,7 @@ static void ST_DrawBar( void ) {
 	} else {
 		if ( ST_Button( ST_STEPS_X, y, 106, "Stop", qfalse, qtrue ) )
 			ST_Stop( S_COLOR_YELLOW "Stopped" );
-		if ( ST_Button( ST_STEPS_X + 112, y, 106, "Continue", (qboolean)st.waiting, (qboolean)st.waiting ) )
+		if ( ST_Button( ST_STEPS_X + 112, y, 106, "Continue", (qboolean)st.run.waiting, (qboolean)st.run.waiting ) )
 			ST_Continue();
 	}
 }
@@ -2274,8 +3092,172 @@ static void ST_DrawStoryRow( int row, float x, float y, float w ) {
 	ST_TextClipped( x, y, w, st.stories[row], stWhite );
 }
 
+static void ST_OpenArmed( void ) {
+	st.popup = ST_POPUP_ARMED;
+	st.focus = ST_F_NONE;
+	st.armedList.sel = stNumArmed ? 0 : -1;
+	st.armedList.scroll = 0;
+	st.armedList.lastClickRow = -1;
+}
+
+static void ST_OpenChoose( stChoose_t kind ) {
+	ST_ScanMap();
+	st.chooseKind = kind;
+	st.chooseList.sel = -1;
+	st.chooseList.scroll = 0;
+	st.chooseList.lastClickRow = -1;
+	if ( kind == ST_CHOOSE_EFFECT ) {
+		CL_EffectManager_RequestList();
+		st.nextSend = Q_max( st.nextSend, cls.realtime + ST_CommandGap() );
+	}
+	st.popup = ST_POPUP_CHOOSE;
+	st.focus = ST_F_NONE;
+}
+
+static int stChooseRows[ST_MAX_MAPENTS];
+
+// what the choose popup lists now: indexes into the map's entities, or into RPMod's effect list
+static int ST_ChooseRows( void ) {
+	int count = 0;
+
+	if ( st.chooseKind == ST_CHOOSE_EFFECT ) {
+		for ( int i = 0; i < CL_EffectManager_NumActive() && count < ST_MAX_MAPENTS; i++ )
+			stChooseRows[count++] = i;
+		return count;
+	}
+	for ( int i = 0; i < stMap.count; i++ ) {
+		if ( stMap.ents[i].trigger == (qboolean)( st.chooseKind == ST_CHOOSE_TRIGGER ) )
+			stChooseRows[count++] = i;
+	}
+	return count;
+}
+
+static void ST_DrawChooseRow( int row, float x, float y, float w ) {
+	if ( st.chooseKind == ST_CHOOSE_EFFECT ) {
+		const char *path;
+		vec3_t org;
+		int num;
+
+		if ( CL_EffectManager_GetActive( stChooseRows[row], &num, &path, org ) )
+			ST_TextClipped( x, y, w, va( "%i  %s" S_COLOR_GREY "  %i %i %i", num, path, ST_Round( org[0] ), ST_Round( org[1] ), ST_Round( org[2] ) ), stWhite );
+		return;
+	}
+	const stMapEnt_t *e = &stMap.ents[stChooseRows[row]];
+	vec3_t mid;
+
+	VectorAdd( e->mins, e->maxs, mid );
+	VectorScale( mid, 0.5f, mid );
+	ST_TextClipped( x, y, w, va( "*%i  %s%s%s" S_COLOR_GREY "  at %i %i %i", e->model, e->classname, e->targetname[0] ? " " : "", e->targetname,
+		ST_Round( mid[0] ), ST_Round( mid[1] ), ST_Round( mid[2] ) ), stWhite );
+}
+
+// the selected step takes the row picked
+static void ST_ChooseApply( int row ) {
+	stStep_t *s = ST_SelectedStep();
+
+	if ( !s || s->action != ST_A_TRIGGER )
+		return;
+	if ( st.chooseKind == ST_CHOOSE_EFFECT ) {
+		const char *path;
+		vec3_t org;
+		int num;
+
+		if ( !CL_EffectManager_GetActive( stChooseRows[row], &num, &path, org ) )
+			return;
+		Q_strncpyz( s->values[1], path, ST_VALUE_LEN );
+		for ( int i = 0; i < 3; i++ )
+			Com_sprintf( s->values[5 + i], ST_VALUE_LEN, "%i", ST_Round( org[i] ) );
+	} else {
+		Com_sprintf( s->values[1], ST_VALUE_LEN, "*%i", stMap.ents[stChooseRows[row]].model );
+	}
+	ST_Changed();
+}
+
+static void ST_DrawChoosePopup( void ) {
+	static const char *titles[] = { "Pick a trigger", "Pick a door or button", "Pick an effect" };
+	const float x = ST_POPUP_X, y = 80, w = ST_POPUP_W, h = 320;
+	const int count = ST_ChooseRows();
+	int picked = -1;
+
+	ST_Box( x, y, w, h, stPanelOpaque );
+	ST_Text( x + 8, y + 8, va( "%s" S_COLOR_GREY "  %i", titles[st.chooseKind], count ), stWhite );
+	if ( !count ) {
+		ST_TextWrapped( x + 8, y + 30, w - 16, st.chooseKind == ST_CHOOSE_EFFECT
+			? "Asking the server for the map's effects... If none come, put some there with the effect manager."
+			: st.chooseKind == ST_CHOOSE_TRIGGER ? "This map has no triggers." : "This map has no doors or buttons.", stDim, 3 );
+	} else {
+		picked = ST_List( &st.chooseList, count, x + 8, y + 26, w - 16, h - 60, ST_DrawChooseRow, NULL );
+	}
+	if ( ST_Button( x + 8, y + h - 22, 80, "Pick", qfalse, (qboolean)( st.chooseList.sel >= 0 && st.chooseList.sel < count ) ) )
+		picked = st.chooseList.sel;
+	if ( ST_Button( x + w - 88, y + h - 22, 80, "Cancel", qfalse, qtrue ) )
+		st.popup = ST_POPUP_NONE;
+	if ( picked >= 0 && picked < count ) {
+		ST_ChooseApply( picked );
+		st.popup = ST_POPUP_NONE;
+	}
+}
+
+static void ST_DrawArmedRow( int row, float x, float y, float w ) {
+	const stArmed_t *a = &stArmed[row];
+
+	ST_TextClipped( x, y, w, va( "%s" S_COLOR_GREY "  %s, set off %i time%s, %s", a->name, a->again ? "every time" : "once",
+		a->times, a->times == 1 ? "" : "s", ST_AtTrigger( &a->run, a->steps, a->numSteps ) ? "waiting" : S_COLOR_GREEN "playing" ), stWhite );
+}
+
+static void ST_DrawArmedPopup( void ) {
+	const float x = ST_POPUP_X, y = 80, w = ST_POPUP_W, h = 320;
+	const char *why = ST_ArmProblem( st.steps, st.numSteps );
+	const char *name = st.name[0] ? st.name : "unsaved story";
+	const qboolean haveSel = (qboolean)( st.armedList.sel >= 0 && st.armedList.sel < stNumArmed );
+
+	ST_Box( x, y, w, h, stPanelOpaque );
+	ST_Text( x + 8, y + 8, va( "Armed stories" S_COLOR_GREY "  %i", stNumArmed ), stWhite );
+	ST_TextWrapped( x + 8, y + 26, w - 16, va( "Arm %s: a copy of it plays by itself when its first step is set off.", name ), stDim, 2 );
+	if ( why ) {
+		ST_TextWrapped( x + 8, y + 54, w - 16, va( S_COLOR_YELLOW "Can't: %s", why ), stWhite, 2 );
+	} else {
+		const float bw = ( w - 20 ) * 0.5f;
+
+		if ( ST_Button( x + 8, y + 54, bw, "Arm: once", qfalse, qtrue ) )
+			ST_Arm( name, st.steps, st.numSteps, qfalse );
+		if ( ST_Button( x + 12 + bw, y + 54, bw, "Arm: every time", qfalse, qtrue ) )
+			ST_Arm( name, st.steps, st.numSteps, qtrue );
+	}
+
+	if ( !stNumArmed )
+		ST_Text( x + 8, y + 84, S_COLOR_GREY "Nothing armed yet", stWhite );
+	else
+		ST_List( &st.armedList, stNumArmed, x + 8, y + 82, w - 16, h - 140, ST_DrawArmedRow, NULL );
+	ST_TextWrapped( x + 8, y + h - 52, w - 16, S_COLOR_GREY "A copy: arm it again after changing it. Disarmed when the map changes.", stWhite, 2 );
+
+	if ( ST_Button( x + 8, y + h - 22, 80, "Disarm", qfalse, haveSel ) ) {
+		ST_Message( va( "Disarmed %s", stArmed[st.armedList.sel].name ) );
+		ST_Disarm( st.armedList.sel );
+		if ( st.armedList.sel >= stNumArmed )
+			st.armedList.sel = stNumArmed - 1;
+	}
+	if ( ST_Button( x + 92, y + h - 22, 80, "Disarm all", qfalse, (qboolean)( stNumArmed > 0 ) ) ) {
+		while ( stNumArmed )
+			ST_Disarm( 0 );
+		st.armedList.sel = -1;
+		ST_Message( "Nothing is armed now" );
+	}
+	if ( ST_Button( x + w - 88, y + h - 22, 80, "Close", qfalse, qtrue ) )
+		st.popup = ST_POPUP_NONE;
+}
+
 static void ST_DrawPopup( void ) {
 	const float x = ST_POPUP_X, w = ST_POPUP_W;
+
+	if ( st.popup == ST_POPUP_ARMED ) {
+		ST_DrawArmedPopup();
+		return;
+	}
+	if ( st.popup == ST_POPUP_CHOOSE ) {
+		ST_DrawChoosePopup();
+		return;
+	}
 
 	if ( st.popup == ST_POPUP_SAVE ) {
 		const float y = 180, h = 90;
@@ -2314,37 +3296,60 @@ static void ST_DrawPopup( void ) {
 		st.popup = ST_POPUP_NONE;
 }
 
-static const char *ST_Status( void ) {
+static const char *ST_RunStatus( const stRun_t *r, const stStep_t *steps, int numSteps ) {
 	const stStep_t *s;
 
-	if ( !st.running )
+	if ( !r->running )
 		return NULL;
-	if ( cls.realtime < st.shotUntil )
-		return va( S_COLOR_GREEN "Step %i/%i: the shot plays, %.1f s left", st.pc, st.numSteps, ( st.shotUntil - cls.realtime ) / 1000.0f );
-	if ( st.pc >= st.numSteps )
+	if ( cls.realtime < r->shotUntil )
+		return va( S_COLOR_GREEN "Step %i/%i: the shot plays, %.1f s left", r->pc, numSteps, ( r->shotUntil - cls.realtime ) / 1000.0f );
+	if ( r->pc >= numSteps )
 		return S_COLOR_GREEN "Finishing";
-	s = &st.steps[st.pc];
-	if ( st.waiting )
-		return va( S_COLOR_YELLOW "Waiting for you at step %i%s%s", st.pc + 1, s->values[0][0] ? ": " : "", s->values[0] );
-	if ( s->action == ST_A_WAIT && st.stepStart ) {
-		const float left = ST_Number( s, 0 ) - ( cls.realtime - st.stepStart ) / 1000.0f;
-		return va( S_COLOR_GREEN "Step %i/%i: waiting %.1f s", st.pc + 1, st.numSteps, left > 0 ? left : 0.0f );
+	s = &steps[r->pc];
+	if ( r->waiting )
+		return va( S_COLOR_YELLOW "Waiting for you at step %i%s%s", r->pc + 1, s->values[0][0] ? ": " : "", s->values[0] );
+	if ( s->action == ST_A_WAIT && r->stepStart ) {
+		const float left = ST_Number( s, 0 ) - ( cls.realtime - r->stepStart ) / 1000.0f;
+		return va( S_COLOR_GREEN "Step %i/%i: waiting %.1f s", r->pc + 1, numSteps, left > 0 ? left : 0.0f );
 	}
-	return va( S_COLOR_GREEN "Step %i/%i: %s", st.pc + 1, st.numSteps, ST_StepSummary( s ) );
+	return va( S_COLOR_GREEN "Step %i/%i: %s", r->pc + 1, numSteps, ST_StepSummary( s ) );
+}
+
+static const char *ST_Status( void ) {
+	return ST_RunStatus( &st.run, st.steps, st.numSteps );
 }
 
 // while playing with the panel closed: where the story is, and how to go on
+// a story's line at the top; how tall it was
+static float ST_DrawRunLine( float y, const char *label, const char *status, qboolean waiting ) {
+	ST_Fill( 160, y, 320, waiting ? 30 : 17, stPanel );
+	ST_TextClipped( 166, y + 2, 308, va( "%s: %s", label, status ), stWhite );
+	if ( waiting ) {
+		const int key = Key_GetKey( ST_TOGGLE_CMD " continue" );
+		ST_TextClipped( 166, y + 15, 308, key >= 0 ? va( S_COLOR_GREY "Press %s to go on", Key_KeynumToString( key ) )
+			: S_COLOR_GREY "/storyteller continue goes on (bind a key to it)", stWhite );
+	}
+	return waiting ? 32.0f : 19.0f;
+}
+
+// while playing with the panel closed: where the stories are, and how to go on. Armed ones
+// show once set off
 static void ST_DrawPlaying( void ) {
 	const char *status = ST_Status();
+	float y = 4;
 
-	if ( !status || ( Key_GetCatcher() & ( KEYCATCH_UI | KEYCATCH_CONSOLE ) ) )
+	if ( Key_GetCatcher() & ( KEYCATCH_UI | KEYCATCH_CONSOLE ) )
 		return;
-	ST_Fill( 160, 4, 320, st.waiting ? 30 : 17, stPanel );
-	ST_TextClipped( 166, 6, 308, va( "Storyteller: %s", status ), stWhite );
-	if ( st.waiting ) {
-		const int key = Key_GetKey( ST_TOGGLE_CMD " continue" );
-		ST_TextClipped( 166, 19, 308, key >= 0 ? va( S_COLOR_GREY "Press %s to go on", Key_KeynumToString( key ) )
-			: S_COLOR_GREY "/storyteller continue goes on (bind a key to it)", stWhite );
+	if ( status )
+		y += ST_DrawRunLine( y, "Storyteller", status, st.run.waiting );
+	for ( int i = 0; i < stNumArmed; i++ ) {
+		const stArmed_t *a = &stArmed[i];
+
+		if ( !a->run.running || ST_AtTrigger( &a->run, a->steps, a->numSteps ) )
+			continue;
+		status = ST_RunStatus( &a->run, a->steps, a->numSteps );
+		if ( status )
+			y += ST_DrawRunLine( y, a->name, status, a->run.waiting );
 	}
 }
 
@@ -2375,7 +3380,9 @@ void CL_Storyteller_Draw( void ) {
 		: va( S_COLOR_GREY "unsaved story%s", st.dirty ? S_COLOR_YELLOW " *" : "" ), stWhite );
 	status = ST_Status();
 	if ( status )
-		ST_TextClipped( ST_EDIT_X - 100, 14, ST_EDIT_W + 100, status, stWhite );
+		ST_TextClipped( ST_EDIT_X - 100, 14, ST_EDIT_W + 100 - 76, status, stWhite );
+	if ( ST_Button( ST_EDIT_X + ST_EDIT_W - 70, 12, 70, va( "Armed (%i)", stNumArmed ), (qboolean)( stNumArmed > 0 ), qtrue ) )
+		ST_OpenArmed();
 	if ( st.message[0] && cls.realtime - st.messageTime < ST_MESSAGE_MS )
 		ST_TextClipped( ST_STEPS_X, 29, ST_STEPS_W + ST_EDIT_W, st.message, stWhite );
 

@@ -470,6 +470,7 @@ if(BuildMPEngine)
 		"${MPDir}/client/cl_shadermanager.cpp"
 		"${MPDir}/client/cl_effectmanager.cpp"
 		"${MPDir}/client/cl_storyteller.cpp"
+		"${MPDir}/client/cl_soundmanager.cpp"
 		"${MPDir}/client/cl_rphooks.cpp"
 		"${MPDir}/client/cl_rpcinematic.cpp"
 		"${MPDir}/client/cl_ui.cpp"

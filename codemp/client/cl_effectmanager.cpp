@@ -3255,6 +3255,7 @@ static void EM_Open( void ) {
 	CL_ShaderManager_Close();
 	CL_Storyteller_Close();
 	CL_RpCinematic_EditorClose();
+	CL_SoundManager_Close();
 	EM_CheckMap();
 	EM_ListConstructs();
 	if ( !em.indexed ) {
@@ -3328,6 +3329,25 @@ void CL_EffectManager_Shutdown( void ) {
 
 qboolean CL_EffectManager_Active( void ) {
 	return (qboolean)( em.state != EM_OFF );
+}
+
+// the effects RPMod listed last, for the storyteller; the list is read with the manager closed too
+void CL_EffectManager_RequestList( void ) {
+	if ( cls.state == CA_ACTIVE )
+		EM_RequestList();
+}
+
+int CL_EffectManager_NumActive( void ) {
+	return em.numActive;
+}
+
+qboolean CL_EffectManager_GetActive( int index, int *num, const char **path, vec3_t origin ) {
+	if ( index < 0 || index >= em.numActive )
+		return qfalse;
+	*num = em.active[index].num;
+	*path = em.active[index].path;
+	VectorCopy( em.active[index].origin, origin );
+	return qtrue;
 }
 
 // opened from a storyteller step

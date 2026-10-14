@@ -1595,6 +1595,7 @@ static void SM_Open( void ) {
 	CL_EffectManager_Close();
 	CL_Storyteller_Close();
 	CL_RpCinematic_EditorClose();
+	CL_SoundManager_Close();
 
 	sm.font = re->RegisterFont( "arialnb" );
 	if ( !sm.font )

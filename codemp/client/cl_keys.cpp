@@ -1364,6 +1364,10 @@ void CL_KeyDownEvent( int key, unsigned time )
 			CL_Storyteller_Escape();
 			return;
 		}
+		if ( ( Key_GetCatcher() & KEYCATCH_SOUNDMANAGER ) && !( Key_GetCatcher() & KEYCATCH_UI ) ) {
+			CL_SoundManager_Escape();
+			return;
+		}
 		if ( ( Key_GetCatcher() & KEYCATCH_CINEDITOR ) && !( Key_GetCatcher() & KEYCATCH_UI ) ) {
 			CL_RpCinematic_EditorEscape();
 			return;
@@ -1426,6 +1430,10 @@ void CL_KeyDownEvent( int key, unsigned time )
 	else if ( Key_GetCatcher() & KEYCATCH_STORYTELLER ) {
 		CL_Storyteller_KeyEvent( key, qtrue );
 	}
+	// sound and music managers
+	else if ( Key_GetCatcher() & KEYCATCH_SOUNDMANAGER ) {
+		CL_SoundManager_KeyEvent( key, qtrue );
+	}
 	// camera editor
 	else if ( Key_GetCatcher() & KEYCATCH_CINEDITOR ) {
 		CL_RpCinematic_EditorKeyEvent( key, qtrue );
@@ -1479,6 +1487,7 @@ void CL_KeyUpEvent( int key, unsigned time )
 	CL_ShaderManager_KeyEvent( key, qfalse );
 	CL_EffectManager_KeyEvent( key, qfalse );
 	CL_Storyteller_KeyEvent( key, qfalse );
+	CL_SoundManager_KeyEvent( key, qfalse );
 	CL_RpCinematic_EditorKeyEvent( key, qfalse );
 
 	if ( Key_GetCatcher( ) & KEYCATCH_UI && cls.uiStarted )
@@ -1521,6 +1530,7 @@ void CL_CharEvent( int key ) {
 	else if ( Key_GetCatcher() & KEYCATCH_SHADERMANAGER )	CL_ShaderManager_CharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_EFFECTMANAGER )	CL_EffectManager_CharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_STORYTELLER )	CL_Storyteller_CharEvent( key );
+	else if ( Key_GetCatcher() & KEYCATCH_SOUNDMANAGER )	CL_SoundManager_CharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_CINEDITOR )	CL_RpCinematic_EditorCharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_CGAME )		CGVM_KeyEvent( key|K_CHAR_FLAG, qtrue );
 	else if ( Key_GetCatcher() & KEYCATCH_MESSAGE )		Field_CharEvent( &chatField, key );

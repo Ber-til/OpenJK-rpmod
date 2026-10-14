@@ -2381,6 +2381,7 @@ static qboolean NM_Open( nmTab_t tab ) {
 	CL_EffectManager_Close();
 	CL_Storyteller_Close();
 	CL_RpCinematic_EditorClose();
+	CL_SoundManager_Close();
 	if ( !nm.indexed )
 		NM_BuildIndex();
 

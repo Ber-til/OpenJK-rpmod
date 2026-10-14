@@ -2823,6 +2823,7 @@ void CL_Init( void ) {
 	CL_ShaderManager_Init ();
 	CL_EffectManager_Init ();
 	CL_Storyteller_Init ();
+	CL_SoundManager_Init ();
 	CL_RpHooks_Init ();
 	CL_RpCinematic_Init ();
 
@@ -2969,6 +2970,8 @@ void CL_Init( void ) {
 	Cmd_AddCommand( "shadermanager", CL_ShaderManager_f, "Find the shaders of what you look at" );
 	Cmd_AddCommand( "effectmanager", CL_EffectManager_f, "Preview effects and play them with RPMod's rpeffect command" );
 	Cmd_AddCommand( "storyteller", CL_Storyteller_f, "Assemble a mission out of steps and play it" );
+	Cmd_AddCommand( "soundmanager", CL_SoundManager_f, "Hear sounds and play them with RPMod's rpsound command" );
+	Cmd_AddCommand( "musicmanager", CL_MusicManager_f, "Hear music and play it for everyone with RPMod's rpmusic command" );
 	Cmd_AddCommand ("record", CL_Record_f, "Record a demo" );
 	Cmd_AddCommand ("demo", CL_PlayDemo_f, "Playback a demo" );
 	Cmd_SetCommandCompletionFunc( "demo", CL_CompleteDemoName );
