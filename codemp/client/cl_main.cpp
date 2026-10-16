@@ -171,9 +171,12 @@ not have future usercmd_t executed before it is executed
 void CL_AddReliableCommand( const char *cmd, qboolean isDisconnectCmd ) {
 	int unacknowledged = clc.reliableSequence - clc.reliableAcknowledge;
 
-	// your chat said by the NPC chosen with npcmanager select
-	if ( !isDisconnectCmd )
+	// your chat in the language your character speaks, then said by the NPC chosen with
+	// npcmanager select
+	if ( !isDisconnectCmd ) {
+		cmd = CL_Languages_OutgoingChat( cmd );
 		cmd = CL_NpcManager_OutgoingChat( cmd );
+	}
 	// RPMod: what would crash the server stays here
 	if ( !isDisconnectCmd && !CL_RpHooks_AllowCommand( cmd ) )
 		return;
@@ -2862,6 +2865,7 @@ void CL_Init( void ) {
 	cl_ratioFix = Cvar_Get( "cl_ratioFix", "0", CVAR_ARCHIVE_ND, "Widescreen: text, and the engine's own, as on a 4:3 screen instead of stretched" );
 	cls.widthRatioCoef = 1.0f;
 	CL_RadialMenu_Init ();
+	CL_Languages_Init ();
 	CL_SaberStyle_Init ();
 	CL_EmotePreview_Init ();
 	CL_RpCinematic_Init ();

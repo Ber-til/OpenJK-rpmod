@@ -1979,6 +1979,9 @@ const char *CL_NpcManager_OutgoingChat( const char *cmd ) {
 	const char *said;
 	int len;
 
+	// a bind or a script can leave spaces before it
+	while ( *cmd == ' ' )
+		cmd++;
 	if ( !nmSpeak.target[0] || Q_stricmpn( cmd, "say ", 4 ) )
 		return cmd;
 	if ( strcmp( nmSpeak.map, cl.mapname ) ) {

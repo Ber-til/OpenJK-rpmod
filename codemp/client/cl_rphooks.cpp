@@ -152,7 +152,7 @@ static rhResult_t RH_Npc( char **argv, int argc, const char *message ) {
 	if ( !message[0] )
 		return RH_DROP;
 
-	RH_AddSubtitle( va( "%s%s" S_COLOR_WHITE ": %s", color, name, message ), 1.0f );
+	RH_AddSubtitle( va( "%s%s" S_COLOR_WHITE ": %s", color, name, CL_Languages_Filter( message ) ), 1.0f );
 	// chat as the game sends it, from right next to us so RPMod's chat range lets it through
 	Com_sprintf( cmd, sizeof( cmd ), "chat \"%s%s" S_COLOR_WHITE "\x19: " S_COLOR_GREEN "%s\" 0", color, name, message );
 	Cmd_TokenizeString( cmd );

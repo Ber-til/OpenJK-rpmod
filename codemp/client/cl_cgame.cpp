@@ -421,8 +421,11 @@ rescan:
 		qboolean replaced;
 		if ( !CL_RpHooks_ServerCommand( &replaced ) )
 			return qfalse;
-		if ( replaced )
+		if ( replaced ) {
+			// NPC talk is chat too: in a language, as the character playing hears it
+			CL_Languages_ServerCommand();
 			return qtrue;
+		}
 	}
 
 	// the admin check reads rpstatus, and hides the reply it asked for
@@ -528,6 +531,8 @@ rescan:
 
 	// we may want to put a "connect to other server" command here
 
+	// chat in a language the character playing doesn't know is gibberish, everywhere it shows
+	CL_Languages_ServerCommand();
 	// chat from far away stays out of the console
 	CL_ChatRange_ServerCommand();
 	// during a cinematic with the HUD hidden, chat is a subtitle
@@ -553,6 +558,7 @@ void CL_ShutdownCGame( void ) {
 	CL_Storyteller_Shutdown();
 	CL_SoundManager_Shutdown();
 	CL_RadialMenu_Shutdown();
+	CL_Languages_Shutdown();
 	CL_EmotePreview_Shutdown();
 	CL_RpCinematic_Reset();
 	CL_NpcWalk_Reset();

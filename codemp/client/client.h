@@ -671,7 +671,8 @@ void CL_ModelManager_Draw( void );
 #define KEYCATCH_MAPEDITOR		0x0400	// engine only, the map editor owns keyboard and mouse
 #define KEYCATCH_SOUNDMANAGER	0x0800	// engine only, the sound or the music manager owns keyboard and mouse
 #define KEYCATCH_RADIALMENU		0x1000	// engine only, the radial menus' settings own keyboard and mouse
-#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELMANAGER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER | KEYCATCH_MAPEDITOR | KEYCATCH_STORYTELLER | KEYCATCH_CINEDITOR | KEYCATCH_SOUNDMANAGER | KEYCATCH_RADIALMENU )	// mods never see or clear these
+#define KEYCATCH_LANGUAGES		0x2000	// engine only, the languages window owns keyboard and mouse
+#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELMANAGER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER | KEYCATCH_MAPEDITOR | KEYCATCH_STORYTELLER | KEYCATCH_CINEDITOR | KEYCATCH_SOUNDMANAGER | KEYCATCH_RADIALMENU | KEYCATCH_LANGUAGES )	// mods never see or clear these
 
 void CL_NpcManager_Init( void );
 void CL_NpcManager_Shutdown( void );
@@ -855,6 +856,21 @@ void CL_RadialMenu_CharEvent( int ch );
 void CL_RadialMenu_SettingsMouseEvent( int dx, int dy );
 void CL_RadialMenu_SettingsEscape( void );
 void CL_RadialMenu_DrawSettings( void );
+
+// cl_languages.cpp
+void CL_Languages_Init( void );
+void CL_Languages_Shutdown( void );
+qboolean CL_Languages_Active( void );
+void CL_Languages_Close( void );
+void CL_Languages_Frame( void );
+void CL_Languages_Draw( void );
+void CL_Languages_KeyEvent( int key, qboolean down );
+void CL_Languages_CharEvent( int ch );
+void CL_Languages_MouseEvent( int dx, int dy );
+void CL_Languages_Escape( void );
+const char *CL_Languages_OutgoingChat( const char *cmd );
+void CL_Languages_ServerCommand( void );
+const char *CL_Languages_Filter( const char *text );
 
 // cl_saberstyle.cpp
 void CL_SaberStyle_Init( void );
