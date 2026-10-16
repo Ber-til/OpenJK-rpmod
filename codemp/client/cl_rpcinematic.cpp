@@ -61,7 +61,10 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 // Shots are made in the camera editor, /cincam edit: a free camera that shows each
 // spot's view, the trail between them and a camera running along it. They are saved in
 // camshots/<name>.cam as their path or orbit hook, which /cincam play and the
-// Storyteller's Camera shot send.
+// Storyteller's Camera shot send. NPCs walking in the shot follow it there as
+//   walk <npc> <route> walk|run <seconds into the shot>
+// lines, sent by whoever plays the shot (npcmanager walk, see cl_npcwalk.cpp) and walked
+// on the editor's screen in its preview.
 
 #include "client.h"
 #include "qcommon/cm_public.h"
@@ -75,6 +78,24 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define RC_SHOT_EXT			".cam"
 #define RC_MAX_HOOK			900			// RPMod passes the line on in a print
 #define RC_SHOT_HEADER		"// camera shot, made with /cincam edit\n"
+#define RC_MAX_WALKS		4			// NPCs walking in a shot
+#define RC_MAX_QUEUED		16
+
+// an NPC walking a route while a shot plays
+typedef struct {
+	char		npc[MAX_QPATH];		// targetname or number, commas between several
+	char		route[MAX_QPATH];
+	qboolean	run;
+	int			delay;				// ms into the shot it sets off
+} rcWalk_t;
+
+// walks of a shot played, each run when its time comes and, sent, when the server takes it
+static struct {
+	char		cmd[MAX_STRING_CHARS];
+	int			at;					// cls.realtime
+	qboolean	local;
+} rcQueue[RC_MAX_QUEUED];
+static int rcNumQueued;
 
 typedef struct {
 	vec3_t	org;
@@ -183,6 +204,7 @@ static cvar_t *rpc_cinematics;
 static cvar_t *rpc_cinThirdPerson;		// 1 while cg_thirdPerson is ours to put back to 0, a crash included
 
 static qboolean CE_Open( void );
+static char *CE_TypedText( int *size );
 static qboolean RC_DepthOfField( const vec3_t org, const vec3_t ang, qboolean dof, float focus, float *now, int *time,
 	float range, float blur );
 static void RC_NoDepthOfField( void );
@@ -826,6 +848,84 @@ static struct {
 
 static int rcShotCacheUse;
 
+static const char *RC_WalkCommand( const rcWalk_t *w, qboolean local ) {
+	return va( "npcmanager walk %s %s %s%s", w->npc, w->route, w->run ? "run" : "walk", local ? " local" : "" );
+}
+
+// the shot's walks set off, each its delay from now; local ones on this screen only
+static void RC_QueueWalks( const rcWalk_t *walks, int count, qboolean local ) {
+	for ( int i = 0; i < count && rcNumQueued < RC_MAX_QUEUED; i++ ) {
+		if ( !walks[i].npc[0] || !walks[i].route[0] )
+			continue;
+		Q_strncpyz( rcQueue[rcNumQueued].cmd, RC_WalkCommand( &walks[i], local ), sizeof( rcQueue[0].cmd ) );
+		rcQueue[rcNumQueued].at = cls.realtime + walks[i].delay;
+		rcQueue[rcNumQueued].local = local;
+		rcNumQueued++;
+	}
+}
+
+// the walks due: local ones at once, the others one at a time as the server takes them
+static void RC_RunQueue( void ) {
+	for ( int i = 0; i < rcNumQueued; ) {
+		if ( cls.realtime < rcQueue[i].at || ( !rcQueue[i].local && ( cls.state != CA_ACTIVE || !CL_NpcWalk_CanSend() ) ) ) {
+			i++;
+			continue;
+		}
+		Cmd_ExecuteString( rcQueue[i].cmd );
+		rcNumQueued--;
+		memmove( &rcQueue[i], &rcQueue[i + 1], ( rcNumQueued - i ) * sizeof( rcQueue[0] ) );
+	}
+}
+
+// a preview's walks called off: the ones still to go, and the NPCs walking back where they are
+static void RC_StopLocalWalks( const rcWalk_t *walks, int count ) {
+	for ( int i = 0; i < rcNumQueued; ) {
+		if ( rcQueue[i].local ) {
+			rcNumQueued--;
+			memmove( &rcQueue[i], &rcQueue[i + 1], ( rcNumQueued - i ) * sizeof( rcQueue[0] ) );
+		} else {
+			i++;
+		}
+	}
+	for ( int i = 0; i < count; i++ ) {
+		if ( walks[i].npc[0] && cls.state == CA_ACTIVE )
+			Cmd_ExecuteString( va( "npcmanager walk %s stop local", walks[i].npc ) );
+	}
+}
+
+// a shot file's walk lines: walk <npc> <route> walk|run <seconds>
+static int RC_ReadWalks( const char *name, rcWalk_t *walks, int max ) {
+	char *buf, *line, *next;
+	int count = 0;
+
+	if ( FS_ReadFile( RC_ShotPath( name ), (void **)&buf ) <= 0 || !buf )
+		return 0;
+	for ( line = buf; line && *line && count < max; line = next ) {
+		char npc[MAX_QPATH], route[MAX_QPATH], pace[16];
+		float seconds = 0;
+
+		next = strchr( line, '\n' );
+		if ( next )
+			*next++ = '\0';
+		if ( Q_stricmpn( line, "walk ", 5 ) || sscanf( line + 5, "%63s %63s %15s %f", npc, route, pace, &seconds ) < 2 )
+			continue;
+		Q_strncpyz( walks[count].npc, npc, sizeof( walks[0].npc ) );
+		Q_strncpyz( walks[count].route, route, sizeof( walks[0].route ) );
+		walks[count].run = (qboolean)!Q_stricmp( pace, "run" );
+		walks[count].delay = RC_SecondsMs( seconds );
+		count++;
+	}
+	FS_FreeFile( buf );
+	return count;
+}
+
+// the saved shot's NPCs set off, each when the shot says: sent for everyone, or local
+void CL_RpCinematic_ShotWalks( const char *name, qboolean local ) {
+	rcWalk_t walks[RC_MAX_WALKS];
+
+	RC_QueueWalks( walks, RC_ReadWalks( name, walks, RC_MAX_WALKS ), local );
+}
+
 static void RC_ForgetShots( void ) {
 	memset( rcShotCache, 0, sizeof( rcShotCache ) );
 }
@@ -939,6 +1039,19 @@ typedef struct {
 	int			keyScroll;
 	qboolean	bars;				// shown, and in the preview
 	qboolean	fxPage;				// the panel shows the focus and the transitions, not the spots
+	qboolean	npcPage;			// or the NPCs walking in it
+
+	// the NPCs walking in the shot, their routes as last read
+	rcWalk_t	walks[RC_MAX_WALKS];
+	int			numWalks, walkSel;
+	vec3_t		walkPts[RC_MAX_WALKS][NW_MAX_ROUTE_POINTS];
+	int			walkNumPts[RC_MAX_WALKS];
+	char		walkLoaded[RC_MAX_WALKS][MAX_QPATH];
+	qboolean	typingWalk;			// the name box being typed in is the walking NPC's
+
+	// the saved routes, to pick from
+	char		routes[64][MAX_QPATH];
+	int			numRoutes;
 	float		dofNow;				// an automatic focus here, where it's got to
 	int			dofTime;
 
@@ -985,6 +1098,8 @@ typedef struct {
 } ceState_t;
 
 static ceState_t ce;
+
+static const byte ceWalkColor[4]	= { 190, 110, 255, 255 };
 
 static vec4_t ceWhite		= { 1.0f, 1.0f, 1.0f, 1.0f };
 static vec4_t cePanel		= { 0.0f, 0.0f, 0.0f, 0.7f };
@@ -1176,6 +1291,9 @@ static void CE_OrbitFromHere( void ) {
 
 static void CE_New( void ) {
 	memset( &ce.shot, 0, sizeof( ce.shot ) );
+	ce.numWalks = 0;
+	ce.walkSel = -1;
+	memset( ce.walkLoaded, 0, sizeof( ce.walkLoaded ) );
 	ce.name[0] = '\0';
 	ce.dirty = qfalse;
 	ce.sel = -1;
@@ -1194,6 +1312,8 @@ static qboolean CE_Load( const char *name ) {
 	RC_FillFov( &shot, RC_DEFAULT_FOV );
 	CE_New();
 	ce.shot = shot;
+	ce.numWalks = RC_ReadWalks( name, ce.walks, RC_MAX_WALKS );
+	ce.walkSel = ce.numWalks ? 0 : -1;
 	Q_strncpyz( ce.name, name, sizeof( ce.name ) );
 	CE_Select( 0 );
 	// the camera a step behind where the shot starts, to see it from
@@ -1238,6 +1358,16 @@ static qboolean CE_Save( void ) {
 	FS_Write( RC_SHOT_HEADER, strlen( RC_SHOT_HEADER ), f );
 	FS_Write( hook, strlen( hook ), f );
 	FS_Write( "\n", 1, f );
+	// the NPCs walking in it, for whoever plays it to send
+	for ( int i = 0; i < ce.numWalks; i++ ) {
+		const rcWalk_t *w = &ce.walks[i];
+		const char *line;
+
+		if ( !w->npc[0] || !w->route[0] )
+			continue;
+		line = va( "walk %s %s %s %g\n", w->npc, w->route, w->run ? "run" : "walk", RC_Seconds( w->delay ) );
+		FS_Write( line, strlen( line ), f );
+	}
 	FS_FCloseFile( f );
 	RC_ForgetShots();
 	ce.dirty = qfalse;
@@ -1277,6 +1407,7 @@ static void CE_StopPreview( void ) {
 	if ( !ce.preview )
 		return;
 	ce.preview = qfalse;
+	RC_StopLocalWalks( ce.walks, ce.numWalks );
 	// the cinematic that was on before, or none
 	rc = ce.saved;
 	rc.frame = -1;
@@ -1306,6 +1437,9 @@ static void CE_Preview( qboolean fromKey ) {
 		RC_WriteShot( &ce.shot, hook, sizeof( hook ) );
 	}
 
+	// the NPCs walk on this screen too, from the start of the shot
+	if ( !fromKey || ce.shot.orbit || ce.sel <= 0 )
+		RC_QueueWalks( ce.walks, ce.numWalks, qtrue );
 	ce.saved = rc;
 	ce.preview = qtrue;
 	ce.flying = qfalse;
@@ -1342,6 +1476,7 @@ static void CE_SendShot( void ) {
 		return;
 	}
 	CL_AddReliableCommand( va( "rpnotify -1 1 cmd:%s", hook ), qfalse );
+	RC_QueueWalks( ce.walks, ce.numWalks, qfalse );
 	CE_Message( S_COLOR_GREEN "Sent to everyone" );
 }
 
@@ -1505,11 +1640,15 @@ void CL_RpCinematic_EditorKeyEvent( int key, qboolean down ) {
 		return;		// flying keys
 
 	if ( ce.typing ) {
-		const int len = strlen( ce.name );
+		int size;
+		char *text = CE_TypedText( &size );
+		const int len = text ? strlen( text ) : 0;
 
 		if ( key == A_BACKSPACE && len ) {
-			ce.name[len - 1] = '\0';
+			text[len - 1] = '\0';
 			CE_Changed();
+		} else if ( ( key == A_ENTER || key == A_KP_ENTER ) && ce.typingWalk ) {
+			ce.typing = qfalse;
 		} else if ( key == A_ENTER || key == A_KP_ENTER ) {
 			CE_Save();
 		}
@@ -1544,14 +1683,33 @@ void CL_RpCinematic_EditorKeyEvent( int key, qboolean down ) {
 	}
 }
 
-void CL_RpCinematic_EditorCharEvent( int ch ) {
-	const int len = strlen( ce.name );
+// what's being typed in: the shot's name, or the walking NPC's; NULL if nothing
+static char *CE_TypedText( int *size ) {
+	if ( !ce.typing )
+		return NULL;
+	if ( ce.typingWalk ) {
+		if ( ce.walkSel < 0 || ce.walkSel >= ce.numWalks )
+			return NULL;
+		*size = sizeof( ce.walks[0].npc );
+		return ce.walks[ce.walkSel].npc;
+	}
+	*size = sizeof( ce.name );
+	return ce.name;
+}
 
-	if ( !ce.open || !ce.typing || ce.flying || !RC_ShotNameChar( ch ) )
+void CL_RpCinematic_EditorCharEvent( int ch ) {
+	int size, len;
+	char *text;
+
+	if ( !ce.open || ce.flying || !( text = CE_TypedText( &size ) ) )
 		return;
-	if ( len < (int)sizeof( ce.name ) - 1 ) {
-		ce.name[len] = (char)ch;
-		ce.name[len + 1] = '\0';
+	// an NPC can be several, commas between
+	if ( !RC_ShotNameChar( ch ) && !( ce.typingWalk && ch == ',' ) )
+		return;
+	len = strlen( text );
+	if ( len < size - 1 ) {
+		text[len] = (char)ch;
+		text[len + 1] = '\0';
 		CE_Changed();
 	}
 }
@@ -1744,6 +1902,28 @@ static void CE_AddScene( void ) {
 	ce.numLines = 0;
 	if ( ce.haveAim && !ce.flying )
 		CE_Cross( ce.aim, 4.0f, ceAimColor );
+
+	// where the NPCs walk: from where each stands through its route's spots
+	for ( int i = 0; i < ce.numWalks; i++ ) {
+		const rcWalk_t *wk = &ce.walks[i];
+		const int num = wk->npc[0] ? CL_NpcWalk_Target( wk->npc ) : -1;
+		vec3_t from;
+		float speed;
+
+		if ( Q_stricmp( ce.walkLoaded[i], wk->route ) ) {
+			ce.walkNumPts[i] = wk->route[0] ? Q_max( 0, CL_NpcWalk_LoadRoute( wk->route, ce.walkPts[i], NW_MAX_ROUTE_POINTS, &speed ) ) : 0;
+			Q_strncpyz( ce.walkLoaded[i], wk->route, sizeof( ce.walkLoaded[0] ) );
+		}
+		if ( !ce.walkNumPts[i] )
+			continue;
+		if ( num >= 0 && CL_NpcManager_NpcOrigin( num, from ) )
+			CE_Line( from, ce.walkPts[i][0], ceWalkColor );
+		for ( int j = 0; j < ce.walkNumPts[i]; j++ ) {
+			if ( j )
+				CE_Line( ce.walkPts[i][j - 1], ce.walkPts[i][j], ceWalkColor );
+			CE_Cross( ce.walkPts[i][j], 3.0f, ceWalkColor );
+		}
+	}
 	if ( !CE_Shown( &s, NULL, 0 ) )
 		return;
 	total = RC_ShotMs( &s );
@@ -2230,6 +2410,156 @@ static void CE_DrawFxPanel( float x, float y, float w ) {
 		CE_Text( x, y, S_COLOR_GREY "The colour stays until the next shot", ceWhite );
 }
 
+static void CE_ListRoutes( void ) {
+	char **files;
+	int count;
+
+	files = FS_ListFiles( "npcmanager/routes", ".route", &count );
+	ce.numRoutes = 0;
+	for ( int i = 0; i < count && ce.numRoutes < (int)ARRAY_LEN( ce.routes ); i++ )
+		COM_StripExtension( files[i], ce.routes[ce.numRoutes++], sizeof( ce.routes[0] ) );
+	FS_FreeFileList( files );
+}
+
+// the NPC whose head the crosshair is nearest, by its targetname if it has one; NULL if none near
+static const char *CE_NpcAtCrosshair( void ) {
+	float best = 96.0f;
+	int found = -1;
+
+	if ( !ce.haveAim )
+		return NULL;
+	for ( int i = 0; i < cl.snap.numEntities; i++ ) {
+		const entityState_t *es = &cl.parseEntities[( cl.snap.parseEntitiesNum + i ) & ( MAX_PARSE_ENTITIES - 1 )];
+		vec3_t mid;
+
+		if ( es->eType != ET_NPC )
+			continue;
+		VectorCopy( es->pos.trBase, mid );
+		if ( Distance( mid, ce.aim ) < best ) {
+			best = Distance( mid, ce.aim );
+			found = es->number;
+		}
+	}
+	if ( found < 0 )
+		return NULL;
+	for ( int i = 0; i < CL_NpcManager_NumNpcs(); i++ ) {
+		const char *type, *name;
+		int num;
+
+		if ( CL_NpcManager_GetNpc( i, &num, &type, &name ) && num == found && name[0] )
+			return name;
+	}
+	return va( "%i", found );
+}
+
+// the walks: which NPC, which route, how fast, how far into the shot
+static void CE_DrawNpcPanel( float x, float y, float w ) {
+	const float half = ( w - 4 ) * 0.5f;
+	rcWalk_t *walk;
+	int steps;
+
+	CE_Text( x, y, va( "NPCs walking (%i)", ce.numWalks ), ceWhite );
+	y += CE_ROW_H + 2;
+	CE_Box( x, y, w, RC_MAX_WALKS * CE_ROW_H + 2, cePanelLight );
+	for ( int i = 0; i < ce.numWalks; i++ ) {
+		const rcWalk_t *wk = &ce.walks[i];
+		const float ry = y + 1 + i * CE_ROW_H;
+
+		if ( i == ce.walkSel )
+			CE_Fill( x + 1, ry, w - 2, CE_ROW_H, ceHighlight );
+		else if ( CE_InRect( x, ry, w, CE_ROW_H ) )
+			CE_Fill( x + 1, ry, w - 2, CE_ROW_H, ceHoverBox );
+		CE_TextClipped( x + 4, ry, w - 8, va( "%s" S_COLOR_GREY "  %s, %s at %.1f s", wk->npc[0] ? wk->npc : S_COLOR_YELLOW "no NPC",
+			wk->route[0] ? wk->route : S_COLOR_YELLOW "no route", wk->run ? "runs" : "walks", RC_Seconds( wk->delay ) ), ceWhite );
+		if ( CE_Clicked( x, ry, w, CE_ROW_H ) ) {
+			ce.walkSel = i;
+			ce.typing = qfalse;
+		}
+	}
+	if ( !ce.numWalks )
+		CE_Text( x + 4, y + 2, S_COLOR_GREY "None: Add one", ceWhite );
+	y += RC_MAX_WALKS * CE_ROW_H + 6;
+
+	if ( CE_Button( x, y, half, "Add", qfalse, (qboolean)( ce.numWalks < RC_MAX_WALKS ) ) ) {
+		walk = &ce.walks[ce.numWalks];
+		memset( walk, 0, sizeof( *walk ) );
+		// the NPC the crosshair is on, and the first route, to start from
+		if ( CE_NpcAtCrosshair() )
+			Q_strncpyz( walk->npc, CE_NpcAtCrosshair(), sizeof( walk->npc ) );
+		if ( ce.numRoutes )
+			Q_strncpyz( walk->route, ce.routes[0], sizeof( walk->route ) );
+		ce.walkLoaded[ce.numWalks][0] = '\0';
+		ce.walkSel = ce.numWalks++;
+		CE_Changed();
+	}
+	if ( CE_Button( x + half + 4, y, half, "Remove", qfalse, (qboolean)( ce.walkSel >= 0 && ce.walkSel < ce.numWalks ) ) ) {
+		ce.numWalks--;
+		memmove( &ce.walks[ce.walkSel], &ce.walks[ce.walkSel + 1], ( ce.numWalks - ce.walkSel ) * sizeof( ce.walks[0] ) );
+		memset( ce.walkLoaded, 0, sizeof( ce.walkLoaded ) );
+		ce.walkSel = Q_min( ce.walkSel, ce.numWalks - 1 );
+		ce.typing = qfalse;
+		CE_Changed();
+	}
+	y += CE_CTRL_H + CE_GAP + 4;
+	if ( ce.walkSel < 0 || ce.walkSel >= ce.numWalks ) {
+		CE_Text( x, y, S_COLOR_GREY "Routes are made in the NPC manager:", ceWhite );
+		CE_Text( x, y + CE_ROW_H, S_COLOR_GREY "Manage tab, Walk, Route on map", ceWhite );
+		return;
+	}
+	walk = &ce.walks[ce.walkSel];
+
+	// the NPC: typed, or the one at the crosshair
+	{
+		const qboolean typing = (qboolean)( ce.typing && ce.typingWalk );
+		const float bx = x + 62, bw = w - 62;
+
+		CE_Text( x, y + 2, "NPC", ceDim );
+		CE_Box( bx, y, bw, CE_CTRL_H, typing ? ceFocus : cePanelLight );
+		CE_TextClipped( bx + 4, y + 2, bw - 8, walk->npc[0] || typing ? va( "%s%s", walk->npc, typing && ( ( cls.realtime >> 8 ) & 1 ) ? "_" : "" )
+			: S_COLOR_GREY "targetname or number", ceWhite );
+		if ( CE_Clicked( bx, y, bw, CE_CTRL_H ) ) {
+			ce.typing = qtrue;
+			ce.typingWalk = qtrue;
+		}
+	}
+	y += CE_CTRL_H + CE_GAP;
+	if ( CE_Button( x + 62, y, w - 62, "The one at the crosshair", qfalse, (qboolean)( CE_NpcAtCrosshair() != NULL ) ) ) {
+		Q_strncpyz( walk->npc, CE_NpcAtCrosshair(), sizeof( walk->npc ) );
+		ce.typing = qfalse;
+		CE_Changed();
+	}
+	y += CE_CTRL_H + CE_GAP;
+
+	// the route: - and + go through the saved ones
+	{
+		int at = -1;
+
+		for ( int i = 0; i < ce.numRoutes; i++ ) {
+			if ( !Q_stricmp( ce.routes[i], walk->route ) )
+				at = i;
+		}
+		steps = CE_Stepper( x, y, w, "Route", walk->route[0] ? walk->route : "none saved" );
+		if ( steps && ce.numRoutes ) {
+			at = ( ( at < 0 ? 0 : at + steps ) % ce.numRoutes + ce.numRoutes ) % ce.numRoutes;
+			Q_strncpyz( walk->route, ce.routes[at], sizeof( walk->route ) );
+			CE_Changed();
+		}
+	}
+	y += CE_CTRL_H + CE_GAP;
+	CE_Text( x, y + 2, "Pace", ceDim );
+	if ( CE_Button( x + 62, y, w - 62, walk->run ? "Runs" : "Walks", qfalse, qtrue ) ) {
+		walk->run = (qboolean)!walk->run;
+		CE_Changed();
+	}
+	y += CE_CTRL_H + CE_GAP;
+	steps = CE_Stepper( x, y, w, "Sets off", va( "%.1f s in", RC_Seconds( walk->delay ) ) );
+	CE_AdjustMs( &walk->delay, steps, 0.5f, 0 );
+	y += CE_CTRL_H + CE_GAP + 4;
+	CE_Text( x, y, S_COLOR_GREY "Preview walks them here.", ceWhite );
+	CE_Text( x, y + CE_ROW_H, S_COLOR_GREY "Played for everyone, sent then;", ceWhite );
+	CE_Text( x, y + CE_ROW_H * 2, S_COLOR_GREY "a second apart at the soonest", ceWhite );
+}
+
 static qboolean CE_Project( const vec3_t point, float *x, float *y ) {
 	vec3_t d;
 	float forward;
@@ -2322,13 +2652,16 @@ static void CE_DrawEditor( void ) {
 	CE_Text( x, y, "Shot", ceWhite );
 	{
 		const float bx = x + 32, bw = w - 32;
-		const char *label = ce.name[0] || ce.typing ? va( "%s%s%s", ce.name, ce.typing && ( ( cls.realtime >> 8 ) & 1 ) ? "_" : "",
+		const qboolean typing = (qboolean)( ce.typing && !ce.typingWalk );
+		const char *label = ce.name[0] || typing ? va( "%s%s%s", ce.name, typing && ( ( cls.realtime >> 8 ) & 1 ) ? "_" : "",
 			ce.dirty ? S_COLOR_YELLOW " *" : "" ) : S_COLOR_GREY "click to name it";
 
-		CE_Box( bx, y - 2, bw, CE_CTRL_H, ce.typing ? ceFocus : cePanelLight );
+		CE_Box( bx, y - 2, bw, CE_CTRL_H, typing ? ceFocus : cePanelLight );
 		CE_TextClipped( bx + 4, y, bw - 8, label, ceWhite );
-		if ( CE_Clicked( bx, y - 2, bw, CE_CTRL_H ) )
+		if ( CE_Clicked( bx, y - 2, bw, CE_CTRL_H ) ) {
 			ce.typing = qtrue;
+			ce.typingWalk = qfalse;
+		}
 	}
 	y += CE_CTRL_H + CE_GAP;
 	if ( CE_Button( x, y, third, "Save", qfalse, qtrue ) )
@@ -2362,13 +2695,22 @@ static void CE_DrawEditor( void ) {
 			ce.bars = (qboolean)!ce.bars;
 		y += CE_CTRL_H + CE_GAP;
 		// what the panel shows of it
-		if ( CE_Button( x, y, half, ce.shot.orbit ? "The orbit" : "The spots", (qboolean)!ce.fxPage, qtrue ) )
-			ce.fxPage = qfalse;
-		if ( CE_Button( x + half + 4, y, half, "Focus, fades", ce.fxPage, qtrue ) )
+		if ( CE_Button( x, y, third, ce.shot.orbit ? "Orbit" : "Spots", (qboolean)( !ce.fxPage && !ce.npcPage ), qtrue ) )
+			ce.fxPage = ce.npcPage = qfalse;
+		if ( CE_Button( x + third + 4, y, third, "Focus, fades", ce.fxPage, qtrue ) ) {
 			ce.fxPage = qtrue;
+			ce.npcPage = qfalse;
+		}
+		if ( CE_Button( x + ( third + 4 ) * 2, y, third, ce.numWalks ? va( "NPCs (%i)", ce.numWalks ) : "NPCs", ce.npcPage, qtrue ) ) {
+			ce.npcPage = qtrue;
+			ce.fxPage = qfalse;
+			CE_ListRoutes();
+		}
 		y += CE_CTRL_H + CE_GAP + 6;
 
-		if ( ce.fxPage )
+		if ( ce.npcPage )
+			CE_DrawNpcPanel( x, y, w );
+		else if ( ce.fxPage )
 			CE_DrawFxPanel( x, y, w );
 		else if ( ce.shot.orbit )
 			CE_DrawOrbitPanel( x, y, w );
@@ -2632,6 +2974,7 @@ const refEntity_t *CL_RpCinematic_Entity( const refEntity_t *ent, refEntity_t *c
 }
 
 void CL_RpCinematic_Frame( void ) {
+	RC_RunQueue();
 	CE_Frame();
 }
 
@@ -2750,6 +3093,8 @@ static void CL_CinCam_f( void ) {
 	}
 	if ( local ) {
 		RC_RunLocal( hook );
+		if ( !Q_stricmp( verb, "play" ) )
+			CL_RpCinematic_ShotWalks( Cmd_Argv( 3 ), qtrue );
 		return;
 	}
 	if ( !CL_RpHooks_Experimental() ) {
@@ -2762,6 +3107,8 @@ static void CL_CinCam_f( void ) {
 		return;
 	}
 	CL_AddReliableCommand( va( "rpnotify -1 1 cmd:%s", hook ), qfalse );
+	if ( !Q_stricmp( verb, "play" ) )
+		CL_RpCinematic_ShotWalks( Cmd_Argv( 2 ), qfalse );
 }
 
 void CL_RpCinematic_Init( void ) {

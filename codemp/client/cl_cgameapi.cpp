@@ -333,6 +333,8 @@ static void CL_R_AddRefEntityToScene( const refEntity_t *ent ) {
 static void CL_R_RenderScene( const refdef_t *fd ) {
 	// the map editor's models and lights are in every main view
 	CL_MapEditor_AddToScene( fd );
+	// where the stories armed wait, for the storyteller
+	CL_Storyteller_AddToScene( fd );
 	if ( !CL_NpcManager_RenderScene( fd ) && !CL_ShaderManager_RenderScene( fd ) && !CL_EffectManager_RenderScene( fd )
 		&& !CL_MapEditor_RenderScene( fd ) && !CL_RpCinematic_RenderScene( fd ) && !CL_NpcWalk_RenderScene( fd ) )
 		CL_ModelManager_RenderScene( fd );

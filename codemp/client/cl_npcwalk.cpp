@@ -1531,6 +1531,18 @@ void CL_NpcWalk_Hook( char **argv, int argc ) {
 	NW_Start( num, (float)atof( argv[1] ), loop, pts, numPts, driver );
 }
 
+// the server takes a command from this client now, for the others that pace theirs
+qboolean CL_NpcWalk_CanSend( void ) {
+	return NW_CanSend();
+}
+
+// the first NPC a target names, a number or a targetname; -1 if it isn't in the list
+int CL_NpcWalk_Target( const char *target ) {
+	int nums[NW_MAX_GROUP];
+
+	return NW_Resolve( target, nums, NW_MAX_GROUP ) > 0 ? nums[0] : -1;
+}
+
 // where the NPC is now: in the snapshot if it's near, else where the NPC manager's list saw it
 static qboolean NW_NpcOrigin( int num, vec3_t out ) {
 	for ( int i = 0; i < cl.snap.numEntities; i++ ) {
