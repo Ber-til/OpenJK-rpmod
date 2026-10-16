@@ -1646,6 +1646,9 @@ const void	*RB_DrawSurfs( const void *data ) {
 		qglEnable( GL_TEXTURE_2D );
 
 		// Just clear colors, but leave the depth buffer intact so we can 'share' it.
+		// The whole screen, as it was copied: a view narrower than the screen would otherwise
+		// leave what's around it to be taken for glow
+		qglScissor( 0, 0, glConfig.vidWidth, glConfig.vidHeight );
 		qglClearColor( 0.0f, 0.0f, 0.0f, 0.0f );
 		qglClear( GL_COLOR_BUFFER_BIT );
 
@@ -1664,9 +1667,13 @@ const void	*RB_DrawSurfs( const void *data ) {
 		qglDisable( GL_TEXTURE_RECTANGLE_ARB );
 		qglEnable( GL_TEXTURE_2D );
 
-		// Resize the viewport to the blur texture size.
+		// Resize the viewport to the blur texture size, from the corner the copies are read from.
+		const int oldViewX = backEnd.viewParms.viewportX;
+		const int oldViewY = backEnd.viewParms.viewportY;
 		const int oldViewWidth = backEnd.viewParms.viewportWidth;
 		const int oldViewHeight = backEnd.viewParms.viewportHeight;
+		backEnd.viewParms.viewportX = 0;
+		backEnd.viewParms.viewportY = 0;
 		backEnd.viewParms.viewportWidth = r_DynamicGlowWidth->integer;
 		backEnd.viewParms.viewportHeight = r_DynamicGlowHeight->integer;
 		SetViewportAndScissor();
@@ -1683,13 +1690,20 @@ const void	*RB_DrawSurfs( const void *data ) {
 		qglEnable( GL_TEXTURE_2D );
 
 		// Set the viewport back to normal.
+		backEnd.viewParms.viewportX = oldViewX;
+		backEnd.viewParms.viewportY = oldViewY;
 		backEnd.viewParms.viewportWidth = oldViewWidth;
 		backEnd.viewParms.viewportHeight = oldViewHeight;
-		SetViewportAndScissor();
+
+		// The scene goes back over the whole screen, as it was copied, not squeezed into a view
+		// narrower than the screen.
+		qglViewport( 0, 0, glConfig.vidWidth, glConfig.vidHeight );
+		qglScissor( 0, 0, glConfig.vidWidth, glConfig.vidHeight );
 		qglClear( GL_COLOR_BUFFER_BIT );
 
 		// Draw the glow additively over the screen.
 		RB_DrawGlowOverlay();
+		SetViewportAndScissor();
 	}
 
 	return (const void *)(cmd + 1);
