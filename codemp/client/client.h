@@ -677,6 +677,17 @@ void CL_NpcManager_Init( void );
 void CL_NpcManager_Shutdown( void );
 void CL_NpcManager_f( void );
 const char *CL_NpcManager_OutgoingChat( const char *cmd );
+int CL_NpcManager_ListTime( void );
+
+// cl_npcwalk.cpp
+#define NW_MAX_ROUTE_POINTS	32
+qboolean CL_NpcWalk_Entity( entityState_t *es, int serverTime );
+void CL_NpcWalk_Frame( void );
+void CL_NpcWalk_Reset( void );
+void CL_NpcWalk_Hook( char **argv, int argc );
+void CL_NpcWalk_Command( void );
+qboolean CL_NpcWalk_SaveRoute( const char *name, const vec3_t *pts, int numPts, float speed );
+int CL_NpcWalk_LoadRoute( const char *name, vec3_t *pts, int maxPts, float *speed );
 qboolean CL_NpcManager_Active( void );
 void CL_NpcManager_Frame( void );
 void CL_NpcManager_Close( void );

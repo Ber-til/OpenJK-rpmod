@@ -44,6 +44,9 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define NM_SAVE_DIR			"npcmanager"		// in the game folder
 #define NM_NPC_DIR			NM_SAVE_DIR "/npcs"
 #define NM_CONSTRUCT_DIR	NM_SAVE_DIR "/constructs"
+#define NM_ROUTE_DIR		NM_SAVE_DIR "/routes"		// cl_npcwalk.cpp reads them
+#define NM_WALK_SPEED		90.0f
+#define NM_RUN_SPEED		250.0f
 #define NM_SAVE_EXT			".cfg"
 #define NM_BASE_PAKS		BASEGAME "/assets"	// base/assets0.pk3 to assets3.pk3 are the game's own
 
@@ -162,7 +165,8 @@ typedef enum {
 	NM_PICK_SPAWN,		// where to spawn
 	NM_PICK_PLACE,		// where to put down what is in hand, as many times as wanted
 	NM_PICK_TELE,		// where to teleport the selection to
-	NM_PICK_SELECT		// which NPC to select
+	NM_PICK_SELECT,		// which NPC to select
+	NM_PICK_ROUTE		// the spots of a walk, one after the other
 } nmPick_t;
 
 typedef enum {
@@ -177,7 +181,8 @@ static const char *nmSourceLabels[NM_SRC_COUNT] = { "All", "Base", "Custom" };
 typedef enum {
 	NM_SAVING_NONE,
 	NM_SAVING_NPC,			// the form's settings
-	NM_SAVING_CONSTRUCT		// the NPCs put down
+	NM_SAVING_CONSTRUCT,	// the NPCs put down
+	NM_SAVING_ROUTE			// the walk's spots, walked once saved
 } nmSaving_t;
 
 typedef enum {
@@ -451,6 +456,11 @@ static struct {
 	nmApply_t	apply;
 	int			talkColor;		// of the name, in nmTalkColors
 	qboolean	talkEmote;		// talking plays emtalk on it
+	vec3_t		route[NW_MAX_ROUTE_POINTS];	// the walk being made
+	int			numRoute;
+	qboolean	routeRun;		// the route is run, not walked
+	qboolean	routeLoop;		// walked round and round until stopped
+	char		routeName[MAX_QPATH];	// the last one saved, to walk again
 	nmConfirm_t	confirm;
 	int			confirmTime;
 
@@ -926,6 +936,16 @@ static int NM_NormalizeYaw( float a ) {
 	return i < 0 ? i + 360 : i;
 }
 
+// yaw facing from one spot to the next
+static float NM_LegYaw( const vec3_t from, const vec3_t to ) {
+	vec3_t dir, angles;
+
+	VectorSubtract( to, from, dir );
+	dir[2] = 0;
+	vectoangles( dir, angles );
+	return angles[YAW];
+}
+
 // yaw for something at pos to face the camera
 static int NM_YawToView( const vec3_t pos ) {
 	vec3_t dir, angles;
@@ -1343,6 +1363,11 @@ void CL_NpcManager_RequestList( void ) {
 
 qboolean CL_NpcManager_Waiting( void ) {
 	return (qboolean)( nm.listRequestTime && cls.realtime - nm.listRequestTime < NM_LIST_TIMEOUT );
+}
+
+// when the list was last read, 0 never
+int CL_NpcManager_ListTime( void ) {
+	return nm.listTime;
 }
 
 int CL_NpcManager_NumNpcs( void ) {
@@ -1974,6 +1999,19 @@ const char *CL_NpcManager_OutgoingChat( const char *cmd ) {
 	return CL_RpHooks_NpcTalkCommand( nmSpeak.target, nmSpeak.name, "", "", text );
 }
 
+// the selection walks a saved route; opened from the storyteller, it goes in the story
+static void NM_Walk( const char *route ) {
+	const char *target = NM_ApplyTarget( qfalse ), *cmd;
+
+	if ( !target || !route[0] )
+		return;
+	cmd = va( "npcmanager walk %s %s %s%s", target, route, nm.routeRun ? "run" : "walk", nm.routeLoop ? " loop" : "" );
+	if ( CL_Storyteller_Capture( cmd ) )
+		return;
+	Com_Printf( S_COLOR_GREEN "NPC manager: " S_COLOR_WHITE "%s\n", cmd );
+	Cbuf_AddText( va( "%s\n", cmd ) );
+}
+
 static void NM_Teleport( const vec3_t pos, int yaw ) {
 	const char *target = NM_ApplyTarget( qfalse );
 
@@ -2300,6 +2338,10 @@ static void NM_StartSaving( nmSaving_t saving ) {
 		if ( !t )
 			return;
 		offer = nm.fields[NM_F_TARGETNAME][0] ? nm.fields[NM_F_TARGETNAME] : t->name;
+	} else if ( saving == NM_SAVING_ROUTE ) {
+		if ( !nm.numRoute )
+			return;
+		offer = nm.routeName[0] ? nm.routeName : "route";
 	} else if ( !nm.numPlaced ) {
 		return;
 	}
@@ -2314,6 +2356,16 @@ static void NM_StartSaving( nmSaving_t saving ) {
 
 static void NM_DoSave( void ) {
 	const char *name = nm.fields[NM_F_SAVE_NAME];
+
+	if ( nm.saving == NM_SAVING_ROUTE ) {
+		if ( !name[0] || !CL_NpcWalk_SaveRoute( name, nm.route, nm.numRoute, nm.routeRun ? NM_RUN_SPEED : NM_WALK_SPEED ) )
+			return;
+		Q_strncpyz( nm.routeName, name, sizeof( nm.routeName ) );
+		nm.saving = NM_SAVING_NONE;
+		NM_Message( va( S_COLOR_GREEN "Saved the route as %s/%s.route", NM_ROUTE_DIR, name ) );
+		NM_Walk( name );
+		return;
+	}
 
 	if ( name[0] && ( nm.saving == NM_SAVING_NPC ? NM_SaveNpc( name ) : NM_SaveConstruct( name ) ) )
 		nm.saving = NM_SAVING_NONE;
@@ -2625,6 +2677,8 @@ void CL_NpcManager_f( void ) {
 		NM_StartConstruct( name );
 		if ( nm.pick == NM_PICK_NONE )
 			Com_Printf( "%s\n", nm.message );
+	} else if ( !Q_stricmp( arg, "walk" ) || !Q_stricmp( arg, "routes" ) ) {
+		CL_NpcWalk_Command();
 	} else if ( !Q_stricmp( arg, "talk" ) && Cmd_Argc() >= 4 ) {
 		const char *target = Cmd_Argv( 2 );
 
@@ -2665,6 +2719,9 @@ void CL_NpcManager_f( void ) {
 		Com_Printf( "       npcmanager talk <npc> <message>  the NPC (targetname or number) says it in chat\n" );
 		Com_Printf( "       npcmanager select <npc> [name]   what you say in chat is said by the NPC, as name\n" );
 		Com_Printf( "       npcmanager select off            talk as yourself again (unselect does too)\n" );
+		Com_Printf( "       npcmanager walk <npc> <route> [walk|run|<speed>] [loop] [local]   the NPC walks a saved route, or round and round\n" );
+		Com_Printf( "       npcmanager walk <npc> stop       it stops where it is\n" );
+		Com_Printf( "       npcmanager routes                list the saved routes\n" );
 		Com_Printf( "       npcmanager reindex               rescan the filesystem for NPC types and models\n" );
 		Com_Printf( "       npcmanager close                 close the NPC manager\n" );
 		Com_Printf( "Saved NPCs are in the %s folder of the game folder, constructs in %s; both can be exec'd\n", NM_NPC_DIR, NM_CONSTRUCT_DIR );
@@ -2884,6 +2941,12 @@ static void NM_PickClick( void ) {
 	}
 	if ( !NM_TraceCursor( pos ) )
 		return;
+	if ( nm.pick == NM_PICK_ROUTE ) {
+		// one more spot, then the next
+		if ( nm.numRoute < NW_MAX_ROUTE_POINTS )
+			VectorCopy( pos, nm.route[nm.numRoute++] );
+		return;
+	}
 	if ( nm.pick == NM_PICK_PLACE ) {
 		// stays in hand for the next one
 		NM_PutDown( pos );
@@ -3016,12 +3079,25 @@ void CL_NpcManager_KeyEvent( int key, qboolean down ) {
 			// takes back the last one put down
 			if ( nm.pick == NM_PICK_PLACE && nm.numPlaced )
 				nm.numPlaced--;
+			if ( nm.pick == NM_PICK_ROUTE && nm.numRoute )
+				nm.numRoute--;
+			break;
+		case A_DELETE:
+			if ( nm.pick == NM_PICK_ROUTE )
+				nm.numRoute = 0;
+			break;
+		case A_CAP_R:
+			if ( nm.pick == NM_PICK_ROUTE )
+				nm.routeRun = (qboolean)!nm.routeRun;
 			break;
 		case A_ENTER:
 		case A_KP_ENTER:
 			if ( nm.pick == NM_PICK_PLACE ) {
 				NM_SpawnPlaced();
 				NM_EndPick();
+			} else if ( nm.pick == NM_PICK_ROUTE && nm.numRoute ) {
+				NM_EndPick();
+				NM_StartSaving( NM_SAVING_ROUTE );
 			}
 			break;
 		default:
@@ -3707,17 +3783,26 @@ static void NM_DrawTeleBox( void ) {
 static void NM_DrawSaving( void ) {
 	const float w = 340, h = 88, x = ( SCREEN_WIDTH - w ) * 0.5f, y = 170;
 	const qboolean construct = (qboolean)( nm.saving == NM_SAVING_CONSTRUCT );
+	const qboolean route = (qboolean)( nm.saving == NM_SAVING_ROUTE );
 	const char *name = nm.fields[NM_F_SAVE_NAME];
+	char path[MAX_QPATH];
 
+	if ( route )
+		Com_sprintf( path, sizeof( path ), "%s/%s.route", NM_ROUTE_DIR, name );
+	else
+		Q_strncpyz( path, NM_SavePath( construct, name ), sizeof( path ) );
 	NM_Box( x, y, w, h, nmPanelOpaque );
-	NM_TextClipped( x + 8, y + 6, w - 16, construct ? va( "Save the %i NPCs put down as a construct named:", nm.numPlaced )
+	NM_TextClipped( x + 8, y + 6, w - 16, route ? va( "Save the route of %i spots, then walk it, as:", nm.numRoute )
+		: construct ? va( "Save the %i NPCs put down as a construct named:", nm.numPlaced )
 		: "Save the form's NPC, with its settings, as:", nmWhite );
 	NM_Field( NM_F_SAVE_NAME, x + 8, y + 22, w - 16, "letters, numbers, - and _" );
-	if ( name[0] && FS_FileExists( NM_SavePath( construct, name ) ) )
+	if ( name[0] && FS_FileExists( path ) )
 		NM_TextClipped( x + 8, y + 42, w - 16, S_COLOR_YELLOW "One with this name is there already; saving replaces it", nmWhite );
+	else if ( route )
+		NM_TextClipped( x + 8, y + 42, w - 16, va( S_COLOR_GREY "Goes in %s; npcmanager walk <npc> <name> walks it", NM_ROUTE_DIR ), nmWhite );
 	else
 		NM_TextClipped( x + 8, y + 42, w - 16, va( S_COLOR_GREY "Goes in %s, shown under Saved", construct ? NM_CONSTRUCT_DIR : NM_NPC_DIR ), nmWhite );
-	if ( NM_Button( x + 8, y + h - 24, 100, "Save  (Enter)", qfalse, (qboolean)( name[0] != '\0' ) ) ) {
+	if ( NM_Button( x + 8, y + h - 24, 100, route ? "Save, walk (Enter)" : "Save  (Enter)", qfalse, (qboolean)( name[0] != '\0' ) ) ) {
 		NM_DoSave();
 		return;
 	}
@@ -3905,6 +3990,25 @@ static void NM_DrawManage( void ) {
 		NM_Text( NM_CTRL_X + ( w + 4 ) * 4, y + 2, S_COLOR_GREY "not on all", nmWhite );
 
 	y += 20;
+	NM_Label( y, "Walk" );
+	if ( NM_Button( NM_CTRL_X, y, 88, "Route on map...", qfalse, (qboolean)( experimental && target != NULL ) ) )
+		NM_StartPick( NM_PICK_ROUTE );
+	// a click runs it instead, and back
+	if ( NM_Button( NM_CTRL_X + 92, y, 40, nm.routeRun ? "Run" : "Walk", qfalse, experimental ) )
+		nm.routeRun = (qboolean)!nm.routeRun;
+	// and round and round, until Stop
+	if ( NM_Button( NM_CTRL_X + 136, y, 40, nm.routeLoop ? "Loop" : "Once", qfalse, experimental ) )
+		nm.routeLoop = (qboolean)!nm.routeLoop;
+	if ( NM_Button( NM_CTRL_X + 180, y, 48, "Again", qfalse, (qboolean)( experimental && target != NULL && nm.routeName[0] ) ) )
+		NM_Walk( nm.routeName );
+	if ( NM_Button( NM_CTRL_X + 232, y, NM_CTRL_W - 232, "Stop", qfalse, (qboolean)( experimental && target != NULL ) ) ) {
+		const char *cmd = va( "npcmanager walk %s stop", target );
+
+		if ( !CL_Storyteller_Capture( cmd ) )
+			Cbuf_AddText( va( "%s\n", cmd ) );
+	}
+
+	y += 20;
 	NM_Label( y, "Hologram" );
 	if ( NM_Button( NM_CTRL_X, y, w, "Normal", qfalse, (qboolean)( targetAll != NULL ) ) )
 		NM_SendManage( va( "npc hologram normal %s", targetAll ), qfalse );
@@ -4081,6 +4185,29 @@ static void NM_DrawPick( void ) {
 
 	if ( nm.pick == NM_PICK_SELECT ) {
 		what = "Aim at an NPC's label and click to select it.   Right-click or Esc cancels";
+	} else if ( nm.pick == NM_PICK_ROUTE ) {
+		const nmNpc_t *npc = NM_SelectedNpc();
+		qboolean have = (qboolean)( npc != NULL );
+		vec3_t from;
+
+		// from the NPC through the spots, then to where the next would go
+		if ( have )
+			NM_NpcOrigin( npc, from );
+		for ( int i = 0; i < nm.numRoute; i++ ) {
+			if ( have && NM_Project( from, &x, &y ) && NM_Project( nm.route[i], &ex, &ey ) )
+				NM_DottedLine( x, y, ex, ey, nmPlacedColor );
+			yaw = have ? NM_NormalizeYaw( NM_LegYaw( from, nm.route[i] ) ) : 0;
+			NM_DrawMarker( nm.route[i], yaw, va( "%i", i + 1 ), nmPlacedColor );
+			VectorCopy( nm.route[i], from );
+			have = qtrue;
+		}
+		if ( NM_TraceCursor( pos ) && NM_Project( pos, &ex, &ey ) ) {
+			NM_Fill( ex - 3, ey - 3, 6, 6, nmAccent );
+			if ( have && NM_Project( from, &x, &y ) )
+				NM_DottedLine( x, y, ex, ey, nmAccent );
+		}
+		what = va( "Click the spots it %s to, one after the other.   Backspace takes the last back, Del clears them",
+			nm.routeRun ? "runs" : "walks" );
 	} else if ( nm.pick == NM_PICK_PLACE ) {
 		// what a click puts down, and where
 		if ( NM_TraceCursor( pos ) ) {
@@ -4111,12 +4238,16 @@ static void NM_DrawPick( void ) {
 			: "Aim and click where to teleport to.   Wheel turns it.   Right-click or Esc cancels";
 	}
 
-	NM_Box( 10, 10, SCREEN_WIDTH - 20, nm.pick == NM_PICK_PLACE ? 43 : 30, nmPanel );
+	NM_Box( 10, 10, SCREEN_WIDTH - 20, nm.pick == NM_PICK_PLACE || nm.pick == NM_PICK_ROUTE ? 43 : 30, nmPanel );
 	NM_TextClipped( 16, 13, SCREEN_WIDTH - 32, what, nmWhite );
 	NM_TextClipped( 16, 26, SCREEN_WIDTH - 32, S_COLOR_GREY "Mouse looks   WASD fly   Space/C up/down   Shift faster   Ctrl slower", nmWhite );
 	if ( nm.pick == NM_PICK_PLACE ) {
 		NM_TextClipped( 16, 39, SCREEN_WIDTH - 32, va( "%s" S_COLOR_WHITE "   Enter spawns them all   Right-click or Esc goes back, keeping them",
 			nm.numPlaced ? va( S_COLOR_GREEN "%i put down", nm.numPlaced ) : S_COLOR_GREY "None put down yet" ), nmWhite );
+	} else if ( nm.pick == NM_PICK_ROUTE ) {
+		NM_TextClipped( 16, 39, SCREEN_WIDTH - 32, va( "%s" S_COLOR_WHITE "   R: %s   Enter saves it and walks it   Right-click or Esc goes back, keeping the spots",
+			nm.numRoute ? va( S_COLOR_GREEN "%i of %i spots", nm.numRoute, NW_MAX_ROUTE_POINTS ) : S_COLOR_GREY "No spots yet",
+			nm.routeRun ? S_COLOR_YELLOW "running" S_COLOR_WHITE " (walk)" : S_COLOR_YELLOW "walking" S_COLOR_WHITE " (run)" ), nmWhite );
 	}
 
 	// the crosshair, what a click picks

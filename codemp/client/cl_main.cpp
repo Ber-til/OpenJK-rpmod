@@ -834,6 +834,7 @@ void CL_Disconnect( qboolean showMainMenu ) {
 	CL_RpHooks_Disconnect();
 	CL_RpAdmin_Disconnect();
 	CL_RpCinematic_Reset();
+	CL_NpcWalk_Reset();
 
 	// wipe the client connection
 	Com_Memset( &clc, 0, sizeof( clc ) );

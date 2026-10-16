@@ -134,14 +134,18 @@ qboolean CL_GetSnapshot( int snapshotNumber, snapshot_t *snapshot ) {
 		Com_DPrintf( "CL_GetSnapshot: truncated %i entities to %i\n", count, MAX_ENTITIES_IN_SNAPSHOT );
 		count = MAX_ENTITIES_IN_SNAPSHOT;
 	}
-	snapshot->numEntities = count;
+	snapshot->numEntities = 0;
 
  	for ( i = 0 ; i < count ; i++ ) {
 
 		int entNum =  ( clSnap->parseEntitiesNum + i ) & (MAX_PARSE_ENTITIES-1) ;
+		entityState_t *es = &snapshot->entities[snapshot->numEntities];
 
 		// copy everything but the ghoul2 pointer
-		memcpy(&snapshot->entities[i], &cl.parseEntities[ entNum ], sizeof(entityState_t));
+		memcpy(es, &cl.parseEntities[ entNum ], sizeof(entityState_t));
+		// an NPC on a walk only this client shows
+		if ( CL_NpcWalk_Entity( es, snapshot->serverTime ) )
+			snapshot->numEntities++;
 	}
 
 	// FIXME: configstring changes and server commands!!!
@@ -551,6 +555,7 @@ void CL_ShutdownCGame( void ) {
 	CL_RadialMenu_Shutdown();
 	CL_EmotePreview_Shutdown();
 	CL_RpCinematic_Reset();
+	CL_NpcWalk_Reset();
 	CL_FighterAssist_Shutdown();
 	CL_ChatRange_Shutdown();
 
