@@ -334,7 +334,7 @@ static void CL_R_RenderScene( const refdef_t *fd ) {
 	// the map editor's models and lights are in every main view
 	CL_MapEditor_AddToScene( fd );
 	if ( !CL_NpcManager_RenderScene( fd ) && !CL_ShaderManager_RenderScene( fd ) && !CL_EffectManager_RenderScene( fd )
-		&& !CL_MapEditor_RenderScene( fd ) && !CL_RpCinematic_RenderScene( fd ) )
+		&& !CL_MapEditor_RenderScene( fd ) && !CL_RpCinematic_RenderScene( fd ) && !CL_NpcWalk_RenderScene( fd ) )
 		CL_ModelManager_RenderScene( fd );
 }
 
@@ -372,7 +372,7 @@ static void CL_FX_AddScheduledEffects( qboolean portal ) {
 
 	if ( !portal && cgameView && ( CL_ModelManager_Camera( origin, angles ) || CL_ShaderManager_Camera( origin, angles )
 		|| CL_EffectManager_Camera( origin, angles ) || CL_NpcManager_Camera( origin, angles )
-		|| CL_MapEditor_Camera( origin, angles ) || CL_RpCinematic_Camera( origin, angles ) ) ) {
+		|| CL_MapEditor_Camera( origin, angles ) || CL_RpCinematic_Camera( origin, angles ) || CL_NpcWalk_Camera( origin, angles ) ) ) {
 		view = *cgameView;
 		VectorCopy( origin, view.vieworg );
 		AnglesToAxis( angles, view.viewaxis );

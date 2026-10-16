@@ -168,6 +168,14 @@ The given command will be transmitted to the server, and is gauranteed to
 not have future usercmd_t executed before it is executed
 ======================
 */
+static int clLastCommandTime;
+
+// cls.realtime the last command went to the server: its flood protection ignores one that
+// follows too soon
+int CL_LastCommandTime( void ) {
+	return clLastCommandTime;
+}
+
 void CL_AddReliableCommand( const char *cmd, qboolean isDisconnectCmd ) {
 	int unacknowledged = clc.reliableSequence - clc.reliableAcknowledge;
 
@@ -183,6 +191,9 @@ void CL_AddReliableCommand( const char *cmd, qboolean isDisconnectCmd ) {
 	// an emote's animation is watched for, a Help click shows one
 	if ( !isDisconnectCmd )
 		CL_EmotePreview_Command( cmd );
+	// impersonating an NPC, a command too soon after its teleport waits its turn
+	if ( !isDisconnectCmd && CL_NpcWalk_HoldCommand( cmd ) )
+		return;
 
 	// if we would be losing an old command that hasn't been acknowledged,
 	// we must drop the connection
@@ -199,6 +210,7 @@ void CL_AddReliableCommand( const char *cmd, qboolean isDisconnectCmd ) {
 
 	Q_strncpyz(clc.reliableCommands[++clc.reliableSequence & (MAX_RELIABLE_COMMANDS - 1)],
 		   cmd, sizeof(*clc.reliableCommands));
+	clLastCommandTime = cls.realtime;
 }
 
 /*

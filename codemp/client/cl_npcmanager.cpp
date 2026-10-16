@@ -2063,6 +2063,73 @@ const char *CL_NpcManager_OutgoingChat( const char *cmd ) {
 	return CL_RpHooks_NpcTalkCommand( nmSpeak.target, nmSpeak.name, "", "", text );
 }
 
+// npcmanager impersonate <npc> [display name] [local]: the player's keys and mouse move the
+// NPC and what they say it says, while they stand still; npcmanager impersonate off
+static void NM_Impersonate_f( void ) {
+	const char *target = Cmd_Argv( 2 );
+	char name[MAX_QPATH];
+	qboolean local = qfalse;
+	int argc = Cmd_Argc(), num = -1;
+
+	if ( argc < 3 ) {
+		if ( CL_NpcWalk_Impersonating() )
+			Com_Printf( "NPC manager: you're impersonating an NPC; npcmanager impersonate off to stop\n" );
+		else
+			Com_Printf( "usage: npcmanager impersonate <npc> [display name] [local]   npcmanager impersonate off\n" );
+		return;
+	}
+	if ( !Q_stricmp( target, "off" ) || !Q_stricmp( target, "stop" ) ) {
+		if ( !CL_NpcWalk_Impersonating() ) {
+			Com_Printf( "NPC manager: you aren't impersonating an NPC\n" );
+			return;
+		}
+		CL_NpcWalk_StopImpersonating();
+		NM_SpeakOff( "" );
+		Com_Printf( "NPC manager: you're yourself again\n" );
+		return;
+	}
+	if ( !Q_stricmp( Cmd_Argv( argc - 1 ), "local" ) ) {
+		local = qtrue;
+		argc--;
+	}
+	if ( cls.state != CA_ACTIVE ) {
+		Com_Printf( "NPC manager: not in game\n" );
+		return;
+	}
+	// teleporting it and its talk are an admin's, with experimental features on
+	if ( !local && !NM_TalkAllowed() )
+		return;
+	if ( Q_isanumber( target ) && !strchr( target, '.' ) ) {
+		num = atoi( target );
+	} else {
+		for ( int i = 0; i < nm.numNpcs && num < 0; i++ ) {
+			if ( !Q_stricmp( nm.npcs[i].name, target ) )
+				num = nm.npcs[i].num;
+		}
+	}
+	if ( num < 0 ) {
+		Com_Printf( S_COLOR_YELLOW "NPC manager: no NPC %s in the list; Refresh in the Manage tab, or give its number\n", target );
+		return;
+	}
+	if ( !CL_NpcWalk_Impersonate( num, local ) )
+		return;
+
+	// what you say, it says
+	name[0] = '\0';
+	for ( int i = 3; i < argc; i++ )
+		Q_strcat( name, sizeof( name ), va( i > 3 ? " %s" : "%s", Cmd_Argv( i ) ) );
+	if ( !name[0] )
+		Q_strncpyz( name, NM_DefaultTalkName( va( "%i", num ) ), sizeof( name ) );
+	if ( !local ) {
+		Com_sprintf( nmSpeak.target, sizeof( nmSpeak.target ), "%i", num );
+		Q_strncpyz( nmSpeak.name, name, sizeof( nmSpeak.name ) );
+		Q_strncpyz( nmSpeak.map, cl.mapname, sizeof( nmSpeak.map ) );
+	}
+	CL_NpcManager_Close();
+	Com_Printf( "NPC manager: you're NPC %i now, as %s" S_COLOR_WHITE ": your keys and mouse move it%s; npcmanager impersonate off to stop\n",
+		num, name, local ? " on your screen only" : ", and what you say it says" );
+}
+
 // who walks: the selection, or the marked ones by number, commas between; NULL if none
 static const char *NM_WalkTarget( void ) {
 	static char target[MAX_STRING_CHARS];
@@ -2775,6 +2842,8 @@ void CL_NpcManager_f( void ) {
 			Com_Printf( "%s\n", nm.message );
 	} else if ( !Q_stricmp( arg, "walk" ) || !Q_stricmp( arg, "routes" ) ) {
 		CL_NpcWalk_Command();
+	} else if ( !Q_stricmp( arg, "impersonate" ) ) {
+		NM_Impersonate_f();
 	} else if ( !Q_stricmp( arg, "talk" ) && Cmd_Argc() >= 4 ) {
 		const char *target = Cmd_Argv( 2 );
 
@@ -2819,6 +2888,9 @@ void CL_NpcManager_f( void ) {
 		Com_Printf( "                                        several walk it together, keeping their places\n" );
 		Com_Printf( "       npcmanager walk <npc>[,<npc>...] stop   they stop where they are\n" );
 		Com_Printf( "       npcmanager routes                list the saved routes\n" );
+		Com_Printf( "       npcmanager impersonate <npc> [display name] [local]   your keys and mouse move the NPC and it says\n" );
+		Com_Printf( "                                        what you say, while you stand still\n" );
+		Com_Printf( "       npcmanager impersonate off       you're yourself again\n" );
 		Com_Printf( "       npcmanager reindex               rescan the filesystem for NPC types and models\n" );
 		Com_Printf( "       npcmanager close                 close the NPC manager\n" );
 		Com_Printf( "Saved NPCs are in the %s folder of the game folder, constructs in %s; both can be exec'd\n", NM_NPC_DIR, NM_CONSTRUCT_DIR );
@@ -4131,6 +4203,15 @@ static void NM_DrawManage( void ) {
 		if ( !CL_Storyteller_Capture( cmd ) )
 			Cbuf_AddText( va( "%s\n", cmd ) );
 	}
+
+	y += 20;
+	NM_Label( y, "Play as" );
+	// talking as the name below
+	if ( NM_Button( NM_CTRL_X, y, 88, "Impersonate", qfalse, (qboolean)( experimental && npc != NULL ) ) )
+		Cbuf_AddText( va( "npcmanager impersonate %i \"%s\"\n", npc->num, NM_TalkName( npc ) ) );
+	if ( NM_Button( NM_CTRL_X + 92, y, 40, "Stop", qfalse, CL_NpcWalk_Impersonating() ) )
+		Cbuf_AddText( "npcmanager impersonate off\n" );
+	NM_TextClipped( NM_CTRL_X + 138, y + 2, NM_CTRL_W - 138, S_COLOR_GREY "your keys move it, it says what you say", nmWhite );
 
 	y += 20;
 	NM_Label( y, "Hologram" );

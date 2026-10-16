@@ -37,6 +37,10 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 // stood from the group's middle, short of walls: the group keeps its shape along the route.
 // Their teleports take turns, as the server only takes one command a second.
 //
+// An admin can also impersonate an NPC: their keys move it, the camera behind it, while they
+// stand still; see "Impersonating an NPC" below.
+//   npcmanager impersonate <npc> [display name] [local], npcmanager impersonate off
+//
 // Routes are made in the NPC manager (Manage tab, Walk) and kept in npcmanager/routes:
 //   npcmanager walk <npc>[,<npc>...] <route> [walk|run|<speed>] [loop] [local]
 //   npcmanager walk <npc>[,<npc>...] stop
@@ -469,7 +473,11 @@ static qboolean NW_IsTeleportEvent( int event, int parm ) {
 }
 
 // the NPC, or one of the spots, walked by now or just now
+static qboolean NW_ImpNear( int num, const vec3_t org );
+
 static qboolean NW_WalkedBy( int num, const vec3_t org, int serverTime ) {
+	if ( NW_ImpNear( num, org ) )
+		return qtrue;
 	for ( int i = 0; i < NW_MAX_WALKS; i++ ) {
 		const vec3_t *pts;
 		const float *realPos;
@@ -535,6 +543,10 @@ static void NW_Debug( const entityState_t *es, int serverTime ) {
 
 // a snapshot's entity on its way to the cgame: an NPC walking is where the walk has it; qfalse
 // when the cgame isn't to see it at all, the flash of the teleports that bring the real NPC along
+static qboolean NW_ImpEntity( entityState_t *es, int serverTime );
+static qboolean NW_GlideEntity( entityState_t *es, int serverTime );
+static void NW_LetGoEntity( entityState_t *es, int serverTime );
+
 qboolean CL_NpcWalk_Entity( entityState_t *es, int serverTime ) {
 	nwWalk_t *w;
 	vec3_t pos, velocity;
@@ -548,6 +560,10 @@ qboolean CL_NpcWalk_Entity( entityState_t *es, int serverTime ) {
 			return qfalse;
 		return qtrue;
 	}
+	// impersonated, here or by someone else, or just let go of
+	if ( NW_ImpEntity( es, serverTime ) || NW_GlideEntity( es, serverTime ) )
+		return qtrue;
+	NW_LetGoEntity( es, serverTime );
 	if ( !nwActive || !( w = NW_Find( es->number ) ) ) {
 		// just let go: the last teleport's uncloak may be yet to come
 		for ( int i = 0; i < NW_MAX_WALKS; i++ ) {
@@ -653,6 +669,14 @@ static int NW_Resolve( const char *target, int *nums, int max ) {
 	return count;
 }
 
+static int NW_CommandGap( void );
+
+// the server takes another command now: the walks' and impersonation's are spaced out, and so
+// are they from any other this client sent, the flood protection ignoring one too soon
+static qboolean NW_CanSend( void ) {
+	return (qboolean)( cls.state == CA_ACTIVE && cls.realtime >= nwNextSend && cls.realtime - CL_LastCommandTime() >= NW_CommandGap() );
+}
+
 static int NW_CommandGap( void ) {
 	const char *flood = Info_ValueForKey( cl.gameState.stringData + cl.gameState.stringOffsets[CS_SERVERINFO], "sv_floodProtect" );
 	int value;
@@ -665,9 +689,625 @@ static int NW_CommandGap( void ) {
 	return ( value == 1 ? 1000 : value ) + 100;
 }
 
+/*
+===============================================================================
+
+Impersonating an NPC
+
+The player stays where they are; their keys move the NPC instead, on this screen at once,
+the camera behind it, and the real one is teleported after it as often as the server takes
+a command. cmd:npc/puppet/<number>/on tells the other clients with this one to glide it
+from teleport to teleport, walking or running, instead of it hopping; /off ends that.
+
+===============================================================================
+*/
+
+#define NW_IMP_CAM_RANGE	110.0f		// the camera this far behind it
+#define NW_IMP_CAM_HEIGHT	56.0f		// looking from this far over the floor it stands on
+#define NW_IMP_TURN			720.0f		// degrees a second it turns to where it goes
+#define NW_IMP_SEND_MOVE	16.0f		// moved this far, the real one is sent after it
+#define NW_IMP_SEND_YAW		15.0f		// or turned this far
+#define NW_IMP_STEP			18.0f		// a step this high it walks up
+#define NW_MAX_GLIDES		8
+#define NW_GLIDE_FAST		600.0f		// a teleport further than this in a command's time is one
+#define NW_IMP_ANNOUNCE_MS	15000		// the hook's on again this often, for a copy lost or someone come since
+#define NW_IMP_SPOTS		4			// teleported from and to lately, their flashes the impersonation's
+#define NW_IMP_MIN_GAP		250			// ms between its teleports however often the server takes commands
+#define NW_GLIDE_KEEP_MS	400			// legs kept walking this long past a glide, the next teleport due
+
+typedef enum {
+	NW_IMP_SENT,			// nothing left to send but where it goes
+	NW_IMP_HOOK_ON,			// the others told to glide it, before it's teleported
+	NW_IMP_LAST_TELE,		// stopped: where it was left, then the hook's off
+	NW_IMP_HOOK_OFF
+} nwImpSend_t;
+
+// the time between the impersonation's commands: as often as the server takes them, and not
+// so often as to flood it with teleports when it takes any number
+static int NW_ImpGap( void ) {
+	return Q_max( NW_CommandGap(), NW_IMP_MIN_GAP );
+}
+
+// cl_npcWalkDebug 1: what the impersonation sends, and how the NPCs others impersonate glide
+static qboolean NW_ImpDebug( void ) {
+	if ( !cl_npcWalkDebug )
+		cl_npcWalkDebug = Cvar_Get( "cl_npcWalkDebug", "0", 0, "Print what changes on NPCs walking a route" );
+	return (qboolean)( cl_npcWalkDebug->integer != 0 );
+}
+
+typedef struct {
+	int			teleBit;			// its EF_TELEPORT_BIT when it was taken, kept
+	qboolean	cloaked;			// cloaked when it was taken, and stays so
+	qboolean	known;
+} nwFx_t;
+
+static struct {
+	qboolean	active;
+	qboolean	ending;				// let go: the real one is brought to where it was left
+	qboolean	local;				// nothing sent
+	int			num;
+	qboolean	known;				// where it is taken from a snapshot yet
+	vec3_t		pos;
+	float		yaw;
+	float		speed;				// how fast it goes now
+	vec3_t		dir;				// and where
+	float		groundOfs;
+	vec3_t		realPos;			// where the server's NPC is
+	vec3_t		sentPos;			// where it was last teleported to
+	float		sentYaw;
+	vec3_t		spots[NW_IMP_SPOTS];	// the ones before
+	int			numSpots;
+	int			nextAnnounce;		// cls.realtime the hook's on goes again
+	vec3_t		frozen;				// the player's own view angles, kept while they stand there
+	float		forward, right;		// what the keys ask, -1 to 1
+	qboolean	run;
+	int			lastTime;			// cls.realtime it last moved
+	int			endTime;			// cls.realtime it's let go of, whatever happens
+	nwImpSend_t	send;
+	nwFx_t		fx;
+} nwImp;
+
+// an NPC someone else impersonates, glided from teleport to teleport
+static struct {
+	qboolean	active;
+	int			num;
+	qboolean	known;
+	vec3_t		raw;				// where the server last put it
+	vec3_t		prevRaw;			// and before
+	int			rawTime;			// serverTime it did, the time between teleports telling the glide's
+	vec3_t		lastVelocity;		// of the last glide, the legs kept walking until the next
+	vec3_t		from, to;
+	int			start, dur;			// serverTime
+	float		groundOfs;
+	int			until;				// serverTime it's let go of, once /off; 0 while on
+	nwFx_t		fx;
+} nwGlide[NW_MAX_GLIDES];
+
+// an NPC impersonated or glided just let go of: its last teleport's cloak and flash may be yet to come
+static struct {
+	int			num;
+	vec3_t		spots[2];			// where that teleport is from and to
+	int			until;				// serverTime; 0 when none
+	nwFx_t		fx;
+} nwLetGo[NW_MAX_GLIDES + 1];
+
+static cvar_t *cl_npcImpThirdPerson;	// 1 while cg_thirdPerson is ours to put back to 0, a crash included
+
+// the cgame only draws the player's own body in third person; the camera is ours either way
+static void NW_ImpThirdPerson( qboolean on ) {
+	if ( !cl_npcImpThirdPerson )
+		cl_npcImpThirdPerson = Cvar_Get( "cl_npcImpThirdPerson", "0", CVAR_ARCHIVE_ND | CVAR_INTERNAL, "" );
+	if ( on ) {
+		if ( Cvar_VariableIntegerValue( "cg_thirdPerson" ) || cl_npcImpThirdPerson->integer )
+			return;
+		Cvar_Set( "cl_npcImpThirdPerson", "1" );
+		Cvar_Set( "cg_thirdPerson", "1" );
+	} else if ( cl_npcImpThirdPerson->integer ) {
+		Cvar_Set( "cg_thirdPerson", "0" );
+		Cvar_Set( "cl_npcImpThirdPerson", "0" );
+	}
+}
+
+// the teleports that bring it along neither cloak it, flash on it nor stop it being drawn smoothly
+static void NW_Quieten( entityState_t *es, nwFx_t *fx ) {
+	if ( !fx->known ) {
+		fx->teleBit = es->eFlags & EF_TELEPORT_BIT;
+		fx->cloaked = (qboolean)( ( es->powerups & ( 1 << PW_CLOAKED ) ) != 0 );
+		fx->known = qtrue;
+	}
+	if ( NW_IsTeleportEvent( es->event, es->eventParm ) )
+		es->event = 0;
+	es->eFlags = ( es->eFlags & ~EF_TELEPORT_BIT ) | fx->teleBit;
+	if ( !fx->cloaked )
+		es->powerups &= ~( 1 << PW_CLOAKED );
+}
+
+// the NPC where it's shown, moving as it is, its legs too
+static void NW_Place( entityState_t *es, const vec3_t pos, float yaw, const vec3_t velocity, int serverTime ) {
+	const float speed = VectorLength( velocity );
+
+	if ( speed > 1.0f ) {
+		const int anim = speed >= NW_RUN_FROM ? BOTH_RUN1 : BOTH_WALK1;
+
+		// the torso too when it's doing what the legs are, standing; a weapon's pose is kept
+		if ( es->torsoAnim == es->legsAnim )
+			es->torsoAnim = anim;
+		es->legsAnim = anim;
+	}
+	es->pos.trType = TR_INTERPOLATE;
+	es->pos.trTime = serverTime;
+	VectorCopy( pos, es->pos.trBase );
+	VectorCopy( velocity, es->pos.trDelta );
+	VectorCopy( pos, es->origin );
+	es->apos.trType = TR_INTERPOLATE;
+	VectorSet( es->apos.trBase, 0, yaw, 0 );
+	VectorClear( es->apos.trDelta );
+	VectorSet( es->angles, 0, yaw, 0 );
+	es->speed = speed;
+}
+
+static void NW_LetGo( int num, const nwFx_t *fx, const vec3_t a, const vec3_t b, int serverTime ) {
+	int slot = 0;
+
+	for ( int i = 0; i < NW_MAX_GLIDES + 1; i++ ) {
+		if ( nwLetGo[i].num == num || serverTime >= nwLetGo[i].until ) {
+			slot = i;
+			break;
+		}
+	}
+	nwLetGo[slot].num = num;
+	nwLetGo[slot].fx = *fx;
+	VectorCopy( a, nwLetGo[slot].spots[0] );
+	VectorCopy( b, nwLetGo[slot].spots[1] );
+	nwLetGo[slot].until = serverTime + NW_QUIET_MS;
+}
+
+// one just let go of: where the server has it, without its last teleport's cloak or flash
+static void NW_LetGoEntity( entityState_t *es, int serverTime ) {
+	for ( int i = 0; i < NW_MAX_GLIDES + 1; i++ ) {
+		if ( nwLetGo[i].until && serverTime < nwLetGo[i].until && nwLetGo[i].num == es->number )
+			NW_Quieten( es, &nwLetGo[i].fx );
+	}
+}
+
+static float NW_GroundOfs( const vec3_t pos ) {
+	float ground;
+
+	if ( NW_Ground( pos, &ground ) )
+		return Com_Clamp( 0.0f, 128.0f, pos[2] - ground );
+	return NW_GROUND_HEIGHT;
+}
+
+// the NPC this client moves: qtrue if this is it, put where it's been moved to
+static qboolean NW_ImpEntity( entityState_t *es, int serverTime ) {
+	vec3_t velocity;
+
+	if ( !nwImp.active || es->number != nwImp.num )
+		return qfalse;
+	NW_Quieten( es, &nwImp.fx );
+	VectorCopy( es->pos.trBase, nwImp.realPos );
+	if ( !nwImp.known ) {
+		VectorCopy( es->pos.trBase, nwImp.pos );
+		VectorCopy( es->pos.trBase, nwImp.sentPos );
+		nwImp.yaw = nwImp.sentYaw = es->apos.trBase[YAW];
+		nwImp.groundOfs = NW_GroundOfs( nwImp.pos );
+		nwImp.known = qtrue;
+	}
+	// let go: the real one is back once it's where this one was left
+	if ( nwImp.ending && ( cls.realtime > nwImp.endTime
+		|| ( nwImp.send == NW_IMP_SENT && Distance( es->pos.trBase, nwImp.pos ) < NW_CATCH_UP ) ) ) {
+		nwImp.active = qfalse;
+		NW_LetGo( nwImp.num, &nwImp.fx, nwImp.spots[0], nwImp.sentPos, serverTime );
+		return qtrue;
+	}
+	VectorScale( nwImp.dir, nwImp.speed, velocity );
+	NW_Place( es, nwImp.pos, nwImp.yaw, velocity, serverTime );
+	return qtrue;
+}
+
+static float NW_TurnTo( float from, float to, float step ) {
+	const float delta = AngleDelta( to, from );
+
+	if ( fabsf( delta ) <= step )
+		return to;
+	return AngleNormalize360( from + ( delta > 0.0f ? step : -step ) );
+}
+
+// moved along, sliding along walls and up steps, never off a floor it can't see
+static void NW_SlideMove( vec3_t pos, const vec3_t delta, float groundOfs ) {
+	vec3_t mins = { -15, -15, 0 }, maxs = { 15, 15, 0 }, move, end, was;
+	float ground;
+	trace_t tr;
+
+	// from a step's height over the floor to a head's
+	mins[2] = NW_IMP_STEP - groundOfs;
+	maxs[2] = mins[2] + 40.0f;
+	VectorCopy( pos, was );
+	VectorCopy( delta, move );
+	for ( int i = 0; i < 3; i++ ) {
+		float into;
+
+		VectorAdd( pos, move, end );
+		CM_BoxTrace( &tr, pos, end, mins, maxs, 0, NW_TRACE_MASK, qfalse );
+		if ( tr.startsolid || tr.allsolid ) {
+			// already in something: out of it the way it goes
+			VectorCopy( end, pos );
+			break;
+		}
+		VectorCopy( tr.endpos, pos );
+		if ( tr.fraction >= 1.0f )
+			break;
+		// what's left of the move, along the wall
+		VectorScale( move, 1.0f - tr.fraction, move );
+		into = DotProduct( move, tr.plane.normal );
+		VectorMA( move, -into, tr.plane.normal, move );
+		move[2] = 0.0f;
+		if ( VectorLength( move ) < 0.5f )
+			break;
+	}
+	if ( NW_Ground( pos, &ground ) )
+		pos[2] = ground + groundOfs;
+	else
+		VectorCopy( was, pos );
+}
+
+// the keys move it, the way the camera looks
+static void NW_ImpMove( float dt ) {
+	vec3_t angles, forward, right, wish, delta;
+
+	VectorSet( angles, 0, cl.viewangles[YAW], 0 );
+	AngleVectors( angles, forward, right, NULL );
+	VectorScale( forward, nwImp.forward, wish );
+	VectorMA( wish, nwImp.right, right, wish );
+	wish[2] = 0.0f;
+	if ( VectorNormalize( wish ) < 0.1f ) {
+		nwImp.speed = 0.0f;
+		return;
+	}
+	nwImp.speed = nwImp.run ? NW_RUN_SPEED : NW_WALK_SPEED;
+	VectorCopy( wish, nwImp.dir );
+	nwImp.yaw = NW_TurnTo( nwImp.yaw, RAD2DEG( atan2f( wish[1], wish[0] ) ), NW_IMP_TURN * dt );
+	VectorScale( wish, nwImp.speed * dt, delta );
+	NW_SlideMove( nwImp.pos, delta, nwImp.groundOfs );
+}
+
+static void NW_ImpTele( void ) {
+	// where it's teleported from, its flash there kept off too
+	memmove( &nwImp.spots[1], &nwImp.spots[0], sizeof( nwImp.spots[0] ) * ( NW_IMP_SPOTS - 1 ) );
+	VectorCopy( nwImp.sentPos, nwImp.spots[0] );
+	nwImp.numSpots = Q_min( nwImp.numSpots + 1, NW_IMP_SPOTS );
+	CL_AddReliableCommand( va( "npc tele %i %i %i %i %i", (int)floorf( nwImp.pos[0] + 0.5f ), (int)floorf( nwImp.pos[1] + 0.5f ),
+		(int)floorf( nwImp.pos[2] + 0.5f ), (int)AngleNormalize360( nwImp.yaw ), nwImp.num ), qfalse );
+	VectorCopy( nwImp.pos, nwImp.sentPos );
+	nwImp.sentYaw = nwImp.yaw;
+	nwNextSend = cls.realtime + NW_ImpGap();
+	if ( NW_ImpDebug() )
+		Com_Printf( "npcimp %i: tele %.0f %.0f %.0f yaw %.0f @%i\n", nwImp.num, nwImp.pos[0], nwImp.pos[1], nwImp.pos[2], nwImp.yaw, cls.realtime );
+}
+
+// commands this client sends while impersonating, held for their turn: one too soon after
+// another would be ignored by the server, chat included
+#define NW_MAX_HELD			4
+static struct {
+	char		cmd[NW_MAX_HELD][MAX_STRING_CHARS];
+	int			num;
+	qboolean	releasing;
+} nwHeld;
+
+// a command about to go to the server; qtrue if it waits its turn instead
+qboolean CL_NpcWalk_HoldCommand( const char *cmd ) {
+	if ( nwHeld.releasing || !nwImp.active || nwImp.local || cls.state != CA_ACTIVE )
+		return qfalse;
+	if ( ( !nwHeld.num && NW_CanSend() ) || nwHeld.num >= NW_MAX_HELD )
+		return qfalse;
+	// chat, said as the NPC or not; anything else goes as it would
+	if ( Q_stricmpn( cmd, "say", 3 ) && Q_stricmpn( cmd, "tell ", 5 ) && Q_stricmpn( cmd, "rpnotify ", 9 ) )
+		return qfalse;
+	if ( NW_ImpDebug() )
+		Com_Printf( "npcimp: held %s\n", cmd );
+	Q_strncpyz( nwHeld.cmd[nwHeld.num++], cmd, sizeof( nwHeld.cmd[0] ) );
+	return qtrue;
+}
+
+// the first one held goes, when the server takes it; qtrue if it went
+static qboolean NW_ReleaseHeld( void ) {
+	if ( !nwHeld.num || !NW_CanSend() )
+		return qfalse;
+	nwHeld.releasing = qtrue;
+	CL_AddReliableCommand( nwHeld.cmd[0], qfalse );
+	nwHeld.releasing = qfalse;
+	memmove( nwHeld.cmd[0], nwHeld.cmd[1], sizeof( nwHeld.cmd[0] ) * ( NW_MAX_HELD - 1 ) );
+	nwHeld.num--;
+	nwNextSend = cls.realtime + NW_ImpGap();
+	return qtrue;
+}
+
+// every frame: it moves, and the real one is sent after it; qtrue if a command went
+static qboolean NW_ImpFrame( void ) {
+	const float dt = Com_Clamp( 0.0f, 0.1f, ( cls.realtime - nwImp.lastTime ) * 0.001f );
+
+	if ( !nwImp.active )
+		return qfalse;
+	nwImp.lastTime = cls.realtime;
+	if ( !nwImp.ending && nwImp.known && cls.state == CA_ACTIVE )
+		NW_ImpMove( dt );
+	if ( nwImp.local || !nwImp.known || !NW_CanSend() )
+		return qfalse;
+	switch ( nwImp.send ) {
+	case NW_IMP_HOOK_ON:
+		CL_AddReliableCommand( va( "rpnotify -1 1 cmd:npc/puppet/%i/on", nwImp.num ), qfalse );
+		nwNextSend = cls.realtime + NW_ImpGap();
+		if ( NW_ImpDebug() )
+			Com_Printf( "npcimp %i: hook on @%i\n", nwImp.num, cls.realtime );
+		nwImp.nextAnnounce = cls.realtime + NW_IMP_ANNOUNCE_MS;
+		nwImp.send = NW_IMP_SENT;
+		return qtrue;
+	case NW_IMP_LAST_TELE:
+		NW_ImpTele();
+		nwImp.send = NW_IMP_HOOK_OFF;
+		return qtrue;
+	case NW_IMP_HOOK_OFF:
+		CL_AddReliableCommand( va( "rpnotify -1 1 cmd:npc/puppet/%i/off", nwImp.num ), qfalse );
+		nwNextSend = cls.realtime + NW_ImpGap();
+		if ( NW_ImpDebug() )
+			Com_Printf( "npcimp %i: hook off @%i\n", nwImp.num, cls.realtime );
+		nwImp.send = NW_IMP_SENT;
+		return qtrue;
+	default:
+		if ( nwImp.ending )
+			return qfalse;
+		if ( Distance( nwImp.pos, nwImp.sentPos ) > NW_IMP_SEND_MOVE || fabsf( AngleDelta( nwImp.yaw, nwImp.sentYaw ) ) > NW_IMP_SEND_YAW
+			|| ( nwImp.speed <= 0.0f && ( Distance( nwImp.pos, nwImp.sentPos ) > 1.0f || fabsf( AngleDelta( nwImp.yaw, nwImp.sentYaw ) ) > 1.0f ) ) ) {
+			NW_ImpTele();
+			return qtrue;
+		}
+		// still: the hook again, for a client that missed it
+		if ( cls.realtime >= nwImp.nextAnnounce ) {
+			nwImp.send = NW_IMP_HOOK_ON;
+			return NW_ImpFrame();
+		}
+		return qfalse;
+	}
+}
+
+// a command about to go to the server: impersonating, the keys are the NPC's and the player
+// stands still, looking where they did
+void CL_NpcWalk_FilterCmd( usercmd_t *cmd ) {
+	if ( !nwImp.active || nwImp.ending )
+		return;
+	nwImp.forward = cmd->forwardmove / 127.0f;
+	nwImp.right = cmd->rightmove / 127.0f;
+	nwImp.run = (qboolean)( abs( cmd->forwardmove ) > 64 || abs( cmd->rightmove ) > 64 );
+	cmd->forwardmove = cmd->rightmove = cmd->upmove = 0;
+	cmd->buttons &= BUTTON_TALK;
+	cmd->generic_cmd = 0;
+	for ( int i = 0; i < 3; i++ )
+		cmd->angles[i] = ANGLE2SHORT( nwImp.frozen[i] );
+}
+
+// the camera behind it, where the mouse looks; qfalse when not impersonating
+qboolean CL_NpcWalk_Camera( vec3_t origin, vec3_t angles ) {
+	static const vec3_t mins = { -4, -4, -4 }, maxs = { 4, 4, 4 };
+	vec3_t target, forward, end;
+	trace_t tr;
+
+	if ( !nwImp.active || nwImp.ending || !nwImp.known )
+		return qfalse;
+	VectorCopy( nwImp.pos, target );
+	target[2] += NW_IMP_CAM_HEIGHT - nwImp.groundOfs;
+	VectorCopy( cl.viewangles, angles );
+	AngleVectors( angles, forward, NULL, NULL );
+	VectorMA( target, -NW_IMP_CAM_RANGE, forward, end );
+	CM_BoxTrace( &tr, target, end, mins, maxs, 0, MASK_SOLID, qfalse );
+	VectorCopy( tr.endpos, origin );
+	return qtrue;
+}
+
+// the cgame's main view, from behind the NPC instead; qtrue if it was drawn here
+qboolean CL_NpcWalk_RenderScene( const refdef_t *fd ) {
+	refdef_t view;
+	vec3_t origin, angles;
+
+	if ( fd->rdflags & ( RDF_NOWORLDMODEL | RDF_AUTOMAP ) )
+		return qfalse;
+	if ( !CL_NpcWalk_Camera( origin, angles ) )
+		return qfalse;
+	view = *fd;
+	VectorCopy( angles, view.viewangles );
+	AnglesToAxis( angles, view.viewaxis );
+	// the sky portal keeps its own origin but looks the way the camera does
+	if ( !( fd->rdflags & RDF_SKYBOXPORTAL ) ) {
+		VectorCopy( origin, view.vieworg );
+		view.viewContents = CM_PointContents( origin, 0 );
+		// the snapshot's area mask is from the player's position, the camera can be anywhere
+		memset( view.areamask, 0, sizeof( view.areamask ) );
+	}
+	re->RenderScene( &view );
+	return qtrue;
+}
+
+qboolean CL_NpcWalk_Impersonating( void ) {
+	return (qboolean)( nwImp.active && !nwImp.ending );
+}
+
+// the player takes the NPC over; qfalse if it isn't near enough to
+qboolean CL_NpcWalk_Impersonate( int num, qboolean local ) {
+	nwWalk_t *w = NW_Find( num );
+	qboolean seen = qfalse;
+
+	for ( int i = 0; i < cl.snap.numEntities && !seen; i++ )
+		seen = (qboolean)( cl.parseEntities[( cl.snap.parseEntitiesNum + i ) & ( MAX_PARSE_ENTITIES - 1 )].number == num );
+	if ( !seen ) {
+		Com_Printf( S_COLOR_YELLOW "NPC manager: NPC %i isn't near you; go where you can see it first\n", num );
+		return qfalse;
+	}
+	if ( nwImp.active && !nwImp.ending )
+		CL_NpcWalk_StopImpersonating();
+	// a walk it's on ends where it is
+	if ( w )
+		NW_Stop( w );
+	memset( &nwImp, 0, sizeof( nwImp ) );
+	nwImp.active = qtrue;
+	nwImp.num = num;
+	nwImp.local = local;
+	nwImp.lastTime = cls.realtime;
+	VectorCopy( cl.viewangles, nwImp.frozen );
+	NW_ImpThirdPerson( qtrue );
+	// the others told first, when the server takes it
+	nwImp.send = local ? NW_IMP_SENT : NW_IMP_HOOK_ON;
+	return qtrue;
+}
+
+// the player is themselves again; the real NPC is brought to where it was left
+void CL_NpcWalk_StopImpersonating( void ) {
+	if ( !nwImp.active || nwImp.ending )
+		return;
+	nwImp.ending = qtrue;
+	nwImp.speed = 0.0f;
+	// never told, nothing to take back
+	nwImp.send = nwImp.local || nwImp.send == NW_IMP_HOOK_ON ? NW_IMP_SENT : NW_IMP_LAST_TELE;
+	nwImp.endTime = cls.realtime + NW_ImpGap() * 3 + NW_RELEASE_MS;
+	VectorCopy( nwImp.frozen, cl.viewangles );
+	NW_ImpThirdPerson( qfalse );
+}
+
+// where a glided NPC is shown at serverTime
+static void NW_GlidePos( const int g, int serverTime, vec3_t pos ) {
+	const float frac = nwGlide[g].dur > 0 ? Com_Clamp( 0.0f, 1.0f, (float)( serverTime - nwGlide[g].start ) / nwGlide[g].dur ) : 1.0f;
+	vec3_t delta;
+
+	VectorSubtract( nwGlide[g].to, nwGlide[g].from, delta );
+	VectorMA( nwGlide[g].from, frac, delta, pos );
+}
+
+// an NPC someone else impersonates: from where it's shown to where the server last put it, in
+// the time until the next teleport; qtrue if this is one
+static qboolean NW_GlideEntity( entityState_t *es, int serverTime ) {
+	vec3_t pos, velocity;
+	float yaw, ground;
+	int g;
+
+	for ( g = 0; g < NW_MAX_GLIDES; g++ ) {
+		if ( nwGlide[g].active && nwGlide[g].num == es->number )
+			break;
+	}
+	if ( g == NW_MAX_GLIDES )
+		return qfalse;
+	NW_Quieten( es, &nwGlide[g].fx );
+	if ( !nwGlide[g].known ) {
+		VectorCopy( es->pos.trBase, nwGlide[g].raw );
+		VectorCopy( es->pos.trBase, nwGlide[g].prevRaw );
+		VectorCopy( es->pos.trBase, nwGlide[g].from );
+		VectorCopy( es->pos.trBase, nwGlide[g].to );
+		nwGlide[g].dur = 0;
+		nwGlide[g].rawTime = serverTime;
+		nwGlide[g].groundOfs = NW_GroundOfs( es->pos.trBase );
+		nwGlide[g].known = qtrue;
+	} else if ( Distance( es->pos.trBase, nwGlide[g].raw ) > 1.0f ) {
+		const int since = serverTime - nwGlide[g].rawTime, gap = NW_ImpGap();
+
+		VectorCopy( nwGlide[g].raw, nwGlide[g].prevRaw );
+		NW_GlidePos( g, serverTime, nwGlide[g].from );
+		VectorCopy( es->pos.trBase, nwGlide[g].to );
+		VectorCopy( es->pos.trBase, nwGlide[g].raw );
+		nwGlide[g].start = serverTime;
+		// as long as it took since the last one, the next as far behind; after a while
+		// standing, the server's pace
+		nwGlide[g].dur = since > 0 && since < gap * 2 + 500 ? since : gap;
+		nwGlide[g].rawTime = serverTime;
+		// too far for the time: a real teleport
+		if ( Distance( nwGlide[g].from, nwGlide[g].to ) > NW_GLIDE_FAST * nwGlide[g].dur * 0.001f )
+			nwGlide[g].dur = 0;
+		if ( NW_ImpDebug() )
+			Com_Printf( "npcglide %i: teleported %.0f units, %i ms since the last: glides %i ms\n", es->number,
+				Distance( nwGlide[g].from, nwGlide[g].to ), since, nwGlide[g].dur );
+	}
+	NW_GlidePos( g, serverTime, pos );
+	VectorClear( velocity );
+	yaw = es->apos.trBase[YAW];
+	if ( nwGlide[g].dur > 0 && serverTime < nwGlide[g].start + nwGlide[g].dur ) {
+		VectorSubtract( nwGlide[g].to, nwGlide[g].from, velocity );
+		velocity[2] = 0.0f;
+		VectorScale( velocity, 1000.0f / nwGlide[g].dur, velocity );
+		VectorCopy( velocity, nwGlide[g].lastVelocity );
+		if ( VectorLength( velocity ) > 1.0f )
+			yaw = NW_Yaw( nwGlide[g].from, nwGlide[g].to );
+	} else if ( nwGlide[g].dur > 0 && serverTime < nwGlide[g].start + nwGlide[g].dur + NW_GLIDE_KEEP_MS ) {
+		// there, the next teleport about due: still walking, not stopping between each
+		VectorCopy( nwGlide[g].lastVelocity, velocity );
+		if ( VectorLength( velocity ) > 1.0f )
+			yaw = NW_Yaw( nwGlide[g].from, nwGlide[g].to );
+	} else if ( nwGlide[g].until && serverTime > nwGlide[g].until ) {
+		// let go, and still: the server's from now
+		nwGlide[g].active = qfalse;
+		NW_LetGo( nwGlide[g].num, &nwGlide[g].fx, nwGlide[g].prevRaw, nwGlide[g].raw, serverTime );
+		return qtrue;
+	}
+	if ( NW_Ground( pos, &ground ) )
+		pos[2] = ground + nwGlide[g].groundOfs;
+	NW_Place( es, pos, yaw, velocity, serverTime );
+	return qtrue;
+}
+
+// cmd:npc/puppet/<number>/on|off
+void CL_NpcWalk_PuppetHook( char **argv, int argc ) {
+	int num, slot = -1;
+
+	if ( argc < 2 || !Q_isanumber( argv[0] ) ) {
+		Com_DPrintf( "RP hook: npc puppet wants the NPC's number, and on or off\n" );
+		return;
+	}
+	num = atoi( argv[0] );
+	if ( NW_ImpDebug() )
+		Com_Printf( "npcglide %i: hook %s%s\n", num, argv[1], nwImp.active && nwImp.num == num ? " (mine, not glided)" : "" );
+	for ( int g = 0; g < NW_MAX_GLIDES; g++ ) {
+		if ( nwGlide[g].active && nwGlide[g].num == num ) {
+			if ( !Q_stricmp( argv[1], "off" ) )
+				nwGlide[g].until = cl.serverTime + NW_ImpGap() * 2 + NW_GLIDE_KEEP_MS;
+			else
+				nwGlide[g].until = 0;
+			return;
+		}
+		if ( !nwGlide[g].active && slot < 0 )
+			slot = g;
+	}
+	// this client's own is moved here, not glided
+	if ( Q_stricmp( argv[1], "on" ) || slot < 0 || ( nwImp.active && nwImp.num == num ) )
+		return;
+	memset( &nwGlide[slot], 0, sizeof( nwGlide[slot] ) );
+	nwGlide[slot].active = qtrue;
+	nwGlide[slot].num = num;
+}
+
+// a teleport's flash or cloak sound at an NPC impersonated, or by it
+static qboolean NW_ImpNear( int num, const vec3_t org ) {
+	if ( nwImp.active ) {
+		if ( nwImp.num == num || Distance( org, nwImp.realPos ) < NW_QUIET_NEAR || Distance( org, nwImp.sentPos ) < NW_QUIET_NEAR )
+			return qtrue;
+		for ( int i = 0; i < nwImp.numSpots; i++ ) {
+			if ( Distance( org, nwImp.spots[i] ) < NW_QUIET_NEAR )
+				return qtrue;
+		}
+	}
+	for ( int g = 0; g < NW_MAX_GLIDES; g++ ) {
+		if ( nwGlide[g].active && ( nwGlide[g].num == num || Distance( org, nwGlide[g].from ) < NW_QUIET_NEAR
+			|| Distance( org, nwGlide[g].raw ) < NW_QUIET_NEAR || Distance( org, nwGlide[g].prevRaw ) < NW_QUIET_NEAR ) )
+			return qtrue;
+	}
+	for ( int i = 0; i < NW_MAX_GLIDES + 1; i++ ) {
+		if ( nwLetGo[i].until && cl.serverTime < nwLetGo[i].until && ( nwLetGo[i].num == num
+			|| Distance( org, nwLetGo[i].spots[0] ) < NW_QUIET_NEAR || Distance( org, nwLetGo[i].spots[1] ) < NW_QUIET_NEAR ) )
+			return qtrue;
+	}
+	return qfalse;
+}
+
 // the sender teleports the real NPC to each spot it gets to; the flood protection may make it
 // skip one, never the last
 void CL_NpcWalk_Frame( void ) {
+	// what the player said goes first, then the impersonated one
+	if ( NW_ReleaseHeld() || NW_ImpFrame() )
+		return;
 	// the list read since the walk asked for it: the name is in it, or it isn't in the map
 	if ( nwPending.time && cls.state == CA_ACTIVE
 		&& ( CL_NpcManager_ListTime() > nwPending.time || cls.realtime - nwPending.time > NW_PENDING_MS ) ) {
@@ -701,7 +1341,7 @@ void CL_NpcWalk_Frame( void ) {
 	}
 	// one teleport at a time, the walks taking turns: the flood protection counts the
 	// client's commands, not each NPC's
-	if ( cls.realtime < nwNextSend || cls.state != CA_ACTIVE )
+	if ( !NW_CanSend() )
 		return;
 	for ( int n = 0; n < NW_MAX_WALKS; n++ ) {
 		nwWalk_t *w = &nw[( nwTurn + n ) % NW_MAX_WALKS];
@@ -720,6 +1360,14 @@ void CL_NpcWalk_Frame( void ) {
 }
 
 void CL_NpcWalk_Reset( void ) {
+	// a map change or a crash while impersonating: the player's own view back
+	if ( nwImp.active && !nwImp.ending )
+		VectorCopy( nwImp.frozen, cl.viewangles );
+	memset( &nwImp, 0, sizeof( nwImp ) );
+	memset( nwGlide, 0, sizeof( nwGlide ) );
+	memset( nwLetGo, 0, sizeof( nwLetGo ) );
+	nwHeld.num = 0;
+	NW_ImpThirdPerson( qfalse );
 	memset( nw, 0, sizeof( nw ) );
 	memset( nwQuiet, 0, sizeof( nwQuiet ) );
 	memset( nwSeen, 0, sizeof( nwSeen ) );
