@@ -1861,6 +1861,14 @@ void RE_Shutdown( qboolean destroyWindow, qboolean restarting ) {
 		// Release the scene texture.
 		qglDeleteTextures( 1, &tr.sceneImage );
 
+		// Release the depth of field's.
+		qglDeleteTextures( 1, &tr.dofDepthImage );
+		if ( tr.dofVtxShader )
+			qglDeleteProgramsARB( 1, &tr.dofVtxShader );
+		if ( tr.dofPxShader )
+			qglDeleteProgramsARB( 1, &tr.dofPxShader );
+		tr.dofVtxShader = tr.dofPxShader = 0;
+
 		qglDeleteTextures(1, &tr.gammaCorrectLUTImage);
 
 		// Release the blur texture.
@@ -2159,6 +2167,7 @@ Q_EXPORT refexport_t* QDECL GetRefAPI( int apiVersion, refimport_t *rimp ) {
 	re.ext.Font_StrLenPixels				= RE_Font_StrLenPixelsNew;
 	re.ext.G2API_GetSkins					= G2API_GetSkins;
 	re.ext.HideWorldTriangles				= RE_HideWorldTriangles;
+	re.ext.SetDepthOfField					= RE_SetDepthOfField;
 	re.ext.WorldPieceModel					= RE_WorldPieceModel;
 
 	return &re;

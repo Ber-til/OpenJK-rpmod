@@ -250,6 +250,10 @@ typedef struct refexport_s {
 		// drawn as the world draws them. Its handle lasts until the next map
 		void				(*HideWorldTriangles)					( const int *surfaces, const int *triangles, int count );
 		qhandle_t			(*WorldPieceModel)						( const int *surfaces, const int *triangles, int count, const vec3_t origin );
+		// the client's cinematic camera: the next world scene rendered is sharp this far from the
+		// camera, give or take range, and blurred away from it, up to blur pixels on a 480 high
+		// screen; blur 0 is none. Holds until changed
+		void				(*SetDepthOfField)						( float focus, float range, float blur );
 	} ext;
 
 } refexport_t;

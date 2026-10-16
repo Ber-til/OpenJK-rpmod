@@ -97,6 +97,7 @@ typedef enum {
 	ST_A_NPC_SPAWN,
 	ST_A_NPC_TELE,
 	ST_A_NPC_CMD,
+	ST_A_NPC_WALK,
 	ST_A_MODEL,
 	ST_A_EFFECT,
 	ST_A_SCREEN,
@@ -176,6 +177,11 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ "Target", ST_K_TEXT, "", NULL },
 		{ "Command", ST_K_CHOICE, "kill", ST_NPC_COMMANDS },
 		{ "Value", ST_K_TEXT, "", NULL } } },
+	{ "npcwalk", "Walk NPC", "NPCs", "Walks the NPCs with this targetname (or number, or several with commas between, keeping their places) along a route made in the NPC manager's Walk row, once or round and round. Everyone with this client sees them walk; the others see them hop from spot to spot.", -1, -1, 4, {
+		{ "Target", ST_K_TEXT, "", NULL },
+		{ "Route", ST_K_TEXT, "", NULL },
+		{ "Pace", ST_K_CHOICE, "walk", "walk|run" },
+		{ "Loop", ST_K_CHOICE, "no", "no|yes" } } },
 	{ "model", "Place model", "World", "Places a model at the spot with rpmodel add, as the model manager does. Scale is in percent.", 1, 5, 9, {
 		{ "Model", ST_K_TEXT, "", NULL },
 		{ "X", ST_K_NUMBER, "", NULL },
@@ -217,9 +223,12 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 	{ "cinstart", "Start cinematic", "Cinematic", "Takes everyone with this client from their own view to the cinematic camera, starting where each of them looks from. Camera shots start one too. Players can leave it with /cincam stop.", -1, -1, 2, {
 		{ "HUD", ST_K_CHOICE, "hide", "hide|show" },
 		{ "Bars", ST_K_CHOICE, "on", "on|off" } } },
-	{ "camshot", "Camera shot", "Cinematic", "Plays a shot made in the camera editor: Edit shot opens it there (or /cincam edit <name>). Fly where it should go, add spots, see the trail and preview it. Waits for the shot to end unless told not to.", -1, -1, 2, {
+	{ "camshot", "Camera shot", "Cinematic", "Plays a shot made in the camera editor: Edit shot opens it there (or /cincam edit <name>). Fly where it should go, add spots, see the trail and preview it; its focus and fades are there too. Waits for the shot to end unless told not to. An NPC can walk a route while it plays: give its targetname and the route.", -1, -1, 5, {
 		{ "Shot", ST_K_TEXT, "", NULL },
-		{ "Wait", ST_K_CHOICE, "until it ends", "until it ends|no" } } },
+		{ "Wait", ST_K_CHOICE, "until it ends", "until it ends|no" },
+		{ "NPC walks", ST_K_TEXT, "", NULL },
+		{ "Route", ST_K_TEXT, "", NULL },
+		{ "Pace", ST_K_CHOICE, "walk", "walk|run" } } },
 	{ "camfov", "Camera zoom", "Cinematic", "Zooms to the FOV (like cg_fov: smaller is closer) over the seconds; 0 seconds is at once.", -1, -1, 2, {
 		{ "FOV", ST_K_NUMBER, "40", NULL },
 		{ "Seconds", ST_K_NUMBER, "2", NULL } } },
@@ -254,7 +263,8 @@ typedef enum {
 typedef enum {
 	ST_CHOOSE_TRIGGER,
 	ST_CHOOSE_DOOR,
-	ST_CHOOSE_EFFECT
+	ST_CHOOSE_EFFECT,
+	ST_CHOOSE_ROUTE
 } stChoose_t;
 
 #define ST_MAX_PEOPLE	128
@@ -613,6 +623,7 @@ static qboolean ST_HasEmote( const stStep_t *s ) {
 static qboolean ST_Experimental( stAction_t action ) {
 	switch ( action ) {
 	case ST_A_NPC_TALK:
+	case ST_A_NPC_WALK:
 	case ST_A_OBJECTIVE:
 	case ST_A_CIN_START:
 	case ST_A_CAM_SHOT:
@@ -633,10 +644,41 @@ static qboolean ST_CanAdd( stAction_t action ) {
 	return qfalse;
 }
 
-// what a step sends after its command, NULL if nothing
-static const char *ST_StepExtra( const stStep_t *s ) {
-	static char cmd[MAX_STRING_CHARS];
+// the NPC manager's walk along a route, or why it can't; NULL either way when nothing walks
+static const char *ST_WalkCommand( const char *target, const char *route, const char *pace, qboolean loop, const char **error ) {
+	static char cmd[MAX_STRING_CHARS], why[MAX_STRING_CHARS];
+	vec3_t pts[NW_MAX_ROUTE_POINTS];
+	float speed;
 
+	*error = NULL;
+	if ( !target[0] ) {
+		*error = "Type the NPC's targetname or number";
+		return NULL;
+	}
+	if ( !route[0] ) {
+		*error = "Pick the route it walks";
+		return NULL;
+	}
+	if ( CL_NpcWalk_LoadRoute( route, pts, NW_MAX_ROUTE_POINTS, &speed ) <= 0 ) {
+		Com_sprintf( why, sizeof( why ), "No route called %s: make it in the NPC manager's Walk row", route );
+		*error = why;
+		return NULL;
+	}
+	Com_sprintf( cmd, sizeof( cmd ), "npcmanager walk %s %s %s%s", target, route, pace, loop ? " loop" : "" );
+	return cmd;
+}
+
+// what a step sends after its command, NULL if nothing; *local if it's a console command
+static const char *ST_StepExtra( const stStep_t *s, qboolean *local ) {
+	static char cmd[MAX_STRING_CHARS];
+	const char *error;
+
+	*local = qfalse;
+	// the NPC walking while the shot plays
+	if ( s->action == ST_A_CAM_SHOT && s->values[2][0] ) {
+		*local = qtrue;
+		return ST_WalkCommand( s->values[2], s->values[3], s->values[4], qfalse, &error );
+	}
 	if ( s->action != ST_A_NPC_TALK || !ST_HasEmote( s ) )
 		return NULL;
 	Com_sprintf( cmd, sizeof( cmd ), "npc emote %s %s", s->values[3], s->values[0] );
@@ -731,6 +773,9 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 			*error = "Name the shot, then Edit shot to make it";
 			return NULL;
 		}
+		// the NPC walking in it, if one does
+		if ( v[2][0] && !ST_WalkCommand( v[2], v[3], v[4], qfalse, error ) )
+			return NULL;
 		if ( !CL_RpCinematic_ShotHook( v[0], hook, sizeof( hook ), NULL ) ) {
 			Com_sprintf( why, sizeof( why ), "No shot called %s yet: Edit shot makes it", v[0] );
 			*error = why;
@@ -779,6 +824,14 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 			return NULL;
 		}
 		Com_sprintf( cmd, sizeof( cmd ), "npc tele %s %i %s", ST_PosArgs( s ), ST_Round( AngleNormalize360( ST_Number( s, 4 ) ) ), v[0] );
+		return cmd;
+
+	case ST_A_NPC_WALK:
+		value = ST_WalkCommand( v[0], v[1], v[2], (qboolean)!Q_stricmp( v[3], "yes" ), error );
+		if ( !value )
+			return NULL;
+		*local = qtrue;
+		Q_strncpyz( cmd, value, sizeof( cmd ) );
 		return cmd;
 
 	case ST_A_NPC_CMD:
@@ -1521,7 +1574,8 @@ static qboolean ST_Play( stRun_t *r, stStep_t *steps, int numSteps, const char *
 		Q_strncpyz( prefix, "Storyteller: ", sizeof( prefix ) );
 
 	while ( r->running ) {
-		if ( cls.realtime < r->shotUntil )
+		// a shot plays out, though what goes with it still goes
+		if ( cls.realtime < r->shotUntil && !r->extraDue )
 			return qfalse;
 		if ( r->pc >= numSteps )
 			return qtrue;
@@ -1565,14 +1619,21 @@ static qboolean ST_Play( stRun_t *r, stStep_t *steps, int numSteps, const char *
 			continue;
 
 		default:
-			if ( cls.realtime < st.nextSend )
+			// the server's flood protection: any command this client sent counts, an NPC
+			// walk's or an impersonation's too
+			if ( cls.realtime < st.nextSend || cls.realtime - CL_LastCommandTime() < ST_CommandGap() )
 				return qfalse;
 			if ( r->extraDue ) {
 				r->extraDue = qfalse;
-				cmd = ST_StepExtra( s );
+				cmd = ST_StepExtra( s, &local );
 				if ( cmd ) {
 					Com_Printf( S_COLOR_GREEN "%s" S_COLOR_WHITE "%s\n", prefix, cmd );
-					CL_AddReliableCommand( cmd, qfalse );
+					if ( local ) {
+						Cbuf_AddText( cmd );
+						Cbuf_AddText( "\n" );
+					} else {
+						CL_AddReliableCommand( cmd, qfalse );
+					}
 					r->sent++;
 					st.nextSend = cls.realtime + ST_CommandGap();
 				}
@@ -1602,7 +1663,7 @@ static qboolean ST_Play( stRun_t *r, stStep_t *steps, int numSteps, const char *
 				if ( CL_RpCinematic_ShotHook( s->values[0], hook, sizeof( hook ), &ms ) )
 					r->shotUntil = cls.realtime + ms;
 			}
-			if ( ST_StepExtra( s ) )
+			if ( ST_StepExtra( s, &local ) )
 				r->extraDue = qtrue;
 			else
 				r->pc++;
@@ -2277,6 +2338,20 @@ static void ST_StepFromCommand( const char *cmd, stStep_t *s ) {
 	}
 	if ( argc >= 3 && !Q_stricmp( argv[0], "npc" ) && ST_NpcStep( argv, argc, s ) )
 		return;
+	// npcmanager walk <target> <route> [walk|run] [loop]
+	if ( argc >= 4 && argc <= 6 && !Q_stricmp( argv[0], "npcmanager" ) && !Q_stricmp( argv[1], "walk" ) && Q_stricmp( argv[3], "stop" ) ) {
+		s->action = ST_A_NPC_WALK;
+		ST_SetDefaults( s );
+		Q_strncpyz( s->values[0], argv[2], ST_VALUE_LEN );
+		Q_strncpyz( s->values[1], argv[3], ST_VALUE_LEN );
+		for ( int i = 4; i < argc; i++ ) {
+			if ( !Q_stricmp( argv[i], "run" ) )
+				Q_strncpyz( s->values[2], "run", ST_VALUE_LEN );
+			else if ( !Q_stricmp( argv[i], "loop" ) )
+				Q_strncpyz( s->values[3], "yes", ST_VALUE_LEN );
+		}
+		return;
+	}
 	if ( ST_TalkStep( cmd, s ) )
 		return;
 	// rpsound once|add|local <sound> [all | -1 | <player> | <x y z>]
@@ -3100,7 +3175,13 @@ static void ST_DrawEdit( void ) {
 		y += ST_CTRL_H + 6;
 	}
 
-	if ( s->action == ST_A_NPC_SPAWN || s->action == ST_A_NPC_TELE || s->action == ST_A_NPC_CMD ) {
+	if ( s->action == ST_A_NPC_WALK || ( s->action == ST_A_CAM_SHOT && s->values[2][0] ) ) {
+		if ( ST_Button( ST_EDIT_X, y, ST_EDIT_W, "Pick the route", qfalse, qtrue ) )
+			ST_OpenChoose( ST_CHOOSE_ROUTE );
+		y += ST_CTRL_H + 6;
+	}
+
+	if ( s->action == ST_A_NPC_SPAWN || s->action == ST_A_NPC_TELE || s->action == ST_A_NPC_CMD || s->action == ST_A_NPC_WALK ) {
 		if ( ST_Button( ST_EDIT_X, y, ST_EDIT_W, s->action == ST_A_NPC_SPAWN ? "Place it with the NPC manager" : "Pick it in the NPC manager", qfalse, qtrue ) ) {
 			ST_StartPick( s->action == ST_A_NPC_SPAWN ? ST_PICK_NPC_SPAWN : ST_PICK_NPC_MANAGE );
 			return;
@@ -3135,10 +3216,10 @@ static void ST_DrawEdit( void ) {
 		int lines;
 		ST_Text( ST_EDIT_X, y, local ? "Runs:" : "Sends:", stDim );
 		lines = ST_TextWrappedEx( ST_EDIT_X, y + ST_ROW_H, ST_EDIT_W, cmd, stWhite, 5, qtrue );
-		cmd = ST_StepExtra( s );
+		cmd = ST_StepExtra( s, &local );
 		if ( cmd ) {
 			y += ST_ROW_H * ( lines + 1 ) + 4;
-			ST_Text( ST_EDIT_X, y, "Then:", stDim );
+			ST_Text( ST_EDIT_X, y, s->action == ST_A_CAM_SHOT ? "And runs:" : "Then:", stDim );
 			ST_TextWrappedEx( ST_EDIT_X, y + ST_ROW_H, ST_EDIT_W, cmd, stWhite, 2, qtrue );
 		}
 	} else if ( s->action == ST_A_TRIGGER ) {
@@ -3200,6 +3281,10 @@ static void ST_OpenArmed( void ) {
 		st.armTimes = 2;
 }
 
+#define ST_MAX_ROUTES		256
+static char stRoutes[ST_MAX_ROUTES][MAX_QPATH];
+static int stNumRoutes;
+
 static void ST_OpenChoose( stChoose_t kind ) {
 	ST_ScanMap();
 	st.chooseKind = kind;
@@ -3209,6 +3294,17 @@ static void ST_OpenChoose( stChoose_t kind ) {
 	if ( kind == ST_CHOOSE_EFFECT ) {
 		CL_EffectManager_RequestList();
 		st.nextSend = Q_max( st.nextSend, cls.realtime + ST_CommandGap() );
+	}
+	// the routes saved, read once for the popup
+	if ( kind == ST_CHOOSE_ROUTE ) {
+		char **files;
+		int count;
+
+		files = FS_ListFiles( "npcmanager/routes", ".route", &count );
+		stNumRoutes = 0;
+		for ( int i = 0; i < count && stNumRoutes < ST_MAX_ROUTES; i++ )
+			COM_StripExtension( files[i], stRoutes[stNumRoutes++], sizeof( stRoutes[0] ) );
+		FS_FreeFileList( files );
 	}
 	st.popup = ST_POPUP_CHOOSE;
 	st.focus = ST_F_NONE;
@@ -3225,6 +3321,11 @@ static int ST_ChooseRows( void ) {
 			stChooseRows[count++] = i;
 		return count;
 	}
+	if ( st.chooseKind == ST_CHOOSE_ROUTE ) {
+		for ( int i = 0; i < stNumRoutes && count < ST_MAX_MAPENTS; i++ )
+			stChooseRows[count++] = i;
+		return count;
+	}
 	for ( int i = 0; i < stMap.count; i++ ) {
 		if ( stMap.ents[i].trigger == (qboolean)( st.chooseKind == ST_CHOOSE_TRIGGER ) )
 			stChooseRows[count++] = i;
@@ -3233,6 +3334,10 @@ static int ST_ChooseRows( void ) {
 }
 
 static void ST_DrawChooseRow( int row, float x, float y, float w ) {
+	if ( st.chooseKind == ST_CHOOSE_ROUTE ) {
+		ST_TextClipped( x, y, w, stRoutes[stChooseRows[row]], stWhite );
+		return;
+	}
 	if ( st.chooseKind == ST_CHOOSE_EFFECT ) {
 		const char *path;
 		vec3_t org;
@@ -3255,6 +3360,14 @@ static void ST_DrawChooseRow( int row, float x, float y, float w ) {
 static void ST_ChooseApply( int row ) {
 	stStep_t *s = ST_SelectedStep();
 
+	// a route, for the walk on its own or in a shot
+	if ( s && st.chooseKind == ST_CHOOSE_ROUTE ) {
+		if ( s->action == ST_A_NPC_WALK || s->action == ST_A_CAM_SHOT ) {
+			Q_strncpyz( s->values[s->action == ST_A_NPC_WALK ? 1 : 3], stRoutes[stChooseRows[row]], ST_VALUE_LEN );
+			ST_Changed();
+		}
+		return;
+	}
 	if ( !s || s->action != ST_A_TRIGGER )
 		return;
 	if ( st.chooseKind == ST_CHOOSE_EFFECT ) {
@@ -3274,7 +3387,7 @@ static void ST_ChooseApply( int row ) {
 }
 
 static void ST_DrawChoosePopup( void ) {
-	static const char *titles[] = { "Pick a trigger", "Pick a door or button", "Pick an effect" };
+	static const char *titles[] = { "Pick a trigger", "Pick a door or button", "Pick an effect", "Pick a route" };
 	const float x = ST_POPUP_X, y = 80, w = ST_POPUP_W, h = 320;
 	const int count = ST_ChooseRows();
 	int picked = -1;
@@ -3282,7 +3395,9 @@ static void ST_DrawChoosePopup( void ) {
 	ST_Box( x, y, w, h, stPanelOpaque );
 	ST_Text( x + 8, y + 8, va( "%s" S_COLOR_GREY "  %i", titles[st.chooseKind], count ), stWhite );
 	if ( !count ) {
-		ST_TextWrapped( x + 8, y + 30, w - 16, st.chooseKind == ST_CHOOSE_EFFECT
+		ST_TextWrapped( x + 8, y + 30, w - 16, st.chooseKind == ST_CHOOSE_ROUTE
+			? "No routes saved yet: make one in the NPC manager, Manage tab, Walk row, Route on map."
+			: st.chooseKind == ST_CHOOSE_EFFECT
 			? "Asking the server for the map's effects... If none come, put some there with the effect manager."
 			: st.chooseKind == ST_CHOOSE_TRIGGER ? "This map has no triggers." : "This map has no doors or buttons.", stDim, 3 );
 	} else {

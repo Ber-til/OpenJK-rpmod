@@ -122,6 +122,78 @@ TEX result.color, r0, texture[1], 3D;\
 END";
 /***********************************************************************************************************/
 
+// Depth of field: the scene (texture 0) blurred by how far each pixel's depth (texture 1) is from
+// the focus. local[0] is the focus, 1 / the range sharp either side of it, and the blur's radius in
+// pixels; local[1] is 2 * near * far, far + near and far - near, to make the depth a distance again.
+// Fifteen taps on two rings, as far out as the pixel is out of focus.
+static const char *dofVtxShader =
+"!!ARBvp1.0\
+MOV result.position, vertex.position;\
+MOV result.texcoord[0], vertex.texcoord[0];\
+END";
+
+static const char *dofPxShader =
+"!!ARBfp1.0\
+OPTION ARB_precision_hint_fastest;\
+PARAM dof = program.local[0];\
+PARAM clip = program.local[1];\
+TEMP d, tc, c, sum;\
+TEX d, fragment.texcoord[0], texture[1], RECT;\
+MAD d.x, d.x, 2.0, -1.0;\
+MAD d.y, -d.x, clip.z, clip.y;\
+RCP d.y, d.y;\
+MUL d.x, clip.x, d.y;\
+SUB d.x, d.x, dof.x;\
+ABS d.x, d.x;\
+MUL_SAT d.x, d.x, dof.y;\
+MUL d.x, d.x, dof.z;\
+TEX sum, fragment.texcoord[0], texture[0], RECT;\
+MAD tc, d.x, { 0.5, 0.0, 0.0, 0.0 }, fragment.texcoord[0];\
+TEX c, tc, texture[0], RECT;\
+ADD sum, sum, c;\
+MAD tc, d.x, { 0.25, 0.433, 0.0, 0.0 }, fragment.texcoord[0];\
+TEX c, tc, texture[0], RECT;\
+ADD sum, sum, c;\
+MAD tc, d.x, { -0.25, 0.433, 0.0, 0.0 }, fragment.texcoord[0];\
+TEX c, tc, texture[0], RECT;\
+ADD sum, sum, c;\
+MAD tc, d.x, { -0.5, 0.0, 0.0, 0.0 }, fragment.texcoord[0];\
+TEX c, tc, texture[0], RECT;\
+ADD sum, sum, c;\
+MAD tc, d.x, { -0.25, -0.433, 0.0, 0.0 }, fragment.texcoord[0];\
+TEX c, tc, texture[0], RECT;\
+ADD sum, sum, c;\
+MAD tc, d.x, { 0.25, -0.433, 0.0, 0.0 }, fragment.texcoord[0];\
+TEX c, tc, texture[0], RECT;\
+ADD sum, sum, c;\
+MAD tc, d.x, { 0.924, 0.383, 0.0, 0.0 }, fragment.texcoord[0];\
+TEX c, tc, texture[0], RECT;\
+ADD sum, sum, c;\
+MAD tc, d.x, { 0.383, 0.924, 0.0, 0.0 }, fragment.texcoord[0];\
+TEX c, tc, texture[0], RECT;\
+ADD sum, sum, c;\
+MAD tc, d.x, { -0.383, 0.924, 0.0, 0.0 }, fragment.texcoord[0];\
+TEX c, tc, texture[0], RECT;\
+ADD sum, sum, c;\
+MAD tc, d.x, { -0.924, 0.383, 0.0, 0.0 }, fragment.texcoord[0];\
+TEX c, tc, texture[0], RECT;\
+ADD sum, sum, c;\
+MAD tc, d.x, { -0.924, -0.383, 0.0, 0.0 }, fragment.texcoord[0];\
+TEX c, tc, texture[0], RECT;\
+ADD sum, sum, c;\
+MAD tc, d.x, { -0.383, -0.924, 0.0, 0.0 }, fragment.texcoord[0];\
+TEX c, tc, texture[0], RECT;\
+ADD sum, sum, c;\
+MAD tc, d.x, { 0.383, -0.924, 0.0, 0.0 }, fragment.texcoord[0];\
+TEX c, tc, texture[0], RECT;\
+ADD sum, sum, c;\
+MAD tc, d.x, { 0.924, -0.383, 0.0, 0.0 }, fragment.texcoord[0];\
+TEX c, tc, texture[0], RECT;\
+ADD sum, sum, c;\
+MUL result.color, sum, 0.0666667;\
+END";
+/***********************************************************************************************************/
+
 #define GL_PROGRAM_ERROR_STRING_ARB						0x8874
 #define GL_PROGRAM_ERROR_POSITION_ARB					0x864B
 
@@ -228,5 +300,24 @@ void ARB_InitGPUShaders(void) {
 			Com_Printf(S_COLOR_RED "Failed to compile gamma correction pixel shader. Error at character %d\n", errorChar);
 			glConfigExt.doGammaCorrectionWithShaders = qfalse;
 		}
+	}
+
+	// Depth of field, for the cinematic camera; without it, there's none
+	qglGenProgramsARB( 1, &tr.dofVtxShader );
+	qglBindProgramARB( GL_VERTEX_PROGRAM_ARB, tr.dofVtxShader );
+	qglProgramStringARB( GL_VERTEX_PROGRAM_ARB, GL_PROGRAM_FORMAT_ASCII_ARB, strlen( dofVtxShader ), dofVtxShader );
+	qglGetIntegerv( GL_PROGRAM_ERROR_POSITION_ARB, &errorChar );
+	if ( errorChar == -1 ) {
+		qglGenProgramsARB( 1, &tr.dofPxShader );
+		qglBindProgramARB( GL_FRAGMENT_PROGRAM_ARB, tr.dofPxShader );
+		qglProgramStringARB( GL_FRAGMENT_PROGRAM_ARB, GL_PROGRAM_FORMAT_ASCII_ARB, strlen( dofPxShader ), dofPxShader );
+		qglGetIntegerv( GL_PROGRAM_ERROR_POSITION_ARB, &errorChar );
+	}
+	if ( errorChar != -1 ) {
+		Com_Printf( S_COLOR_YELLOW "Depth of field unavailable: its shader didn't compile (character %d)\n", errorChar );
+		if ( tr.dofPxShader )
+			qglDeleteProgramsARB( 1, &tr.dofPxShader );
+		qglDeleteProgramsARB( 1, &tr.dofVtxShader );
+		tr.dofVtxShader = tr.dofPxShader = 0;
 	}
 }

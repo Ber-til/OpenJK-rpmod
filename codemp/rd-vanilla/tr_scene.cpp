@@ -394,6 +394,12 @@ to handle mirrors,
 */
 void RE_RenderWorldEffects(void);
 void RE_RenderAutoMap(void);
+void RE_SetDepthOfField( float focus, float range, float blur ) {
+	tr.dofNext[0] = focus;
+	tr.dofNext[1] = range > 1.0f ? range : 1.0f;
+	tr.dofNext[2] = blur > 0.0f ? blur : 0.0f;
+}
+
 void RE_RenderScene( const refdef_t *fd ) {
 	viewParms_t		parms;
 	int				startTime;
@@ -460,6 +466,15 @@ void RE_RenderScene( const refdef_t *fd ) {
 		tr.refdef.frametime = 0;
 	}
 	tr.refdef.rdflags = fd->rdflags;
+
+	// the depth of field the client asked for, on the world's main view only
+	if ( !( fd->rdflags & ( RDF_NOWORLDMODEL | RDF_SKYBOXPORTAL ) ) ) {
+		tr.refdef.dofFocus = tr.dofNext[0];
+		tr.refdef.dofRange = tr.dofNext[1];
+		tr.refdef.dofBlur = tr.dofNext[2];
+	} else {
+		tr.refdef.dofBlur = 0.0f;
+	}
 
 	// copy the areamask data over and note if it has changed, which
 	// will force a reset of the visible leafs even if the view hasn't moved

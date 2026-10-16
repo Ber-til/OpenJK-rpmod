@@ -34,6 +34,14 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 //   cmd:cin/move/<seconds>[/linear]/<spot>[/<seconds>/<spot>...]
 //                                   the same from where the camera is; spots without their
 //                                   own seconds share the first out
+//                                   Before the spots, a path or orbit can also have
+//                                   dof <focus> <range> <blur>: what's focus away is sharp,
+//                                   give or take range, the rest blurred up to blur (1-10);
+//                                   focus 0 is whatever the camera looks at
+//                                   in|out <cut|fade|left|right|top|bottom> <seconds> <r g b>:
+//                                   the shot fades in from the colour, or is wiped in from
+//                                   that side, and out to it at its end; the screen stays
+//                                   that colour after an out until the next shot
 //   cmd:cin/cut/<spot>              the camera jumps there
 //   cmd:cin/orbit/<seconds>[/linear]/<x y z>/<radius>/<height>/<from yaw>/<degrees>[/<fov>[/<end fov>]]
 //                                   circles the point looking at it, from the yaw it is
@@ -75,9 +83,43 @@ typedef struct {
 	int		ms;			// from the key before
 } rcKey_t;
 
+// how a shot comes in or goes: cut, faded from or to a colour, or wiped across from a side
+typedef enum {
+	RC_TR_CUT,
+	RC_TR_FADE,
+	RC_TR_LEFT,
+	RC_TR_RIGHT,
+	RC_TR_TOP,
+	RC_TR_BOTTOM,
+	RC_NUM_TRANSITIONS
+} rcTransType_t;
+
+static const char *rcTransWords[RC_NUM_TRANSITIONS] = { "cut", "fade", "left", "right", "top", "bottom" };
+
+typedef struct {
+	int			type;			// rcTransType_t
+	int			ms;
+	byte		color[3];
+} rcTrans_t;
+
+#define RC_DOF_RANGE		128.0f		// what a new depth of field keeps sharp, either side
+#define RC_DOF_BLUR			4.0f
+#define RC_DOF_MAX_BLUR		10.0f
+#define RC_DOF_FOCUS_RATE	6.0f		// an automatic focus follows what's looked at this quickly
+#define RC_TRANS_MS			1000
+#define RC_WIPE_SOFT		0.06f		// a wipe's edge, soft over this much of the screen
+
 typedef struct {
 	qboolean	orbit;
 	qboolean	linear;
+
+	// depth of field
+	qboolean	dof;
+	float		dofFocus;		// 0 is what the camera looks at
+	float		dofRange, dofBlur;
+
+	// coming in, going out
+	rcTrans_t	in, out;
 
 	// a path
 	rcKey_t		keys[RC_MAX_KEYS + 1];		// a move's keys[0] is where it set off from
@@ -115,6 +157,15 @@ typedef struct {
 	float		fovFrom, fovTo;
 	int			fovStart, fovDuration;
 
+	// the last shot's transitions, its out holding after it; qfalse after a cut
+	qboolean	trans;
+
+	// the depth of field, until another shot; dofNow is where an automatic one has got to
+	qboolean	dof;
+	float		dofFocus, dofRange, dofBlur;
+	float		dofNow;
+	int			dofTime;
+
 	// the bars, on their own as well
 	qboolean	bars;
 	float		barsFrom;
@@ -132,6 +183,9 @@ static cvar_t *rpc_cinematics;
 static cvar_t *rpc_cinThirdPerson;		// 1 while cg_thirdPerson is ours to put back to 0, a crash included
 
 static qboolean CE_Open( void );
+static qboolean RC_DepthOfField( const vec3_t org, const vec3_t ang, qboolean dof, float focus, float *now, int *time,
+	float range, float blur );
+static void RC_NoDepthOfField( void );
 
 // the cgame only draws the player's own body in third person; the camera is ours either way
 static void RC_ThirdPerson( qboolean on ) {
@@ -283,6 +337,66 @@ static qboolean RC_IsWord( const char *s ) {
 	return (qboolean)( isalpha( (unsigned char)s[0] ) != 0 );
 }
 
+// a shot's option word: linear, look, dof, in, out; qtrue if it was one of them
+static qboolean RC_ParseOption( const char *p, rcShot_t *s ) {
+	if ( !Q_stricmp( p, "linear" ) ) {
+		s->linear = qtrue;
+		return qtrue;
+	}
+	if ( !Q_stricmpn( p, "look ", 5 ) ) {
+		if ( sscanf( p + 5, "%f %f %f", &s->lookAt[0], &s->lookAt[1], &s->lookAt[2] ) == 3 )
+			s->look = qtrue;
+		return qtrue;
+	}
+	if ( !Q_stricmpn( p, "dof ", 4 ) ) {
+		float v[3];
+
+		if ( sscanf( p + 4, "%f %f %f", &v[0], &v[1], &v[2] ) == 3 && v[2] > 0.0f ) {
+			s->dof = qtrue;
+			s->dofFocus = Q_max( 0.0f, v[0] );
+			s->dofRange = Q_max( 1.0f, v[1] );
+			s->dofBlur = Com_Clamp( 0.0f, RC_DOF_MAX_BLUR, v[2] );
+		}
+		return qtrue;
+	}
+	if ( !Q_stricmpn( p, "in ", 3 ) || !Q_stricmpn( p, "out ", 4 ) ) {
+		rcTrans_t *tr = !Q_stricmpn( p, "in ", 3 ) ? &s->in : &s->out;
+		char word[16];
+		float seconds = 0;
+		int r = 0, g = 0, b = 0;
+
+		if ( sscanf( strchr( p, ' ' ) + 1, "%15s %f %i %i %i", word, &seconds, &r, &g, &b ) >= 2 ) {
+			for ( int i = 0; i < RC_NUM_TRANSITIONS; i++ ) {
+				if ( !Q_stricmp( word, rcTransWords[i] ) )
+					tr->type = i;
+			}
+			tr->ms = RC_SecondsMs( seconds );
+			tr->color[0] = (byte)Com_Clampi( 0, 255, r );
+			tr->color[1] = (byte)Com_Clampi( 0, 255, g );
+			tr->color[2] = (byte)Com_Clampi( 0, 255, b );
+			if ( !tr->ms )
+				tr->type = RC_TR_CUT;
+		}
+		return qtrue;
+	}
+	return qfalse;
+}
+
+// the options as a hook writes them, each after a /
+static void RC_WriteOptions( const rcShot_t *s, char *out, int size ) {
+	const rcTrans_t *trs[2] = { &s->in, &s->out };
+
+	if ( s->dof )
+		Q_strcat( out, size, va( "/dof %i %i %g", RC_Round( s->dofFocus ), RC_Round( s->dofRange ), s->dofBlur ) );
+	for ( int i = 0; i < 2; i++ ) {
+		const rcTrans_t *tr = trs[i];
+
+		if ( tr->type != RC_TR_CUT && tr->ms > 0 )
+			Q_strcat( out, size, va( "/%s %s %g %i %i %i", i ? "out" : "in", rcTransWords[tr->type], floorf( tr->ms / 100.0f + 0.5f ) / 10.0f,
+				tr->color[0], tr->color[1], tr->color[2] ) );
+	}
+}
+
 // angles turned the short way round from the spot before, so a curve through them doesn't spin
 static void RC_Unwrap( rcKey_t *key, const rcKey_t *prev ) {
 	for ( int j = 0; j < 3; j++ )
@@ -303,10 +417,7 @@ static void RC_ParseKeys( char **argv, int argc, rcShot_t *s, const vec3_t ang )
 		int n;
 
 		if ( RC_IsWord( p ) ) {
-			if ( !Q_stricmp( p, "linear" ) )
-				s->linear = qtrue;
-			else if ( !Q_stricmpn( p, "look ", 5 ) && sscanf( p + 5, "%f %f %f", &s->lookAt[0], &s->lookAt[1], &s->lookAt[2] ) == 3 )
-				s->look = qtrue;
+			RC_ParseOption( p, s );
 			continue;
 		}
 		n = sscanf( p, "%f %f %f %f %f %f %f", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6] );
@@ -356,8 +467,7 @@ static qboolean RC_ParseOrbit( char **argv, int argc, rcShot_t *s ) {
 	s->orbit = qtrue;
 	s->ms = RC_Ms( argv[0] );
 	while ( part < argc && RC_IsWord( argv[part] ) ) {
-		if ( !Q_stricmp( argv[part], "linear" ) )
-			s->linear = qtrue;
+		RC_ParseOption( argv[part], s );
 		part++;
 	}
 	if ( argc - part < 5 || sscanf( argv[part], "%f %f %f", &s->center[0], &s->center[1], &s->center[2] ) != 3 )
@@ -395,12 +505,15 @@ static float RC_Seconds( int ms ) {
 // the hook that plays the shot, rounded as it goes out
 static void RC_WriteShot( const rcShot_t *s, char *out, int size ) {
 	if ( s->orbit ) {
-		Com_sprintf( out, size, "cin/orbit/%g%s/%i %i %i/%i/%i/%i/%i/%i/%i", RC_Seconds( s->ms ), s->linear ? "/linear" : "",
+		Com_sprintf( out, size, "cin/orbit/%g%s", RC_Seconds( s->ms ), s->linear ? "/linear" : "" );
+		RC_WriteOptions( s, out, size );
+		Q_strcat( out, size, va( "/%i %i %i/%i/%i/%i/%i/%i/%i",
 			RC_Round( s->center[0] ), RC_Round( s->center[1] ), RC_Round( s->center[2] ), RC_Round( s->radius ), RC_Round( s->height ),
-			RC_Round( AngleNormalize360( s->fromYaw ) ), RC_Round( s->degrees ), RC_Round( s->fov ), RC_Round( s->endFov ) );
+			RC_Round( AngleNormalize360( s->fromYaw ) ), RC_Round( s->degrees ), RC_Round( s->fov ), RC_Round( s->endFov ) ) );
 		return;
 	}
 	Com_sprintf( out, size, "cin/path%s", s->linear ? "/linear" : "" );
+	RC_WriteOptions( s, out, size );
 	if ( s->look )
 		Q_strcat( out, size, va( "/look %i %i %i", RC_Round( s->lookAt[0] ), RC_Round( s->lookAt[1] ), RC_Round( s->lookAt[2] ) ) );
 	for ( int i = 0; i < s->numKeys; i++ ) {
@@ -501,6 +614,14 @@ static void RC_Play( const rcShot_t *shot ) {
 	rc.shotFov = qtrue;
 	rc.start = cls.realtime;
 	rc.frame = -1;
+	// its transitions, and its focus until another shot
+	rc.trans = qtrue;
+	if ( rc.dof != shot->dof || ( shot->dof && shot->dofFocus > 0.0f ) )
+		rc.dofNow = shot->dofFocus;
+	rc.dof = shot->dof;
+	rc.dofFocus = shot->dofFocus;
+	rc.dofRange = shot->dofRange;
+	rc.dofBlur = shot->dofBlur;
 }
 
 static void RC_ZoomTo( float fovY, int ms ) {
@@ -534,6 +655,8 @@ static void RC_Start( void ) {
 	rc.lookAt = qfalse;
 	rc.playing = qfalse;
 	rc.shotFov = qfalse;
+	rc.trans = qfalse;
+	rc.dof = qfalse;
 	rc.frame = -1;
 	if ( rc.haveView ) {
 		VectorCopy( rc.viewOrg, rc.holdOrg );
@@ -554,6 +677,8 @@ void CL_RpCinematic_Stop( void ) {
 		RC_Bars( qfalse, RC_BAR_MS / 2 );
 	rc.active = qfalse;
 	rc.playing = qfalse;
+	rc.trans = qfalse;
+	rc.dof = qfalse;
 	RC_SyncThirdPerson();
 }
 
@@ -597,6 +722,7 @@ static void RC_Hook( char **argv, int argc ) {
 			return;
 		VectorCopy( shot.keys[0].org, rc.holdOrg );
 		VectorCopy( shot.keys[0].ang, rc.holdAng );
+		rc.trans = qfalse;
 		if ( shot.keys[0].fov > 0 )
 			RC_ZoomTo( RC_FovY( shot.keys[0].fov ), 0 );
 		rc.frame = -1;
@@ -812,6 +938,9 @@ typedef struct {
 	int			sel;				// the key, -1 none
 	int			keyScroll;
 	qboolean	bars;				// shown, and in the preview
+	qboolean	fxPage;				// the panel shows the focus and the transitions, not the spots
+	float		dofNow;				// an automatic focus here, where it's got to
+	int			dofTime;
 
 	// the free camera; its fov is cg_fov's
 	vec3_t		camOrg, camAng;
@@ -1711,6 +1840,12 @@ static void CE_RenderScene( const refdef_t *fd ) {
 		VectorCopy( view.viewaxis[2], ce.viewAxis[2] );
 		ce.viewFovX = view.fov_x;
 		ce.viewFovY = view.fov_y;
+		if ( ( ce.fxPage || ce.through ) && !ce.listing && RC_DepthOfField( ce.camOrg, ce.camAng, ce.shot.dof, ce.shot.dofFocus,
+			&ce.dofNow, &ce.dofTime, ce.shot.dofRange, ce.shot.dofBlur ) ) {
+			re->RenderScene( &view );
+			RC_NoDepthOfField();
+			return;
+		}
 	}
 	re->RenderScene( &view );
 }
@@ -1986,6 +2121,115 @@ static void CE_DrawOrbitPanel( float x, float y, float w ) {
 		CE_OrbitFromHere();
 }
 
+static const char *ceTransNames[RC_NUM_TRANSITIONS] = { "Cut", "Fade", "Wipe from the left", "Wipe from the right", "Wipe from the top", "Wipe from the bottom" };
+
+static const struct {
+	const char	*name;
+	byte		rgb[3];
+} ceTransColors[] = {
+	{ "Black", { 0, 0, 0 } },
+	{ "White", { 255, 255, 255 } },
+	{ "Red", { 190, 25, 25 } },
+	{ "Orange", { 235, 130, 20 } },
+	{ "Yellow", { 240, 215, 40 } },
+	{ "Green", { 35, 170, 60 } },
+	{ "Cyan", { 40, 200, 220 } },
+	{ "Blue", { 30, 70, 210 } },
+	{ "Purple", { 140, 50, 190 } }
+};
+
+// a transition's kind, length and colour; where the next row goes
+static float CE_DrawTransition( float x, float y, float w, const char *label, rcTrans_t *tr ) {
+	int color = -1, steps;
+
+	CE_Text( x, y + 2, label, ceDim );
+	// a click for the next kind
+	if ( CE_Button( x + 62, y, w - 62, ceTransNames[tr->type], (qboolean)( tr->type != RC_TR_CUT ), qtrue ) ) {
+		tr->type = ( tr->type + 1 ) % RC_NUM_TRANSITIONS;
+		if ( tr->type != RC_TR_CUT && !tr->ms )
+			tr->ms = RC_TRANS_MS;
+		CE_Changed();
+	}
+	y += CE_CTRL_H + CE_GAP;
+	if ( tr->type == RC_TR_CUT )
+		return y;
+	steps = CE_Stepper( x, y, w, "Seconds", va( "%.1f", RC_Seconds( tr->ms ) ) );
+	CE_AdjustMs( &tr->ms, steps, 0.25f, 100 );
+	y += CE_CTRL_H + CE_GAP;
+
+	// the colour: a swatch, a click for the next
+	for ( int i = 0; i < (int)ARRAY_LEN( ceTransColors ); i++ ) {
+		if ( !memcmp( ceTransColors[i].rgb, tr->color, 3 ) )
+			color = i;
+	}
+	CE_Text( x, y + 2, "Color", ceDim );
+	{
+		const vec4_t swatch = { tr->color[0] / 255.0f, tr->color[1] / 255.0f, tr->color[2] / 255.0f, 1.0f };
+
+		CE_Box( x + 62, y, 18, CE_CTRL_H, ceBorder );
+		CE_Fill( x + 63, y + 1, 16, CE_CTRL_H - 2, swatch );
+	}
+	if ( CE_Button( x + 84, y, w - 84, color >= 0 ? ceTransColors[color].name : va( "%i %i %i", tr->color[0], tr->color[1], tr->color[2] ), qfalse, qtrue ) ) {
+		color = ( color + 1 ) % ARRAY_LEN( ceTransColors );
+		memcpy( tr->color, ceTransColors[color].rgb, 3 );
+		CE_Changed();
+	}
+	return y + CE_CTRL_H + CE_GAP;
+}
+
+// the shot's depth of field and how it comes in and goes out
+static void CE_DrawFxPanel( float x, float y, float w ) {
+	rcShot_t *s = &ce.shot;
+	const float half = ( w - 4 ) * 0.5f;
+	int steps;
+
+	CE_Text( x, y, "Depth of field", ceWhite );
+	y += CE_ROW_H + 2;
+	CE_Text( x, y + 2, "Blur", ceDim );
+	if ( CE_Button( x + 62, y, w - 62, s->dof ? "On: away from the focus" : "Off: all sharp", s->dof, (qboolean)( re->ext.SetDepthOfField != NULL ) ) ) {
+		s->dof = (qboolean)!s->dof;
+		if ( s->dof && s->dofRange <= 0.0f )
+			s->dofRange = RC_DOF_RANGE;
+		if ( s->dof && s->dofBlur <= 0.0f )
+			s->dofBlur = RC_DOF_BLUR;
+		CE_Changed();
+	}
+	y += CE_CTRL_H + CE_GAP;
+	if ( s->dof ) {
+		steps = CE_Stepper( x, y, w, "Focus", s->dofFocus > 0.0f ? va( "%i away", RC_Round( s->dofFocus ) ) : "what it sees" );
+		CE_Adjust( &s->dofFocus, steps, 16.0f, 0.0f, 8192.0f );
+		y += CE_CTRL_H + CE_GAP;
+		if ( CE_Button( x, y, half, "What it sees", (qboolean)( s->dofFocus <= 0.0f ), qtrue ) ) {
+			s->dofFocus = 0.0f;
+			CE_Changed();
+		}
+		if ( CE_Button( x + half + 4, y, half, "The crosshair", qfalse, ce.haveAim ) ) {
+			s->dofFocus = Q_max( 1.0f, Distance( ce.camOrg, ce.aim ) );
+			CE_Changed();
+		}
+		y += CE_CTRL_H + CE_GAP;
+		steps = CE_Stepper( x, y, w, "Sharp", va( "%i either side", RC_Round( s->dofRange ) ) );
+		CE_Adjust( &s->dofRange, steps, 16.0f, 8.0f, 4096.0f );
+		y += CE_CTRL_H + CE_GAP;
+		steps = CE_Stepper( x, y, w, "Strength", va( "%i", RC_Round( s->dofBlur ) ) );
+		CE_Adjust( &s->dofBlur, steps, 1.0f, 1.0f, RC_DOF_MAX_BLUR );
+		y += CE_CTRL_H + CE_GAP;
+		CE_Text( x, y, S_COLOR_GREY "Shown here as it is set", ceWhite );
+		y += CE_ROW_H;
+	} else if ( !re->ext.SetDepthOfField ) {
+		CE_Text( x, y, S_COLOR_GREY "This renderer has none", ceWhite );
+		y += CE_ROW_H;
+	}
+	y += 6;
+
+	CE_Text( x, y, "Transitions", ceWhite );
+	y += CE_ROW_H + 2;
+	y = CE_DrawTransition( x, y, w, "Coming in", &s->in );
+	y = CE_DrawTransition( x, y, w, "Going out", &s->out );
+	if ( s->out.type != RC_TR_CUT )
+		CE_Text( x, y, S_COLOR_GREY "The colour stays until the next shot", ceWhite );
+}
+
 static qboolean CE_Project( const vec3_t point, float *x, float *y ) {
 	vec3_t d;
 	float forward;
@@ -2116,9 +2360,17 @@ static void CE_DrawEditor( void ) {
 		}
 		if ( CE_Button( x + half + 4, y, half, ce.bars ? "Bars shown" : "No bars", ce.bars, qtrue ) )
 			ce.bars = (qboolean)!ce.bars;
+		y += CE_CTRL_H + CE_GAP;
+		// what the panel shows of it
+		if ( CE_Button( x, y, half, ce.shot.orbit ? "The orbit" : "The spots", (qboolean)!ce.fxPage, qtrue ) )
+			ce.fxPage = qfalse;
+		if ( CE_Button( x + half + 4, y, half, "Focus, fades", ce.fxPage, qtrue ) )
+			ce.fxPage = qtrue;
 		y += CE_CTRL_H + CE_GAP + 6;
 
-		if ( ce.shot.orbit )
+		if ( ce.fxPage )
+			CE_DrawFxPanel( x, y, w );
+		else if ( ce.shot.orbit )
 			CE_DrawOrbitPanel( x, y, w );
 		else
 			CE_DrawPathPanel( x, y, w );
@@ -2189,6 +2441,127 @@ qboolean CL_RpCinematic_Hide2D( float x, float y, float w, float h ) {
 	return (qboolean)!( x <= 0.0f && y <= 0.0f && x + w >= SCREEN_WIDTH && y + h >= SCREEN_HEIGHT );
 }
 
+// how far off what the camera looks at is: the world, or a player or NPC in the way
+static float RC_LookDistance( const vec3_t org, const vec3_t ang ) {
+	vec3_t forward, end;
+	trace_t tr;
+	float best;
+
+	AngleVectors( ang, forward, NULL, NULL );
+	VectorMA( org, 8192.0f, forward, end );
+	CM_BoxTrace( &tr, org, end, vec3_origin, vec3_origin, 0, MASK_SOLID, qfalse );
+	best = tr.fraction * 8192.0f;
+	// the player too, drawn in third person, though the snapshot doesn't list them
+	for ( int i = -1; i < cl.snap.numEntities; i++ ) {
+		const entityState_t *es = i >= 0 ? &cl.parseEntities[( cl.snap.parseEntitiesNum + i ) & ( MAX_PARSE_ENTITIES - 1 )] : NULL;
+		vec3_t to, mid;
+		float along;
+
+		if ( es && es->eType != ET_PLAYER && es->eType != ET_NPC )
+			continue;
+		VectorCopy( es ? es->pos.trBase : cl.snap.ps.origin, mid );
+		mid[2] += 16.0f;
+		VectorSubtract( mid, org, to );
+		along = DotProduct( to, forward );
+		if ( along <= 8.0f || along >= best )
+			continue;
+		VectorMA( to, -along, forward, to );
+		if ( VectorLength( to ) < 36.0f )
+			best = along;
+	}
+	return best;
+}
+
+// the depth of field the camera at org has now; qfalse if none
+static qboolean RC_DepthOfField( const vec3_t org, const vec3_t ang, qboolean dof, float focus, float *now, int *time,
+	float range, float blur ) {
+	if ( !dof || !re->ext.SetDepthOfField )
+		return qfalse;
+	if ( focus <= 0.0f ) {
+		const float to = RC_LookDistance( org, ang );
+		const float dt = Com_Clamp( 0.0f, 0.2f, ( cls.realtime - *time ) * 0.001f );
+
+		// eased onto what's looked at, not snapping from one thing to the next
+		if ( *now <= 0.0f || dt <= 0.0f )
+			*now = to;
+		else
+			*now += ( to - *now ) * Com_Clamp( 0.0f, 1.0f, dt * RC_DOF_FOCUS_RATE );
+		*time = cls.realtime;
+		focus = *now;
+	}
+	re->ext.SetDepthOfField( focus, range, blur );
+	return qtrue;
+}
+
+static void RC_NoDepthOfField( void ) {
+	if ( re->ext.SetDepthOfField )
+		re->ext.SetDepthOfField( 0.0f, 1.0f, 0.0f );
+}
+
+// a strip of a wipe, from a0 to a1 of the way across from the side it comes from
+static void RC_WipeStrip( int type, float a0, float a1 ) {
+	a0 = Com_Clamp( 0.0f, 1.0f, a0 );
+	a1 = Com_Clamp( 0.0f, 1.0f, a1 );
+	if ( a1 <= a0 )
+		return;
+	switch ( type ) {
+	case RC_TR_LEFT:
+		re->DrawStretchPic( a0 * SCREEN_WIDTH, 0, ( a1 - a0 ) * SCREEN_WIDTH, SCREEN_HEIGHT, 0, 0, 0, 0, cls.whiteShader );
+		break;
+	case RC_TR_RIGHT:
+		re->DrawStretchPic( ( 1.0f - a1 ) * SCREEN_WIDTH, 0, ( a1 - a0 ) * SCREEN_WIDTH, SCREEN_HEIGHT, 0, 0, 0, 0, cls.whiteShader );
+		break;
+	case RC_TR_TOP:
+		re->DrawStretchPic( 0, a0 * SCREEN_HEIGHT, SCREEN_WIDTH, ( a1 - a0 ) * SCREEN_HEIGHT, 0, 0, 0, 0, cls.whiteShader );
+		break;
+	default:
+		re->DrawStretchPic( 0, ( 1.0f - a1 ) * SCREEN_HEIGHT, SCREEN_WIDTH, ( a1 - a0 ) * SCREEN_HEIGHT, 0, 0, 0, 0, cls.whiteShader );
+		break;
+	}
+}
+
+// a transition's colour over the screen: faded in by how far it is, or wiped across, its edge
+// sweeping from the side; coming in, the picture is behind the edge, going out, the colour is
+static void RC_DrawCover( const rcTrans_t *tr, float progress, qboolean in ) {
+	const int steps = 12;
+	const float soft = RC_WIPE_SOFT, step = soft / steps;
+	// the edge, from just before the side to just past the other one, for its soft part to
+	// come on and leave the screen too
+	const float e = progress * ( 1.0f + soft ) - soft;
+	vec4_t color = { tr->color[0] / 255.0f, tr->color[1] / 255.0f, tr->color[2] / 255.0f, 1.0f };
+
+	if ( tr->type == RC_TR_FADE ) {
+		color[3] = in ? 1.0f - progress : progress;
+		if ( color[3] <= 0.0f )
+			return;
+		re->SetColor( color );
+		re->DrawStretchPic( 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0, 0, 0, 0, cls.whiteShader );
+		re->SetColor( NULL );
+		return;
+	}
+	re->SetColor( color );
+	if ( in )
+		RC_WipeStrip( tr->type, e + soft, 1.0f );
+	else
+		RC_WipeStrip( tr->type, 0.0f, e );
+	for ( int i = 0; i < steps; i++ ) {
+		color[3] = in ? ( i + 0.5f ) / steps : 1.0f - ( i + 0.5f ) / steps;
+		re->SetColor( color );
+		RC_WipeStrip( tr->type, e + i * step, e + ( i + 1 ) * step );
+	}
+	re->SetColor( NULL );
+}
+
+// the shot playing coming in or going out, ms into it
+static void RC_DrawTransitions( const rcShot_t *shot, int ms ) {
+	const int total = RC_ShotMs( shot );
+
+	if ( shot->in.type != RC_TR_CUT && shot->in.ms > 0 && ms < shot->in.ms )
+		RC_DrawCover( &shot->in, RC_Ease( (float)ms / shot->in.ms, qfalse ), qtrue );
+	else if ( shot->out.type != RC_TR_CUT && shot->out.ms > 0 && ms >= total - shot->out.ms )
+		RC_DrawCover( &shot->out, RC_Ease( (float)( ms - ( total - shot->out.ms ) ) / shot->out.ms, qfalse ), qfalse );
+}
+
 // the cgame's main view: the player's is kept to start from, the camera's drawn instead.
 // qtrue if it was drawn here, or left out
 qboolean CL_RpCinematic_RenderScene( const refdef_t *fd ) {
@@ -2225,6 +2598,11 @@ qboolean CL_RpCinematic_RenderScene( const refdef_t *fd ) {
 		view.viewContents = CM_PointContents( rc.org, 0 );
 		// the snapshot's area mask is from the player's position, the camera can be anywhere
 		memset( view.areamask, 0, sizeof( view.areamask ) );
+		if ( RC_DepthOfField( rc.org, rc.ang, rc.dof, rc.dofFocus, &rc.dofNow, &rc.dofTime, rc.dofRange, rc.dofBlur ) ) {
+			re->RenderScene( &view );
+			RC_NoDepthOfField();
+			return qtrue;
+		}
 	}
 	re->RenderScene( &view );
 	return qtrue;
@@ -2268,6 +2646,9 @@ void CL_RpCinematic_Draw( void ) {
 		re->DrawStretchPic( 0, SCREEN_HEIGHT - h, SCREEN_WIDTH, h, 0, 0, 0, 0, cls.whiteShader );
 		re->SetColor( NULL );
 	}
+	// the shot fading or wiping in or out, over the bars too
+	if ( rc.active && rc.trans && !CE_Viewing() )
+		RC_DrawTransitions( &rc.shot, cls.realtime - rc.start );
 	if ( CL_RpCinematic_Subtitles() && !CE_Viewing() )
 		CL_RpHooks_DrawSubtitles();
 	if ( ce.open )
@@ -2347,7 +2728,9 @@ static void CL_CinCam_f( void ) {
 			"cincam [local] bars on|off [/<seconds>]\n"
 			"cincam [local] hud on|off\n"
 			"cincam [local] end\n"
-			"A spot is x y z [pitch yaw [roll [fov]]]; parts are separated by /\n" );
+			"A spot is x y z [pitch yaw [roll [fov]]]; parts are separated by /\n"
+			"Before its spots a path or orbit can have /dof <focus|0 for what it sees> <range> <blur 1-10>\n"
+			"and /in|out <cut|fade|left|right|top|bottom> <seconds> <r g b>\n" );
 		return;
 	}
 	if ( cls.state != CA_ACTIVE ) {
