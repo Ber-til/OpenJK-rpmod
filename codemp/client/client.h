@@ -686,6 +686,9 @@ qboolean CL_NpcWalk_Entity( entityState_t *es, int serverTime );
 void CL_NpcWalk_Frame( void );
 void CL_NpcWalk_Reset( void );
 void CL_NpcWalk_Hook( char **argv, int argc );
+void CL_NpcWalk_GroupHook( char **argv, int argc );
+void CL_NpcWalk_GroupSpot( const vec3_t spot, const vec3_t offset, vec3_t out );
+void CL_NpcWalk_GroupMiddle( const vec3_t *starts, int count, vec3_t middle );
 void CL_NpcWalk_Command( void );
 qboolean CL_NpcWalk_SaveRoute( const char *name, const vec3_t *pts, int numPts, float speed );
 int CL_NpcWalk_LoadRoute( const char *name, vec3_t *pts, int maxPts, float *speed );
@@ -702,6 +705,7 @@ void CL_NpcManager_RequestList( void );
 qboolean CL_NpcManager_Waiting( void );
 int CL_NpcManager_NumNpcs( void );
 qboolean CL_NpcManager_GetNpc( int index, int *num, const char **type, const char **name );
+qboolean CL_NpcManager_NpcOrigin( int num, vec3_t out );
 const char *CL_NpcManager_SpawnCommand( const char *type, qboolean vehicle, const char *targetname, const char *team,
 	const char *model, const char *scale, const vec3_t pos, int yaw );
 qboolean CL_NpcManager_RenderScene( const refdef_t *fd );

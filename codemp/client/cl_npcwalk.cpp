@@ -30,14 +30,19 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 //   cmd:npc/walk/<entity number>/<speed>/loop/<x y z>/<x y z>...
 // walks it round and round: from the last spot back to the second, the route's first,
 // until it's stopped. Clients from before it walk it once.
-//   cmd:npc/walk/<entity number>/stop
-// ends one where it is.
+//   cmd:npc/walk/<entity number>[,<entity number>...]/stop
+// ends them where they are.
+//   cmd:npc/group/<speed>[/loop]/<entity number x y z>.../<x y z>...
+// walks several NPCs at once, each from where it stands (x y z) as far from each spot as it
+// stood from the group's middle, short of walls: the group keeps its shape along the route.
+// Their teleports take turns, as the server only takes one command a second.
 //
 // Routes are made in the NPC manager (Manage tab, Walk) and kept in npcmanager/routes:
-//   npcmanager walk <npc> <route> [walk|run|<speed>] [loop] [local]
-//   npcmanager walk <npc> stop
+//   npcmanager walk <npc>[,<npc>...] <route> [walk|run|<speed>] [loop] [local]
+//   npcmanager walk <npc>[,<npc>...] stop
 //   npcmanager routes
-// local plays it on this screen only, without sending anything.
+// <npc> is a number or a targetname, a name being every NPC with it; more than one walk
+// together. local plays it on this screen only, without sending anything.
 
 #include "client.h"
 #include "qcommon/cm_public.h"
@@ -59,6 +64,8 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define NW_TRACE_MASK		(CONTENTS_SOLID|CONTENTS_PLAYERCLIP|CONTENTS_TERRAIN)
 #define NW_QUIET_MS			4000		// its teleports' cloak and flash are kept off this long after a walk
 #define NW_QUIET_NEAR		64.0f		// a teleport flash or cloak sound this near a spot is the walk's
+#define NW_MAX_GROUP		NW_MAX_WALKS
+#define NW_MAX_HOOK			900			// what rpnotify is trusted to carry
 
 typedef struct {
 	qboolean	active;
@@ -73,7 +80,7 @@ typedef struct {
 	qboolean	driver;				// this client teleports the real NPC
 	int			teleNext;			// the next spot it gets to
 	int			telePending;		// a spot reached, its teleport not sent yet; -1 none
-	int			nextSend;			// cls.realtime the server takes another command
+	int			release;			// ms after the end the real NPC is waited for
 	int			teleBit;			// its EF_TELEPORT_BIT when it set off, kept while it walks
 	qboolean	cloaked;			// it was cloaked when it set off, and stays so
 	qboolean	teleBitKnown;
@@ -83,6 +90,8 @@ typedef struct {
 
 static nwWalk_t nw[NW_MAX_WALKS];
 static int nwActive;				// how many are, to skip the entities quickly
+static int nwNextSend;				// cls.realtime the server takes another command
+static int nwTurn;					// the walk whose teleport goes first, next time
 
 // cl_npcWalkDebug 1: what changes on a walking NPC as the server teleports it, other than
 // where it is and its legs, and the events near it
@@ -392,14 +401,14 @@ static void NW_Lap( nwWalk_t *w, int serverTime ) {
 	}
 }
 
-// a new walk for the NPC, in place of one it's on
-static void NW_Start( int num, float speed, qboolean loop, const vec3_t *pts, int numPts, qboolean driver ) {
+// a new walk for the NPC, in place of one it's on; NULL if it can't
+static nwWalk_t *NW_Start( int num, float speed, qboolean loop, const vec3_t *pts, int numPts, qboolean driver ) {
 	nwWalk_t *w = NW_Find( num );
 	float ground;
 	qboolean cloaked = qfalse, cloakKnown = qfalse;
 
 	if ( numPts < 2 || speed <= 0.0f )
-		return;
+		return NULL;
 	// cloaked or not before the teleports began, not by one of them
 	if ( w ) {
 		cloaked = w->cloaked;
@@ -419,7 +428,7 @@ static void NW_Start( int num, float speed, qboolean loop, const vec3_t *pts, in
 		}
 		if ( !w ) {
 			Com_Printf( S_COLOR_YELLOW "NPC walk: too many NPCs walking at once\n" );
-			return;
+			return NULL;
 		}
 		nwActive++;
 	}
@@ -441,7 +450,9 @@ static void NW_Start( int num, float speed, qboolean loop, const vec3_t *pts, in
 	w->telePending = -1;
 	w->cloaked = cloaked;
 	w->cloakKnown = cloakKnown;
+	w->release = NW_RELEASE_MS;
 	nwQuiet[w - nw].until = 0;
+	return w;
 }
 
 // RPMod's npc tele cloaks the NPC, teleports it, then uncloaks it, with the cloak sounds
@@ -568,7 +579,7 @@ qboolean CL_NpcWalk_Entity( entityState_t *es, int serverTime ) {
 	t = serverTime - w->start;
 	if ( !NW_At( w, t, pos, &yaw, velocity ) ) {
 		// there: the real NPC is let back once it has caught up
-		if ( Distance( es->pos.trBase, pos ) < NW_CATCH_UP || t > w->arrive[w->numPts - 1] + NW_RELEASE_MS ) {
+		if ( Distance( es->pos.trBase, pos ) < NW_CATCH_UP || t > w->arrive[w->numPts - 1] + w->release ) {
 			NW_Stop( w );
 			return qtrue;
 		}
@@ -596,18 +607,50 @@ qboolean CL_NpcWalk_Entity( entityState_t *es, int serverTime ) {
 	return qtrue;
 }
 
-// an NPC by its number or its targetname, as the NPC manager's list has it; -1 if not there
-static int NW_NpcNumber( const char *target ) {
-	const char *type, *name;
-	int num;
-
-	if ( Q_isanumber( target ) && !strchr( target, '.' ) )
-		return atoi( target );
-	for ( int i = 0; i < CL_NpcManager_NumNpcs(); i++ ) {
-		if ( CL_NpcManager_GetNpc( i, &num, &type, &name ) && !Q_stricmp( name, target ) )
-			return num;
+static void NW_AddNumber( int *nums, int *count, int max, int num ) {
+	for ( int i = 0; i < *count; i++ ) {
+		if ( nums[i] == num )
+			return;
 	}
-	return -1;
+	if ( *count < max )
+		nums[( *count )++] = num;
+}
+
+// the NPCs a target names: numbers and targetnames with commas between them, a name being
+// every NPC with it in the NPC manager's list; how many, -1 if a name isn't in the list
+static int NW_Resolve( const char *target, int *nums, int max ) {
+	int count = 0;
+
+	for ( const char *p = target; *p; ) {
+		char item[MAX_QPATH];
+		const char *type, *name;
+		qboolean found = qfalse;
+		int len = 0, num;
+
+		while ( *p && *p != ',' ) {
+			if ( len < (int)sizeof( item ) - 1 )
+				item[len++] = *p;
+			p++;
+		}
+		item[len] = '\0';
+		if ( *p )
+			p++;
+		if ( !item[0] )
+			continue;
+		if ( Q_isanumber( item ) && !strchr( item, '.' ) ) {
+			NW_AddNumber( nums, &count, max, atoi( item ) );
+			continue;
+		}
+		for ( int i = 0; i < CL_NpcManager_NumNpcs(); i++ ) {
+			if ( CL_NpcManager_GetNpc( i, &num, &type, &name ) && !Q_stricmp( name, item ) ) {
+				NW_AddNumber( nums, &count, max, num );
+				found = qtrue;
+			}
+		}
+		if ( !found )
+			return -1;
+	}
+	return count;
 }
 
 static int NW_CommandGap( void ) {
@@ -629,7 +672,9 @@ void CL_NpcWalk_Frame( void ) {
 	if ( nwPending.time && cls.state == CA_ACTIVE
 		&& ( CL_NpcManager_ListTime() > nwPending.time || cls.realtime - nwPending.time > NW_PENDING_MS ) ) {
 		nwPending.time = 0;
-		if ( NW_NpcNumber( nwPending.target ) < 0 )
+		int nums[NW_MAX_GROUP];
+
+		if ( NW_Resolve( nwPending.target, nums, NW_MAX_GROUP ) <= 0 )
 			Com_Printf( S_COLOR_YELLOW "NPC walk: no NPC %s in the map\n", nwPending.target );
 		else
 			Cmd_ExecuteString( va( "npcmanager walk %s %s %g%s%s", nwPending.target, nwPending.route, nwPending.speed,
@@ -645,7 +690,7 @@ void CL_NpcWalk_Frame( void ) {
 			continue;
 		NW_Lap( w, cl.serverTime );
 		t = cl.serverTime - w->start;
-		if ( t > w->arrive[w->numPts - 1] + NW_RELEASE_MS * 2 ) {
+		if ( t > w->arrive[w->numPts - 1] + w->release * 2 ) {
 			NW_Stop( w );
 			continue;
 		}
@@ -653,14 +698,24 @@ void CL_NpcWalk_Frame( void ) {
 			continue;
 		while ( w->teleNext < w->numPts && t >= w->arrive[w->teleNext] )
 			w->telePending = w->teleNext++;
-		if ( w->telePending >= 0 && cls.realtime >= w->nextSend && cls.state == CA_ACTIVE ) {
-			const float *p = w->pts[w->telePending];
+	}
+	// one teleport at a time, the walks taking turns: the flood protection counts the
+	// client's commands, not each NPC's
+	if ( cls.realtime < nwNextSend || cls.state != CA_ACTIVE )
+		return;
+	for ( int n = 0; n < NW_MAX_WALKS; n++ ) {
+		nwWalk_t *w = &nw[( nwTurn + n ) % NW_MAX_WALKS];
+		const float *p;
 
-			CL_AddReliableCommand( va( "npc tele %i %i %i %i %i", (int)floorf( p[0] + 0.5f ), (int)floorf( p[1] + 0.5f ), (int)floorf( p[2] + 0.5f ),
-				(int)AngleNormalize360( NW_SpotYaw( w, w->telePending ) ), w->num ), qfalse );
-			w->telePending = -1;
-			w->nextSend = cls.realtime + NW_CommandGap();
-		}
+		if ( !w->active || !w->driver || w->telePending < 0 )
+			continue;
+		p = w->pts[w->telePending];
+		CL_AddReliableCommand( va( "npc tele %i %i %i %i %i", (int)floorf( p[0] + 0.5f ), (int)floorf( p[1] + 0.5f ), (int)floorf( p[2] + 0.5f ),
+			(int)AngleNormalize360( NW_SpotYaw( w, w->telePending ) ), w->num ), qfalse );
+		w->telePending = -1;
+		nwNextSend = cls.realtime + NW_CommandGap();
+		nwTurn = (int)( w - nw + 1 ) % NW_MAX_WALKS;
+		break;
 	}
 }
 
@@ -669,6 +724,7 @@ void CL_NpcWalk_Reset( void ) {
 	memset( nwQuiet, 0, sizeof( nwQuiet ) );
 	memset( nwSeen, 0, sizeof( nwSeen ) );
 	nwActive = 0;
+	nwNextSend = nwTurn = 0;
 	nwSent.time = 0;
 	nwPending.time = 0;
 }
@@ -681,42 +737,143 @@ The hook, and the command
 ===============================================================================
 */
 
-// cmd:npc/walk/<entity number>/<speed>[/loop]/<x y z>/<x y z>... or cmd:npc/walk/<number>/stop
+// a walk this client sent, come back: it teleports the real NPC
+static qboolean NW_Driver( int num ) {
+	if ( !nwSent.time || nwSent.num != num || cls.realtime - nwSent.time >= NW_DRIVER_MS )
+		return qfalse;
+	nwSent.time = 0;
+	return qtrue;
+}
+
+// the NPC stays where it is now, and the real one is brought there
+static void NW_Halt( int num, qboolean driver ) {
+	nwWalk_t *w = NW_Find( num );
+	vec3_t pos, velocity;
+	float yaw;
+
+	if ( !w )
+		return;
+	NW_Lap( w, cl.serverTime );
+	NW_At( w, cl.serverTime - w->start, pos, &yaw, velocity );
+	VectorCopy( pos, w->pts[0] );
+	VectorCopy( pos, w->pts[1] );
+	w->numPts = 2;
+	w->loop = qfalse;
+	w->arrive[0] = w->arrive[1] = 0;
+	w->start = cl.serverTime;
+	w->driver = driver;
+	w->teleNext = 1;
+	w->telePending = -1;
+}
+
+// where one of a group goes at a spot: as far from it as it stood from the group's middle,
+// short of a wall in between
+void CL_NpcWalk_GroupSpot( const vec3_t spot, const vec3_t offset, vec3_t out ) {
+	static const vec3_t mins = { -15, -15, -8 }, maxs = { 15, 15, 8 };
+	vec3_t end;
+	trace_t tr;
+
+	VectorAdd( spot, offset, end );
+	CM_BoxTrace( &tr, spot, end, mins, maxs, 0, NW_TRACE_MASK, qfalse );
+	VectorCopy( tr.startsolid || tr.allsolid ? end : tr.endpos, out );
+}
+
+// the middle of where a group stands, the spot it's walked by
+void CL_NpcWalk_GroupMiddle( const vec3_t *starts, int count, vec3_t middle ) {
+	VectorClear( middle );
+	for ( int i = 0; i < count; i++ )
+		VectorAdd( middle, starts[i], middle );
+	if ( count )
+		VectorScale( middle, 1.0f / count, middle );
+}
+
+// the group sets off: each from where it stands, through the spots as far from each as it
+// stood from the middle
+static void NW_StartGroup( const int *nums, const vec3_t *starts, int count, const vec3_t *route, int numRoute,
+	float speed, qboolean loop, qboolean driver ) {
+	vec3_t middle;
+
+	CL_NpcWalk_GroupMiddle( starts, count, middle );
+	for ( int m = 0; m < count; m++ ) {
+		vec3_t pts[NW_MAX_ROUTE_POINTS + 1], offset;
+		nwWalk_t *w;
+
+		VectorSubtract( starts[m], middle, offset );
+		offset[2] = 0.0f;
+		VectorCopy( starts[m], pts[0] );
+		for ( int i = 0; i < numRoute; i++ )
+			CL_NpcWalk_GroupSpot( route[i], offset, pts[i + 1] );
+		w = NW_Start( nums[m], speed, loop, pts, numRoute + 1, driver );
+		// the last teleports wait their turn
+		if ( w )
+			w->release = NW_RELEASE_MS + count * NW_CommandGap();
+	}
+}
+
+// how many numbers an argument has, up to four
+static int NW_Numbers( const char *arg, float *out ) {
+	return sscanf( arg, "%f %f %f %f", &out[0], &out[1], &out[2], &out[3] );
+}
+
+// cmd:npc/group/<speed>[/loop]/<number x y z>.../<x y z>...
+void CL_NpcWalk_GroupHook( char **argv, int argc ) {
+	vec3_t route[NW_MAX_ROUTE_POINTS], starts[NW_MAX_GROUP];
+	int nums[NW_MAX_GROUP], count = 0, numRoute = 0;
+	qboolean loop = qfalse;
+
+	if ( argc < 3 || !Q_isanumber( argv[0] ) ) {
+		Com_DPrintf( "RP hook: npc group wants the speed, the NPCs and the spots\n" );
+		return;
+	}
+	for ( int i = 1; i < argc; i++ ) {
+		float v[4];
+		const int n = NW_Numbers( argv[i], v );
+
+		if ( !Q_stricmp( argv[i], "loop" ) ) {
+			loop = qtrue;
+		} else if ( n == 4 && count < NW_MAX_GROUP ) {
+			nums[count] = (int)v[0];
+			VectorSet( starts[count], v[1], v[2], v[3] );
+			count++;
+		} else if ( n == 3 && numRoute < NW_MAX_ROUTE_POINTS ) {
+			VectorSet( route[numRoute], v[0], v[1], v[2] );
+			numRoute++;
+		}
+	}
+	if ( !count || !numRoute )
+		return;
+	NW_StartGroup( nums, starts, count, route, numRoute, (float)atof( argv[0] ), loop, NW_Driver( nums[0] ) );
+}
+
+// cmd:npc/walk/<entity number>/<speed>[/loop]/<x y z>/<x y z>...,
+// cmd:npc/walk/<number>[,<number>...]/stop
 void CL_NpcWalk_Hook( char **argv, int argc ) {
 	vec3_t pts[NW_MAX_ROUTE_POINTS + 1];
 	int num, numPts = 0;
 	qboolean driver, loop = qfalse;
 
+	if ( argc >= 2 && !Q_stricmp( argv[1], "stop" ) ) {
+		int nums[NW_MAX_GROUP], count = 0;
+
+		for ( const char *p = argv[0]; *p; ) {
+			if ( *p >= '0' && *p <= '9' )
+				NW_AddNumber( nums, &count, NW_MAX_GROUP, atoi( p ) );
+			while ( *p >= '0' && *p <= '9' )
+				p++;
+			while ( *p && ( *p < '0' || *p > '9' ) )
+				p++;
+		}
+		driver = count ? NW_Driver( nums[0] ) : qfalse;
+		for ( int i = 0; i < count; i++ )
+			NW_Halt( nums[i], driver );
+		return;
+	}
 	if ( argc < 2 || !Q_isanumber( argv[0] ) ) {
 		Com_DPrintf( "RP hook: npc walk wants the NPC's number, and its speed or stop\n" );
 		return;
 	}
 	num = atoi( argv[0] );
-	driver = (qboolean)( nwSent.time && nwSent.num == num && cls.realtime - nwSent.time < NW_DRIVER_MS );
-	if ( driver )
-		nwSent.time = 0;
-
-	if ( !Q_stricmp( argv[1], "stop" ) ) {
-		nwWalk_t *w = NW_Find( num );
-		vec3_t pos, velocity;
-		float yaw;
-
-		if ( !w )
-			return;
-		// it stays where it is now, and the real one is brought there
-		NW_Lap( w, cl.serverTime );
-		NW_At( w, cl.serverTime - w->start, pos, &yaw, velocity );
-		VectorCopy( pos, w->pts[0] );
-		VectorCopy( pos, w->pts[1] );
-		w->numPts = 2;
-		w->loop = qfalse;
-		w->arrive[0] = w->arrive[1] = 0;
-		w->start = cl.serverTime;
-		w->driver = driver;
-		w->teleNext = 1;
-		w->telePending = -1;
-		return;
-	}
+	driver = NW_Driver( num );
 	for ( int i = 2; i < argc && numPts < NW_MAX_ROUTE_POINTS + 1; i++ ) {
 		if ( !Q_stricmp( argv[i], "loop" ) )
 			loop = qtrue;
@@ -726,7 +883,7 @@ void CL_NpcWalk_Hook( char **argv, int argc ) {
 	NW_Start( num, (float)atof( argv[1] ), loop, pts, numPts, driver );
 }
 
-// where the NPC is now: in the snapshot if it's near, else nowhere known
+// where the NPC is now: in the snapshot if it's near, else where the NPC manager's list saw it
 static qboolean NW_NpcOrigin( int num, vec3_t out ) {
 	for ( int i = 0; i < cl.snap.numEntities; i++ ) {
 		const entityState_t *es = &cl.parseEntities[( cl.snap.parseEntitiesNum + i ) & ( MAX_PARSE_ENTITIES - 1 )];
@@ -736,7 +893,7 @@ static qboolean NW_NpcOrigin( int num, vec3_t out ) {
 			return qtrue;
 		}
 	}
-	return qfalse;
+	return CL_NpcManager_NpcOrigin( num, out );
 }
 
 static float NW_ParseSpeed( const char *s, float route ) {
@@ -766,14 +923,14 @@ static void NW_ListRoutes( void ) {
 	FS_FreeFileList( files );
 }
 
-// npcmanager walk <npc> <route> [walk|run|<speed>] [local], npcmanager walk <npc> stop,
-// npcmanager routes; argument 1 is walk or routes
+// npcmanager walk <npc>[,<npc>...] <route> [walk|run|<speed>] [loop] [local],
+// npcmanager walk <npc>[,<npc>...] stop, npcmanager routes; argument 1 is walk or routes
 void CL_NpcWalk_Command( void ) {
 	vec3_t pts[NW_MAX_ROUTE_POINTS + 1];
 	const char *target = Cmd_Argv( 2 ), *route = Cmd_Argv( 3 );
 	qboolean local = qfalse, loop = qfalse;
 	float speed, routeSpeed;
-	int num, numPts;
+	int nums[NW_MAX_GROUP], count, num, numPts;
 	char hook[MAX_STRING_CHARS];
 
 	if ( !Q_stricmp( Cmd_Argv( 1 ), "routes" ) ) {
@@ -781,7 +938,7 @@ void CL_NpcWalk_Command( void ) {
 		return;
 	}
 	if ( Cmd_Argc() < 4 ) {
-		Com_Printf( "usage: npcmanager walk <npc> <route> [walk|run|<speed>] [loop] [local]   npcmanager walk <npc> stop\n" );
+		Com_Printf( "usage: npcmanager walk <npc>[,<npc>...] <route> [walk|run|<speed>] [loop] [local]   npcmanager walk <npc>[,<npc>...] stop\n" );
 		return;
 	}
 	for ( int i = 4; i < Cmd_Argc(); i++ ) {
@@ -802,8 +959,8 @@ void CL_NpcWalk_Command( void ) {
 		return;
 	}
 
-	num = NW_NpcNumber( target );
-	if ( num < 0 ) {
+	count = NW_Resolve( target, nums, NW_MAX_GROUP );
+	if ( count < 0 ) {
 		// a name the list doesn't have yet, an NPC spawned just now: the list is read first
 		if ( nwPending.time ) {
 			Com_Printf( S_COLOR_YELLOW "NPC walk: still looking for an NPC\n" );
@@ -818,18 +975,30 @@ void CL_NpcWalk_Command( void ) {
 		CL_NpcManager_RequestList();
 		return;
 	}
+	if ( !count ) {
+		Com_Printf( S_COLOR_YELLOW "NPC walk: no NPC given\n" );
+		return;
+	}
+	num = nums[0];
 
 	if ( !Q_stricmp( route, "stop" ) ) {
 		if ( local ) {
-			nwWalk_t *w = NW_Find( num );
+			for ( int i = 0; i < count; i++ ) {
+				nwWalk_t *w = NW_Find( nums[i] );
 
-			if ( w )
-				NW_Stop( w );
+				if ( w )
+					NW_Stop( w );
+			}
 			return;
 		}
+		Com_sprintf( hook, sizeof( hook ), "rpnotify -1 1 cmd:npc/walk/%i", num );
+		for ( int i = 1; i < count; i++ )
+			Q_strcat( hook, sizeof( hook ), va( ",%i", nums[i] ) );
+		Q_strcat( hook, sizeof( hook ), "/stop" );
 		nwSent.num = num;
 		nwSent.time = cls.realtime;
-		CL_AddReliableCommand( va( "rpnotify -1 1 cmd:npc/walk/%i/stop", num ), qfalse );
+		nwNextSend = cls.realtime + NW_CommandGap();
+		CL_AddReliableCommand( hook, qfalse );
 		return;
 	}
 
@@ -845,6 +1014,39 @@ void CL_NpcWalk_Command( void ) {
 	speed = Cmd_Argc() > 4 ? NW_ParseSpeed( Cmd_Argv( 4 ), routeSpeed ) : routeSpeed;
 	if ( speed <= 0.0f )
 		speed = routeSpeed > 0.0f ? routeSpeed : NW_WALK_SPEED;
+
+	if ( count > 1 ) {
+		vec3_t starts[NW_MAX_GROUP];
+		int known = 0;
+
+		// each from where it stands; one nowhere to be found stays out of it
+		for ( int i = 0; i < count; i++ ) {
+			if ( NW_NpcOrigin( nums[i], starts[known] ) )
+				nums[known++] = nums[i];
+			else
+				Com_Printf( S_COLOR_YELLOW "NPC walk: NPC %i isn't in the NPC list, it stays\n", nums[i] );
+		}
+		if ( !known )
+			return;
+		if ( local ) {
+			NW_StartGroup( nums, starts, known, pts + 1, numPts, speed, loop, qfalse );
+			return;
+		}
+		Com_sprintf( hook, sizeof( hook ), "rpnotify -1 1 cmd:npc/group/%g%s", speed, loop ? "/loop" : "" );
+		for ( int i = 0; i < known; i++ )
+			Q_strcat( hook, sizeof( hook ), va( "/%i %i %i %i", nums[i], (int)floorf( starts[i][0] + 0.5f ), (int)floorf( starts[i][1] + 0.5f ), (int)floorf( starts[i][2] + 0.5f ) ) );
+		for ( int i = 1; i <= numPts; i++ )
+			Q_strcat( hook, sizeof( hook ), va( "/%i %i %i", (int)floorf( pts[i][0] + 0.5f ), (int)floorf( pts[i][1] + 0.5f ), (int)floorf( pts[i][2] + 0.5f ) ) );
+		if ( strlen( hook ) > NW_MAX_HOOK ) {
+			Com_Printf( S_COLOR_YELLOW "NPC walk: too many NPCs and spots for one message; fewer spots, or fewer NPCs at once\n" );
+			return;
+		}
+		nwSent.num = nums[0];
+		nwSent.time = cls.realtime;
+		nwNextSend = cls.realtime + NW_CommandGap();
+		CL_AddReliableCommand( hook, qfalse );
+		return;
+	}
 	// from where it stands; out of sight, from the route's first spot
 	if ( !NW_NpcOrigin( num, pts[0] ) )
 		VectorCopy( pts[1], pts[0] );
@@ -858,5 +1060,6 @@ void CL_NpcWalk_Command( void ) {
 		Q_strcat( hook, sizeof( hook ), va( "/%i %i %i", (int)floorf( pts[i][0] + 0.5f ), (int)floorf( pts[i][1] + 0.5f ), (int)floorf( pts[i][2] + 0.5f ) ) );
 	nwSent.num = num;
 	nwSent.time = cls.realtime;
+	nwNextSend = cls.realtime + NW_CommandGap();
 	CL_AddReliableCommand( hook, qfalse );
 }

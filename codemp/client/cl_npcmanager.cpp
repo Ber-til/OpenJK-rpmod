@@ -72,6 +72,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define NM_TRACE_MASK		(CONTENTS_SOLID|CONTENTS_TERRAIN)
 #define NM_TRACE_DIST		8192.0f
 #define NM_GROUND_HEIGHT	25.0f	// NPC origins sit this far above the floor
+#define NM_MAX_MARKED		16		// NPCs marked to walk together, as many as can walk at once
 #define NM_FRONT_DIST		96.0f	// "in front of me"
 #define NM_YAW_STEP			15
 #define NM_FLY_SPEED		400.0f	// free camera, units a second
@@ -207,7 +208,8 @@ typedef enum {
 typedef enum {
 	NM_APPLY_ONE,		// the selected NPC, by number
 	NM_APPLY_NAME,		// every NPC sharing its targetname
-	NM_APPLY_ALL
+	NM_APPLY_ALL,
+	NM_APPLY_MARKED		// the NPCs marked with Ctrl+click: they walk together, nothing else takes them
 } nmApply_t;
 
 typedef enum {
@@ -453,6 +455,8 @@ static struct {
 	int			numNpcView;
 	nmList_t	npcList;
 	int			selNum;			// entity number of the selected NPC, -1 = none
+	int			marked[NM_MAX_MARKED];	// entity numbers marked with Ctrl+click
+	int			numMarked;
 	nmApply_t	apply;
 	int			talkColor;		// of the name, in nmTalkColors
 	qboolean	talkEmote;		// talking plays emtalk on it
@@ -919,6 +923,51 @@ static int NM_CountNamed( const char *name ) {
 	return count;
 }
 
+static qboolean NM_IsMarked( int num ) {
+	for ( int i = 0; i < nm.numMarked; i++ ) {
+		if ( nm.marked[i] == num )
+			return qtrue;
+	}
+	return qfalse;
+}
+
+// the marked ones still in the list
+static int NM_CountMarked( void ) {
+	int count = 0;
+
+	for ( int i = 0; i < nm.numMarked; i++ ) {
+		if ( NM_FindNpc( nm.marked[i] ) )
+			count++;
+	}
+	return count;
+}
+
+// Ctrl+click: marked, or not any more; the commands then go to the marked ones, or back to one
+static void NM_ToggleMark( int num ) {
+	for ( int i = 0; i < nm.numMarked; i++ ) {
+		if ( nm.marked[i] == num ) {
+			memmove( &nm.marked[i], &nm.marked[i + 1], ( nm.numMarked - i - 1 ) * sizeof( nm.marked[0] ) );
+			nm.numMarked--;
+			if ( !NM_CountMarked() && nm.apply == NM_APPLY_MARKED )
+				nm.apply = NM_APPLY_ONE;
+			return;
+		}
+	}
+	// the ones gone from the map make room
+	for ( int i = 0; i < nm.numMarked; ) {
+		if ( !NM_FindNpc( nm.marked[i] ) )
+			nm.marked[i] = nm.marked[--nm.numMarked];
+		else
+			i++;
+	}
+	if ( nm.numMarked >= NM_MAX_MARKED ) {
+		NM_Message( va( S_COLOR_YELLOW "At most %i NPCs walk together", NM_MAX_MARKED ) );
+		return;
+	}
+	nm.marked[nm.numMarked++] = num;
+	nm.apply = NM_APPLY_MARKED;
+}
+
 // where the NPC is now if it's in the snapshot, else where the list saw it
 static void NM_NpcOrigin( const nmNpc_t *npc, vec3_t out ) {
 	for ( int i = 0; i < cl.snap.numEntities; i++ ) {
@@ -1372,6 +1421,16 @@ int CL_NpcManager_ListTime( void ) {
 
 int CL_NpcManager_NumNpcs( void ) {
 	return nm.numNpcs;
+}
+
+// where the NPC is now, as the manager sees it; qfalse if it isn't in the list
+qboolean CL_NpcManager_NpcOrigin( int num, vec3_t out ) {
+	const nmNpc_t *npc = NM_FindNpc( num );
+
+	if ( !npc )
+		return qfalse;
+	NM_NpcOrigin( npc, out );
+	return qtrue;
 }
 
 qboolean CL_NpcManager_GetNpc( int index, int *num, const char **type, const char **name ) {
@@ -1889,6 +1948,8 @@ static const char *NM_ApplyTarget( qboolean allowAll ) {
 	char *out = target[allowAll ? 1 : 0];
 
 	switch ( nm.apply ) {
+	case NM_APPLY_MARKED:
+		return NULL;
 	case NM_APPLY_ALL:
 		return allowAll ? "all" : NULL;
 	case NM_APPLY_NAME:
@@ -2002,9 +2063,38 @@ const char *CL_NpcManager_OutgoingChat( const char *cmd ) {
 	return CL_RpHooks_NpcTalkCommand( nmSpeak.target, nmSpeak.name, "", "", text );
 }
 
+// who walks: the selection, or the marked ones by number, commas between; NULL if none
+static const char *NM_WalkTarget( void ) {
+	static char target[MAX_STRING_CHARS];
+
+	if ( nm.apply != NM_APPLY_MARKED )
+		return NM_ApplyTarget( qfalse );
+	target[0] = '\0';
+	for ( int i = 0; i < nm.numMarked; i++ ) {
+		if ( NM_FindNpc( nm.marked[i] ) )
+			Q_strcat( target, sizeof( target ), va( target[0] ? ",%i" : "%i", nm.marked[i] ) );
+	}
+	return target[0] ? target : NULL;
+}
+
+// where the marked ones stand, walking together; how many, 0 when it isn't them who walk
+static int NM_GroupStarts( vec3_t *starts ) {
+	int count = 0;
+
+	if ( nm.apply != NM_APPLY_MARKED )
+		return 0;
+	for ( int i = 0; i < nm.numMarked; i++ ) {
+		const nmNpc_t *npc = NM_FindNpc( nm.marked[i] );
+
+		if ( npc )
+			NM_NpcOrigin( npc, starts[count++] );
+	}
+	return count;
+}
+
 // the selection walks a saved route; opened from the storyteller, it goes in the story
 static void NM_Walk( const char *route ) {
-	const char *target = NM_ApplyTarget( qfalse ), *cmd;
+	const char *target = NM_WalkTarget(), *cmd;
 
 	if ( !target || !route[0] )
 		return;
@@ -2599,6 +2689,9 @@ void CL_NpcManager_Shutdown( void ) {
 	nm.listRequestTime = nm.listLineTime = nm.listTime = nm.refreshTime = 0;
 	nm.havePos = qfalse;
 	nm.selNum = -1;
+	nm.numMarked = 0;
+	if ( nm.apply == NM_APPLY_MARKED )
+		nm.apply = NM_APPLY_ONE;
 	// spots in this map, for this server
 	nm.numPlaced = nm.placedScroll = 0;
 	nm.numQueue = nm.queueTotal = 0;
@@ -2722,8 +2815,9 @@ void CL_NpcManager_f( void ) {
 		Com_Printf( "       npcmanager talk <npc> <message>  the NPC (targetname or number) says it in chat\n" );
 		Com_Printf( "       npcmanager select <npc> [name]   what you say in chat is said by the NPC, as name\n" );
 		Com_Printf( "       npcmanager select off            talk as yourself again (unselect does too)\n" );
-		Com_Printf( "       npcmanager walk <npc> <route> [walk|run|<speed>] [loop] [local]   the NPC walks a saved route, or round and round\n" );
-		Com_Printf( "       npcmanager walk <npc> stop       it stops where it is\n" );
+		Com_Printf( "       npcmanager walk <npc>[,<npc>...] <route> [walk|run|<speed>] [loop] [local]   the NPC walks a saved route, or round and round;\n" );
+		Com_Printf( "                                        several walk it together, keeping their places\n" );
+		Com_Printf( "       npcmanager walk <npc>[,<npc>...] stop   they stop where they are\n" );
 		Com_Printf( "       npcmanager routes                list the saved routes\n" );
 		Com_Printf( "       npcmanager reindex               rescan the filesystem for NPC types and models\n" );
 		Com_Printf( "       npcmanager close                 close the NPC manager\n" );
@@ -2935,6 +3029,11 @@ static void NM_PickClick( void ) {
 	vec3_t pos;
 
 	if ( nm.pick == NM_PICK_SELECT ) {
+		// Ctrl marks one, or unmarks it, and goes on picking
+		if ( ( nm.held[A_CTRL] || nm.held[A_CTRL2] ) && NM_NpcAtCursor() >= 0 ) {
+			NM_ToggleMark( nm.npcs[NM_NpcAtCursor()].num );
+			return;
+		}
 		// a miss keeps flying, to look for it elsewhere
 		if ( NM_NpcAtCursor() >= 0 ) {
 			NM_SelectAtCursor();
@@ -3462,6 +3561,9 @@ static const char *NM_SourceLabel( const nmType_t *t ) {
 static void NM_DrawNpcRow( int row, float x, float y, float w ) {
 	const nmNpc_t *n = &nm.npcs[nm.npcView[row]];
 
+	// marked with Ctrl+click
+	if ( NM_IsMarked( n->num ) )
+		NM_Fill( x - 3, y, 2, NM_ROW_H - 2, nmAccent );
 	NM_Text( x, y, va( S_COLOR_CYAN "%i", n->num ), nmWhite );
 	NM_TextClipped( x + 34, y, w - 34, n->name[0] ? va( "%s " S_COLOR_GREY "%s", n->name, n->type ) : va( S_COLOR_GREY "%s", n->type ), nmWhite );
 }
@@ -3882,12 +3984,21 @@ static void NM_DrawPreview( void ) {
 static void NM_DrawManage( void ) {
 	const qboolean experimental = CL_RpHooks_Experimental();
 	const nmNpc_t *npc;
-	const char *target, *targetAll;
+	const char *target, *targetAll, *walker;
 	float y, w;
-	int named;
+	int named, marked;
 	vec3_t org;
 
 	NM_Field( NM_F_NPC_SEARCH, NM_LEFT_X, NM_SEARCH_Y, NM_LEFT_W, "Type to filter by number, type or name" );
+	// Ctrl+click marks several, to walk them together
+	if ( ( nm.held[A_CTRL] || nm.held[A_CTRL2] ) && NM_Clicked( NM_LEFT_X, NM_LIST_Y, NM_LEFT_W, NM_LIST_H ) ) {
+		const int row = nm.npcList.scroll + (int)( ( nm.clickY - NM_LIST_Y ) / NM_ROW_H );
+
+		if ( row < nm.numNpcView ) {
+			nm.npcList.sel = row;
+			NM_ToggleMark( nm.npcs[nm.npcView[row]].num );
+		}
+	}
 	NM_List( &nm.npcList, nm.numNpcView, NM_LEFT_X, NM_LIST_Y, NM_LEFT_W, NM_LIST_H, NM_DrawNpcRow );
 	if ( nm.npcList.sel < nm.numNpcView )
 		nm.selNum = nm.npcs[nm.npcView[nm.npcList.sel]].num;
@@ -3909,7 +4020,12 @@ static void NM_DrawManage( void ) {
 
 	y = NM_LIST_Y;
 	NM_Box( NM_RIGHT_X, y, NM_RIGHT_W, 34, nmPanelLight );
-	if ( npc ) {
+	if ( nm.apply == NM_APPLY_MARKED ) {
+		const char *marked = NM_WalkTarget();
+
+		NM_TextClipped( NM_RIGHT_X + 6, y + 4, NM_RIGHT_W - 12, va( S_COLOR_CYAN "Marked  " S_COLOR_WHITE "%s", marked ? marked : "none in the list" ), nmWhite );
+		NM_TextClipped( NM_RIGHT_X + 6, y + 18, NM_RIGHT_W - 12, S_COLOR_GREY "Ctrl+click marks more. They walk together, keeping their places", nmWhite );
+	} else if ( npc ) {
 		NM_NpcOrigin( npc, org );
 		NM_TextClipped( NM_RIGHT_X + 6, y + 4, NM_RIGHT_W - 12,
 			va( S_COLOR_CYAN "%i  " S_COLOR_YELLOW "%s  " S_COLOR_WHITE "%s", npc->num, npc->type, npc->name[0] ? npc->name : S_COLOR_GREY "(no targetname)" ), nmWhite );
@@ -3923,14 +4039,19 @@ static void NM_DrawManage( void ) {
 	y += 42;
 	named = npc && npc->name[0] ? NM_CountNamed( npc->name ) : 0;
 	NM_Label( y, "Apply to" );
-	if ( NM_Button( NM_CTRL_X, y, 80, "This NPC", (qboolean)( nm.apply == NM_APPLY_ONE ), (qboolean)( npc != NULL ) ) )
+	marked = NM_CountMarked();
+	if ( NM_Button( NM_CTRL_X, y, 60, "This NPC", (qboolean)( nm.apply == NM_APPLY_ONE ), (qboolean)( npc != NULL ) ) )
 		nm.apply = NM_APPLY_ONE;
-	if ( NM_Button( NM_CTRL_X + 84, y, 110, named ? va( "Named alike (%i)", named ) : "Named alike", (qboolean)( nm.apply == NM_APPLY_NAME ), (qboolean)( named > 0 ) ) )
+	if ( NM_Button( NM_CTRL_X + 64, y, 100, named ? va( "Named alike (%i)", named ) : "Named alike", (qboolean)( nm.apply == NM_APPLY_NAME ), (qboolean)( named > 0 ) ) )
 		nm.apply = NM_APPLY_NAME;
-	if ( NM_Button( NM_CTRL_X + 198, y, 82, "All NPCs", (qboolean)( nm.apply == NM_APPLY_ALL ), qtrue ) )
+	// Ctrl+click in the list or on the map marks them
+	if ( NM_Button( NM_CTRL_X + 168, y, 66, marked ? va( "Marked (%i)", marked ) : "Marked", (qboolean)( nm.apply == NM_APPLY_MARKED ), (qboolean)( marked > 0 ) ) )
+		nm.apply = NM_APPLY_MARKED;
+	if ( NM_Button( NM_CTRL_X + 238, y, 42, "All", (qboolean)( nm.apply == NM_APPLY_ALL ), qtrue ) )
 		nm.apply = NM_APPLY_ALL;
 	target = NM_ApplyTarget( qfalse );
 	targetAll = NM_ApplyTarget( qtrue );
+	walker = NM_WalkTarget();
 
 	w = 66;
 	y += 24;
@@ -3994,7 +4115,7 @@ static void NM_DrawManage( void ) {
 
 	y += 20;
 	NM_Label( y, "Walk" );
-	if ( NM_Button( NM_CTRL_X, y, 88, "Route on map...", qfalse, (qboolean)( experimental && target != NULL ) ) )
+	if ( NM_Button( NM_CTRL_X, y, 88, "Route on map...", qfalse, (qboolean)( experimental && walker != NULL ) ) )
 		NM_StartPick( NM_PICK_ROUTE );
 	// a click runs it instead, and back
 	if ( NM_Button( NM_CTRL_X + 92, y, 40, nm.routeRun ? "Run" : "Walk", qfalse, experimental ) )
@@ -4002,10 +4123,10 @@ static void NM_DrawManage( void ) {
 	// and round and round, until Stop
 	if ( NM_Button( NM_CTRL_X + 136, y, 40, nm.routeLoop ? "Loop" : "Once", qfalse, experimental ) )
 		nm.routeLoop = (qboolean)!nm.routeLoop;
-	if ( NM_Button( NM_CTRL_X + 180, y, 48, "Again", qfalse, (qboolean)( experimental && target != NULL && nm.routeName[0] ) ) )
+	if ( NM_Button( NM_CTRL_X + 180, y, 48, "Again", qfalse, (qboolean)( experimental && walker != NULL && nm.routeName[0] ) ) )
 		NM_Walk( nm.routeName );
-	if ( NM_Button( NM_CTRL_X + 232, y, NM_CTRL_W - 232, "Stop", qfalse, (qboolean)( experimental && target != NULL ) ) ) {
-		const char *cmd = va( "npcmanager walk %s stop", target );
+	if ( NM_Button( NM_CTRL_X + 232, y, NM_CTRL_W - 232, "Stop", qfalse, (qboolean)( experimental && walker != NULL ) ) ) {
+		const char *cmd = va( "npcmanager walk %s stop", walker );
 
 		if ( !CL_Storyteller_Capture( cmd ) )
 			Cbuf_AddText( va( "%s\n", cmd ) );
@@ -4129,7 +4250,7 @@ static void NM_DrawLabels( void ) {
 	for ( int i = 0; i < nm.numNpcs; i++ ) {
 		const nmNpc_t *n = &nm.npcs[i];
 		const char *label = n->name[0] ? va( "%i %s", n->num, n->name ) : va( "%i %s", n->num, n->type );
-		qboolean sel = (qboolean)( n->num == nm.selNum || i == hovered );
+		qboolean sel = (qboolean)( n->num == nm.selNum || i == hovered || NM_IsMarked( n->num ) );
 
 		NM_NpcOrigin( n, org );
 		org[2] += 40.0f;
@@ -4171,6 +4292,20 @@ static void NM_DrawMarker( const vec3_t pos, int yaw, const char *label, const f
 	NM_Text( hx - tw * 0.5f, hy - 15, label, color );
 }
 
+// where each of a group walking together stands at a spot: a dot, its number by it
+static void NM_DrawGroupSpots( const vec3_t spot, const vec3_t *starts, int count, const vec3_t middle, const float *color ) {
+	for ( int m = 0; m < count; m++ ) {
+		vec3_t offset, at;
+		float x, y;
+
+		VectorSubtract( starts[m], middle, offset );
+		offset[2] = 0.0f;
+		CL_NpcWalk_GroupSpot( spot, offset, at );
+		if ( NM_Project( at, &x, &y ) )
+			NM_Fill( x - 2, y - 2, 4, 4, color );
+	}
+}
+
 static const char *NM_MarkerLabel( const nmSpawn_t *s ) {
 	return s->targetname[0] ? va( "%s %s", s->type, s->targetname ) : s->type;
 }
@@ -4187,20 +4322,28 @@ static void NM_DrawPick( void ) {
 		NM_DrawMarker( nm.placed[i].pos, nm.placed[i].yaw, NM_MarkerLabel( &nm.placed[i] ), nmPlacedColor );
 
 	if ( nm.pick == NM_PICK_SELECT ) {
-		what = "Aim at an NPC's label and click to select it.   Right-click or Esc cancels";
+		what = "Aim at an NPC's label and click to select it, Ctrl+click to mark several to walk together.   Right-click or Esc cancels";
 	} else if ( nm.pick == NM_PICK_ROUTE ) {
 		const nmNpc_t *npc = NM_SelectedNpc();
 		qboolean have = (qboolean)( npc != NULL );
-		vec3_t from;
+		vec3_t from, starts[NM_MAX_MARKED], middle;
+		const int group = NM_GroupStarts( starts );
 
-		// from the NPC through the spots, then to where the next would go
-		if ( have )
+		// from the NPC, or the middle of the marked ones, through the spots, then to where the
+		// next would go
+		if ( group ) {
+			CL_NpcWalk_GroupMiddle( starts, group, middle );
+			VectorCopy( middle, from );
+			have = qtrue;
+		} else if ( have ) {
 			NM_NpcOrigin( npc, from );
+		}
 		for ( int i = 0; i < nm.numRoute; i++ ) {
 			if ( have && NM_Project( from, &x, &y ) && NM_Project( nm.route[i], &ex, &ey ) )
 				NM_DottedLine( x, y, ex, ey, nmPlacedColor );
 			yaw = have ? NM_NormalizeYaw( NM_LegYaw( from, nm.route[i] ) ) : 0;
 			NM_DrawMarker( nm.route[i], yaw, va( "%i", i + 1 ), nmPlacedColor );
+			NM_DrawGroupSpots( nm.route[i], starts, group, middle, nmPlacedColor );
 			VectorCopy( nm.route[i], from );
 			have = qtrue;
 		}
@@ -4208,8 +4351,11 @@ static void NM_DrawPick( void ) {
 			NM_Fill( ex - 3, ey - 3, 6, 6, nmAccent );
 			if ( have && NM_Project( from, &x, &y ) )
 				NM_DottedLine( x, y, ex, ey, nmAccent );
+			NM_DrawGroupSpots( pos, starts, group, middle, nmAccent );
 		}
-		what = va( "Click the spots it %s to, one after the other.   Backspace takes the last back, Del clears them",
+		what = group > 1 ? va( "Click the spots the %i marked NPCs %s to, keeping their places.   Backspace takes the last back, Del clears them",
+			group, nm.routeRun ? "run" : "walk" )
+			: va( "Click the spots it %s to, one after the other.   Backspace takes the last back, Del clears them",
 			nm.routeRun ? "runs" : "walks" );
 	} else if ( nm.pick == NM_PICK_PLACE ) {
 		// what a click puts down, and where

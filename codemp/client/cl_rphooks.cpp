@@ -35,7 +35,8 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 //
 //   cmd:npc/walk/<entity number>/<speed>/<x y z>/<x y z>...
 //     the NPC walks the spots, on the screens of everyone with this client; see
-//     cl_npcwalk.cpp. cmd:npc/walk/<entity number>/stop ends it.
+//     cl_npcwalk.cpp. cmd:npc/walk/<entity number>[,<entity number>...]/stop ends it.
+//     cmd:npc/group/<speed>/<entity number x y z>.../<x y z>... walks several together.
 //
 //   cmd:objective/<add|done|undone|remove|clear|title>: <text or number>
 //     the mission's objectives, listed on the left while the menu (Esc) is up.
@@ -55,7 +56,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #include "client.h"
 
 #define RH_PREFIX		"cmd:"
-#define RH_MAX_ARGS		40		// a camera move's spots, an NPC walk's
+#define RH_MAX_ARGS		64		// a camera move's spots, an NPC walk's, a group's NPCs and spots
 // RPMod word-wraps centre prints at about 50 characters a line, and a word longer than
 // a line crashes the server: 36 in a row went through, 65 didn't
 #define RH_MAX_WORD		40
@@ -354,6 +355,10 @@ static rhResult_t RH_Run( const char *text ) {
 
 	if ( !Q_stricmp( argv[0], "npc" ) && argc >= 2 && !Q_stricmp( argv[1], "walk" ) ) {
 		CL_NpcWalk_Hook( argv + 2, argc - 2 );
+		return RH_DROP;
+	}
+	if ( !Q_stricmp( argv[0], "npc" ) && argc >= 2 && !Q_stricmp( argv[1], "group" ) ) {
+		CL_NpcWalk_GroupHook( argv + 2, argc - 2 );
 		return RH_DROP;
 	}
 	if ( !Q_stricmp( argv[0], "npc" ) )
