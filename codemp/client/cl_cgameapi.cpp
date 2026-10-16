@@ -386,6 +386,13 @@ static void CL_FX_AddScheduledEffects( qboolean portal ) {
 	FX_AddScheduledEffects( portal );
 }
 
+// the cgame's looping sounds go to the mixer as it places the listener: the map editor's
+// speakers go with them, after the cgame cleared the last frame's
+static void CL_S_Respatialize( int entityNum, const vec3_t head, matrix3_t axis, int inwater ) {
+	CL_MapEditor_Sounds( head );
+	S_Respatialize( entityNum, head, axis, inwater );
+}
+
 static void CL_AddCgameCommand( const char *cmdName ) {
 	Cmd_AddCommand( cmdName, NULL );
 }
@@ -1138,7 +1145,7 @@ intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 		return 0;
 
 	case CG_S_RESPATIALIZE:
-		S_Respatialize( args[1], (const float *)VMA(2), (vec3_t *)VMA(3), args[4] );
+		CL_S_Respatialize( args[1], (const float *)VMA(2), (vec3_t *)VMA(3), args[4] );
 		return 0;
 
 	case CG_S_SHUTUP:
@@ -1838,7 +1845,7 @@ void CL_BindCGame( void ) {
 		cgi.S_GetVoiceVolume					= CL_S_GetVoiceVolume;
 		cgi.S_MuteSound							= S_MuteSound;
 		cgi.S_RegisterSound						= S_RegisterSound;
-		cgi.S_Respatialize						= S_Respatialize;
+		cgi.S_Respatialize						= CL_S_Respatialize;
 		cgi.S_Shutup							= CL_S_Shutup;
 		cgi.S_StartBackgroundTrack				= S_StartBackgroundTrack;
 		cgi.S_StartLocalSound					= S_StartLocalSound;

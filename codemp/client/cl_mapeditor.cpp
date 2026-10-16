@@ -29,6 +29,8 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 // the world and drawn as a model of their own, with the light they had.
 // Lights: dynamic lights, their colour and reach, and a light style they can follow.
 // Triggers: boxes that run a console command when the player walks in.
+// Sounds: speakers playing a sound or a piece of music round and round, heard near them
+// or everywhere on the map, as a target_speaker would; saved as one.
 // Styles: the map's light styles, the switchable lights it was built with, given a
 // pattern and a colour of our own.
 //
@@ -43,8 +45,8 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 //   cmd:map/add/<id>/<part>: <edit> | <edit> | ...
 //   cmd:map/end/<id>/<parts>               shown in place of the player's own until
 //                                          cmd:map/clear: <map>, or another map
-// An edit is m (a model), p (a map prop), l (a light), s (a light style) or h (a hidden
-// brush entity), then its numbers; a model's path and a style's letters come last, with
+// An edit is m (a model), p (a map prop), l (a light), a (a speaker), s (a light style) or
+// h (a hidden brush entity), then its numbers; a model's path and a style's letters come last, with
 // spaces put in so no word is long, and taken out again. Triggers stay with whoever made
 // them: a print never runs a command. Only what's drawn changes: walls hidden still block,
 // props moved don't, as the server knows nothing of it. Players who join later see the
@@ -90,17 +92,21 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define ME_MAX_SEEDS		32			// pieces a map prop is found from
 #define ME_PROP_MAX_TRIS	20000		// bigger than this it's the map, not a prop
 #define ME_PROP_MAX_SIZE	1024.0f
+#define ME_MAX_SOUNDS		8192		// sounds and music to pick from
+#define ME_SOUND_POOL		( ME_MAX_SOUNDS * 48 )
+#define ME_SOUND_NEAR		256.0f		// a speaker's sound is at its loudest this near
 
 typedef enum {
 	ME_TAB_MAP,
 	ME_TAB_MODELS,
 	ME_TAB_LIGHTS,
 	ME_TAB_TRIGGERS,
+	ME_TAB_SOUNDS,
 	ME_TAB_STYLES,
 	ME_NUM_TABS
 } meTab_t;
 
-static const char *meTabNames[ME_NUM_TABS] = { "Map", "Models", "Lights", "Triggers", "Styles" };
+static const char *meTabNames[ME_NUM_TABS] = { "Map", "Models", "Lights", "Triggers", "Sounds", "Styles" };
 
 // what can be chosen
 typedef enum {
@@ -134,7 +140,8 @@ typedef enum {
 	ME_ITEM_MODEL,
 	ME_ITEM_LIGHT,
 	ME_ITEM_TRIGGER,
-	ME_ITEM_PROP		// a prop of the map's, lifted out
+	ME_ITEM_PROP,		// a prop of the map's, lifted out
+	ME_ITEM_SPEAKER		// a sound playing round and round
 } meItemKind_t;
 
 typedef struct {
@@ -152,6 +159,13 @@ typedef struct {
 	vec3_t		color;
 	float		radius;
 	int			style;
+
+	// a speaker: its sound, heard everywhere or fading with distance, playing or not
+	char		noise[MAX_QPATH];
+	qboolean	global;
+	qboolean	off;
+	sfxHandle_t	sfx;
+	qboolean	sfxRegistered;
 
 	// a trigger: a box that size either way from org
 	vec3_t		size;
@@ -222,7 +236,8 @@ typedef enum {
 	ME_FIELD_SEARCH,		// the models
 	ME_FIELD_COMMAND,		// a trigger's
 	ME_FIELD_PATTERN,		// a light style's
-	ME_FIELD_LAYOUT			// a layout's name
+	ME_FIELD_LAYOUT,		// a layout's name
+	ME_FIELD_SOUND			// a speaker's sound
 } meField_t;
 
 typedef struct {
@@ -288,6 +303,13 @@ typedef struct {
 	int			searchScroll;
 	char		pickModel[MAX_QPATH];
 
+	// sounds and music to choose from
+	qboolean	soundsIndexed;
+	char		*sounds[ME_MAX_SOUNDS];
+	int			numSounds;
+	int			soundPoolUsed;
+	int			soundScroll;
+
 	// the view drawn, for picking and labels
 	qboolean	haveView;
 	vec3_t		viewOrg;
@@ -340,6 +362,7 @@ typedef struct {
 
 static meState_t me;
 static char meNamePool[ME_NAME_POOL];
+static char meSoundPool[ME_SOUND_POOL];
 static cvar_t *rpc_mapEdits;
 static cvar_t *rpc_mapShare;
 
@@ -363,6 +386,7 @@ static const byte meSelColor[4]		= { 255, 255, 255, 255 };
 static const byte meAimColor[4]		= { 255, 140, 40, 255 };
 static const byte meReachColor[4]	= { 255, 255, 255, 70 };
 static const byte meCandColor[4]	= { 255, 90, 200, 255 };
+static const byte meSpeakerColor[4]	= { 190, 120, 255, 255 };
 
 static int ME_Round( float f ) {
 	return (int)( f < 0 ? f - 0.5f : f + 0.5f );
@@ -395,11 +419,12 @@ static meEnt_t *ME_SelectedEnt( void ) {
 }
 
 static int ME_ItemTab( int kind ) {
-	return kind == ME_ITEM_MODEL || kind == ME_ITEM_PROP ? ME_TAB_MODELS : kind == ME_ITEM_LIGHT ? ME_TAB_LIGHTS : ME_TAB_TRIGGERS;
+	return kind == ME_ITEM_MODEL || kind == ME_ITEM_PROP ? ME_TAB_MODELS : kind == ME_ITEM_LIGHT ? ME_TAB_LIGHTS
+		: kind == ME_ITEM_SPEAKER ? ME_TAB_SOUNDS : ME_TAB_TRIGGERS;
 }
 
 static int ME_TabItemKind( int tab ) {
-	return tab == ME_TAB_MODELS ? ME_ITEM_MODEL : tab == ME_TAB_LIGHTS ? ME_ITEM_LIGHT : ME_ITEM_TRIGGER;
+	return tab == ME_TAB_MODELS ? ME_ITEM_MODEL : tab == ME_TAB_LIGHTS ? ME_ITEM_LIGHT : tab == ME_TAB_SOUNDS ? ME_ITEM_SPEAKER : ME_ITEM_TRIGGER;
 }
 
 /*
@@ -994,6 +1019,8 @@ static void ME_ForgetHandles( void ) {
 	for ( int i = 0; i < me.numItems; i++ ) {
 		me.items[i].registered = qfalse;
 		me.items[i].h = 0;
+		me.items[i].sfxRegistered = qfalse;
+		me.items[i].sfx = 0;
 	}
 	me.numHidden = 0;
 	// the renderer's world comes back whole
@@ -1052,6 +1079,7 @@ static void ME_PlaceAt( meItem_t *it, const vec3_t at, const vec3_t normal ) {
 		VectorCopy( at, it->org );
 		break;
 	case ME_ITEM_LIGHT:
+	case ME_ITEM_SPEAKER:
 		VectorMA( at, 16.0f, normal, it->org );
 		break;
 	default:
@@ -1359,6 +1387,12 @@ static int ME_SaveTo( const char *path ) {
 				ME_Print( f, "modelscale", va( "%g", it->scale ) );
 			if ( it->removed )
 				ME_Print( f, "removed", "1" );
+		} else if ( it->kind == ME_ITEM_SPEAKER ) {
+			// looped on or off, and global: a target_speaker's spawnflags
+			ME_Print( f, "classname", "target_speaker" );
+			ME_Print( f, "origin", ME_Vec( it->org ) );
+			ME_Print( f, "noise", it->noise );
+			ME_Print( f, "spawnflags", va( "%i", ( it->off ? 2 : 1 ) | ( it->global ? 4 : 0 ) ) );
 		} else if ( it->kind == ME_ITEM_LIGHT ) {
 			ME_Print( f, "classname", "rpm_light" );
 			ME_Print( f, "origin", ME_Vec( it->org ) );
@@ -1464,6 +1498,16 @@ static void ME_LoadEntity( const meKv_t *kv, int num ) {
 		it->removed = (qboolean)( atoi( ME_Value( kv, num, "removed", "0" ) ) != 0 );
 		if ( it->numSeeds )
 			me.numItems++;
+	} else if ( !Q_stricmp( classname, "target_speaker" ) ) {
+		const int flags = atoi( ME_Value( kv, num, "spawnflags", "1" ) );
+
+		if ( !( it = ME_NewItem( ME_ITEM_SPEAKER ) ) )
+			return;
+		ME_ParseVector( ME_Value( kv, num, "origin", "0 0 0" ), it->org );
+		Q_strncpyz( it->noise, ME_Value( kv, num, "noise", "" ), sizeof( it->noise ) );
+		it->off = (qboolean)( ( flags & 2 ) && !( flags & 1 ) );
+		it->global = (qboolean)( ( flags & 4 ) != 0 );
+		me.numItems++;
 	} else if ( !Q_stricmp( classname, "rpm_light" ) ) {
 		if ( !( it = ME_NewItem( ME_ITEM_LIGHT ) ) )
 			return;
@@ -1665,6 +1709,9 @@ static const char *ME_ShareItem( const meItem_t *it ) {
 	} else if ( it->kind == ME_ITEM_LIGHT ) {
 		Q_strcat( out, sizeof( out ), va( "l %s %i %g %g %g %i", ME_Vec( it->org ), ME_Round( it->radius ),
 			it->color[0], it->color[1], it->color[2], it->style ) );
+	} else if ( it->kind == ME_ITEM_SPEAKER && it->noise[0] ) {
+		Q_strcat( out, sizeof( out ), va( "a %s %i ", ME_Vec( it->org ), ( it->off ? 2 : 1 ) | ( it->global ? 4 : 0 ) ) );
+		ME_AppendSplit( out, sizeof( out ), it->noise );
 	}
 	return out;
 }
@@ -1815,6 +1862,15 @@ static void ME_ApplyShared( const char *edit ) {
 		ME_KV( "radius", va( "%g", f[3] ) );
 		ME_KV( "_color", va( "%g %g %g", f[4], f[5], f[6] ) );
 		ME_KV( "style", va( "%i", (int)f[7] ) );
+		break;
+	case 'a':
+		if ( sscanf( edit + 1, "%f %f %f %f %n", &f[0], &f[1], &f[2], &f[3], &used ) < 4 || !used )
+			return;
+		ME_Unsplit( edit + 1 + used, rest, sizeof( rest ) );
+		ME_KV( "classname", "target_speaker" );
+		ME_KV( "origin", va( "%g %g %g", f[0], f[1], f[2] ) );
+		ME_KV( "spawnflags", va( "%i", (int)f[3] ) );
+		ME_KV( "noise", rest );
 		break;
 	case 's':
 		if ( sscanf( edit + 1, "%f %f %f %f %n", &f[0], &f[1], &f[2], &f[3], &used ) < 4 || !used )
@@ -2321,6 +2377,11 @@ static char *ME_FieldBuffer( int *size ) {
 	case ME_FIELD_LAYOUT:
 		*size = sizeof( me.layoutName );
 		return me.layoutName;
+	case ME_FIELD_SOUND:
+		if ( !it || it->kind != ME_ITEM_SPEAKER )
+			return NULL;
+		*size = sizeof( it->noise );
+		return it->noise;
 	default:
 		return NULL;
 	}
@@ -2333,6 +2394,11 @@ static void ME_FieldEdited( void ) {
 		me.searchScroll = 0;
 	else if ( me.field != ME_FIELD_LAYOUT )
 		ME_Changed();
+	// another sound: heard as typed, once it's one
+	if ( me.field == ME_FIELD_SOUND && ME_SelectedItem() ) {
+		ME_SelectedItem()->sfxRegistered = qfalse;
+		me.soundScroll = 0;
+	}
 }
 
 void CL_MapEditor_KeyEvent( int key, qboolean down ) {
@@ -2718,6 +2784,33 @@ static void ME_LightNow( const meItem_t *it, vec3_t color ) {
 	}
 }
 
+// a speaker's sound, registered when first wanted; 0 if there's none to play. The game keeps
+// MP3s of sound/chars to stream, and a stream can't loop
+static sfxHandle_t ME_SpeakerSound( meItem_t *it ) {
+	if ( !it->sfxRegistered ) {
+		it->sfxRegistered = qtrue;
+		it->sfx = 0;
+		if ( it->noise[0] && Q_stricmpn( it->noise, "sound/chars/", 12 ) && FS_ReadFile( it->noise, NULL ) > 0 )
+			it->sfx = S_RegisterSound( it->noise );
+	}
+	return it->sfx;
+}
+
+// the speakers, round and round: near them, or as loud everywhere, where the listener's ear
+// is. Each frame, as the cgame hands its own looping sounds to the mixer
+void CL_MapEditor_Sounds( const vec3_t ear ) {
+	if ( cls.state != CA_ACTIVE || !ME_Shown() || !me.map[0] || Q_stricmp( me.map, cl.mapname ) )
+		return;
+	for ( int i = 0; i < me.numItems; i++ ) {
+		meItem_t *it = &me.items[i];
+		sfxHandle_t sfx;
+
+		if ( it->kind != ME_ITEM_SPEAKER || it->off || !( sfx = ME_SpeakerSound( it ) ) )
+			continue;
+		S_AddLoopingSound( ENTITYNUM_WORLD, it->global ? ear : it->org, vec3_origin, sfx );
+	}
+}
+
 // the models and lights, in every main view
 static void ME_AddItems( void ) {
 	for ( int i = 0; i < me.numItems; i++ ) {
@@ -2783,6 +2876,10 @@ static void ME_AddEditorLines( void ) {
 		if ( it->kind == ME_ITEM_TRIGGER ) {
 			ME_ItemBounds( it, mins, maxs );
 			ME_BoxLines( mins, maxs, sel || hover ? meSelColor : meOurTrigger );
+		} else if ( it->kind == ME_ITEM_SPEAKER ) {
+			ME_Cross( it->org, sel || hover ? 10.0f : 6.0f, sel || hover ? meSelColor : it->off ? meHiddenColor : meSpeakerColor );
+			if ( sel && !it->global )
+				ME_Circle( it->org, ME_SOUND_NEAR, 2, meReachColor );
 		} else if ( it->kind == ME_ITEM_LIGHT ) {
 			byte color[4];
 			vec3_t c;
@@ -3222,6 +3319,9 @@ static meItem_t *ME_DrawItemList( float *py, float x, float w, int kind, const c
 			text = va( "%i  %s", r + me.itemScroll[tab] + 1, COM_SkipPath( (char *)row->model ) );
 		else if ( kind == ME_ITEM_LIGHT )
 			text = va( "%i  reach %i%s", r + me.itemScroll[tab] + 1, ME_Round( row->radius ), row->style >= 0 ? va( ", style %i", row->style ) : "" );
+		else if ( kind == ME_ITEM_SPEAKER )
+			text = va( "%i  %s" S_COLOR_GREY "  %s%s", r + me.itemScroll[tab] + 1, row->noise[0] ? COM_SkipPath( (char *)row->noise ) : S_COLOR_YELLOW "no sound",
+				row->global ? "everywhere" : "here", row->off ? ", stopped" : "" );
 		else
 			text = va( "%i  %s", r + me.itemScroll[tab] + 1, row->command[0] ? row->command : S_COLOR_GREY "no command" );
 		ME_TextClipped( x + 4, ry, w - 8, text, meWhite );
@@ -3449,6 +3549,106 @@ static void ME_DrawTriggersTab( float x, float y, float w ) {
 		if ( ME_Button( x, y, w, "Done; let it run again", qfalse, qtrue ) )
 			it->fired = qfalse;
 	}
+}
+
+static void ME_AddSound( const char *name, const char *source, void *ctx ) {
+	char path[MAX_QPATH];
+	const int len = strlen( name );
+
+	if ( me.numSounds >= ME_MAX_SOUNDS || me.soundPoolUsed + len + 1 > ME_SOUND_POOL || len >= MAX_QPATH )
+		return;
+	// streamed, these can't loop
+	if ( !Q_stricmpn( name, "sound/chars/", 12 ) )
+		return;
+	Q_strncpyz( path, name, sizeof( path ) );
+	for ( char *c = path; *c; c++ ) {
+		if ( *c == '\\' )
+			*c = '/';
+	}
+	me.sounds[me.numSounds++] = strcpy( meSoundPool + me.soundPoolUsed, path );
+	me.soundPoolUsed += len + 1;
+}
+
+static int QDECL ME_CompareSounds( const void *a, const void *b ) {
+	return Q_stricmp( *(const char * const *)a, *(const char * const *)b );
+}
+
+// the music first, then the sounds, each found once
+static void ME_IndexSounds( void ) {
+	static const char *roots[] = { "music", "sound" };
+	static const char *exts[] = { ".mp3", ".wav" };
+	int count = 0;
+
+	me.numSounds = me.soundPoolUsed = 0;
+	for ( int r = 0; r < (int)ARRAY_LEN( roots ); r++ ) {
+		const int from = me.numSounds;
+
+		for ( int e = 0; e < (int)ARRAY_LEN( exts ); e++ )
+			FS_ListFilesRecursiveFrom( roots[r], exts[e], ME_AddSound, NULL );
+		qsort( me.sounds + from, me.numSounds - from, sizeof( me.sounds[0] ), ME_CompareSounds );
+		// the same file in several pk3s
+		count = from;
+		for ( int i = from; i < me.numSounds; i++ ) {
+			if ( count == from || Q_stricmp( me.sounds[i], me.sounds[count - 1] ) )
+				me.sounds[count++] = me.sounds[i];
+		}
+		me.numSounds = count;
+	}
+	me.soundsIndexed = qtrue;
+}
+
+static void ME_DrawSoundsTab( float x, float y, float w ) {
+	meItem_t *it = ME_DrawItemList( &y, x, w, ME_ITEM_SPEAKER, "Add" );
+	const float half = ( w - 4 ) * 0.5f;
+	static int matches[ME_MAX_SOUNDS];
+	int numMatches = 0, clicked;
+	const int rows = 10;
+
+	if ( !it ) {
+		ME_Text( x, y + 4, S_COLOR_GREY "A speaker at the crosshair, playing a sound", meWhite );
+		ME_Text( x, y + 4 + ME_ROW_H, S_COLOR_GREY "or music round and round, as a target_speaker", meWhite );
+		return;
+	}
+	if ( ME_Button( x, y, half, it->global ? "Heard everywhere" : "Heard near it", it->global, qtrue ) ) {
+		it->global = (qboolean)!it->global;
+		ME_Changed();
+	}
+	if ( ME_Button( x + half + 4, y, half, it->off ? "Stopped" : "Playing", (qboolean)!it->off, qtrue ) ) {
+		it->off = (qboolean)!it->off;
+		ME_Changed();
+	}
+	y += ME_CTRL_H + ME_GAP + 4;
+
+	// the sound: typed, or picked from the ones that match what's typed
+	ME_Text( x, y, va( "Sound%s", it->noise[0] && !ME_SpeakerSound( it ) ? S_COLOR_RED "  not found" : "" ), meDim );
+	y += ME_ROW_H;
+	ME_TextBox( x, y, w, ME_FIELD_SOUND, it->noise, "type to look for one, e.g. music/" );
+	y += ME_CTRL_H + ME_GAP;
+	if ( !me.soundsIndexed )
+		ME_IndexSounds();
+	for ( int i = 0; i < me.numSounds; i++ ) {
+		if ( !it->noise[0] || Q_stristr( me.sounds[i], it->noise ) )
+			matches[numMatches++] = i;
+	}
+	clicked = ME_ListRows( x, y, w, rows, numMatches, &me.soundScroll );
+	for ( int r = 0; r < rows && me.soundScroll + r < numMatches; r++ ) {
+		const char *name = me.sounds[matches[me.soundScroll + r]];
+
+		if ( !Q_stricmp( name, it->noise ) )
+			ME_RowHighlight( x, y, w, r + me.soundScroll, me.soundScroll, rows );
+		ME_TextClipped( x + 4, y + 1 + r * ME_ROW_H, w - 8, name, meWhite );
+	}
+	if ( !numMatches )
+		ME_Text( x + 4, y + 2, S_COLOR_GREY "None match", meWhite );
+	if ( clicked >= 0 ) {
+		Q_strncpyz( it->noise, me.sounds[matches[clicked]], sizeof( it->noise ) );
+		it->sfxRegistered = qfalse;
+		me.field = ME_FIELD_NONE;
+		ME_Changed();
+	}
+	y += rows * ME_ROW_H + 6;
+	ME_Text( x, y, va( S_COLOR_GREY "%i of %i: the music, then the sounds", numMatches, me.numSounds ), meWhite );
+	ME_Text( x, y + ME_ROW_H, S_COLOR_GREY "Shared, everyone with this client hears it", meWhite );
 }
 
 static void ME_DrawStylesTab( float x, float y, float w ) {
@@ -3785,6 +3985,7 @@ static void ME_DrawEditor( void ) {
 	case ME_TAB_MODELS:		ME_DrawModelsTab( x, y, w );	break;
 	case ME_TAB_LIGHTS:		ME_DrawLightsTab( x, y, w );	break;
 	case ME_TAB_TRIGGERS:	ME_DrawTriggersTab( x, y, w );	break;
+	case ME_TAB_SOUNDS:		ME_DrawSoundsTab( x, y, w );	break;
 	default:				ME_DrawStylesTab( x, y, w );	break;
 	}
 
