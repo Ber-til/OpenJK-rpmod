@@ -990,6 +990,8 @@ void CL_MouseEvent( int dx, int dy, int time ) {
 		CL_RpCinematic_EditorMouseEvent( dx, dy );
 	} else if ( Key_GetCatcher( ) & KEYCATCH_RADIALMENU ) {
 		CL_RadialMenu_SettingsMouseEvent( dx, dy );
+	} else if ( Key_GetCatcher( ) & KEYCATCH_LANGUAGES ) {
+		CL_Languages_MouseEvent( dx, dy );
 	} else if ( Key_GetCatcher( ) & KEYCATCH_CGAME ) {
 		CGVM_MouseEvent( dx, dy );
 	} else if ( CL_RadialMenu_MouseEvent( dx, dy ) ) {

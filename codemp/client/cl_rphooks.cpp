@@ -33,6 +33,11 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 //     box, as a player's chat would be. The emote is for whoever sends it to
 //     play with "npc emote"; the storyteller does.
 //
+//   cmd:npc/walk/<entity number>/<speed>/<x y z>/<x y z>...
+//     the NPC walks the spots, on the screens of everyone with this client; see
+//     cl_npcwalk.cpp. cmd:npc/walk/<entity number>[,<entity number>...]/stop ends it.
+//     cmd:npc/group/<speed>/<entity number x y z>.../<x y z>... walks several together.
+//
 //   cmd:objective/<add|done|undone|remove|clear|title>: <text or number>
 //     the mission's objectives, listed on the left while the menu (Esc) is up.
 //     done strikes one through, undone takes the line off again, remove takes it
@@ -44,6 +49,10 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 //
 //   cmd:map/<verb>/...
 //     an admin's map edits, shown to everyone on the map; see cl_mapeditor.cpp.
+//
+//   cmd:sky/<r g b>/<degrees a second>/<pitch yaw roll>/<x y z>
+//     the sky tinted, spun round and turned, a 3D skybox's view also moved, until the
+//     map changes; see cl_shadermanager.cpp. cmd:sky/off puts it back.
 //     cmd:startcinematic and cmd:endcinematic start and end one too.
 //
 // Hooks only ever show things: nothing a server sends here runs a command.
@@ -51,7 +60,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #include "client.h"
 
 #define RH_PREFIX		"cmd:"
-#define RH_MAX_ARGS		24		// a camera move's spots
+#define RH_MAX_ARGS		64		// a camera move's spots, an NPC walk's, a group's NPCs and spots
 // RPMod word-wraps centre prints at about 50 characters a line, and a word longer than
 // a line crashes the server: 36 in a row went through, 65 didn't
 #define RH_MAX_WORD		40
@@ -148,7 +157,7 @@ static rhResult_t RH_Npc( char **argv, int argc, const char *message ) {
 	if ( !message[0] )
 		return RH_DROP;
 
-	RH_AddSubtitle( va( "%s%s" S_COLOR_WHITE ": %s", color, name, message ), 1.0f );
+	RH_AddSubtitle( va( "%s%s" S_COLOR_WHITE ": " S_COLOR_GREEN "%s", color, name, CL_Languages_Filter( message ) ), 1.0f );
 	// chat as the game sends it, from right next to us so RPMod's chat range lets it through
 	Com_sprintf( cmd, sizeof( cmd ), "chat \"%s%s" S_COLOR_WHITE "\x19: " S_COLOR_GREEN "%s\" 0", color, name, message );
 	Cmd_TokenizeString( cmd );
@@ -348,6 +357,14 @@ static rhResult_t RH_Run( const char *text ) {
 		p = end + 1;
 	}
 
+	if ( !Q_stricmp( argv[0], "npc" ) && argc >= 2 && !Q_stricmp( argv[1], "walk" ) ) {
+		CL_NpcWalk_Hook( argv + 2, argc - 2 );
+		return RH_DROP;
+	}
+	if ( !Q_stricmp( argv[0], "npc" ) && argc >= 2 && !Q_stricmp( argv[1], "group" ) ) {
+		CL_NpcWalk_GroupHook( argv + 2, argc - 2 );
+		return RH_DROP;
+	}
 	if ( !Q_stricmp( argv[0], "npc" ) )
 		return RH_Npc( argv + 1, argc - 1, message );
 	if ( !Q_stricmp( argv[0], "objective" ) || !Q_stricmp( argv[0], "objectives" ) )
@@ -358,6 +375,10 @@ static rhResult_t RH_Run( const char *text ) {
 	}
 	if ( !Q_stricmp( argv[0], "map" ) ) {
 		CL_MapEditor_Hook( argv + 1, argc - 1, message );
+		return RH_DROP;
+	}
+	if ( !Q_stricmp( argv[0], "sky" ) ) {
+		CL_ShaderManager_SkyHook( argv + 1, argc - 1 );
 		return RH_DROP;
 	}
 	if ( !Q_stricmp( argv[0], "startcinematic" ) || !Q_stricmp( argv[0], "endcinematic" ) ) {
@@ -613,13 +634,11 @@ void CL_RpHooks_ChatSubtitle( void ) {
 
 	if ( !Q_stricmp( FS_GetCurrentGameDir(), "rpmod" ) && isdigit( (unsigned char)num[0] ) && !RH_ChatRange( (float)atoi( num ), &alpha ) )
 		return;
-	// the chat's own green left off, to read as NPC talk does
-	if ( !Q_stricmpn( message, S_COLOR_GREEN, 2 ) )
-		memmove( message, message + 2, strlen( message + 2 ) + 1 );
+	// green as the chat is, unless it has colour codes of its own, which come after and win
 	if ( name[0] )
-		RH_AddSubtitle( va( "%s" S_COLOR_WHITE ": %s", name, message ), alpha );
+		RH_AddSubtitle( va( "%s" S_COLOR_WHITE ": " S_COLOR_GREEN "%s", name, message ), alpha );
 	else
-		RH_AddSubtitle( message, alpha );
+		RH_AddSubtitle( va( S_COLOR_GREEN "%s", message ), alpha );
 }
 
 // NPCs talking and players' chat, at the bottom of the screen: the cinematic hides the chat

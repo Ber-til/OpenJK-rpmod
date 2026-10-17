@@ -477,6 +477,8 @@ if(BuildMPEngine)
 		"${MPDir}/client/cl_rpadmin.cpp"
 		"${MPDir}/client/cl_emotepreview.cpp"
 		"${MPDir}/client/cl_rphooks.cpp"
+		"${MPDir}/client/cl_npcwalk.cpp"
+		"${MPDir}/client/cl_languages.cpp"
 		"${MPDir}/client/cl_rpcinematic.cpp"
 		"${MPDir}/client/cl_ui.cpp"
 		"${MPDir}/client/cl_uiapi.cpp"

@@ -1606,6 +1606,64 @@ const void *RB_RotatePic2 ( const void *data )
 
 /*
 =============
+RB_DepthOfField
+
+The view as drawn, blurred by how far each pixel is from the focus: twice, the second time
+half as far out, to fill in between the first's taps.
+=============
+*/
+static void RB_DepthOfField( void ) {
+	const float zNear = r_znear->value, zFar = backEnd.viewParms.zFar;
+	const float x = (float)backEnd.viewParms.viewportX, y = (float)backEnd.viewParms.viewportY;
+	const float w = (float)backEnd.viewParms.viewportWidth, h = (float)backEnd.viewParms.viewportHeight;
+	const float radius = backEnd.refdef.dofBlur * glConfig.vidHeight / 480.0f;
+
+	if ( zFar <= zNear )
+		return;
+	GL_State( GLS_DEPTHTEST_DISABLE );
+	GL_Cull( CT_TWO_SIDED );
+
+	// the depth as drawn, before anything else is
+	GL_SelectTexture( 1 );
+	qglBindTexture( GL_TEXTURE_RECTANGLE_ARB, tr.dofDepthImage );
+	qglCopyTexSubImage2D( GL_TEXTURE_RECTANGLE_ARB, 0, 0, 0, 0, 0, glConfig.vidWidth, glConfig.vidHeight );
+	GL_SelectTexture( 0 );
+
+	qglViewport( (int)x, (int)y, (int)w, (int)h );
+	qglScissor( (int)x, (int)y, (int)w, (int)h );
+	qglBindProgramARB( GL_VERTEX_PROGRAM_ARB, tr.dofVtxShader );
+	qglBindProgramARB( GL_FRAGMENT_PROGRAM_ARB, tr.dofPxShader );
+	qglProgramLocalParameter4fARB( GL_FRAGMENT_PROGRAM_ARB, 1, 2.0f * zNear * zFar, zFar + zNear, zFar - zNear, 0.0f );
+	qglEnable( GL_VERTEX_PROGRAM_ARB );
+	qglEnable( GL_FRAGMENT_PROGRAM_ARB );
+
+	for ( int pass = 0; pass < 2; pass++ ) {
+		qglBindTexture( GL_TEXTURE_RECTANGLE_ARB, tr.sceneImage );
+		qglCopyTexSubImage2D( GL_TEXTURE_RECTANGLE_ARB, 0, 0, 0, 0, 0, glConfig.vidWidth, glConfig.vidHeight );
+		qglProgramLocalParameter4fARB( GL_FRAGMENT_PROGRAM_ARB, 0, backEnd.refdef.dofFocus, 1.0f / backEnd.refdef.dofRange,
+			pass ? radius * 0.5f : radius, 0.0f );
+		qglBegin( GL_QUADS );
+			qglTexCoord2f( x, y );
+			qglVertex2f( -1.0f, -1.0f );
+			qglTexCoord2f( x, y + h );
+			qglVertex2f( -1.0f, 1.0f );
+			qglTexCoord2f( x + w, y + h );
+			qglVertex2f( 1.0f, 1.0f );
+			qglTexCoord2f( x + w, y );
+			qglVertex2f( 1.0f, -1.0f );
+		qglEnd();
+	}
+
+	qglDisable( GL_VERTEX_PROGRAM_ARB );
+	qglDisable( GL_FRAGMENT_PROGRAM_ARB );
+	// the texture the renderer thinks is bound on unit 0 is again
+	qglBindTexture( GL_TEXTURE_2D, glState.currenttextures[0] );
+	SetViewportAndScissor();
+}
+
+
+/*
+=============
 RB_DrawSurfs
 
 =============
@@ -1646,6 +1704,9 @@ const void	*RB_DrawSurfs( const void *data ) {
 		qglEnable( GL_TEXTURE_2D );
 
 		// Just clear colors, but leave the depth buffer intact so we can 'share' it.
+		// The whole screen, as it was copied: a view narrower than the screen would otherwise
+		// leave what's around it to be taken for glow
+		qglScissor( 0, 0, glConfig.vidWidth, glConfig.vidHeight );
 		qglClearColor( 0.0f, 0.0f, 0.0f, 0.0f );
 		qglClear( GL_COLOR_BUFFER_BIT );
 
@@ -1664,9 +1725,13 @@ const void	*RB_DrawSurfs( const void *data ) {
 		qglDisable( GL_TEXTURE_RECTANGLE_ARB );
 		qglEnable( GL_TEXTURE_2D );
 
-		// Resize the viewport to the blur texture size.
+		// Resize the viewport to the blur texture size, from the corner the copies are read from.
+		const int oldViewX = backEnd.viewParms.viewportX;
+		const int oldViewY = backEnd.viewParms.viewportY;
 		const int oldViewWidth = backEnd.viewParms.viewportWidth;
 		const int oldViewHeight = backEnd.viewParms.viewportHeight;
+		backEnd.viewParms.viewportX = 0;
+		backEnd.viewParms.viewportY = 0;
 		backEnd.viewParms.viewportWidth = r_DynamicGlowWidth->integer;
 		backEnd.viewParms.viewportHeight = r_DynamicGlowHeight->integer;
 		SetViewportAndScissor();
@@ -1683,14 +1748,26 @@ const void	*RB_DrawSurfs( const void *data ) {
 		qglEnable( GL_TEXTURE_2D );
 
 		// Set the viewport back to normal.
+		backEnd.viewParms.viewportX = oldViewX;
+		backEnd.viewParms.viewportY = oldViewY;
 		backEnd.viewParms.viewportWidth = oldViewWidth;
 		backEnd.viewParms.viewportHeight = oldViewHeight;
-		SetViewportAndScissor();
+
+		// The scene goes back over the whole screen, as it was copied, not squeezed into a view
+		// narrower than the screen.
+		qglViewport( 0, 0, glConfig.vidWidth, glConfig.vidHeight );
+		qglScissor( 0, 0, glConfig.vidWidth, glConfig.vidHeight );
 		qglClear( GL_COLOR_BUFFER_BIT );
 
 		// Draw the glow additively over the screen.
 		RB_DrawGlowOverlay();
+		SetViewportAndScissor();
 	}
+
+	// the cinematic camera's depth of field, over the view and its glow
+	if ( backEnd.refdef.dofBlur > 0.0f && tr.dofPxShader && !backEnd.viewParms.isPortal
+		&& !( backEnd.refdef.rdflags & RDF_NOWORLDMODEL ) )
+		RB_DepthOfField();
 
 	return (const void *)(cmd + 1);
 }

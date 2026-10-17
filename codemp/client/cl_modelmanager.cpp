@@ -70,6 +70,9 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define MM_TRACE_MASK		(CONTENTS_SOLID|CONTENTS_TERRAIN)
 #define MM_TRACE_DIST		8192.0f
 #define MM_NO_HIT_DIST		256.0f
+#define MM_HOLD_MIN			32.0f	// what's in hand in front of the camera: this near at least
+#define MM_HOLD_MAX			2048.0f	// and this far at most
+#define MM_HOLD_STEP		16.0f	// nearer or farther by this a wheel notch
 #define MM_FLY_SPEED		400.0f
 #define MM_SCALE_MIN		1
 #define MM_SCALE_MAX		1000
@@ -904,6 +907,24 @@ static qboolean MM_ShiftDown( void ) {
 
 static qboolean MM_CtrlDown( void ) {
 	return (qboolean)( mm.held[A_CTRL] || mm.held[A_CTRL2] );
+}
+
+// what's in hand follows the crosshair onto what it aims at, however far, or stays in front of
+// the camera, as far as cl_modelHoldDistance or the first thing nearer
+static cvar_t *cl_modelFollowFront, *cl_modelHoldDistance;
+
+static float MM_HoldDistance( void ) {
+	return Com_Clamp( MM_HOLD_MIN, MM_HOLD_MAX, cl_modelHoldDistance->value );
+}
+
+static void MM_ToggleFollowFront( void ) {
+	Cvar_SetValue( "cl_modelFollowFront", cl_modelFollowFront->integer ? 0 : 1 );
+	MM_Message( cl_modelFollowFront->integer ? va( "In hand, it stays %i units in front of you: Ctrl+Wheel nearer or farther", (int)MM_HoldDistance() )
+		: "In hand, it goes onto whatever you aim at, however far" );
+}
+
+static void MM_ChangeHoldDistance( int dir ) {
+	Cvar_SetValue( "cl_modelHoldDistance", Com_Clamp( MM_HOLD_MIN, MM_HOLD_MAX, MM_HoldDistance() + dir * MM_HOLD_STEP * ( MM_ShiftDown() ? 4 : 1 ) ) );
 }
 
 // splits a line into words, "quoted" ones whole; the line is cut up in place
@@ -2430,6 +2451,8 @@ void CL_ModelManager_Init( void ) {
 	mm.instant = qtrue;
 	mm.hover = -1;
 	mm.peek = -1;
+	cl_modelFollowFront = Cvar_Get( "cl_modelFollowFront", "0", CVAR_ARCHIVE_ND, "Model manager: 1 keeps what's in hand in front of the camera, 0 puts it onto what the crosshair aims at" );
+	cl_modelHoldDistance = Cvar_Get( "cl_modelHoldDistance", "128", CVAR_ARCHIVE_ND, "Model manager: how far in front of the camera what's in hand stays" );
 }
 
 // cgame is going away: map change, disconnect or vid_restart
@@ -2851,8 +2874,17 @@ static void MM_CameraKey( int key ) {
 		else
 			MM_Pickup( qfalse );
 		break;
-	case A_MWHEELUP:	MM_Rotate( YAW, 1 );	break;
-	case A_MWHEELDOWN:	MM_Rotate( YAW, -1 );	break;
+	case A_MWHEELUP:
+	case A_MWHEELDOWN:
+		// held in front: Ctrl and the wheel bring it nearer or push it away
+		if ( MM_CtrlDown() && cl_modelFollowFront->integer )
+			MM_ChangeHoldDistance( key == A_MWHEELUP ? 1 : -1 );
+		else
+			MM_Rotate( YAW, key == A_MWHEELUP ? 1 : -1 );
+		break;
+	case A_CAP_P:
+		MM_ToggleFollowFront();
+		break;
 	case A_CAP_Z:		MM_Rotate( PITCH, -1 );	break;
 	case A_CAP_X:		MM_Rotate( PITCH, 1 );	break;
 	case A_CAP_Q:		MM_Rotate( ROLL, -1 );	break;
@@ -3016,7 +3048,8 @@ static void MM_UpdateCamera( float dt ) {
 	}
 }
 
-// put what is in hand where the crosshair meets the world, resting on that surface
+// put what is in hand where the crosshair meets the world, resting on that surface; in front of
+// the camera instead, when that's further than it's held
 static void MM_FollowCrosshair( void ) {
 	vec3_t forward, end, normal, corner, mins, maxs, pivot, to, delta;
 	matrix3_t axis;
@@ -3030,7 +3063,11 @@ static void MM_FollowCrosshair( void ) {
 	VectorMA( mm.camOrg, MM_TRACE_DIST, forward, end );
 	CM_BoxTrace( &tr, mm.camOrg, end, vec3_origin, vec3_origin, 0, MM_TRACE_MASK, qfalse );
 
-	if ( tr.fraction < 1.0f && !tr.startsolid && !( tr.surfaceFlags & SURF_SKY ) ) {
+	if ( cl_modelFollowFront->integer && !tr.startsolid && tr.fraction * MM_TRACE_DIST > MM_HoldDistance() ) {
+		VectorMA( mm.camOrg, MM_HoldDistance(), forward, to );
+		for ( int i = 0; i < 3; i++ )
+			to[i] = MM_SnapTo( to[i], grid );
+	} else if ( tr.fraction < 1.0f && !tr.startsolid && !( tr.surfaceFlags & SURF_SKY ) ) {
 		VectorCopy( tr.plane.normal, normal );
 
 		// the lowest corner of them all, along the surface's normal
@@ -3689,6 +3726,7 @@ static void MM_DrawCamera( void ) {
 		"Enter          put down, send all changes",
 		"Shift+Enter    name it, then put down and send",
 		"RMB / F        pick up; lock or follow",
+		"P / Ctrl+Wheel follow in front / how far",
 		"Wheel Z X Q E  turn: yaw, pitch, roll",
 		"R / Backspace  reset angles / and scale",
 		"[ ] or - +     scale (Shift x5)",
@@ -3704,8 +3742,7 @@ static void MM_DrawCamera( void ) {
 		"I              send as you go / on Enter",
 		"L              read the map's models again",
 		"WASD Space C   fly (Shift fast, Ctrl slow)",
-		"Esc            cancel a move, browser",
-		"Tab            browser",
+		"Esc / Tab      cancel a move / browser",
 		"H              hide this help",
 	};
 	const float x = 10, w = 270, cx = SCREEN_WIDTH * 0.5f, cy = SCREEN_HEIGHT * 0.5f;
@@ -3721,7 +3758,8 @@ static void MM_DrawCamera( void ) {
 
 	if ( mm.carrying )
 		status = va( "%s %s", MM_CarryingTemplate() ? S_COLOR_GREEN "PLACING" : S_COLOR_MAGENTA "MOVING",
-			mm.locked ? S_COLOR_YELLOW "LOCKED" : S_COLOR_GREEN "FOLLOWING" );
+			mm.locked ? S_COLOR_YELLOW "LOCKED" : cl_modelFollowFront->integer ? va( S_COLOR_GREEN "IN FRONT %i", (int)MM_HoldDistance() )
+			: S_COLOR_GREEN "FOLLOWING" );
 	else if ( count )
 		status = va( S_COLOR_CYAN "%i selected", count );
 	else

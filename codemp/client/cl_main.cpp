@@ -168,12 +168,23 @@ The given command will be transmitted to the server, and is gauranteed to
 not have future usercmd_t executed before it is executed
 ======================
 */
+static int clLastCommandTime;
+
+// cls.realtime the last command went to the server: its flood protection ignores one that
+// follows too soon
+int CL_LastCommandTime( void ) {
+	return clLastCommandTime;
+}
+
 void CL_AddReliableCommand( const char *cmd, qboolean isDisconnectCmd ) {
 	int unacknowledged = clc.reliableSequence - clc.reliableAcknowledge;
 
-	// your chat said by the NPC chosen with npcmanager select
-	if ( !isDisconnectCmd )
+	// your chat in the language your character speaks, then said by the NPC chosen with
+	// npcmanager select
+	if ( !isDisconnectCmd ) {
+		cmd = CL_Languages_OutgoingChat( cmd );
 		cmd = CL_NpcManager_OutgoingChat( cmd );
+	}
 	// RPMod: what would crash the server stays here
 	if ( !isDisconnectCmd && !CL_RpHooks_AllowCommand( cmd ) )
 		return;
@@ -196,6 +207,7 @@ void CL_AddReliableCommand( const char *cmd, qboolean isDisconnectCmd ) {
 
 	Q_strncpyz(clc.reliableCommands[++clc.reliableSequence & (MAX_RELIABLE_COMMANDS - 1)],
 		   cmd, sizeof(*clc.reliableCommands));
+	clLastCommandTime = cls.realtime;
 }
 
 /*
@@ -834,6 +846,7 @@ void CL_Disconnect( qboolean showMainMenu ) {
 	CL_RpHooks_Disconnect();
 	CL_RpAdmin_Disconnect();
 	CL_RpCinematic_Reset();
+	CL_NpcWalk_Reset();
 
 	// wipe the client connection
 	Com_Memset( &clc, 0, sizeof( clc ) );
@@ -2861,6 +2874,7 @@ void CL_Init( void ) {
 	cl_ratioFix = Cvar_Get( "cl_ratioFix", "0", CVAR_ARCHIVE_ND, "Widescreen: text, and the engine's own, as on a 4:3 screen instead of stretched" );
 	cls.widthRatioCoef = 1.0f;
 	CL_RadialMenu_Init ();
+	CL_Languages_Init ();
 	CL_SaberStyle_Init ();
 	CL_EmotePreview_Init ();
 	CL_RpCinematic_Init ();

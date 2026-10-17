@@ -38,6 +38,11 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 // Effects have no geometry to trace: the effects system reports each piece it
 // draws (sprite, line, poly...), the pieces close together are taken as one
 // effect, and the box around them is what a click finds.
+//
+// The Overlays tab sends RPMod's "rpshader overlay add/remove/list": a shader drawn
+// over everyone's screen. The Sky tab tints and turns the map's sky, and spins it
+// round, on this screen as it's changed; a 3D skybox's view is turned and moved
+// instead. Shared, it goes to everyone with this client in an rpnotify, cmd:sky.
 
 #include <algorithm>
 #include <map>
@@ -76,6 +81,9 @@ extern IHeapAllocator *G2VertSpaceClient;
 #define SM_ROW_H			13.0f
 #define SM_CTRL_H			15.0f
 
+#define SM_OVERLAY_ROWS		8
+#define SM_PORTAL_MS		1000	// a 3D skybox's view rendered this lately: the map has one
+
 typedef enum {
 	SM_HIT_NONE,
 	SM_HIT_WORLD,
@@ -105,7 +113,10 @@ typedef enum {
 
 typedef enum {
 	SM_TAB_OBJECT,
-	SM_TAB_REMAPS
+	SM_TAB_REMAPS,
+	SM_TAB_OVERLAYS,
+	SM_TAB_SKY,
+	SM_NUM_TABS
 } smTab_t;
 
 typedef enum {
@@ -120,6 +131,12 @@ typedef enum {
 	SM_F_SEARCH,
 	SM_F_OFFSET,
 	SM_F_PATH,			// a replacement typed in, instead of picked from the list
+	SM_F_OV_SEARCH,		// the overlays tab's shader search
+	SM_F_OV_FADE,		// and the overlay's numbers, in the order the command takes them
+	SM_F_OV_X,
+	SM_F_OV_Y,
+	SM_F_OV_W,
+	SM_F_OV_H,
 	SM_NUM_FIELDS
 } smField_t;
 
@@ -181,6 +198,21 @@ typedef struct smFxGroup_s {
 typedef struct smGlm_s {
 	std::vector<std::string> surfaces, shaders;
 } smGlm_t;
+
+// an overlay on the server, as its list printed it, or as this client added it
+typedef struct smOverlay_s {
+	std::string	line;
+	std::string	shader;			// "" if the line doesn't name one
+	int			index;			// the number the list gave it, -1 if none
+} smOverlay_t;
+
+// the sky's look; all as the map has it is no change
+typedef struct smSky_s {
+	float		tint[3];		// 0-255 a colour, 255 as it is
+	float		spin;			// degrees a second, round the up axis
+	vec3_t		angles;			// turned this far: pitch, yaw, roll
+	vec3_t		shift;			// a 3D skybox's view moved this far
+} smSky_t;
 
 static struct {
 	qboolean	initialized;
@@ -271,6 +303,20 @@ static struct {
 
 	// remaps tab
 	smList_t	remapList;
+
+	// overlays tab
+	std::vector<int> overlayView;				// the shaders matching its search
+	smList_t	overlayShaders;
+	qboolean	overlayPreview;					// the overlay drawn where it would go, on this screen
+	std::vector<smOverlay_t> overlays;
+	smList_t	overlayList;
+	int			overlayListTime;				// "overlay list" sent; its reply's lines are the list
+
+	// sky tab
+	smSky_t		sky;
+	qboolean	skySet;							// the renderer has a sky look to put back
+	int			portalTime;						// a 3D skybox's view last rendered
+	float		*drag;							// the slider the mouse holds
 
 	// what was sent, for undo: the shader and what it was remapped to before
 	std::vector<std::string> undoShader, undoPrevious;
@@ -1181,6 +1227,57 @@ static void SM_SetLive( const char *from, const char *to ) {
 	Q_strncpyz( sm.liveTo, to, sizeof( sm.liveTo ) );
 }
 
+// a line of "rpshader overlay list"'s reply: one that names a shader or starts with a number
+// is an overlay; the others, its heading or that there are none, aren't
+static void SM_OverlayListPrint( const char *text ) {
+	char buf[MAX_STRING_CHARS], *line, *next;
+
+	Q_strncpyz( buf, text, sizeof( buf ) );
+	Q_StripColor( buf );
+	for ( line = buf; line; line = next ) {
+		char word[MAX_QPATH];
+		const char *p;
+		smOverlay_t o;
+		int n = 0;
+
+		next = strchr( line, '\n' );
+		if ( next )
+			*next++ = '\0';
+		while ( *line == ' ' || *line == '\t' )
+			line++;
+		for ( int len = strlen( line ); len && ( line[len - 1] == ' ' || line[len - 1] == '\r' ); )
+			line[--len] = '\0';
+		if ( !line[0] )
+			continue;
+		o.line = line;
+		o.index = -1;
+		for ( p = line; *p; n++ ) {
+			int len = 0;
+			char *w = word;
+
+			while ( *p == ' ' || *p == '\t' )
+				p++;
+			while ( *p && *p != ' ' && *p != '\t' ) {
+				if ( len < (int)sizeof( word ) - 1 )
+					word[len++] = *p;
+				p++;
+			}
+			word[len] = '\0';
+			// [1] #1 1: 1) 1. 1, "name",
+			while ( *w == '[' || *w == '#' || *w == '(' || *w == '"' || *w == '\'' )
+				w++;
+			for ( len = strlen( w ); len && strchr( "]):.,\"'", w[len - 1] ); )
+				w[--len] = '\0';
+			if ( n == 0 && w[0] && ( Q_isanumber( w ) || ( w[0] == '-' && Q_isanumber( w + 1 ) ) ) && !strchr( w, '.' ) )
+				o.index = atoi( w );
+			else if ( o.shader.empty() && strchr( w, '/' ) )
+				o.shader = w;
+		}
+		if ( o.index >= 0 || !o.shader.empty() )
+			sm.overlays.push_back( o );
+	}
+}
+
 // a print from the server soon after a command is taken as its answer
 void CL_ShaderManager_ServerPrint( const char *text ) {
 	char line[MAX_STRING_CHARS];
@@ -1188,6 +1285,8 @@ void CL_ShaderManager_ServerPrint( const char *text ) {
 
 	if ( sm.state == SM_OFF || !sm.sentTime || cls.realtime - sm.sentTime > SM_REPLY_MS )
 		return;
+	if ( sm.overlayListTime && cls.realtime - sm.overlayListTime < SM_REPLY_MS )
+		SM_OverlayListPrint( text );
 	Q_strncpyz( line, text, sizeof( line ) );
 	Q_StripColor( line );
 	len = strlen( line );
@@ -1356,6 +1455,24 @@ static void SM_RebuildShaderView( void ) {
 	}
 }
 
+// the overlays tab's list: every shader, by its own search
+static void SM_RebuildOverlayView( void ) {
+	const char *search = sm.fields[SM_F_OV_SEARCH];
+
+	sm.overlayView.clear();
+	for ( size_t i = 0; i < sm.shaderNames.size(); i++ ) {
+		if ( SM_ContainsNoCase( sm.shaderNames[i].c_str(), search ) )
+			sm.overlayView.push_back( (int)i );
+	}
+	sm.overlayShaders.sel = Com_Clampi( 0, Q_max( (int)sm.overlayView.size() - 1, 0 ), sm.overlayShaders.sel );
+}
+
+static const char *SM_OverlayShader( void ) {
+	if ( sm.overlayShaders.sel < 0 || sm.overlayShaders.sel >= (int)sm.overlayView.size() )
+		return NULL;
+	return sm.shaderNames[sm.overlayView[sm.overlayShaders.sel]].c_str();
+}
+
 // the shader picked in the list, or with a path typed in, that path
 static const char *SM_HighlightedShader( void ) {
 	if ( sm.typingPath )
@@ -1388,6 +1505,8 @@ static qboolean SM_PathKnown( void ) {
 static smField_t SM_TypingField( void ) {
 	if ( sm.focus != SM_F_NONE )
 		return sm.focus;
+	if ( sm.tab == SM_TAB_OVERLAYS )
+		return SM_F_OV_SEARCH;
 	return sm.typingPath && sm.tab == SM_TAB_OBJECT ? SM_F_PATH : SM_F_SEARCH;
 }
 
@@ -1562,6 +1681,7 @@ STATE CHANGES
 static void SM_ReleaseKeys( void ) {
 	memset( sm.held, 0, sizeof( sm.held ) );
 	sm.looking = qfalse;
+	sm.drag = NULL;
 }
 
 static void SM_EnterCamera( void ) {
@@ -1583,6 +1703,7 @@ static void SM_EnterEdit( smTab_t tab ) {
 	sm.wheel = 0;
 	SM_ReleaseKeys();
 	SM_RebuildShaderView();
+	SM_RebuildOverlayView();
 }
 
 static void SM_Open( void ) {
@@ -1633,11 +1754,15 @@ qboolean CL_ShaderManager_Active( void ) {
 	return (qboolean)( sm.state != SM_OFF );
 }
 
-// opened from a storyteller step
-void CL_ShaderManager_OpenForStory( void ) {
+// opened from a storyteller step: on the world for a remap, else on its tab (an smTab_t)
+void CL_ShaderManager_OpenForStory( int tab ) {
 	SM_Open();
-	if ( sm.state != SM_OFF )
-		SM_SetStatus( S_COLOR_GREEN "For the story: what you send here goes in it as steps, not to the server" );
+	if ( sm.state == SM_OFF )
+		return;
+	if ( tab > SM_TAB_OBJECT && tab < SM_NUM_TABS )
+		SM_EnterEdit( (smTab_t)tab );
+	SM_SetStatus( tab == SM_TAB_SKY ? S_COLOR_GREEN "For the story: Share with all puts the sky look in it as a step"
+		: S_COLOR_GREEN "For the story: what you send here goes in it as steps, not to the server" );
 }
 
 /*
@@ -1671,6 +1796,8 @@ static int SM_ShaderRows( void ) {
 	return sm.showPreview ? 11 : 17;
 }
 
+static void SM_AddOverlay( void );
+
 static void SM_EditKey( int key ) {
 	smList_t *list;
 	int count, visible, delta, len;
@@ -1692,13 +1819,15 @@ static void SM_EditKey( int key ) {
 		sm.wheel += 3;
 		return;
 	case A_TAB:
-		sm.tab = sm.tab == SM_TAB_OBJECT ? SM_TAB_REMAPS : SM_TAB_OBJECT;
+		sm.tab = (smTab_t)( ( sm.tab + 1 ) % SM_NUM_TABS );
 		sm.focus = SM_F_NONE;
 		return;
 	case A_ENTER:
 	case A_KP_ENTER:
 		if ( sm.tab == SM_TAB_OBJECT && SM_SelectedOriginal() && SM_HighlightedShader() )
 			SM_SendRemap( SM_SelectedOriginal(), SM_HighlightedShader(), qtrue );
+		else if ( sm.tab == SM_TAB_OVERLAYS )
+			SM_AddOverlay();
 		return;
 	case A_BACKSPACE:
 		len = strlen( sm.fields[f] );
@@ -1708,6 +1837,8 @@ static void SM_EditKey( int key ) {
 				SM_RebuildShaderView();
 			else if ( f == SM_F_PATH )
 				SM_PathChanged();
+			else if ( f == SM_F_OV_SEARCH )
+				SM_RebuildOverlayView();
 		}
 		return;
 	case A_DELETE:
@@ -1716,6 +1847,8 @@ static void SM_EditKey( int key ) {
 			SM_RebuildShaderView();
 		else if ( f == SM_F_PATH )
 			SM_PathChanged();
+		else if ( f == SM_F_OV_SEARCH )
+			SM_RebuildOverlayView();
 		return;
 	default:
 		break;
@@ -1725,10 +1858,16 @@ static void SM_EditKey( int key ) {
 		list = &sm.shaderList;
 		count = (int)sm.shaderView.size();
 		visible = SM_ShaderRows();
-	} else {
+	} else if ( sm.tab == SM_TAB_REMAPS ) {
 		list = &sm.remapList;
 		count = (int)sm.remapFrom.size();
 		visible = 26;
+	} else if ( sm.tab == SM_TAB_OVERLAYS ) {
+		list = &sm.overlayShaders;
+		count = (int)sm.overlayView.size();
+		visible = SM_OVERLAY_ROWS;
+	} else {
+		return;
 	}
 	switch ( key ) {
 	case A_CURSOR_UP:	delta = -1; break;
@@ -1753,6 +1892,8 @@ void CL_ShaderManager_KeyEvent( int key, qboolean down ) {
 	if ( !down ) {
 		if ( key == A_MOUSE2 )
 			sm.looking = qfalse;
+		if ( key == A_MOUSE1 )
+			sm.drag = NULL;
 		return;
 	}
 
@@ -1782,7 +1923,7 @@ void CL_ShaderManager_CharEvent( int ch ) {
 	if ( sm.state != SM_EDIT || sm.looking || ch < ' ' || ch > '~' )
 		return;
 	f = SM_TypingField();
-	if ( f == SM_F_OFFSET && !( isdigit( ch ) || ch == '.' || ch == '-' ) )
+	if ( ( f == SM_F_OFFSET || ( f >= SM_F_OV_FADE && f <= SM_F_OV_H ) ) && !( isdigit( ch ) || ch == '.' || ch == '-' ) )
 		return;
 	// goes on the command line as one word
 	if ( f == SM_F_PATH && ( ch == ' ' || ch == '"' || ch == ';' ) )
@@ -1796,6 +1937,9 @@ void CL_ShaderManager_CharEvent( int ch ) {
 			SM_RebuildShaderView();
 		} else if ( f == SM_F_PATH ) {
 			SM_PathChanged();
+		} else if ( f == SM_F_OV_SEARCH ) {
+			sm.overlayShaders.scroll = 0;
+			SM_RebuildOverlayView();
 		}
 	}
 }
@@ -2174,6 +2318,8 @@ qboolean CL_ShaderManager_RenderScene( const refdef_t *fd ) {
 	static const byte selColor[4] = { 64, 220, 255, 255 };
 	refdef_t view;
 
+	if ( fd->rdflags & RDF_SKYBOXPORTAL )
+		sm.portalTime = cls.realtime;
 	if ( fd->rdflags & ( RDF_NOWORLDMODEL | RDF_AUTOMAP ) ) {
 		sm.numPending = 0;
 		sm.numFxPending = 0;
@@ -2575,7 +2721,14 @@ static void SM_DrawObjectTab( float x, float y, float w ) {
 	y += 5 * SM_ROW_H + 4;
 	original = SM_SelectedOriginal();
 	remap = original ? SM_RemappedTo( original ) : NULL;
-	SM_TextClipped( x, y, w, remap ? va( S_COLOR_CYAN "Now remapped to %s", remap ) : original ? S_COLOR_GREY "Not remapped" : "", smWhite );
+	if ( SM_IsSky( original ) ) {
+		// a sky has its own look to change
+		SM_TextClipped( x, y, w - 84, remap ? va( S_COLOR_CYAN "Now remapped to %s", remap ) : S_COLOR_GREY "Not remapped", smWhite );
+		if ( SM_Button( x + w - 80, y - 2, 80, "Sky look...", qfalse, qtrue ) )
+			sm.tab = SM_TAB_SKY;
+	} else {
+		SM_TextClipped( x, y, w, remap ? va( S_COLOR_CYAN "Now remapped to %s", remap ) : original ? S_COLOR_GREY "Not remapped" : "", smWhite );
+	}
 	y += 16;
 
 	SM_Text( x, y + 2, "With", smDim );
@@ -2693,21 +2846,337 @@ static void SM_DrawRemapsTab( float x, float y, float w ) {
 		SM_Undo();
 }
 
+/*
+===============================================================================
+
+OVERLAYS
+
+===============================================================================
+*/
+
+static void SM_DrawOverlayShaderRow( int row, float x, float y, float w ) {
+	SM_TextClipped( x, y, w, sm.shaderNames[sm.overlayView[row]].c_str(), smWhite );
+}
+
+static void SM_DrawOverlayRow( int row, float x, float y, float w ) {
+	SM_TextClipped( x, y, w, sm.overlays[row].line.c_str(), smWhite );
+}
+
+// the overlay's numbers as the command takes them, those left empty as RPMod would have them
+static const char *SM_OverlayValue( int field ) {
+	static const char *defaults[] = { "0", "0", "0", "640", "480" };
+	const char *v = sm.fields[SM_F_OV_FADE + field];
+
+	return v[0] ? v : defaults[field];
+}
+
+// rpshader overlay add <shader> [fade] [x] [y] [width] [height], up to the last number given
+static void SM_AddOverlay( void ) {
+	const char *shader = SM_OverlayShader();
+	char cmd[MAX_STRING_CHARS];
+	smOverlay_t o;
+	int last = -1;
+
+	if ( !shader )
+		return;
+	for ( int i = 0; i < 5; i++ ) {
+		if ( sm.fields[SM_F_OV_FADE + i][0] )
+			last = i;
+	}
+	Com_sprintf( cmd, sizeof( cmd ), "rpshader overlay add %s", shader );
+	for ( int i = 0; i <= last; i++ )
+		Q_strcat( cmd, sizeof( cmd ), va( " %s", SM_OverlayValue( i ) ) );
+	SM_Send( cmd );
+	o.shader = shader;
+	o.index = -1;
+	o.line = va( "%s  " S_COLOR_GREY "%s %s %sx%s", shader, SM_OverlayValue( 1 ), SM_OverlayValue( 2 ), SM_OverlayValue( 3 ), SM_OverlayValue( 4 ) );
+	sm.overlays.push_back( o );
+}
+
+static void SM_RemoveOverlay( int i ) {
+	if ( i < 0 || i >= (int)sm.overlays.size() )
+		return;
+	if ( !sm.overlays[i].shader.empty() )
+		SM_Send( va( "rpshader overlay remove %s", sm.overlays[i].shader.c_str() ) );
+	else
+		SM_Send( va( "rpshader overlay remove %i", sm.overlays[i].index ) );
+	sm.overlays.erase( sm.overlays.begin() + i );
+}
+
+// where the picked shader would show, on this screen only
+static void SM_DrawOverlayPreview( void ) {
+	const char *shader = SM_OverlayShader();
+	float x, y, w, h;
+	qhandle_t hShader;
+
+	if ( sm.tab != SM_TAB_OVERLAYS || !sm.overlayPreview || !shader || !( hShader = SM_PreviewHandle( shader ) ) )
+		return;
+	x = (float)atof( SM_OverlayValue( 1 ) );
+	y = (float)atof( SM_OverlayValue( 2 ) );
+	w = (float)atof( SM_OverlayValue( 3 ) );
+	h = (float)atof( SM_OverlayValue( 4 ) );
+	re->SetColor( NULL );
+	re->DrawStretchPic( x, y, w, h, 0, 0, 1, 1, hShader );
+	SM_Fill( x, y, w, 1, smBorder );
+	SM_Fill( x, y + h - 1, w, 1, smBorder );
+	SM_Fill( x, y, 1, h, smBorder );
+	SM_Fill( x + w - 1, y, 1, h, smBorder );
+}
+
+static void SM_DrawOverlaysTab( float x, float y, float w ) {
+	static const char *labels[] = { "Fade", "X", "Y", "Width", "Height" };
+	const char *shader;
+	const float cw = ( w - 16 ) / 5;
+	int count = (int)sm.overlays.size(), sel;
+
+	SM_ClearLive();
+	SM_Text( x, y, "Shader drawn over everyone's screen", smDim );
+	y += 12;
+	SM_Field( SM_F_OV_SEARCH, x, y, w, va( "Type to search %i shaders", (int)sm.shaderNames.size() ) );
+	y += 18;
+	SM_List( &sm.overlayShaders, (int)sm.overlayView.size(), x, y, w, SM_OVERLAY_ROWS, SM_DrawOverlayShaderRow );
+	if ( sm.overlayView.empty() )
+		SM_Text( x + 4, y + 1, "No shaders match", smDim );
+	y += SM_OVERLAY_ROWS * SM_ROW_H + 4;
+	shader = SM_OverlayShader();
+
+	// the numbers, empty ones left out or as RPMod has them
+	for ( int i = 0; i < 5; i++ ) {
+		static const char *placeholders[] = { "0", "0", "0", "640", "480" };
+
+		SM_Text( x + i * ( cw + 4 ), y, labels[i], smDim );
+		SM_Field( (smField_t)( SM_F_OV_FADE + i ), x + i * ( cw + 4 ), y + 12, cw, placeholders[i] );
+	}
+	y += 31;
+	if ( SM_Button( x, y, 70, "Full screen", qfalse, qtrue ) ) {
+		for ( int i = 1; i < 5; i++ )
+			sm.fields[SM_F_OV_FADE + i][0] = '\0';
+	}
+	if ( SM_Button( x + 74, y, 82, sm.overlayPreview ? "Preview: on" : "Preview: off", sm.overlayPreview, qtrue ) )
+		sm.overlayPreview = (qboolean)!sm.overlayPreview;
+	if ( SM_Button( x + 160, y, w - 160, "Add  (Enter)", qfalse, (qboolean)( shader != NULL ) ) )
+		SM_AddOverlay();
+	y += 24;
+
+	SM_Text( x, y + 2, va( S_COLOR_GREY "%i overlay%s", count, count == 1 ? "" : "s" ), smWhite );
+	if ( SM_Button( x + w - 90, y, 90, "List from server", qfalse, qtrue ) ) {
+		// the reply's lines make the list
+		sm.overlays.clear();
+		sm.overlayListTime = cls.realtime;
+		SM_Send( "rpshader overlay list" );
+	}
+	y += 18;
+	SM_List( &sm.overlayList, count, x, y, w, SM_OVERLAY_ROWS, SM_DrawOverlayRow );
+	if ( !count )
+		SM_Text( x + 4, y + 1, "None added here; List asks the server", smDim );
+	y += SM_OVERLAY_ROWS * SM_ROW_H + 4;
+	sel = sm.overlayList.sel < count ? sm.overlayList.sel : -1;
+	if ( SM_Button( x, y, 110, "Remove selected", qfalse, (qboolean)( sel >= 0 ) ) )
+		SM_RemoveOverlay( sel );
+	if ( SM_Button( x + 114, y, w - 114, "Remove all", qfalse, qtrue ) ) {
+		SM_Send( "rpshader overlay remove all" );
+		sm.overlays.clear();
+	}
+	y += 22;
+	SM_TextClipped( x, y, w, S_COLOR_GREY "Place on a 640x480 screen. Overlays others added show", smWhite );
+	SM_TextClipped( x, y + 12, w, S_COLOR_GREY "here once listed from the server.", smWhite );
+}
+
+/*
+===============================================================================
+
+SKY
+
+===============================================================================
+*/
+
+static void SM_SkyDefault( smSky_t *sky ) {
+	memset( sky, 0, sizeof( *sky ) );
+	sky->tint[0] = sky->tint[1] = sky->tint[2] = 255.0f;
+}
+
+static qboolean SM_SkyAltered( const smSky_t *sky ) {
+	smSky_t plain;
+
+	SM_SkyDefault( &plain );
+	return (qboolean)( memcmp( sky, &plain, sizeof( plain ) ) != 0 );
+}
+
+// before each scene: the sky's look to the renderer, the spin by the server's clock so
+// everyone's sky has turned as far
+void CL_ShaderManager_SkyLook( void ) {
+	vec3_t tint, angles;
+
+	if ( !re || !re->ext.SetSkyLook )
+		return;
+	if ( !SM_SkyAltered( &sm.sky ) ) {
+		if ( sm.skySet )
+			re->ext.SetSkyLook( NULL, NULL, NULL );
+		sm.skySet = qfalse;
+		return;
+	}
+	VectorScale( sm.sky.tint, 1.0f / 255.0f, tint );
+	VectorCopy( sm.sky.angles, angles );
+	angles[YAW] = AngleNormalize360( angles[YAW] + (float)fmod( sm.sky.spin * ( cl.serverTime / 1000.0 ), 360.0 ) );
+	re->ext.SetSkyLook( tint, angles, sm.sky.shift );
+	sm.skySet = qtrue;
+}
+
+// cmd:sky/<r g b>/<spin>/<pitch yaw roll>/<x y z>: the sky look an admin shared; cmd:sky/off
+void CL_ShaderManager_SkyHook( char **argv, int argc ) {
+	smSky_t sky;
+
+	SM_SkyDefault( &sky );
+	if ( argc >= 1 && Q_stricmp( argv[0], "off" ) && Q_stricmp( argv[0], "reset" ) ) {
+		sscanf( argv[0], "%f %f %f", &sky.tint[0], &sky.tint[1], &sky.tint[2] );
+		if ( argc >= 2 )
+			sky.spin = (float)atof( argv[1] );
+		if ( argc >= 3 )
+			sscanf( argv[2], "%f %f %f", &sky.angles[0], &sky.angles[1], &sky.angles[2] );
+		if ( argc >= 4 )
+			sscanf( argv[3], "%f %f %f", &sky.shift[0], &sky.shift[1], &sky.shift[2] );
+		for ( int i = 0; i < 3; i++ )
+			sky.tint[i] = Com_Clamp( 0.0f, 255.0f, sky.tint[i] );
+	}
+	sm.sky = sky;
+}
+
+// a value dragged along a bar, or stepped with the wheel over it
+static void SM_Slider( float x, float y, float w, const char *label, float *value, float min, float max, float step, const char *fmt, qboolean enabled ) {
+	const float labelW = 46.0f, valueW = 44.0f, bx = x + labelW, bw = w - labelW - valueW;
+	float old = *value, frac;
+
+	SM_Text( x, y + 1, label, smDim );
+	if ( enabled && SM_Clicked( bx - 3, y, bw + 6, SM_CTRL_H ) )
+		sm.drag = value;
+	if ( sm.drag == value ) {
+		if ( sm.held[A_MOUSE1] && enabled )
+			*value = min + ( max - min ) * Com_Clamp( 0.0f, 1.0f, ( sm.cursorX - bx ) / bw );
+		else
+			sm.drag = NULL;
+	}
+	if ( enabled && sm.wheel && SM_InRect( bx - 3, y, bw + 6, SM_CTRL_H ) ) {
+		*value -= ( sm.wheel / 3 ) * step;
+		sm.wheel = 0;
+	}
+	if ( *value != old )
+		*value = Com_Clamp( min, max, step * floorf( *value / step + 0.5f ) );
+	frac = Com_Clamp( 0.0f, 1.0f, ( *value - min ) / ( max - min ) );
+	SM_Box( bx, y + 5, bw, 5, smPanelLight );
+	SM_Fill( bx + 1, y + 6, ( bw - 2 ) * frac, 3, enabled ? smHighlight : smPanelLight );
+	SM_Fill( bx + ( bw - 4 ) * frac, y + 1, 4, SM_CTRL_H - 2, enabled ? smWhite : smDim );
+	SM_Text( bx + bw + 6, y + 1, va( fmt, *value ), enabled ? smWhite : smDim );
+}
+
+// the sky the map's surfaces show, remapped or not
+static const char *SM_MapSky( void ) {
+	for ( size_t i = 0; i < sm.bspShaders.size(); i++ ) {
+		if ( SM_IsSky( sm.bspShaders[i].c_str() ) )
+			return sm.bspShaders[i].c_str();
+	}
+	return NULL;
+}
+
+static void SM_DrawSkyTab( float x, float y, float w ) {
+	const qboolean portal = (qboolean)( sm.portalTime && cls.realtime - sm.portalTime < SM_PORTAL_MS );
+	const qboolean renderer = (qboolean)( re->ext.SetSkyLook != NULL );
+	const char *sky = SM_MapSky(), *remap = sky ? SM_RemappedTo( sky ) : NULL;
+	vec4_t swatch;
+
+	SM_ClearLive();
+	SM_TextClipped( x, y, w, sky ? va( S_COLOR_GREY "Sky: " S_COLOR_WHITE "%s%s%s", sky, remap ? S_COLOR_CYAN " -> " : "", remap ? remap : "" )
+		: S_COLOR_GREY "No sky shader found in this map", smWhite );
+	y += 12;
+	SM_TextClipped( x, y, w, portal ? S_COLOR_GREY "A 3D skybox: its whole view is turned and moved"
+		: S_COLOR_GREY "Shown on your screen as you change it", smWhite );
+	y += 18;
+	if ( !renderer ) {
+		SM_TextClipped( x, y, w, S_COLOR_RED "This renderer can't change the sky's look", smWhite );
+		return;
+	}
+
+	SM_Text( x, y, "Colour", smWhite );
+	y += 13;
+	SM_Slider( x, y, w - 30, "Red", &sm.sky.tint[0], 0, 255, 1, "%.0f", qtrue );
+	SM_Slider( x, y + 17, w - 30, "Green", &sm.sky.tint[1], 0, 255, 1, "%.0f", qtrue );
+	SM_Slider( x, y + 34, w - 30, "Blue", &sm.sky.tint[2], 0, 255, 1, "%.0f", qtrue );
+	VectorScale( sm.sky.tint, 1.0f / 255.0f, swatch );
+	swatch[3] = 1.0f;
+	SM_Box( x + w - 24, y, 24, 49, swatch );
+	y += 54;
+
+	SM_Text( x, y, "Spin", smWhite );
+	y += 13;
+	SM_Slider( x, y, w, "Speed", &sm.sky.spin, -20, 20, 0.1f, "%.1f/s", qtrue );
+	y += 22;
+
+	SM_Text( x, y, "Turn", smWhite );
+	y += 13;
+	SM_Slider( x, y, w, "Around", &sm.sky.angles[YAW], 0, 360, 1, "%.0f", qtrue );
+	SM_Slider( x, y + 17, w, "Tilt", &sm.sky.angles[PITCH], -90, 90, 1, "%.0f", qtrue );
+	SM_Slider( x, y + 34, w, "Roll", &sm.sky.angles[ROLL], -180, 180, 1, "%.0f", qtrue );
+	y += 56;
+
+	SM_Text( x, y, portal ? "Move the 3D skybox" : S_COLOR_GREY "Move: only a map with a 3D skybox", smWhite );
+	y += 13;
+	SM_Slider( x, y, w, "X", &sm.sky.shift[0], -2048, 2048, 8, "%.0f", portal );
+	SM_Slider( x, y + 17, w, "Y", &sm.sky.shift[1], -2048, 2048, 8, "%.0f", portal );
+	SM_Slider( x, y + 34, w, "Z", &sm.sky.shift[2], -2048, 2048, 8, "%.0f", portal );
+	y += 56;
+
+	if ( SM_Button( x, y, 60, "Reset", qfalse, SM_SkyAltered( &sm.sky ) ) )
+		SM_SkyDefault( &sm.sky );
+	if ( SM_Button( x + 64, y, 96, "Share with all", qfalse, qtrue ) ) {
+		if ( !CL_RpHooks_Experimental() )
+			SM_SetStatus( S_COLOR_YELLOW "Sharing the sky is experimental: TOGGLE EXPERIMENTAL in the npcmanager first" );
+		else if ( !SM_SkyAltered( &sm.sky ) )
+			SM_Send( "rpnotify -1 1 cmd:sky/off" );
+		else
+			SM_Send( va( "rpnotify -1 1 cmd:sky/%g %g %g/%g/%g %g %g/%g %g %g", sm.sky.tint[0], sm.sky.tint[1], sm.sky.tint[2], sm.sky.spin,
+				sm.sky.angles[0], sm.sky.angles[1], sm.sky.angles[2], sm.sky.shift[0], sm.sky.shift[1], sm.sky.shift[2] ) );
+	}
+	if ( SM_Button( x + 164, y, w - 164, "Reset for all", qfalse, qtrue ) ) {
+		if ( !CL_RpHooks_Experimental() ) {
+			SM_SetStatus( S_COLOR_YELLOW "Sharing the sky is experimental: TOGGLE EXPERIMENTAL in the npcmanager first" );
+		} else {
+			SM_SkyDefault( &sm.sky );
+			SM_Send( "rpnotify -1 1 cmd:sky/off" );
+		}
+	}
+	y += 22;
+	SM_TextClipped( x, y, w, S_COLOR_GREY "Drag a bar, or turn the wheel over it. Shared, it", smWhite );
+	SM_TextClipped( x, y + 12, w, S_COLOR_GREY "shows for everyone with this client, until the map", smWhite );
+	SM_TextClipped( x, y + 24, w, S_COLOR_GREY "changes; those who join later don't get it.", smWhite );
+}
+
 static void SM_DrawPanel( void ) {
+	static const char *tabs[SM_NUM_TABS] = { "Object", "Remaps", "Overlays", "Sky" };
 	const float px = SM_PANEL_X, pw = SM_PANEL_W, x = px + 8, w = pw - 16;
 	qboolean click;
+	float bx = x + w;
 
 	SM_Box( px, 8, pw, SCREEN_HEIGHT - 16, smPanelDark );
 	SM_Text( x, 14, "Shader Manager", smWhite );
-	if ( SM_Button( x + w - 120, 12, 58, "Object", (qboolean)( sm.tab == SM_TAB_OBJECT ), qtrue ) )
-		sm.tab = SM_TAB_OBJECT;
-	if ( SM_Button( x + w - 58, 12, 58, "Remaps", (qboolean)( sm.tab == SM_TAB_REMAPS ), qtrue ) )
-		sm.tab = SM_TAB_REMAPS;
+	// the tabs from the right, as wide as their names
+	for ( int i = SM_NUM_TABS - 1; i >= 0; i-- ) {
+		const float bw = SM_TextWidth( tabs[i] ) + 10;
+
+		bx -= bw;
+		if ( SM_Button( bx, 12, bw, tabs[i], (qboolean)( sm.tab == i ), qtrue ) ) {
+			sm.tab = (smTab_t)i;
+			sm.focus = SM_F_NONE;
+		}
+		bx -= 2;
+	}
 
 	if ( sm.tab == SM_TAB_OBJECT )
 		SM_DrawObjectTab( x, 34, w );
-	else
+	else if ( sm.tab == SM_TAB_REMAPS )
 		SM_DrawRemapsTab( x, 34, w );
+	else if ( sm.tab == SM_TAB_OVERLAYS )
+		SM_DrawOverlaysTab( x, 34, w );
+	else
+		SM_DrawSkyTab( x, 34, w );
 
 	// the server's answer, else what was sent
 	if ( sm.reply[0] && cls.realtime - sm.replyTime < 8000 )
@@ -2763,6 +3232,7 @@ void CL_ShaderManager_Draw( void ) {
 	}
 
 	SM_DrawEffects();
+	SM_DrawOverlayPreview();
 	// before the panel, which takes clicks in the view as picks
 	if ( SM_Button( 16, SCREEN_HEIGHT - 48, 110, sm.hideEffects ? "Effect boxes: off" : "Effect boxes: on", (qboolean)!sm.hideEffects, qtrue ) )
 		sm.hideEffects = (qboolean)!sm.hideEffects;
@@ -2824,7 +3294,9 @@ void CL_ShaderManager_Init( void ) {
 	sm.initialized = qtrue;
 	sm.showPreview = qtrue;
 	sm.livePreview = qtrue;
+	sm.overlayPreview = qtrue;
 	sm.selSurf = -1;
+	SM_SkyDefault( &sm.sky );
 }
 
 // cgame is going away: map change, disconnect or vid_restart
@@ -2849,6 +3321,10 @@ void CL_ShaderManager_Shutdown( void ) {
 	sm.hitValid = qfalse;
 	sm.numFxGroups = 0;
 	sm.selFx = qfalse;
+	SM_SkyDefault( &sm.sky );
+	sm.overlays.clear();
+	sm.overlayView.clear();
+	sm.portalTime = 0;
 	sm.numPending = sm.numEntities = 0;
 	sm.font = 0;
 	// the pure pk3 list can change with the next map or server, and the renderer drops its shaders

@@ -474,6 +474,8 @@ void SCR_DrawScreenField( stereoFrame_t stereoFrame ) {
 			CL_RpAdmin_Frame();
 			CL_EmotePreview_Frame();
 			CL_RpCinematic_Frame();
+			CL_NpcWalk_Frame();
+			CL_Languages_Frame();
 			CL_CGameRendering( stereoFrame );
 			CL_RpCinematic_Draw();
 			SCR_DrawDemoRecording();
@@ -485,6 +487,7 @@ void SCR_DrawScreenField( stereoFrame_t stereoFrame ) {
 			CL_Storyteller_Draw();
 			CL_SoundManager_Draw();
 			CL_RadialMenu_DrawSettings();
+			CL_Languages_Draw();
 			CL_RadialMenu_Draw();
 			break;
 		}

@@ -1685,6 +1685,15 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input )
 		if (!input->fading)
 		{ //this means ignore this, while we do a fade-out
 			ComputeColors( pStage, forceRGBGen );
+			// the sky look's tint on the sky's clouds
+			if ( input->shader->sky && backEnd.refdef.skyTinted )
+			{
+				for ( int v = 0; v < input->numVertexes; v++ )
+				{
+					for ( int c = 0; c < 3; c++ )
+						input->svars.colors[v][c] = (byte)Com_Clampi( 0, 255, (int)( input->svars.colors[v][c] * backEnd.refdef.skyTint[c] ) );
+				}
+			}
 		}
 		ComputeTexCoords( pStage );
 

@@ -22,7 +22,8 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 //
 // A story is a list of steps run one after the other: waits, a stop until the
 // storyteller says go on, chat, console commands, and the RPMod commands the
-// managers send (npc spawn/tele/kill/..., rpmodel add, rpeffect, rpshader remap).
+// managers send (npc spawn/tele/kill/..., rpmodel add, rpeffect, rpshader remap and
+// overlay, the shader manager's sky look).
 // The panel has the actions to pick from, the story, and the selected step's
 // settings. Commands go out paced by the server's flood protection, and a story
 // keeps playing with the panel closed. Stories are saved in storyteller/*.story,
@@ -33,6 +34,14 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 // armed: a copy of it waits in the background and plays when that happens, once or
 // every time, several at once. Only who the server sends this client can be seen, so
 // the storyteller has to be near enough; the server could do it everywhere one day.
+//
+// Several stories can be open at once, each in a numbered tab, and steps copied between
+// them: Ctrl+click and Shift+click pick several, Ctrl+C, Ctrl+X, Ctrl+V and Del act on
+// them. The story playing keeps playing from its own tab whichever is shown.
+//
+// Where the stories armed wait, and the "when someone comes" of the one shown, are drawn
+// in the world for the storyteller only: a ring round a spot or an effect, a box round a
+// map trigger or a door, and the story's name over it (storyteller markers on|off).
 //
 // This lives in the engine rather than cgame so it works whatever cgame the
 // server's mod ships (RPMod loads its own).
@@ -97,10 +106,13 @@ typedef enum {
 	ST_A_NPC_SPAWN,
 	ST_A_NPC_TELE,
 	ST_A_NPC_CMD,
+	ST_A_NPC_WALK,
 	ST_A_MODEL,
 	ST_A_EFFECT,
 	ST_A_SCREEN,
 	ST_A_SHADER,
+	ST_A_OVERLAY,
+	ST_A_SKY,
 	ST_A_SOUND,
 	ST_A_MUSIC,
 	ST_A_CIN_START,
@@ -140,8 +152,10 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ "Z", ST_K_NUMBER, "", NULL } } },
 	{ "command", "Run a command", "Flow", "Runs it as if typed in the console, e.g. rpcinematic intro, or exec mission.cfg. Separate several with ;", -1, -1, 1, {
 		{ "Command", ST_K_TEXT, "", NULL } } },
-	{ "say", "Say", "Speech", "Says this in chat, as you.", -1, -1, 1, {
-		{ "Text", ST_K_TEXT, "", NULL } } },
+	{ "say", "Say", "Speech", "Says this in chat, as you, or as one of the players on the server: by their number or a part of their name. As a player it shows in chat as theirs for everyone with this client (sent hidden in an rpnotify; others see the raw line in their console).", -1, -1, 3, {
+		{ "Text", ST_K_TEXT, "", NULL },
+		{ "As", ST_K_CHOICE, "me", "me|a player" },
+		{ "Player", ST_K_TEXT, "", NULL } } },
 	{ "center", "Center message", "Speech", "Shows the text in the middle of the screen with rpcentersay, for everyone (all), or one player. 0 seconds keeps each player's own setting.", -1, -1, 3, {
 		{ "Who", ST_K_TEXT, "all", NULL },
 		{ "Seconds", ST_K_NUMBER, "3", NULL },
@@ -176,6 +190,11 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ "Target", ST_K_TEXT, "", NULL },
 		{ "Command", ST_K_CHOICE, "kill", ST_NPC_COMMANDS },
 		{ "Value", ST_K_TEXT, "", NULL } } },
+	{ "npcwalk", "Walk NPC", "NPCs", "Walks the NPCs with this targetname (or number, or several with commas between, keeping their places) along a route made in the NPC manager's Walk row, once or round and round. Everyone with this client sees them walk; the others see them hop from spot to spot.", -1, -1, 4, {
+		{ "Target", ST_K_TEXT, "", NULL },
+		{ "Route", ST_K_TEXT, "", NULL },
+		{ "Pace", ST_K_CHOICE, "walk", "walk|run" },
+		{ "Loop", ST_K_CHOICE, "no", "no|yes" } } },
 	{ "model", "Place model", "World", "Places a model at the spot with rpmodel add, as the model manager does. Scale is in percent.", 1, 5, 9, {
 		{ "Model", ST_K_TEXT, "", NULL },
 		{ "X", ST_K_NUMBER, "", NULL },
@@ -203,6 +222,22 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ "From", ST_K_TEXT, "", NULL },
 		{ "To", ST_K_TEXT, "", NULL },
 		{ "Time offset", ST_K_NUMBER, "", NULL } } },
+	{ "overlay", "Screen overlay", "World", "Draws a shader over everyone's screen with rpshader overlay, or takes it away (by its shader or its number in the list). X, Y, width and height are on a 640x480 screen; empty is the whole screen.", -1, -1, 7, {
+		{ "Do", ST_K_CHOICE, "add", "add|remove|remove all" },
+		{ "Shader", ST_K_TEXT, "", NULL },
+		{ "Fade", ST_K_NUMBER, "", NULL },
+		{ "X", ST_K_NUMBER, "", NULL },
+		{ "Y", ST_K_NUMBER, "", NULL },
+		{ "Width", ST_K_NUMBER, "", NULL },
+		{ "Height", ST_K_NUMBER, "", NULL } } },
+	{ "sky", "Sky look", "World", "Tints the map's sky (red green blue, 255 as it is), spins it round (degrees a second) and turns it, as the shader manager's Sky tab does; a 3D skybox's view also moves. For everyone with this client, until the map changes (sent hidden in an rpnotify).", -1, -1, 7, {
+		{ "Do", ST_K_CHOICE, "set", "set|reset" },
+		{ "Colour", ST_K_TEXT, "255 255 255", NULL },
+		{ "Spin", ST_K_NUMBER, "0", NULL },
+		{ "Around", ST_K_NUMBER, "0", NULL },
+		{ "Tilt", ST_K_NUMBER, "0", NULL },
+		{ "Roll", ST_K_NUMBER, "0", NULL },
+		{ "Move", ST_K_TEXT, "0 0 0", NULL } } },
 	{ "sound", "Play sound", "World", "Plays a sound with rpsound: once, looping (until removed) or local, to everyone, you, a player or at a spot. Pick it in the sound manager to hear it first.", 4, -1, 7, {
 		{ "Sound", ST_K_TEXT, "", NULL },
 		{ "Play", ST_K_CHOICE, "once", "once|loop|local" },
@@ -217,7 +252,7 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 	{ "cinstart", "Start cinematic", "Cinematic", "Takes everyone with this client from their own view to the cinematic camera, starting where each of them looks from. Camera shots start one too. Players can leave it with /cincam stop.", -1, -1, 2, {
 		{ "HUD", ST_K_CHOICE, "hide", "hide|show" },
 		{ "Bars", ST_K_CHOICE, "on", "on|off" } } },
-	{ "camshot", "Camera shot", "Cinematic", "Plays a shot made in the camera editor: Edit shot opens it there (or /cincam edit <name>). Fly where it should go, add spots, see the trail and preview it. Waits for the shot to end unless told not to.", -1, -1, 2, {
+	{ "camshot", "Camera shot", "Cinematic", "Plays a shot made in the camera editor: Edit shot opens it there (or /cincam edit <name>). Fly where it should go, add spots, see the trail and preview it; its focus, fades and the NPCs walking in it are there too. Waits for the shot to end unless told not to.", -1, -1, 2, {
 		{ "Shot", ST_K_TEXT, "", NULL },
 		{ "Wait", ST_K_CHOICE, "until it ends", "until it ends|no" } } },
 	{ "camfov", "Camera zoom", "Cinematic", "Zooms to the FOV (like cg_fov: smaller is closer) over the seconds; 0 seconds is at once.", -1, -1, 2, {
@@ -254,7 +289,8 @@ typedef enum {
 typedef enum {
 	ST_CHOOSE_TRIGGER,
 	ST_CHOOSE_DOOR,
-	ST_CHOOSE_EFFECT
+	ST_CHOOSE_EFFECT,
+	ST_CHOOSE_ROUTE
 } stChoose_t;
 
 #define ST_MAX_PEOPLE	128
@@ -283,6 +319,8 @@ typedef enum {
 	ST_PICK_MODEL,
 	ST_PICK_EFFECT,
 	ST_PICK_SHADER,
+	ST_PICK_OVERLAY,
+	ST_PICK_SKY,
 	ST_PICK_NPC_SPAWN,
 	ST_PICK_NPC_MANAGE,
 	ST_PICK_SOUND,
@@ -317,6 +355,8 @@ static struct {
 	char		name[MAX_QPATH];	// "" = not saved yet
 	qboolean	dirty;
 	stList_t	stepList;
+	byte		marked[ST_MAX_STEPS];	// picked with Ctrl or Shift, with the selected one
+	int			anchor;				// where a Shift+click picks from
 
 	stActionRow_t	actionRows[ST_NUM_ACTIONS * 2];
 	int				numActionRows;
@@ -333,7 +373,9 @@ static struct {
 
 	// playing
 	stRun_t		run;
+	int			runTab;			// the tab the story playing is in
 	int			nextSend;		// for every story: the server's flood protection is per client
+	int			confirmClose;	// cls.realtime a tab with changes was asked to close, 0 none
 
 	// the armed stories, and the list a trigger step picks from
 	stList_t	armedList;
@@ -353,6 +395,40 @@ static struct {
 
 static void ST_OpenArmed( void );
 static void ST_OpenChoose( stChoose_t kind );
+static qboolean ST_MarkersOn( void );
+
+// the stories open, one in each tab; the one shown is in st, the others kept here
+#define ST_MAX_TABS		8
+typedef struct {
+	stStep_t	*steps;			// while another tab is shown
+	int			numSteps;
+	char		name[MAX_QPATH];
+	qboolean	dirty;
+	stList_t	stepList;
+	byte		marked[ST_MAX_STEPS];
+} stTab_t;
+
+static stTab_t	stTabs[ST_MAX_TABS];
+static int		stNumTabs = 1, stActiveTab;
+
+// steps copied, to paste in this story or another
+static stStep_t	*stClip;
+static int		stNumClip;
+
+// the story playing is the one shown
+static qboolean ST_RunHere( void ) {
+	return (qboolean)( st.run.running && st.runTab == stActiveTab );
+}
+
+// the steps of the story playing, wherever its tab is
+static stStep_t *ST_RunSteps( int *numSteps ) {
+	if ( st.runTab == stActiveTab || st.runTab < 0 || st.runTab >= stNumTabs || !stTabs[st.runTab].steps ) {
+		*numSteps = st.numSteps;
+		return st.steps;
+	}
+	*numSteps = stTabs[st.runTab].numSteps;
+	return stTabs[st.runTab].steps;
+}
 
 static vec4_t stWhite		= { 1.0f, 1.0f, 1.0f, 1.0f };
 static vec4_t stPanel		= { 0.0f, 0.0f, 0.0f, 0.65f };
@@ -367,6 +443,7 @@ static vec4_t stBorder		= { 0.5f, 0.5f, 0.5f, 0.8f };
 static vec4_t stDim			= { 0.7f, 0.7f, 0.7f, 1.0f };
 static vec4_t stAccent		= { 1.0f, 0.8f, 0.3f, 1.0f };
 static vec4_t stRunning		= { 0.2f, 0.6f, 0.25f, 0.8f };
+static vec4_t stMarked		= { 0.2f, 0.45f, 0.8f, 0.4f };
 
 /*
 ===============================================================================
@@ -515,6 +592,12 @@ static qboolean ST_FieldShown( const stStep_t *s, int field ) {
 	}
 	if ( s->action == ST_A_MUSIC )
 		return (qboolean)( field != 1 || !Q_stricmp( s->values[0], "play" ) );
+	if ( s->action == ST_A_SAY )
+		return (qboolean)( field != 2 || !Q_stricmp( s->values[1], "a player" ) );
+	if ( s->action == ST_A_OVERLAY )
+		return (qboolean)( field == 0 || ( field == 1 && Q_stricmp( s->values[0], "remove all" ) ) || !Q_stricmp( s->values[0], "add" ) );
+	if ( s->action == ST_A_SKY )
+		return (qboolean)( field == 0 || Q_stricmp( s->values[0], "reset" ) );
 	if ( s->action != ST_A_TRIGGER )
 		return qtrue;
 	switch ( field ) {
@@ -612,7 +695,9 @@ static qboolean ST_HasEmote( const stStep_t *s ) {
 // sent as cmd: hooks, which only players with this client see
 static qboolean ST_Experimental( stAction_t action ) {
 	switch ( action ) {
+	case ST_A_SKY:
 	case ST_A_NPC_TALK:
+	case ST_A_NPC_WALK:
 	case ST_A_OBJECTIVE:
 	case ST_A_CIN_START:
 	case ST_A_CAM_SHOT:
@@ -633,14 +718,77 @@ static qboolean ST_CanAdd( stAction_t action ) {
 	return qfalse;
 }
 
-// what a step sends after its command, NULL if nothing
-static const char *ST_StepExtra( const stStep_t *s ) {
+// the NPC manager's walk along a route, or why it can't; NULL either way when nothing walks
+static const char *ST_WalkCommand( const char *target, const char *route, const char *pace, qboolean loop, const char **error ) {
+	static char cmd[MAX_STRING_CHARS], why[MAX_STRING_CHARS];
+	vec3_t pts[NW_MAX_ROUTE_POINTS];
+	float speed;
+
+	*error = NULL;
+	if ( !target[0] ) {
+		*error = "Type the NPC's targetname or number";
+		return NULL;
+	}
+	if ( !route[0] ) {
+		*error = "Pick the route it walks";
+		return NULL;
+	}
+	if ( CL_NpcWalk_LoadRoute( route, pts, NW_MAX_ROUTE_POINTS, &speed ) <= 0 ) {
+		Com_sprintf( why, sizeof( why ), "No route called %s: make it in the NPC manager's Walk row", route );
+		*error = why;
+		return NULL;
+	}
+	Com_sprintf( cmd, sizeof( cmd ), "npcmanager walk %s %s %s%s", target, route, pace, loop ? " loop" : "" );
+	return cmd;
+}
+
+// what a step sends after its command, NULL if nothing; *local if it's a console command
+static const char *ST_StepExtra( const stStep_t *s, qboolean *local ) {
 	static char cmd[MAX_STRING_CHARS];
 
+	*local = qfalse;
 	if ( s->action != ST_A_NPC_TALK || !ST_HasEmote( s ) )
 		return NULL;
 	Com_sprintf( cmd, sizeof( cmd ), "npc emote %s %s", s->values[3], s->values[0] );
 	return cmd;
+}
+
+// a connected player's name, colours and all
+static const char *ST_PlayerName( int num ) {
+	const char *info;
+
+	if ( num < 0 || num >= MAX_CLIENTS )
+		return "";
+	info = cl.gameState.stringData + cl.gameState.stringOffsets[CS_PLAYERS + num];
+	return info[0] ? Info_ValueForKey( info, "n" ) : "";
+}
+
+// a player by their number, or by their name or a part of it, colours left out; -1 if no one
+static int ST_FindPlayer( const char *who ) {
+	char want[MAX_STRING_CHARS], name[MAX_STRING_CHARS];
+	int found = -1;
+
+	if ( Q_isanumber( who ) && !strchr( who, '.' ) ) {
+		const int num = atoi( who );
+
+		return ST_PlayerName( num )[0] ? num : -1;
+	}
+	Q_strncpyz( want, who, sizeof( want ) );
+	Q_StripColor( want );
+	Q_strlwr( want );
+	for ( int i = 0; i < MAX_CLIENTS; i++ ) {
+		Q_strncpyz( name, ST_PlayerName( i ), sizeof( name ) );
+		if ( !name[0] )
+			continue;
+		Q_StripColor( name );
+		Q_strlwr( name );
+		// the whole name first, else the first it's part of
+		if ( !strcmp( name, want ) )
+			return i;
+		if ( found < 0 && strstr( name, want ) )
+			found = i;
+	}
+	return found;
 }
 
 // what a step sends: a server command, or with *local a console command; NULL and why if it can't
@@ -684,6 +832,26 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 		if ( !v[0][0] ) {
 			*error = "Type what to say";
 			return NULL;
+		}
+		if ( !Q_stricmp( v[1], "a player" ) ) {
+			static char why[MAX_STRING_CHARS];
+			int num;
+
+			// shown as their chat, which only this client's hook can do
+			if ( !CL_RpHooks_Experimental() ) {
+				*error = RP_EXPERIMENTAL_OFF;
+				return NULL;
+			}
+			if ( !v[2][0] ) {
+				*error = "Type the player's number or a part of their name";
+				return NULL;
+			}
+			if ( ( num = ST_FindPlayer( v[2] ) ) < 0 ) {
+				Com_sprintf( why, sizeof( why ), "No player %s on the server", v[2] );
+				*error = why;
+				return NULL;
+			}
+			return CL_RpHooks_NpcTalkCommand( va( "%i", num ), ST_PlayerName( num ), "^7", "", v[0] );
 		}
 		Com_sprintf( cmd, sizeof( cmd ), "say %s", v[0] );
 		return cmd;
@@ -731,6 +899,7 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 			*error = "Name the shot, then Edit shot to make it";
 			return NULL;
 		}
+
 		if ( !CL_RpCinematic_ShotHook( v[0], hook, sizeof( hook ), NULL ) ) {
 			Com_sprintf( why, sizeof( why ), "No shot called %s yet: Edit shot makes it", v[0] );
 			*error = why;
@@ -779,6 +948,14 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 			return NULL;
 		}
 		Com_sprintf( cmd, sizeof( cmd ), "npc tele %s %i %s", ST_PosArgs( s ), ST_Round( AngleNormalize360( ST_Number( s, 4 ) ) ), v[0] );
+		return cmd;
+
+	case ST_A_NPC_WALK:
+		value = ST_WalkCommand( v[0], v[1], v[2], (qboolean)!Q_stricmp( v[3], "yes" ), error );
+		if ( !value )
+			return NULL;
+		*local = qtrue;
+		Q_strncpyz( cmd, value, sizeof( cmd ) );
 		return cmd;
 
 	case ST_A_NPC_CMD:
@@ -904,6 +1081,50 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 		else
 			Com_sprintf( cmd, sizeof( cmd ), "rpshader remap %s %s", v[0], v[1] );
 		return cmd;
+
+	case ST_A_OVERLAY: {
+		// rpshader overlay add <shader> [fade] [x] [y] [width] [height], up to the last one given
+		static const char *defaults[] = { "0", "0", "0", "640", "480" };
+		int last = -1;
+
+		if ( !Q_stricmp( v[0], "remove all" ) )
+			return "rpshader overlay remove all";
+		if ( !v[1][0] ) {
+			*error = !Q_stricmp( v[0], "remove" ) ? "Type the overlay's shader, or its number in the list" : "Type the shader, or pick it in the shader manager";
+			return NULL;
+		}
+		if ( !Q_stricmp( v[0], "remove" ) ) {
+			Com_sprintf( cmd, sizeof( cmd ), "rpshader overlay remove %s", v[1] );
+			return cmd;
+		}
+		for ( int i = 0; i < 5; i++ ) {
+			if ( v[2 + i][0] )
+				last = i;
+		}
+		Com_sprintf( cmd, sizeof( cmd ), "rpshader overlay add %s", v[1] );
+		for ( int i = 0; i <= last; i++ )
+			Q_strcat( cmd, sizeof( cmd ), va( " %s", v[2 + i][0] ? v[2 + i] : defaults[i] ) );
+		return cmd;
+	}
+
+	case ST_A_SKY: {
+		vec3_t tint = { 255, 255, 255 }, shift = { 0, 0, 0 };
+
+		if ( !Q_stricmp( v[0], "reset" ) )
+			return "rpnotify -1 1 cmd:sky/off";
+		if ( v[1][0] && sscanf( v[1], "%f %f %f", &tint[0], &tint[1], &tint[2] ) != 3 ) {
+			*error = "Type the colour as red green blue, 0 to 255, e.g. 255 180 120";
+			return NULL;
+		}
+		if ( v[6][0] && sscanf( v[6], "%f %f %f", &shift[0], &shift[1], &shift[2] ) != 3 ) {
+			*error = "Type the move as x y z, e.g. 0 0 128";
+			return NULL;
+		}
+		Com_sprintf( cmd, sizeof( cmd ), "rpnotify -1 1 cmd:sky/%g %g %g/%g/%g %g %g/%g %g %g", Com_Clamp( 0, 255, tint[0] ),
+			Com_Clamp( 0, 255, tint[1] ), Com_Clamp( 0, 255, tint[2] ), ST_Number( s, 2 ), ST_Number( s, 4 ), ST_Number( s, 3 ),
+			ST_Number( s, 5 ), shift[0], shift[1], shift[2] );
+		return cmd;
+	}
 
 	default:
 		return NULL;
@@ -1331,6 +1552,24 @@ static const char *ST_StepSummary( const stStep_t *s ) {
 	case ST_A_SHADER:
 		Com_sprintf( buf, sizeof( buf ), "Remap %s", s->values[0][0] ? s->values[0] : "?" );
 		break;
+	case ST_A_SAY:
+		if ( !Q_stricmp( s->values[1], "a player" ) )
+			Com_sprintf( buf, sizeof( buf ), "Say as %s" S_COLOR_WHITE ": %s", s->values[2][0] ? s->values[2] : "?", s->values[0] );
+		else
+			Com_sprintf( buf, sizeof( buf ), "Say: %s", s->values[0] );
+		break;
+	case ST_A_OVERLAY:
+		if ( !Q_stricmp( s->values[0], "remove all" ) )
+			Q_strncpyz( buf, "Overlays: remove all", sizeof( buf ) );
+		else
+			Com_sprintf( buf, sizeof( buf ), "Overlay %s %s", s->values[0], s->values[1][0] ? s->values[1] : "?" );
+		break;
+	case ST_A_SKY:
+		if ( !Q_stricmp( s->values[0], "reset" ) )
+			Q_strncpyz( buf, "Sky look: as the map has it", sizeof( buf ) );
+		else
+			Com_sprintf( buf, sizeof( buf ), "Sky look: %s, spin %s", s->values[1], s->values[2][0] ? s->values[2] : "0" );
+		break;
 	default:
 		Com_sprintf( buf, sizeof( buf ), "%s%s%s", def->name, s->values[0][0] ? ": " : "", s->values[0] );
 		break;
@@ -1369,7 +1608,7 @@ static void ST_AddStep( stAction_t action ) {
 	at = ( st.stepList.sel >= 0 && st.stepList.sel < st.numSteps ) ? st.stepList.sel + 1 : st.numSteps;
 	memmove( &st.steps[at + 1], &st.steps[at], ( st.numSteps - at ) * sizeof( st.steps[0] ) );
 	st.numSteps++;
-	if ( st.run.running && st.run.pc >= at )
+	if ( ST_RunHere() && st.run.pc >= at )
 		st.run.pc++;
 
 	s = &st.steps[at];
@@ -1382,27 +1621,95 @@ static void ST_AddStep( stAction_t action ) {
 	ST_Changed();
 }
 
-static void ST_DeleteStep( void ) {
-	const int at = st.stepList.sel;
+// the steps picked, in order: the marked ones, or the selected one; how many
+static int ST_Picked( int *rows ) {
+	int count = 0;
 
-	if ( at < 0 || at >= st.numSteps )
+	for ( int i = 0; i < st.numSteps; i++ ) {
+		if ( st.marked[i] )
+			rows[count++] = i;
+	}
+	if ( !count && st.stepList.sel >= 0 && st.stepList.sel < st.numSteps )
+		rows[count++] = st.stepList.sel;
+	return count;
+}
+
+static void ST_ClearMarks( void ) {
+	memset( st.marked, 0, sizeof( st.marked ) );
+}
+
+static void ST_DeleteStep( void ) {
+	int rows[ST_MAX_STEPS];
+	const int count = ST_Picked( rows );
+
+	if ( !count )
 		return;
-	memmove( &st.steps[at], &st.steps[at + 1], ( st.numSteps - at - 1 ) * sizeof( st.steps[0] ) );
-	st.numSteps--;
-	if ( st.run.running && st.run.pc > at )
-		st.run.pc--;
-	ST_SelectStep( at < st.numSteps ? at : st.numSteps - 1 );
+	// from the last up, so the ones before stay where they are
+	for ( int i = count - 1; i >= 0; i-- ) {
+		const int at = rows[i];
+
+		memmove( &st.steps[at], &st.steps[at + 1], ( st.numSteps - at - 1 ) * sizeof( st.steps[0] ) );
+		st.numSteps--;
+		if ( ST_RunHere() && st.run.pc > at )
+			st.run.pc--;
+	}
+	ST_ClearMarks();
+	ST_SelectStep( rows[0] < st.numSteps ? rows[0] : st.numSteps - 1 );
+	ST_Changed();
+	if ( count > 1 )
+		ST_Message( va( "Deleted %i steps", count ) );
+}
+
+// the picked steps to the clipboard
+static void ST_CopySteps( qboolean cut ) {
+	int rows[ST_MAX_STEPS];
+	const int count = ST_Picked( rows );
+
+	if ( !count )
+		return;
+	if ( !stClip )
+		stClip = (stStep_t *)Z_Malloc( ST_MAX_STEPS * sizeof( stStep_t ), TAG_GENERAL, qfalse );
+	for ( int i = 0; i < count; i++ )
+		stClip[i] = st.steps[rows[i]];
+	stNumClip = count;
+	if ( cut )
+		ST_DeleteStep();
+	ST_Message( va( "%s %i step%s: Paste puts %s after the selected one, in any tab", cut ? "Cut" : "Copied", count, count == 1 ? "" : "s",
+		count == 1 ? "it" : "them" ) );
+}
+
+// the clipboard after the selected step, picked once there
+static void ST_PasteSteps( void ) {
+	int at;
+
+	if ( !stNumClip )
+		return;
+	if ( st.numSteps + stNumClip > ST_MAX_STEPS ) {
+		ST_Message( S_COLOR_RED "The story would be too long" );
+		return;
+	}
+	at = ( st.stepList.sel >= 0 && st.stepList.sel < st.numSteps ) ? st.stepList.sel + 1 : st.numSteps;
+	memmove( &st.steps[at + stNumClip], &st.steps[at], ( st.numSteps - at ) * sizeof( st.steps[0] ) );
+	memcpy( &st.steps[at], stClip, stNumClip * sizeof( st.steps[0] ) );
+	st.numSteps += stNumClip;
+	if ( ST_RunHere() && st.run.pc >= at )
+		st.run.pc += stNumClip;
+	ST_ClearMarks();
+	for ( int i = 0; i < stNumClip; i++ )
+		st.marked[at + i] = 1;
+	ST_SelectStep( at + stNumClip - 1 );
+	st.anchor = at;
 	ST_Changed();
 }
 
-static void ST_CopyStep( void ) {
+static void ST_DuplicateStep( void ) {
 	const int at = st.stepList.sel;
 
 	if ( at < 0 || at >= st.numSteps || st.numSteps >= ST_MAX_STEPS )
 		return;
 	memmove( &st.steps[at + 1], &st.steps[at], ( st.numSteps - at ) * sizeof( st.steps[0] ) );
 	st.numSteps++;
-	if ( st.run.running && st.run.pc > at )
+	if ( ST_RunHere() && st.run.pc > at )
 		st.run.pc++;
 	ST_SelectStep( at + 1 );
 	ST_Changed();
@@ -1417,7 +1724,13 @@ static void ST_MoveStep( int delta ) {
 	tmp = st.steps[at];
 	st.steps[at] = st.steps[to];
 	st.steps[to] = tmp;
-	if ( st.run.running ) {
+	{
+		const byte mark = st.marked[at];
+
+		st.marked[at] = st.marked[to];
+		st.marked[to] = mark;
+	}
+	if ( ST_RunHere() ) {
 		if ( st.run.pc == at )
 			st.run.pc = to;
 		else if ( st.run.pc == to )
@@ -1428,7 +1741,9 @@ static void ST_MoveStep( int delta ) {
 }
 
 static void ST_New( void ) {
-	st.run.running = qfalse;
+	if ( ST_RunHere() )
+		st.run.running = qfalse;
+	ST_ClearMarks();
 	st.numSteps = 0;
 	st.name[0] = '\0';
 	st.dirty = qfalse;
@@ -1485,6 +1800,7 @@ static void ST_Run( int from ) {
 		return;
 	}
 	ST_StartRun( &st.run, from );
+	st.runTab = stActiveTab;
 	ST_Message( from ? va( S_COLOR_GREEN "Playing from step %i", from + 1 ) : S_COLOR_GREEN "Playing" );
 }
 
@@ -1521,7 +1837,8 @@ static qboolean ST_Play( stRun_t *r, stStep_t *steps, int numSteps, const char *
 		Q_strncpyz( prefix, "Storyteller: ", sizeof( prefix ) );
 
 	while ( r->running ) {
-		if ( cls.realtime < r->shotUntil )
+		// a shot plays out, though what goes with it still goes
+		if ( cls.realtime < r->shotUntil && !r->extraDue )
 			return qfalse;
 		if ( r->pc >= numSteps )
 			return qtrue;
@@ -1565,14 +1882,21 @@ static qboolean ST_Play( stRun_t *r, stStep_t *steps, int numSteps, const char *
 			continue;
 
 		default:
-			if ( cls.realtime < st.nextSend )
+			// the server's flood protection: any command this client sent counts, an NPC
+			// walk's or an impersonation's too
+			if ( cls.realtime < st.nextSend || cls.realtime - CL_LastCommandTime() < ST_CommandGap() )
 				return qfalse;
 			if ( r->extraDue ) {
 				r->extraDue = qfalse;
-				cmd = ST_StepExtra( s );
+				cmd = ST_StepExtra( s, &local );
 				if ( cmd ) {
 					Com_Printf( S_COLOR_GREEN "%s" S_COLOR_WHITE "%s\n", prefix, cmd );
-					CL_AddReliableCommand( cmd, qfalse );
+					if ( local ) {
+						Cbuf_AddText( cmd );
+						Cbuf_AddText( "\n" );
+					} else {
+						CL_AddReliableCommand( cmd, qfalse );
+					}
 					r->sent++;
 					st.nextSend = cls.realtime + ST_CommandGap();
 				}
@@ -1595,14 +1919,16 @@ static qboolean ST_Play( stRun_t *r, stStep_t *steps, int numSteps, const char *
 			r->sent++;
 			// a console command may well send one too
 			st.nextSend = cls.realtime + ST_CommandGap();
-			if ( s->action == ST_A_CAM_SHOT && Q_stricmp( s->values[1], "no" ) ) {
+			if ( s->action == ST_A_CAM_SHOT ) {
 				char hook[MAX_STRING_CHARS];
 				int ms;
 
-				if ( CL_RpCinematic_ShotHook( s->values[0], hook, sizeof( hook ), &ms ) )
+				// the NPCs walking in it set off, each when the shot says
+				CL_RpCinematic_ShotWalks( s->values[0], qfalse );
+				if ( Q_stricmp( s->values[1], "no" ) && CL_RpCinematic_ShotHook( s->values[0], hook, sizeof( hook ), &ms ) )
 					r->shotUntil = cls.realtime + ms;
 			}
-			if ( ST_StepExtra( s ) )
+			if ( ST_StepExtra( s, &local ) )
 				r->extraDue = qtrue;
 			else
 				r->pc++;
@@ -1738,7 +2064,10 @@ static void ST_RunArmed( void ) {
 
 // every frame in game, open or not
 static void ST_RunFrame( void ) {
-	if ( st.run.running && ST_Play( &st.run, st.steps, st.numSteps, NULL ) )
+	int runNum;
+	stStep_t *runSteps = ST_RunSteps( &runNum );
+
+	if ( st.run.running && ST_Play( &st.run, runSteps, runNum, NULL ) )
 		ST_Stop( va( S_COLOR_GREEN "The story is over (%i command%s sent)", st.run.sent, st.run.sent == 1 ? "" : "s" ) );
 	ST_RunArmed();
 }
@@ -1895,6 +2224,85 @@ static int QDECL ST_CompareNames( const void *a, const void *b ) {
 	return Q_stricmp( (const char *)a, (const char *)b );
 }
 
+/*
+===============================================================================
+
+TABS
+
+===============================================================================
+*/
+
+// the story shown, kept in its tab
+static void ST_StoreTab( void ) {
+	stTab_t *t = &stTabs[stActiveTab];
+
+	if ( !t->steps )
+		t->steps = (stStep_t *)Z_Malloc( ST_MAX_STEPS * sizeof( stStep_t ), TAG_GENERAL, qfalse );
+	memcpy( t->steps, st.steps, st.numSteps * sizeof( stStep_t ) );
+	t->numSteps = st.numSteps;
+	Q_strncpyz( t->name, st.name, sizeof( t->name ) );
+	t->dirty = st.dirty;
+	t->stepList = st.stepList;
+	memcpy( t->marked, st.marked, sizeof( t->marked ) );
+}
+
+// a tab's story shown, the one shown before not kept
+static void ST_FetchTab( int index ) {
+	stTab_t *t = &stTabs[index];
+
+	stActiveTab = index;
+	st.numSteps = t->steps ? t->numSteps : 0;
+	if ( st.numSteps )
+		memcpy( st.steps, t->steps, st.numSteps * sizeof( stStep_t ) );
+	Q_strncpyz( st.name, t->name, sizeof( st.name ) );
+	st.dirty = t->dirty;
+	st.stepList = t->stepList;
+	memcpy( st.marked, t->marked, sizeof( st.marked ) );
+	st.anchor = Q_max( 0, st.stepList.sel );
+	st.focus = ST_F_NONE;
+	st.confirmClose = 0;
+}
+
+static void ST_ShowTab( int index ) {
+	if ( index == stActiveTab || index < 0 || index >= stNumTabs )
+		return;
+	ST_StoreTab();
+	ST_FetchTab( index );
+}
+
+// a new, empty tab, shown; qfalse if there's no room for one
+static qboolean ST_NewTab( void ) {
+	if ( stNumTabs >= ST_MAX_TABS ) {
+		ST_Message( va( S_COLOR_YELLOW "At most %i stories open at once: close one first", ST_MAX_TABS ) );
+		return qfalse;
+	}
+	ST_StoreTab();
+	memset( &stTabs[stNumTabs], 0, sizeof( stTabs[0] ) );
+	stTabs[stNumTabs].stepList.sel = -1;
+	ST_FetchTab( stNumTabs++ );
+	return qtrue;
+}
+
+// the tab shown closed, its story with it; the one playing in it stops
+static void ST_CloseTab( void ) {
+	const int index = stActiveTab;
+
+	if ( ST_RunHere() )
+		ST_Stop( S_COLOR_YELLOW "Stopped: its tab was closed" );
+	if ( stNumTabs == 1 ) {
+		ST_New();
+		return;
+	}
+	if ( stTabs[index].steps )
+		Z_Free( stTabs[index].steps );
+	stNumTabs--;
+	memmove( &stTabs[index], &stTabs[index + 1], ( stNumTabs - index ) * sizeof( stTabs[0] ) );
+	memset( &stTabs[stNumTabs], 0, sizeof( stTabs[0] ) );
+	if ( st.runTab > index )
+		st.runTab--;
+	ST_FetchTab( index < stNumTabs ? index : stNumTabs - 1 );
+}
+
 static void ST_RefreshStories( void ) {
 	char list[16384], *name;
 	int count;
@@ -1921,6 +2329,26 @@ static void ST_OpenSave( void ) {
 	st.popup = ST_POPUP_SAVE;
 	Q_strncpyz( st.saveName, st.name, sizeof( st.saveName ) );
 	st.focus = ST_F_SAVE_NAME;
+}
+
+// a saved story opened from the list: in a tab of its own, unless the one shown is empty,
+// or the story is open already
+static qboolean ST_LoadInTab( const char *name ) {
+	if ( FS_ReadFile( ST_StoryPath( name ), NULL ) < 0 ) {
+		ST_Message( va( S_COLOR_RED "No story called %s", name ) );
+		return qfalse;
+	}
+	ST_StoreTab();
+	for ( int i = 0; i < stNumTabs; i++ ) {
+		if ( !Q_stricmp( stTabs[i].name, name ) ) {
+			ST_ShowTab( i );
+			ST_Message( va( "%s is open in tab %i", name, i + 1 ) );
+			return qtrue;
+		}
+	}
+	if ( ( st.numSteps || st.name[0] || st.dirty ) && !ST_NewTab() )
+		return qfalse;
+	return ST_Load( name );
 }
 
 static void ST_OpenLoad( void ) {
@@ -2043,8 +2471,8 @@ static void ST_StartPick( stPick_t pick ) {
 		CL_ModelManager_OpenForStory();
 	else if ( pick == ST_PICK_EFFECT )
 		CL_EffectManager_OpenForStory();
-	else if ( pick == ST_PICK_SHADER )
-		CL_ShaderManager_OpenForStory();
+	else if ( pick == ST_PICK_SHADER || pick == ST_PICK_OVERLAY || pick == ST_PICK_SKY )
+		CL_ShaderManager_OpenForStory( pick == ST_PICK_OVERLAY ? 2 : pick == ST_PICK_SKY ? 3 : 0 );
 	else if ( pick == ST_PICK_SOUND )
 		CL_SoundManager_OpenForStory();
 	else if ( pick == ST_PICK_MUSIC )
@@ -2057,7 +2485,9 @@ static qboolean ST_PickOpen( void ) {
 	switch ( st.pick ) {
 	case ST_PICK_MODEL:		return CL_ModelManager_Active();
 	case ST_PICK_EFFECT:	return CL_EffectManager_Active();
-	case ST_PICK_SHADER:	return CL_ShaderManager_Active();
+	case ST_PICK_SHADER:
+	case ST_PICK_OVERLAY:
+	case ST_PICK_SKY:		return CL_ShaderManager_Active();
 	case ST_PICK_NPC_SPAWN:
 	case ST_PICK_NPC_MANAGE:	return CL_NpcManager_Active();
 	case ST_PICK_SOUND:		return CL_SoundManager_Active();
@@ -2225,8 +2655,47 @@ static void ST_StepFromCommand( const char *cmd, stStep_t *s ) {
 
 	memset( s, 0, sizeof( *s ) );
 	s->enabled = qtrue;
+
+	// rpnotify -1 1 cmd:sky/<r g b>/<spin>/<pitch yaw roll>/<x y z>, or cmd:sky/off: the shader manager's
+	// sky look; its parts have spaces in them
+	if ( !Q_stricmpn( cmd, "rpnotify -1 1 cmd:sky/", 22 ) ) {
+		vec3_t tint = { 255, 255, 255 }, angles = { 0, 0, 0 }, shift = { 0, 0, 0 };
+		float spin = 0.0f;
+
+		s->action = ST_A_SKY;
+		ST_SetDefaults( s );
+		if ( !Q_stricmpn( cmd + 22, "off", 3 ) || !Q_stricmpn( cmd + 22, "reset", 5 ) ) {
+			Q_strncpyz( s->values[0], "reset", ST_VALUE_LEN );
+			return;
+		}
+		sscanf( cmd + 22, "%f %f %f/%f/%f %f %f/%f %f %f", &tint[0], &tint[1], &tint[2], &spin, &angles[0], &angles[1], &angles[2],
+			&shift[0], &shift[1], &shift[2] );
+		Com_sprintf( s->values[1], ST_VALUE_LEN, "%g %g %g", tint[0], tint[1], tint[2] );
+		Com_sprintf( s->values[2], ST_VALUE_LEN, "%g", spin );
+		Com_sprintf( s->values[3], ST_VALUE_LEN, "%g", angles[YAW] );
+		Com_sprintf( s->values[4], ST_VALUE_LEN, "%g", angles[PITCH] );
+		Com_sprintf( s->values[5], ST_VALUE_LEN, "%g", angles[ROLL] );
+		Com_sprintf( s->values[6], ST_VALUE_LEN, "%g %g %g", shift[0], shift[1], shift[2] );
+		return;
+	}
+
 	Q_strncpyz( line, cmd, sizeof( line ) );
 	argc = ST_SplitLine( line, argv, ARRAY_LEN( argv ) );
+
+	// rpshader overlay add <shader> [fade x y width height], rpshader overlay remove <shader|number|all>
+	if ( argc >= 4 && argc <= 9 && !Q_stricmp( argv[0], "rpshader" ) && !Q_stricmp( argv[1], "overlay" )
+		&& ( !Q_stricmp( argv[2], "add" ) || !Q_stricmp( argv[2], "remove" ) ) ) {
+		s->action = ST_A_OVERLAY;
+		ST_SetDefaults( s );
+		if ( !Q_stricmp( argv[2], "remove" ) && ( !Q_stricmp( argv[3], "all" ) || !strcmp( argv[3], "-1" ) ) ) {
+			Q_strncpyz( s->values[0], "remove all", ST_VALUE_LEN );
+			return;
+		}
+		Q_strncpyz( s->values[0], argv[2], ST_VALUE_LEN );
+		for ( int i = 3; i < argc; i++ )
+			Q_strncpyz( s->values[i - 2], argv[i], ST_VALUE_LEN );
+		return;
+	}
 
 	// rpmodel add <model> <x y z> <pitch yaw roll> <scale> <solid>
 	if ( argc == 10 && !Q_stricmp( argv[0], "rpmodel" ) && !Q_stricmp( argv[1], "add" ) && ST_AllNumbers( argv, 3, 10 ) ) {
@@ -2277,6 +2746,20 @@ static void ST_StepFromCommand( const char *cmd, stStep_t *s ) {
 	}
 	if ( argc >= 3 && !Q_stricmp( argv[0], "npc" ) && ST_NpcStep( argv, argc, s ) )
 		return;
+	// npcmanager walk <target> <route> [walk|run] [loop]
+	if ( argc >= 4 && argc <= 6 && !Q_stricmp( argv[0], "npcmanager" ) && !Q_stricmp( argv[1], "walk" ) && Q_stricmp( argv[3], "stop" ) ) {
+		s->action = ST_A_NPC_WALK;
+		ST_SetDefaults( s );
+		Q_strncpyz( s->values[0], argv[2], ST_VALUE_LEN );
+		Q_strncpyz( s->values[1], argv[3], ST_VALUE_LEN );
+		for ( int i = 4; i < argc; i++ ) {
+			if ( !Q_stricmp( argv[i], "run" ) )
+				Q_strncpyz( s->values[2], "run", ST_VALUE_LEN );
+			else if ( !Q_stricmp( argv[i], "loop" ) )
+				Q_strncpyz( s->values[3], "yes", ST_VALUE_LEN );
+		}
+		return;
+	}
 	if ( ST_TalkStep( cmd, s ) )
 		return;
 	// rpsound once|add|local <sound> [all | -1 | <player> | <x y z>]
@@ -2417,6 +2900,11 @@ void CL_Storyteller_f( void ) {
 			ST_Open();
 	} else if ( !Q_stricmp( arg, "close" ) ) {
 		CL_Storyteller_Close();
+	} else if ( !Q_stricmp( arg, "markers" ) ) {
+		const char *to = Cmd_Argv( 2 );
+
+		Cvar_SetValue( "cl_storyMarkers", !Q_stricmp( to, "on" ) ? 1 : !Q_stricmp( to, "off" ) ? 0 : !ST_MarkersOn() );
+		Com_Printf( "Storyteller: markers %s\n", ST_MarkersOn() ? "on" : "off" );
 	} else if ( !Q_stricmp( arg, "continue" ) ) {
 		if ( !ST_AnyWaiting() )
 			Com_Printf( "Storyteller: nothing is waiting for you\n" );
@@ -2445,6 +2933,10 @@ void CL_Storyteller_f( void ) {
 		}
 		if ( ST_Save( name ) )
 			Com_Printf( "Storyteller: saved %s\n", name );
+	} else if ( !Q_stricmp( arg, "open" ) && Cmd_Argc() >= 3 ) {
+		// in a tab of its own, as the Load list does
+		if ( !ST_LoadInTab( Cmd_Argv( 2 ) ) )
+			Com_Printf( "Storyteller: couldn't open %s\n", Cmd_Argv( 2 ) );
 	} else if ( !Q_stricmp( arg, "arm" ) && Cmd_Argc() >= 3 ) {
 		const char *how = Cmd_Argv( 3 );
 
@@ -2489,12 +2981,14 @@ void CL_Storyteller_f( void ) {
 		Com_Printf( "       storyteller continue         go on past a \"wait for me\" step (bind a key to it)\n" );
 		Com_Printf( "       storyteller stop             stop playing\n" );
 		Com_Printf( "       storyteller load <name>      load a saved story\n" );
+		Com_Printf( "       storyteller open <name>      open a saved story in a tab of its own\n" );
 		Com_Printf( "       storyteller save <name>      save the story\n" );
 		Com_Printf( "       storyteller list             list the saved stories\n" );
 		Com_Printf( "       storyteller arm <name> [again|<times>]  arm a saved story: it plays when its first step\n" );
 		Com_Printf( "                                    is set off, once, every time with again, or that many times\n" );
 		Com_Printf( "       storyteller disarm [name|all]  disarm one, or all\n" );
 		Com_Printf( "       storyteller armed            list the armed stories\n" );
+		Com_Printf( "       storyteller markers [on|off] where the armed stories wait, drawn on your screen\n" );
 		Com_Printf( "       storyteller close            close the storyteller\n" );
 	}
 }
@@ -2627,7 +3121,7 @@ void CL_Storyteller_KeyEvent( int key, qboolean down ) {
 			break;
 		case A_ENTER:
 		case A_KP_ENTER:
-			if ( st.storyList.sel >= 0 && st.storyList.sel < st.numStories && ST_Load( st.stories[st.storyList.sel] ) )
+			if ( st.storyList.sel >= 0 && st.storyList.sel < st.numStories && ST_LoadInTab( st.stories[st.storyList.sel] ) )
 				st.popup = ST_POPUP_NONE;
 			break;
 		default:
@@ -2640,19 +3134,45 @@ void CL_Storyteller_KeyEvent( int key, qboolean down ) {
 
 	switch ( key ) {
 	case A_CURSOR_UP:
-		if ( Key_IsDown( A_CTRL ) )
+		if ( Key_IsDown( A_CTRL ) ) {
 			ST_MoveStep( -1 );
-		else
+		} else {
+			ST_ClearMarks();
 			ST_SelectStep( Com_Clampi( 0, st.numSteps - 1, st.stepList.sel - 1 ) );
+		}
 		break;
 	case A_CURSOR_DOWN:
-		if ( Key_IsDown( A_CTRL ) )
+		if ( Key_IsDown( A_CTRL ) ) {
 			ST_MoveStep( 1 );
-		else if ( st.numSteps )
+		} else if ( st.numSteps ) {
+			ST_ClearMarks();
 			ST_SelectStep( Com_Clampi( 0, st.numSteps - 1, st.stepList.sel + 1 ) );
+		}
 		break;
 	case A_DELETE:
 		ST_DeleteStep();
+		break;
+	case A_LOW_C:
+	case A_CAP_C:
+		if ( Key_IsDown( A_CTRL ) )
+			ST_CopySteps( qfalse );
+		break;
+	case A_LOW_X:
+	case A_CAP_X:
+		if ( Key_IsDown( A_CTRL ) )
+			ST_CopySteps( qtrue );
+		break;
+	case A_LOW_V:
+	case A_CAP_V:
+		if ( Key_IsDown( A_CTRL ) )
+			ST_PasteSteps();
+		break;
+	case A_LOW_A:
+	case A_CAP_A:
+		if ( Key_IsDown( A_CTRL ) ) {
+			for ( int i = 0; i < st.numSteps; i++ )
+				st.marked[i] = 1;
+		}
 		break;
 	case A_ENTER:
 	case A_KP_ENTER:
@@ -2941,7 +3461,9 @@ static void ST_DrawStepRow( int row, float x, float y, float w ) {
 }
 
 static const float *ST_StepFill( int row ) {
-	return ( st.run.running && row == st.run.pc ) ? stRunning : NULL;
+	if ( ST_RunHere() && row == st.run.pc )
+		return stRunning;
+	return st.marked[row] ? stMarked : NULL;
 }
 
 static void ST_DrawActions( void ) {
@@ -2973,16 +3495,47 @@ static void ST_DrawActions( void ) {
 }
 
 static void ST_DrawSteps( void ) {
-	const float listY = ST_TOP_Y + 14, by = listY + ST_STEPS_H + 4, bw = ( ST_STEPS_W - 12 ) / 4;
+	const float listY = ST_TOP_Y + 14, by = listY + ST_STEPS_H + 4, bw = ( ST_STEPS_W - 20 ) / 6;
 	stStep_t *s = ST_SelectedStep();
 	int picked;
 
 	ST_Text( ST_STEPS_X, ST_TOP_Y, va( "Story" S_COLOR_GREY "  %i step%s", st.numSteps, st.numSteps == 1 ? "" : "s" ), stWhite );
 	if ( st.numSteps ) {
 		const int before = st.stepList.sel;
+		const qboolean ctrl = (qboolean)( Key_IsDown( A_CTRL ) != 0 ), shift = (qboolean)( Key_IsDown( A_SHIFT ) != 0 );
+		int row = -1;
+
+		// the row a click is on, before the list takes it
+		if ( st.click && ST_InRect( ST_STEPS_X, listY, ST_STEPS_W, ST_STEPS_H ) ) {
+			row = st.stepList.scroll + (int)( ( st.clickY - listY ) / ST_ROW_H );
+			if ( row >= st.numSteps )
+				row = -1;
+		}
 		picked = ST_List( &st.stepList, st.numSteps, ST_STEPS_X, listY, ST_STEPS_W, ST_STEPS_H, ST_DrawStepRow, ST_StepFill );
 		if ( st.stepList.sel != before )
 			st.focus = ST_F_NONE;
+		if ( row >= 0 && ctrl ) {
+			// one more, or one less; the one selected before is one of them
+			if ( before >= 0 && before < st.numSteps && before != row ) {
+				qboolean any = qfalse;
+
+				for ( int i = 0; i < st.numSteps && !any; i++ )
+					any = (qboolean)( st.marked[i] != 0 );
+				if ( !any )
+					st.marked[before] = 1;
+			}
+			st.marked[row] = (byte)!st.marked[row];
+			picked = -1;
+		} else if ( row >= 0 && shift ) {
+			// all of them from the last one clicked
+			ST_ClearMarks();
+			for ( int i = Q_min( st.anchor, row ); i <= Q_max( st.anchor, row ) && i < st.numSteps; i++ )
+				st.marked[i] = 1;
+			picked = -1;
+		} else if ( row >= 0 ) {
+			ST_ClearMarks();
+			st.anchor = row;
+		}
 		// double-click plays from there
 		if ( picked >= 0 )
 			ST_Run( picked );
@@ -2997,8 +3550,12 @@ static void ST_DrawSteps( void ) {
 	if ( ST_Button( ST_STEPS_X + bw + 4, by, bw, "Down", qfalse, (qboolean)( s && st.stepList.sel < st.numSteps - 1 ) ) )
 		ST_MoveStep( 1 );
 	if ( ST_Button( ST_STEPS_X + ( bw + 4 ) * 2, by, bw, "Copy", qfalse, (qboolean)( s != NULL ) ) )
-		ST_CopyStep();
-	if ( ST_Button( ST_STEPS_X + ( bw + 4 ) * 3, by, bw, "Delete", qfalse, (qboolean)( s != NULL ) ) )
+		ST_CopySteps( qfalse );
+	if ( ST_Button( ST_STEPS_X + ( bw + 4 ) * 3, by, bw, "Cut", qfalse, (qboolean)( s != NULL ) ) )
+		ST_CopySteps( qtrue );
+	if ( ST_Button( ST_STEPS_X + ( bw + 4 ) * 4, by, bw, stNumClip ? va( "Paste %i", stNumClip ) : "Paste", qfalse, (qboolean)( stNumClip > 0 ) ) )
+		ST_PasteSteps();
+	if ( ST_Button( ST_STEPS_X + ( bw + 4 ) * 5, by, bw, "Delete", qfalse, (qboolean)( s != NULL ) ) )
 		ST_DeleteStep();
 }
 
@@ -3092,6 +3649,14 @@ static void ST_DrawEdit( void ) {
 		y += ST_CTRL_H + 6;
 	}
 
+	if ( s->action == ST_A_OVERLAY || s->action == ST_A_SKY ) {
+		if ( ST_Button( ST_EDIT_X, y, ST_EDIT_W, s->action == ST_A_OVERLAY ? "Pick it in the shader manager's Overlays" : "Set it in the shader manager's Sky tab", qfalse, qtrue ) ) {
+			ST_StartPick( s->action == ST_A_OVERLAY ? ST_PICK_OVERLAY : ST_PICK_SKY );
+			return;
+		}
+		y += ST_CTRL_H + 6;
+	}
+
 	if ( s->action == ST_A_SOUND || s->action == ST_A_MUSIC ) {
 		if ( ST_Button( ST_EDIT_X, y, ST_EDIT_W, s->action == ST_A_SOUND ? "Pick it in the sound manager" : "Pick it in the music manager", qfalse, qtrue ) ) {
 			ST_StartPick( s->action == ST_A_SOUND ? ST_PICK_SOUND : ST_PICK_MUSIC );
@@ -3100,7 +3665,13 @@ static void ST_DrawEdit( void ) {
 		y += ST_CTRL_H + 6;
 	}
 
-	if ( s->action == ST_A_NPC_SPAWN || s->action == ST_A_NPC_TELE || s->action == ST_A_NPC_CMD ) {
+	if ( s->action == ST_A_NPC_WALK ) {
+		if ( ST_Button( ST_EDIT_X, y, ST_EDIT_W, "Pick the route", qfalse, qtrue ) )
+			ST_OpenChoose( ST_CHOOSE_ROUTE );
+		y += ST_CTRL_H + 6;
+	}
+
+	if ( s->action == ST_A_NPC_SPAWN || s->action == ST_A_NPC_TELE || s->action == ST_A_NPC_CMD || s->action == ST_A_NPC_WALK ) {
 		if ( ST_Button( ST_EDIT_X, y, ST_EDIT_W, s->action == ST_A_NPC_SPAWN ? "Place it with the NPC manager" : "Pick it in the NPC manager", qfalse, qtrue ) ) {
 			ST_StartPick( s->action == ST_A_NPC_SPAWN ? ST_PICK_NPC_SPAWN : ST_PICK_NPC_MANAGE );
 			return;
@@ -3135,7 +3706,7 @@ static void ST_DrawEdit( void ) {
 		int lines;
 		ST_Text( ST_EDIT_X, y, local ? "Runs:" : "Sends:", stDim );
 		lines = ST_TextWrappedEx( ST_EDIT_X, y + ST_ROW_H, ST_EDIT_W, cmd, stWhite, 5, qtrue );
-		cmd = ST_StepExtra( s );
+		cmd = ST_StepExtra( s, &local );
 		if ( cmd ) {
 			y += ST_ROW_H * ( lines + 1 ) + 4;
 			ST_Text( ST_EDIT_X, y, "Then:", stDim );
@@ -3151,6 +3722,40 @@ static void ST_DrawEdit( void ) {
 	} else if ( s->action == ST_A_PAUSE ) {
 		ST_TextWrapped( ST_EDIT_X, y, ST_EDIT_W, "Waits until you press Continue, or run /storyteller continue.", stDim, 3 );
 	}
+}
+
+// the stories open: a tab each, the one shown with its close box, and one more
+static void ST_DrawTabs( void ) {
+	const float y = 29, w = 72;
+	float x = ST_ACTIONS_X;
+
+	for ( int i = 0; i < stNumTabs; i++ ) {
+		const qboolean shown = (qboolean)( i == stActiveTab );
+		const char *name = shown ? st.name : stTabs[i].name;
+		const qboolean dirty = shown ? st.dirty : stTabs[i].dirty;
+		const qboolean playing = (qboolean)( st.run.running && st.runTab == i );
+		const char *label = va( "%s%i %s%s", playing ? S_COLOR_GREEN : "", i + 1, name[0] ? name : "new", dirty ? S_COLOR_YELLOW "*" : "" );
+
+		if ( ST_Button( x, y, shown ? w - 14 : w, label, shown, qtrue ) && !shown ) {
+			ST_ShowTab( i );
+			return;
+		}
+		if ( shown ) {
+			const qboolean asked = (qboolean)( st.confirmClose && cls.realtime - st.confirmClose < ST_CONFIRM_MS );
+
+			if ( ST_Button( x + w - 12, y, 12, asked ? "?" : "x", asked, qtrue ) ) {
+				if ( !st.dirty || asked ) {
+					ST_CloseTab();
+					return;
+				}
+				st.confirmClose = cls.realtime;
+				ST_Message( S_COLOR_YELLOW "Not saved: click x again to close it anyway" );
+			}
+		}
+		x += w + 4;
+	}
+	if ( stNumTabs < ST_MAX_TABS && ST_Button( x, y, 16, "+", qfalse, qtrue ) )
+		ST_NewTab();
 }
 
 static void ST_DrawBar( void ) {
@@ -3200,6 +3805,10 @@ static void ST_OpenArmed( void ) {
 		st.armTimes = 2;
 }
 
+#define ST_MAX_ROUTES		256
+static char stRoutes[ST_MAX_ROUTES][MAX_QPATH];
+static int stNumRoutes;
+
 static void ST_OpenChoose( stChoose_t kind ) {
 	ST_ScanMap();
 	st.chooseKind = kind;
@@ -3209,6 +3818,17 @@ static void ST_OpenChoose( stChoose_t kind ) {
 	if ( kind == ST_CHOOSE_EFFECT ) {
 		CL_EffectManager_RequestList();
 		st.nextSend = Q_max( st.nextSend, cls.realtime + ST_CommandGap() );
+	}
+	// the routes saved, read once for the popup
+	if ( kind == ST_CHOOSE_ROUTE ) {
+		char **files;
+		int count;
+
+		files = FS_ListFiles( "npcmanager/routes", ".route", &count );
+		stNumRoutes = 0;
+		for ( int i = 0; i < count && stNumRoutes < ST_MAX_ROUTES; i++ )
+			COM_StripExtension( files[i], stRoutes[stNumRoutes++], sizeof( stRoutes[0] ) );
+		FS_FreeFileList( files );
 	}
 	st.popup = ST_POPUP_CHOOSE;
 	st.focus = ST_F_NONE;
@@ -3225,6 +3845,11 @@ static int ST_ChooseRows( void ) {
 			stChooseRows[count++] = i;
 		return count;
 	}
+	if ( st.chooseKind == ST_CHOOSE_ROUTE ) {
+		for ( int i = 0; i < stNumRoutes && count < ST_MAX_MAPENTS; i++ )
+			stChooseRows[count++] = i;
+		return count;
+	}
 	for ( int i = 0; i < stMap.count; i++ ) {
 		if ( stMap.ents[i].trigger == (qboolean)( st.chooseKind == ST_CHOOSE_TRIGGER ) )
 			stChooseRows[count++] = i;
@@ -3233,6 +3858,10 @@ static int ST_ChooseRows( void ) {
 }
 
 static void ST_DrawChooseRow( int row, float x, float y, float w ) {
+	if ( st.chooseKind == ST_CHOOSE_ROUTE ) {
+		ST_TextClipped( x, y, w, stRoutes[stChooseRows[row]], stWhite );
+		return;
+	}
 	if ( st.chooseKind == ST_CHOOSE_EFFECT ) {
 		const char *path;
 		vec3_t org;
@@ -3255,6 +3884,14 @@ static void ST_DrawChooseRow( int row, float x, float y, float w ) {
 static void ST_ChooseApply( int row ) {
 	stStep_t *s = ST_SelectedStep();
 
+	// a route, for the walk
+	if ( s && st.chooseKind == ST_CHOOSE_ROUTE ) {
+		if ( s->action == ST_A_NPC_WALK ) {
+			Q_strncpyz( s->values[1], stRoutes[stChooseRows[row]], ST_VALUE_LEN );
+			ST_Changed();
+		}
+		return;
+	}
 	if ( !s || s->action != ST_A_TRIGGER )
 		return;
 	if ( st.chooseKind == ST_CHOOSE_EFFECT ) {
@@ -3274,7 +3911,7 @@ static void ST_ChooseApply( int row ) {
 }
 
 static void ST_DrawChoosePopup( void ) {
-	static const char *titles[] = { "Pick a trigger", "Pick a door or button", "Pick an effect" };
+	static const char *titles[] = { "Pick a trigger", "Pick a door or button", "Pick an effect", "Pick a route" };
 	const float x = ST_POPUP_X, y = 80, w = ST_POPUP_W, h = 320;
 	const int count = ST_ChooseRows();
 	int picked = -1;
@@ -3282,7 +3919,9 @@ static void ST_DrawChoosePopup( void ) {
 	ST_Box( x, y, w, h, stPanelOpaque );
 	ST_Text( x + 8, y + 8, va( "%s" S_COLOR_GREY "  %i", titles[st.chooseKind], count ), stWhite );
 	if ( !count ) {
-		ST_TextWrapped( x + 8, y + 30, w - 16, st.chooseKind == ST_CHOOSE_EFFECT
+		ST_TextWrapped( x + 8, y + 30, w - 16, st.chooseKind == ST_CHOOSE_ROUTE
+			? "No routes saved yet: make one in the NPC manager, Manage tab, Walk row, Route on map."
+			: st.chooseKind == ST_CHOOSE_EFFECT
 			? "Asking the server for the map's effects... If none come, put some there with the effect manager."
 			: st.chooseKind == ST_CHOOSE_TRIGGER ? "This map has no triggers." : "This map has no doors or buttons.", stDim, 3 );
 	} else {
@@ -3419,7 +4058,7 @@ static void ST_DrawPopup( void ) {
 		picked = st.storyList.sel;
 	if ( ST_Button( x + w - 88, y + h - 22, 80, "Cancel", qfalse, qtrue ) )
 		st.popup = ST_POPUP_NONE;
-	if ( picked >= 0 && picked < st.numStories && ST_Load( st.stories[picked] ) )
+	if ( picked >= 0 && picked < st.numStories && ST_LoadInTab( st.stories[picked] ) )
 		st.popup = ST_POPUP_NONE;
 }
 
@@ -3443,7 +4082,207 @@ static const char *ST_RunStatus( const stRun_t *r, const stStep_t *steps, int nu
 }
 
 static const char *ST_Status( void ) {
-	return ST_RunStatus( &st.run, st.steps, st.numSteps );
+	int num;
+	const stStep_t *steps = ST_RunSteps( &num );
+
+	return ST_RunStatus( &st.run, steps, num );
+}
+
+/*
+===============================================================================
+
+MARKERS
+
+Where the stories armed wait, and the shown story's "when someone comes": drawn in the
+world on this screen only, with the story's name over each.
+
+===============================================================================
+*/
+
+#define ST_MAX_MARKERS		48
+#define ST_MAX_MARKER_LINES	800
+#define ST_MARKER_HEIGHT	72.0f
+
+static const byte stArmedColor[4]	= { 255, 170, 40, 255 };
+static const byte stFiredColor[4]	= { 60, 230, 90, 255 };
+static const byte stShownColor[4]	= { 70, 200, 255, 255 };
+
+static struct {
+	qboolean	haveView;
+	vec3_t		viewOrg, viewAxis[3];
+	float		fovX, fovY;
+	int			numLines;
+	int			count;
+	vec3_t		top[ST_MAX_MARKERS];
+	char		text[ST_MAX_MARKERS][MAX_QPATH * 2];
+	byte		color[ST_MAX_MARKERS][4];
+} stMark;
+
+static qboolean ST_MarkersOn( void ) {
+	static cvar_t *markers;
+
+	if ( !markers )
+		markers = Cvar_Get( "cl_storyMarkers", "1", CVAR_ARCHIVE_ND, "Draw where the stories armed wait, on the storyteller's screen" );
+	return (qboolean)( markers->integer != 0 );
+}
+
+static void ST_Line( const vec3_t a, const vec3_t b, const byte *color ) {
+	refEntity_t ent;
+	vec3_t mid;
+
+	if ( stMark.numLines >= ST_MAX_MARKER_LINES )
+		return;
+	stMark.numLines++;
+	VectorAdd( a, b, mid );
+	VectorScale( mid, 0.5f, mid );
+	memset( &ent, 0, sizeof( ent ) );
+	ent.reType = RT_LINE;
+	VectorCopy( a, ent.origin );
+	VectorCopy( b, ent.oldorigin );
+	ent.radius = 0.5f + Distance( mid, stMark.viewOrg ) * 0.002f;
+	ent.customShader = cls.whiteShader;
+	memcpy( ent.shaderRGBA, color, sizeof( ent.shaderRGBA ) );
+	ent.renderfx = RF_NOSHADOW;
+	re->AddRefEntityToScene( &ent );
+}
+
+// the trigger of a step drawn, its name to go at *top; qfalse if it can't be told where
+static qboolean ST_DrawTrigger( const stStep_t *s, const byte *color, vec3_t top ) {
+	vec3_t mins, maxs;
+
+	if ( ST_TriggerNear( s ) ) {
+		// a ring on the floor round the spot, and one over it, posts between
+		const float radius = ST_Number( s, 4 ) > 0 ? ST_Number( s, 4 ) : 96.0f;
+		vec3_t pos, prev[2];
+
+		if ( !ST_HavePos( s ) || !s->values[5][0] )
+			return qfalse;
+		ST_GetPos( s, pos );
+		pos[2] -= ST_GROUND_HEIGHT;
+		for ( int i = 0; i <= 32; i++ ) {
+			const float a = i * ( M_PI * 2.0f / 32.0f );
+			vec3_t p[2];
+
+			for ( int h = 0; h < 2; h++ ) {
+				VectorSet( p[h], pos[0] + cosf( a ) * radius, pos[1] + sinf( a ) * radius, pos[2] + 2.0f + h * ST_MARKER_HEIGHT );
+				if ( i )
+					ST_Line( prev[h], p[h], color );
+				VectorCopy( p[h], prev[h] );
+			}
+			if ( i % 8 == 0 )
+				ST_Line( p[0], p[1], color );
+		}
+		VectorSet( top, pos[0], pos[1], pos[2] + ST_MARKER_HEIGHT + 8.0f );
+		return qtrue;
+	}
+
+	// a box round the map's trigger, door or button
+	{
+		const int model = ST_ModelNum( s->values[1] );
+		qboolean found = qfalse;
+
+		for ( int i = 0; i < stMap.count && !found; i++ ) {
+			if ( stMap.ents[i].model == model ) {
+				VectorCopy( stMap.ents[i].mins, mins );
+				VectorCopy( stMap.ents[i].maxs, maxs );
+				found = qtrue;
+			}
+		}
+		if ( !found )
+			return qfalse;
+	}
+	{
+		// its twelve edges, between its eight corners
+		static const int edges[12][2] = { { 0, 1 }, { 2, 3 }, { 4, 5 }, { 6, 7 }, { 0, 2 }, { 1, 3 }, { 4, 6 }, { 5, 7 },
+			{ 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 } };
+		vec3_t corners[8];
+
+		for ( int i = 0; i < 8; i++ )
+			VectorSet( corners[i], ( i & 1 ) ? maxs[0] : mins[0], ( i & 2 ) ? maxs[1] : mins[1], ( i & 4 ) ? maxs[2] : mins[2] );
+		for ( int i = 0; i < 12; i++ )
+			ST_Line( corners[edges[i][0]], corners[edges[i][1]], color );
+	}
+	VectorSet( top, ( mins[0] + maxs[0] ) * 0.5f, ( mins[1] + maxs[1] ) * 0.5f, maxs[2] + 8.0f );
+	return qtrue;
+}
+
+static void ST_AddMarker( const stStep_t *s, const byte *color, const char *text ) {
+	if ( stMark.count >= ST_MAX_MARKERS || !ST_DrawTrigger( s, color, stMark.top[stMark.count] ) )
+		return;
+	Q_strncpyz( stMark.text[stMark.count], text, sizeof( stMark.text[0] ) );
+	memcpy( stMark.color[stMark.count], color, 4 );
+	stMark.count++;
+}
+
+// the cgame's main view, about to be drawn: the markers go in it
+void CL_Storyteller_AddToScene( const refdef_t *fd ) {
+	if ( fd->rdflags & ( RDF_NOWORLDMODEL | RDF_SKYBOXPORTAL ) )
+		return;
+	stMark.haveView = qfalse;
+	stMark.count = 0;
+	stMark.numLines = 0;
+	if ( !ST_MarkersOn() || cls.state != CA_ACTIVE || CL_RpCinematic_Active() )
+		return;
+	stMark.haveView = qtrue;
+	VectorCopy( fd->vieworg, stMark.viewOrg );
+	for ( int i = 0; i < 3; i++ )
+		VectorCopy( fd->viewaxis[i], stMark.viewAxis[i] );
+	stMark.fovX = fd->fov_x;
+	stMark.fovY = fd->fov_y;
+	ST_ScanMap();
+
+	// the stories armed: where they wait, or have been set off
+	for ( int i = 0; i < stNumArmed; i++ ) {
+		const stArmed_t *a = &stArmed[i];
+		const qboolean fired = (qboolean)( a->run.running && !ST_AtTrigger( &a->run, a->steps, a->numSteps ) );
+
+		if ( Q_stricmp( a->map, cl.mapname ) )
+			continue;
+		for ( int j = 0; j < a->numSteps; j++ ) {
+			if ( !a->steps[j].enabled )
+				continue;
+			if ( a->steps[j].action == ST_A_TRIGGER ) {
+				ST_AddMarker( &a->steps[j], fired ? stFiredColor : stArmedColor, va( "%s%s" S_COLOR_GREY "  %s%s", fired ? S_COLOR_GREEN : S_COLOR_YELLOW,
+					a->name, fired ? "playing" : "waiting", a->limit ? va( ", %i of %i played", a->times, a->limit ) : "" ) );
+			}
+			break;
+		}
+	}
+	// the story shown, while it's being made or played
+	if ( st.open || ST_RunHere() ) {
+		for ( int i = 0; i < st.numSteps; i++ ) {
+			if ( st.steps[i].enabled && st.steps[i].action == ST_A_TRIGGER )
+				ST_AddMarker( &st.steps[i], stShownColor, va( S_COLOR_CYAN "%s" S_COLOR_GREY "  step %i", st.name[0] ? st.name : "this story", i + 1 ) );
+		}
+	}
+}
+
+static qboolean ST_Project( const vec3_t point, float *x, float *y ) {
+	vec3_t d;
+	float forward;
+
+	VectorSubtract( point, stMark.viewOrg, d );
+	forward = DotProduct( d, stMark.viewAxis[0] );
+	if ( forward < 4.0f )
+		return qfalse;
+	*x = SCREEN_WIDTH * 0.5f * ( 1.0f - DotProduct( d, stMark.viewAxis[1] ) / forward / tanf( DEG2RAD( stMark.fovX * 0.5f ) ) );
+	*y = SCREEN_HEIGHT * 0.5f * ( 1.0f - DotProduct( d, stMark.viewAxis[2] ) / forward / tanf( DEG2RAD( stMark.fovY * 0.5f ) ) );
+	return qtrue;
+}
+
+// the stories' names over their markers
+static void ST_DrawMarkerLabels( void ) {
+	if ( !stMark.haveView || ( Key_GetCatcher() & ( KEYCATCH_UI | KEYCATCH_CONSOLE ) ) )
+		return;
+	for ( int i = 0; i < stMark.count; i++ ) {
+		float x, y, w;
+
+		if ( !ST_Project( stMark.top[i], &x, &y ) || x < 0 || x > SCREEN_WIDTH || y < 0 || y > SCREEN_HEIGHT )
+			continue;
+		w = ST_TextWidth( stMark.text[i] );
+		ST_Fill( x - w * 0.5f - 3, y - 7, w + 6, 14, stPanel );
+		ST_Text( x - w * 0.5f, y - 6, stMark.text[i], stWhite );
+	}
 }
 
 // while playing with the panel closed: where the story is, and how to go on
@@ -3484,12 +4323,13 @@ void CL_Storyteller_Draw( void ) {
 	char buf[MAX_STRING_CHARS];
 	const char *status;
 
+	if ( !st.font ) {
+		st.font = re->RegisterFont( "arialnb" );
+		if ( !st.font )
+			st.font = cls.menuFont;
+	}
+	ST_DrawMarkerLabels();
 	if ( !st.open ) {
-		if ( !st.font ) {
-			st.font = re->RegisterFont( "arialnb" );
-			if ( !st.font )
-				st.font = cls.menuFont;
-		}
 		ST_DrawPlaying();
 		return;
 	}
@@ -3507,7 +4347,11 @@ void CL_Storyteller_Draw( void ) {
 		: va( S_COLOR_GREY "unsaved story%s", st.dirty ? S_COLOR_YELLOW " *" : "" ), stWhite );
 	status = ST_Status();
 	if ( status )
-		ST_TextClipped( ST_EDIT_X - 100, 14, ST_EDIT_W + 100 - 76 - 124, status, stWhite );
+		ST_TextClipped( ST_EDIT_X - 100, 14, ST_EDIT_W + 100 - 76 - 124 - 64, status, stWhite );
+	if ( ST_Button( ST_EDIT_X + ST_EDIT_W - 74 - 124 - 60, 12, 60, "Markers", ST_MarkersOn(), qtrue ) ) {
+		Cvar_SetValue( "cl_storyMarkers", ST_MarkersOn() ? 0 : 1 );
+		ST_Message( ST_MarkersOn() ? "Markers on: where the stories wait shows on your screen" : "Markers off" );
+	}
 	if ( ST_Button( ST_EDIT_X + ST_EDIT_W - 74 - 120, 12, 120, RP_EXPERIMENTAL_LABEL, CL_RpHooks_Experimental(), qtrue ) ) {
 		if ( CL_RpHooks_Experimental() ) {
 			CL_RpHooks_SetExperimental( qfalse );
@@ -3520,17 +4364,19 @@ void CL_Storyteller_Draw( void ) {
 	if ( ST_Button( ST_EDIT_X + ST_EDIT_W - 70, 12, 70, va( "Armed (%i)", stNumArmed ), (qboolean)( stNumArmed > 0 ), qtrue ) )
 		ST_OpenArmed();
 	if ( st.message[0] && cls.realtime - st.messageTime < ST_MESSAGE_MS )
-		ST_TextClipped( ST_STEPS_X, 29, ST_STEPS_W + ST_EDIT_W, st.message, stWhite );
+		ST_TextClipped( ST_ACTIONS_X, 454, ST_EDIT_X - ST_ACTIONS_X - 8, st.message, stWhite );
 
+	ST_DrawTabs();
 	ST_DrawActions();
 	ST_DrawSteps();
 	ST_DrawEdit();
 	ST_DrawBar();
 
-	ST_Text( ST_EDIT_X, 428, S_COLOR_GREY "Up/Down select   Ctrl+Up/Down move", stWhite );
-	ST_Text( ST_EDIT_X, 440, S_COLOR_GREY "Del delete   Tab next box", stWhite );
-	Com_sprintf( buf, sizeof( buf ), S_COLOR_GREY "Esc back / close%s", Key_GetKey( ST_TOGGLE_CMD ) >= 0 ? "" : "   Bind a key to storyteller" );
-	ST_Text( ST_EDIT_X, 452, buf, stWhite );
+	ST_Text( ST_EDIT_X, 418, S_COLOR_GREY "Up/Down select   Ctrl+Up/Down move", stWhite );
+	ST_Text( ST_EDIT_X, 430, S_COLOR_GREY "Ctrl/Shift+click several   Ctrl+A all", stWhite );
+	ST_Text( ST_EDIT_X, 442, S_COLOR_GREY "Ctrl+C/X/V copy, cut, paste   Del delete", stWhite );
+	Com_sprintf( buf, sizeof( buf ), S_COLOR_GREY "Tab next box   Esc back / close%s", Key_GetKey( ST_TOGGLE_CMD ) >= 0 ? "" : "   Bind a key to storyteller" );
+	ST_Text( ST_EDIT_X, 454, buf, stWhite );
 
 	if ( popupOpen && st.popup != ST_POPUP_NONE ) {
 		st.click = click;

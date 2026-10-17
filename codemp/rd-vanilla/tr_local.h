@@ -566,6 +566,16 @@ typedef struct trRefdef_s {
 
 	int			numDrawSurfs;
 	struct drawSurf_s	*drawSurfs;
+
+	// depth of field: sharp dofFocus from the camera give or take dofRange, blurred up to dofBlur
+	// pixels on a 480 high screen away from it; dofBlur 0 is none
+	float		dofFocus, dofRange, dofBlur;
+
+	// the sky look: the sky shader tinted by skyTint, and drawn with its axes along skyAxis
+	// when skyTurned; a 3D skybox's view is turned itself, so its sky isn't
+	qboolean	skyTinted, skyTurned;
+	vec3_t		skyTint;
+	matrix3_t	skyAxis;
 } trRefdef_t;
 
 
@@ -1027,6 +1037,16 @@ typedef struct trGlobals_s {
 	GLuint					gammaCorrectVtxShader;
 	GLuint					gammaCorrectPxShader;
 
+	// Depth of field: the scene's depth, and the programs that blur by it; 0 if they didn't compile
+	GLuint					dofDepthImage;
+	GLuint					dofVtxShader;
+	GLuint					dofPxShader;
+	float					dofNext[3];		// focus, range and blur the next world scene takes
+
+	// the sky look the client asked for, for every world scene until changed
+	qboolean				skyLookOn;
+	vec3_t					skyLookTint, skyLookAngles, skyLookShift;
+
 	shader_t				*defaultShader;
 	shader_t				*shadowShader;
 	shader_t				*distortionShader;
@@ -1390,6 +1410,8 @@ model_t		*R_AllocModel( void );
 
 extern int	tr_worldLoads;
 void		RE_HideWorldTriangles( const int *surfaces, const int *triangles, int count );
+void		RE_SetDepthOfField( float focus, float range, float blur );
+void		RE_SetSkyLook( const float *tint, const vec3_t angles, const vec3_t shift );
 qhandle_t	RE_WorldPieceModel( const int *surfaces, const int *triangles, int count, const vec3_t origin );
 
 void    	R_Init( void );

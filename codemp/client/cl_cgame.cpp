@@ -134,14 +134,18 @@ qboolean CL_GetSnapshot( int snapshotNumber, snapshot_t *snapshot ) {
 		Com_DPrintf( "CL_GetSnapshot: truncated %i entities to %i\n", count, MAX_ENTITIES_IN_SNAPSHOT );
 		count = MAX_ENTITIES_IN_SNAPSHOT;
 	}
-	snapshot->numEntities = count;
+	snapshot->numEntities = 0;
 
  	for ( i = 0 ; i < count ; i++ ) {
 
 		int entNum =  ( clSnap->parseEntitiesNum + i ) & (MAX_PARSE_ENTITIES-1) ;
+		entityState_t *es = &snapshot->entities[snapshot->numEntities];
 
 		// copy everything but the ghoul2 pointer
-		memcpy(&snapshot->entities[i], &cl.parseEntities[ entNum ], sizeof(entityState_t));
+		memcpy(es, &cl.parseEntities[ entNum ], sizeof(entityState_t));
+		// an NPC on a walk only this client shows
+		if ( CL_NpcWalk_Entity( es, snapshot->serverTime ) )
+			snapshot->numEntities++;
 	}
 
 	// FIXME: configstring changes and server commands!!!
@@ -417,8 +421,11 @@ rescan:
 		qboolean replaced;
 		if ( !CL_RpHooks_ServerCommand( &replaced ) )
 			return qfalse;
-		if ( replaced )
+		if ( replaced ) {
+			// NPC talk is chat too: in a language, as the character playing hears it
+			CL_Languages_ServerCommand();
 			return qtrue;
+		}
 	}
 
 	// the admin check reads rpstatus, and hides the reply it asked for
@@ -524,6 +531,8 @@ rescan:
 
 	// we may want to put a "connect to other server" command here
 
+	// chat in a language the character playing doesn't know is gibberish, everywhere it shows
+	CL_Languages_ServerCommand();
 	// chat from far away stays out of the console
 	CL_ChatRange_ServerCommand();
 	// during a cinematic with the HUD hidden, chat is a subtitle
@@ -549,8 +558,10 @@ void CL_ShutdownCGame( void ) {
 	CL_Storyteller_Shutdown();
 	CL_SoundManager_Shutdown();
 	CL_RadialMenu_Shutdown();
+	CL_Languages_Shutdown();
 	CL_EmotePreview_Shutdown();
 	CL_RpCinematic_Reset();
+	CL_NpcWalk_Reset();
 	CL_FighterAssist_Shutdown();
 	CL_ChatRange_Shutdown();
 

@@ -44,6 +44,9 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define NM_SAVE_DIR			"npcmanager"		// in the game folder
 #define NM_NPC_DIR			NM_SAVE_DIR "/npcs"
 #define NM_CONSTRUCT_DIR	NM_SAVE_DIR "/constructs"
+#define NM_ROUTE_DIR		NM_SAVE_DIR "/routes"		// cl_npcwalk.cpp reads them
+#define NM_WALK_SPEED		90.0f
+#define NM_RUN_SPEED		250.0f
 #define NM_SAVE_EXT			".cfg"
 #define NM_BASE_PAKS		BASEGAME "/assets"	// base/assets0.pk3 to assets3.pk3 are the game's own
 
@@ -69,6 +72,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define NM_TRACE_MASK		(CONTENTS_SOLID|CONTENTS_TERRAIN)
 #define NM_TRACE_DIST		8192.0f
 #define NM_GROUND_HEIGHT	25.0f	// NPC origins sit this far above the floor
+#define NM_MAX_MARKED		16		// NPCs marked to walk together, as many as can walk at once
 #define NM_FRONT_DIST		96.0f	// "in front of me"
 #define NM_YAW_STEP			15
 #define NM_FLY_SPEED		400.0f	// free camera, units a second
@@ -162,7 +166,8 @@ typedef enum {
 	NM_PICK_SPAWN,		// where to spawn
 	NM_PICK_PLACE,		// where to put down what is in hand, as many times as wanted
 	NM_PICK_TELE,		// where to teleport the selection to
-	NM_PICK_SELECT		// which NPC to select
+	NM_PICK_SELECT,		// which NPC to select
+	NM_PICK_ROUTE		// the spots of a walk, one after the other
 } nmPick_t;
 
 typedef enum {
@@ -177,7 +182,8 @@ static const char *nmSourceLabels[NM_SRC_COUNT] = { "All", "Base", "Custom" };
 typedef enum {
 	NM_SAVING_NONE,
 	NM_SAVING_NPC,			// the form's settings
-	NM_SAVING_CONSTRUCT		// the NPCs put down
+	NM_SAVING_CONSTRUCT,	// the NPCs put down
+	NM_SAVING_ROUTE			// the walk's spots, walked once saved
 } nmSaving_t;
 
 typedef enum {
@@ -202,7 +208,8 @@ typedef enum {
 typedef enum {
 	NM_APPLY_ONE,		// the selected NPC, by number
 	NM_APPLY_NAME,		// every NPC sharing its targetname
-	NM_APPLY_ALL
+	NM_APPLY_ALL,
+	NM_APPLY_MARKED		// the NPCs marked with Ctrl+click: they walk together, nothing else takes them
 } nmApply_t;
 
 typedef enum {
@@ -448,9 +455,16 @@ static struct {
 	int			numNpcView;
 	nmList_t	npcList;
 	int			selNum;			// entity number of the selected NPC, -1 = none
+	int			marked[NM_MAX_MARKED];	// entity numbers marked with Ctrl+click
+	int			numMarked;
 	nmApply_t	apply;
 	int			talkColor;		// of the name, in nmTalkColors
 	qboolean	talkEmote;		// talking plays emtalk on it
+	vec3_t		route[NW_MAX_ROUTE_POINTS];	// the walk being made
+	int			numRoute;
+	qboolean	routeRun;		// the route is run, not walked
+	qboolean	routeLoop;		// walked round and round until stopped
+	char		routeName[MAX_QPATH];	// the last one saved, to walk again
 	nmConfirm_t	confirm;
 	int			confirmTime;
 
@@ -909,6 +923,51 @@ static int NM_CountNamed( const char *name ) {
 	return count;
 }
 
+static qboolean NM_IsMarked( int num ) {
+	for ( int i = 0; i < nm.numMarked; i++ ) {
+		if ( nm.marked[i] == num )
+			return qtrue;
+	}
+	return qfalse;
+}
+
+// the marked ones still in the list
+static int NM_CountMarked( void ) {
+	int count = 0;
+
+	for ( int i = 0; i < nm.numMarked; i++ ) {
+		if ( NM_FindNpc( nm.marked[i] ) )
+			count++;
+	}
+	return count;
+}
+
+// Ctrl+click: marked, or not any more; the commands then go to the marked ones, or back to one
+static void NM_ToggleMark( int num ) {
+	for ( int i = 0; i < nm.numMarked; i++ ) {
+		if ( nm.marked[i] == num ) {
+			memmove( &nm.marked[i], &nm.marked[i + 1], ( nm.numMarked - i - 1 ) * sizeof( nm.marked[0] ) );
+			nm.numMarked--;
+			if ( !NM_CountMarked() && nm.apply == NM_APPLY_MARKED )
+				nm.apply = NM_APPLY_ONE;
+			return;
+		}
+	}
+	// the ones gone from the map make room
+	for ( int i = 0; i < nm.numMarked; ) {
+		if ( !NM_FindNpc( nm.marked[i] ) )
+			nm.marked[i] = nm.marked[--nm.numMarked];
+		else
+			i++;
+	}
+	if ( nm.numMarked >= NM_MAX_MARKED ) {
+		NM_Message( va( S_COLOR_YELLOW "At most %i NPCs walk together", NM_MAX_MARKED ) );
+		return;
+	}
+	nm.marked[nm.numMarked++] = num;
+	nm.apply = NM_APPLY_MARKED;
+}
+
 // where the NPC is now if it's in the snapshot, else where the list saw it
 static void NM_NpcOrigin( const nmNpc_t *npc, vec3_t out ) {
 	for ( int i = 0; i < cl.snap.numEntities; i++ ) {
@@ -924,6 +983,16 @@ static void NM_NpcOrigin( const nmNpc_t *npc, vec3_t out ) {
 static int NM_NormalizeYaw( float a ) {
 	int i = (int)floorf( a + 0.5f ) % 360;
 	return i < 0 ? i + 360 : i;
+}
+
+// yaw facing from one spot to the next
+static float NM_LegYaw( const vec3_t from, const vec3_t to ) {
+	vec3_t dir, angles;
+
+	VectorSubtract( to, from, dir );
+	dir[2] = 0;
+	vectoangles( dir, angles );
+	return angles[YAW];
 }
 
 // yaw for something at pos to face the camera
@@ -1345,8 +1414,23 @@ qboolean CL_NpcManager_Waiting( void ) {
 	return (qboolean)( nm.listRequestTime && cls.realtime - nm.listRequestTime < NM_LIST_TIMEOUT );
 }
 
+// when the list was last read, 0 never
+int CL_NpcManager_ListTime( void ) {
+	return nm.listTime;
+}
+
 int CL_NpcManager_NumNpcs( void ) {
 	return nm.numNpcs;
+}
+
+// where the NPC is now, as the manager sees it; qfalse if it isn't in the list
+qboolean CL_NpcManager_NpcOrigin( int num, vec3_t out ) {
+	const nmNpc_t *npc = NM_FindNpc( num );
+
+	if ( !npc )
+		return qfalse;
+	NM_NpcOrigin( npc, out );
+	return qtrue;
 }
 
 qboolean CL_NpcManager_GetNpc( int index, int *num, const char **type, const char **name ) {
@@ -1864,6 +1948,8 @@ static const char *NM_ApplyTarget( qboolean allowAll ) {
 	char *out = target[allowAll ? 1 : 0];
 
 	switch ( nm.apply ) {
+	case NM_APPLY_MARKED:
+		return NULL;
 	case NM_APPLY_ALL:
 		return allowAll ? "all" : NULL;
 	case NM_APPLY_NAME:
@@ -1954,6 +2040,9 @@ const char *CL_NpcManager_OutgoingChat( const char *cmd ) {
 	const char *said;
 	int len;
 
+	// a bind or a script can leave spaces before it
+	while ( *cmd == ' ' )
+		cmd++;
 	if ( !nmSpeak.target[0] || Q_stricmpn( cmd, "say ", 4 ) )
 		return cmd;
 	if ( strcmp( nmSpeak.map, cl.mapname ) ) {
@@ -1972,6 +2061,48 @@ const char *CL_NpcManager_OutgoingChat( const char *cmd ) {
 	if ( !text[0] )
 		return cmd;
 	return CL_RpHooks_NpcTalkCommand( nmSpeak.target, nmSpeak.name, "", "", text );
+}
+
+// who walks: the selection, or the marked ones by number, commas between; NULL if none
+static const char *NM_WalkTarget( void ) {
+	static char target[MAX_STRING_CHARS];
+
+	if ( nm.apply != NM_APPLY_MARKED )
+		return NM_ApplyTarget( qfalse );
+	target[0] = '\0';
+	for ( int i = 0; i < nm.numMarked; i++ ) {
+		if ( NM_FindNpc( nm.marked[i] ) )
+			Q_strcat( target, sizeof( target ), va( target[0] ? ",%i" : "%i", nm.marked[i] ) );
+	}
+	return target[0] ? target : NULL;
+}
+
+// where the marked ones stand, walking together; how many, 0 when it isn't them who walk
+static int NM_GroupStarts( vec3_t *starts ) {
+	int count = 0;
+
+	if ( nm.apply != NM_APPLY_MARKED )
+		return 0;
+	for ( int i = 0; i < nm.numMarked; i++ ) {
+		const nmNpc_t *npc = NM_FindNpc( nm.marked[i] );
+
+		if ( npc )
+			NM_NpcOrigin( npc, starts[count++] );
+	}
+	return count;
+}
+
+// the selection walks a saved route; opened from the storyteller, it goes in the story
+static void NM_Walk( const char *route ) {
+	const char *target = NM_WalkTarget(), *cmd;
+
+	if ( !target || !route[0] )
+		return;
+	cmd = va( "npcmanager walk %s %s %s%s", target, route, nm.routeRun ? "run" : "walk", nm.routeLoop ? " loop" : "" );
+	if ( CL_Storyteller_Capture( cmd ) )
+		return;
+	Com_Printf( S_COLOR_GREEN "NPC manager: " S_COLOR_WHITE "%s\n", cmd );
+	Cbuf_AddText( va( "%s\n", cmd ) );
 }
 
 static void NM_Teleport( const vec3_t pos, int yaw ) {
@@ -2300,6 +2431,10 @@ static void NM_StartSaving( nmSaving_t saving ) {
 		if ( !t )
 			return;
 		offer = nm.fields[NM_F_TARGETNAME][0] ? nm.fields[NM_F_TARGETNAME] : t->name;
+	} else if ( saving == NM_SAVING_ROUTE ) {
+		if ( !nm.numRoute )
+			return;
+		offer = nm.routeName[0] ? nm.routeName : "route";
 	} else if ( !nm.numPlaced ) {
 		return;
 	}
@@ -2314,6 +2449,16 @@ static void NM_StartSaving( nmSaving_t saving ) {
 
 static void NM_DoSave( void ) {
 	const char *name = nm.fields[NM_F_SAVE_NAME];
+
+	if ( nm.saving == NM_SAVING_ROUTE ) {
+		if ( !name[0] || !CL_NpcWalk_SaveRoute( name, nm.route, nm.numRoute, nm.routeRun ? NM_RUN_SPEED : NM_WALK_SPEED ) )
+			return;
+		Q_strncpyz( nm.routeName, name, sizeof( nm.routeName ) );
+		nm.saving = NM_SAVING_NONE;
+		NM_Message( va( S_COLOR_GREEN "Saved the route as %s/%s.route", NM_ROUTE_DIR, name ) );
+		NM_Walk( name );
+		return;
+	}
 
 	if ( name[0] && ( nm.saving == NM_SAVING_NPC ? NM_SaveNpc( name ) : NM_SaveConstruct( name ) ) )
 		nm.saving = NM_SAVING_NONE;
@@ -2544,6 +2689,9 @@ void CL_NpcManager_Shutdown( void ) {
 	nm.listRequestTime = nm.listLineTime = nm.listTime = nm.refreshTime = 0;
 	nm.havePos = qfalse;
 	nm.selNum = -1;
+	nm.numMarked = 0;
+	if ( nm.apply == NM_APPLY_MARKED )
+		nm.apply = NM_APPLY_ONE;
 	// spots in this map, for this server
 	nm.numPlaced = nm.placedScroll = 0;
 	nm.numQueue = nm.queueTotal = 0;
@@ -2625,6 +2773,8 @@ void CL_NpcManager_f( void ) {
 		NM_StartConstruct( name );
 		if ( nm.pick == NM_PICK_NONE )
 			Com_Printf( "%s\n", nm.message );
+	} else if ( !Q_stricmp( arg, "walk" ) || !Q_stricmp( arg, "routes" ) ) {
+		CL_NpcWalk_Command();
 	} else if ( !Q_stricmp( arg, "talk" ) && Cmd_Argc() >= 4 ) {
 		const char *target = Cmd_Argv( 2 );
 
@@ -2665,6 +2815,10 @@ void CL_NpcManager_f( void ) {
 		Com_Printf( "       npcmanager talk <npc> <message>  the NPC (targetname or number) says it in chat\n" );
 		Com_Printf( "       npcmanager select <npc> [name]   what you say in chat is said by the NPC, as name\n" );
 		Com_Printf( "       npcmanager select off            talk as yourself again (unselect does too)\n" );
+		Com_Printf( "       npcmanager walk <npc>[,<npc>...] <route> [walk|run|<speed>] [loop] [local]   the NPC walks a saved route, or round and round;\n" );
+		Com_Printf( "                                        several walk it together, keeping their places\n" );
+		Com_Printf( "       npcmanager walk <npc>[,<npc>...] stop   they stop where they are\n" );
+		Com_Printf( "       npcmanager routes                list the saved routes\n" );
 		Com_Printf( "       npcmanager reindex               rescan the filesystem for NPC types and models\n" );
 		Com_Printf( "       npcmanager close                 close the NPC manager\n" );
 		Com_Printf( "Saved NPCs are in the %s folder of the game folder, constructs in %s; both can be exec'd\n", NM_NPC_DIR, NM_CONSTRUCT_DIR );
@@ -2875,6 +3029,11 @@ static void NM_PickClick( void ) {
 	vec3_t pos;
 
 	if ( nm.pick == NM_PICK_SELECT ) {
+		// Ctrl marks one, or unmarks it, and goes on picking
+		if ( ( nm.held[A_CTRL] || nm.held[A_CTRL2] ) && NM_NpcAtCursor() >= 0 ) {
+			NM_ToggleMark( nm.npcs[NM_NpcAtCursor()].num );
+			return;
+		}
 		// a miss keeps flying, to look for it elsewhere
 		if ( NM_NpcAtCursor() >= 0 ) {
 			NM_SelectAtCursor();
@@ -2884,6 +3043,12 @@ static void NM_PickClick( void ) {
 	}
 	if ( !NM_TraceCursor( pos ) )
 		return;
+	if ( nm.pick == NM_PICK_ROUTE ) {
+		// one more spot, then the next
+		if ( nm.numRoute < NW_MAX_ROUTE_POINTS )
+			VectorCopy( pos, nm.route[nm.numRoute++] );
+		return;
+	}
 	if ( nm.pick == NM_PICK_PLACE ) {
 		// stays in hand for the next one
 		NM_PutDown( pos );
@@ -3016,12 +3181,25 @@ void CL_NpcManager_KeyEvent( int key, qboolean down ) {
 			// takes back the last one put down
 			if ( nm.pick == NM_PICK_PLACE && nm.numPlaced )
 				nm.numPlaced--;
+			if ( nm.pick == NM_PICK_ROUTE && nm.numRoute )
+				nm.numRoute--;
+			break;
+		case A_DELETE:
+			if ( nm.pick == NM_PICK_ROUTE )
+				nm.numRoute = 0;
+			break;
+		case A_CAP_R:
+			if ( nm.pick == NM_PICK_ROUTE )
+				nm.routeRun = (qboolean)!nm.routeRun;
 			break;
 		case A_ENTER:
 		case A_KP_ENTER:
 			if ( nm.pick == NM_PICK_PLACE ) {
 				NM_SpawnPlaced();
 				NM_EndPick();
+			} else if ( nm.pick == NM_PICK_ROUTE && nm.numRoute ) {
+				NM_EndPick();
+				NM_StartSaving( NM_SAVING_ROUTE );
 			}
 			break;
 		default:
@@ -3383,6 +3561,9 @@ static const char *NM_SourceLabel( const nmType_t *t ) {
 static void NM_DrawNpcRow( int row, float x, float y, float w ) {
 	const nmNpc_t *n = &nm.npcs[nm.npcView[row]];
 
+	// marked with Ctrl+click
+	if ( NM_IsMarked( n->num ) )
+		NM_Fill( x - 3, y, 2, NM_ROW_H - 2, nmAccent );
 	NM_Text( x, y, va( S_COLOR_CYAN "%i", n->num ), nmWhite );
 	NM_TextClipped( x + 34, y, w - 34, n->name[0] ? va( "%s " S_COLOR_GREY "%s", n->name, n->type ) : va( S_COLOR_GREY "%s", n->type ), nmWhite );
 }
@@ -3707,17 +3888,26 @@ static void NM_DrawTeleBox( void ) {
 static void NM_DrawSaving( void ) {
 	const float w = 340, h = 88, x = ( SCREEN_WIDTH - w ) * 0.5f, y = 170;
 	const qboolean construct = (qboolean)( nm.saving == NM_SAVING_CONSTRUCT );
+	const qboolean route = (qboolean)( nm.saving == NM_SAVING_ROUTE );
 	const char *name = nm.fields[NM_F_SAVE_NAME];
+	char path[MAX_QPATH];
 
+	if ( route )
+		Com_sprintf( path, sizeof( path ), "%s/%s.route", NM_ROUTE_DIR, name );
+	else
+		Q_strncpyz( path, NM_SavePath( construct, name ), sizeof( path ) );
 	NM_Box( x, y, w, h, nmPanelOpaque );
-	NM_TextClipped( x + 8, y + 6, w - 16, construct ? va( "Save the %i NPCs put down as a construct named:", nm.numPlaced )
+	NM_TextClipped( x + 8, y + 6, w - 16, route ? va( "Save the route of %i spots, then walk it, as:", nm.numRoute )
+		: construct ? va( "Save the %i NPCs put down as a construct named:", nm.numPlaced )
 		: "Save the form's NPC, with its settings, as:", nmWhite );
 	NM_Field( NM_F_SAVE_NAME, x + 8, y + 22, w - 16, "letters, numbers, - and _" );
-	if ( name[0] && FS_FileExists( NM_SavePath( construct, name ) ) )
+	if ( name[0] && FS_FileExists( path ) )
 		NM_TextClipped( x + 8, y + 42, w - 16, S_COLOR_YELLOW "One with this name is there already; saving replaces it", nmWhite );
+	else if ( route )
+		NM_TextClipped( x + 8, y + 42, w - 16, va( S_COLOR_GREY "Goes in %s; npcmanager walk <npc> <name> walks it", NM_ROUTE_DIR ), nmWhite );
 	else
 		NM_TextClipped( x + 8, y + 42, w - 16, va( S_COLOR_GREY "Goes in %s, shown under Saved", construct ? NM_CONSTRUCT_DIR : NM_NPC_DIR ), nmWhite );
-	if ( NM_Button( x + 8, y + h - 24, 100, "Save  (Enter)", qfalse, (qboolean)( name[0] != '\0' ) ) ) {
+	if ( NM_Button( x + 8, y + h - 24, 100, route ? "Save, walk (Enter)" : "Save  (Enter)", qfalse, (qboolean)( name[0] != '\0' ) ) ) {
 		NM_DoSave();
 		return;
 	}
@@ -3794,12 +3984,21 @@ static void NM_DrawPreview( void ) {
 static void NM_DrawManage( void ) {
 	const qboolean experimental = CL_RpHooks_Experimental();
 	const nmNpc_t *npc;
-	const char *target, *targetAll;
+	const char *target, *targetAll, *walker;
 	float y, w;
-	int named;
+	int named, marked;
 	vec3_t org;
 
 	NM_Field( NM_F_NPC_SEARCH, NM_LEFT_X, NM_SEARCH_Y, NM_LEFT_W, "Type to filter by number, type or name" );
+	// Ctrl+click marks several, to walk them together
+	if ( ( nm.held[A_CTRL] || nm.held[A_CTRL2] ) && NM_Clicked( NM_LEFT_X, NM_LIST_Y, NM_LEFT_W, NM_LIST_H ) ) {
+		const int row = nm.npcList.scroll + (int)( ( nm.clickY - NM_LIST_Y ) / NM_ROW_H );
+
+		if ( row < nm.numNpcView ) {
+			nm.npcList.sel = row;
+			NM_ToggleMark( nm.npcs[nm.npcView[row]].num );
+		}
+	}
 	NM_List( &nm.npcList, nm.numNpcView, NM_LEFT_X, NM_LIST_Y, NM_LEFT_W, NM_LIST_H, NM_DrawNpcRow );
 	if ( nm.npcList.sel < nm.numNpcView )
 		nm.selNum = nm.npcs[nm.npcView[nm.npcList.sel]].num;
@@ -3821,7 +4020,12 @@ static void NM_DrawManage( void ) {
 
 	y = NM_LIST_Y;
 	NM_Box( NM_RIGHT_X, y, NM_RIGHT_W, 34, nmPanelLight );
-	if ( npc ) {
+	if ( nm.apply == NM_APPLY_MARKED ) {
+		const char *marked = NM_WalkTarget();
+
+		NM_TextClipped( NM_RIGHT_X + 6, y + 4, NM_RIGHT_W - 12, va( S_COLOR_CYAN "Marked  " S_COLOR_WHITE "%s", marked ? marked : "none in the list" ), nmWhite );
+		NM_TextClipped( NM_RIGHT_X + 6, y + 18, NM_RIGHT_W - 12, S_COLOR_GREY "Ctrl+click marks more. They walk together, keeping their places", nmWhite );
+	} else if ( npc ) {
 		NM_NpcOrigin( npc, org );
 		NM_TextClipped( NM_RIGHT_X + 6, y + 4, NM_RIGHT_W - 12,
 			va( S_COLOR_CYAN "%i  " S_COLOR_YELLOW "%s  " S_COLOR_WHITE "%s", npc->num, npc->type, npc->name[0] ? npc->name : S_COLOR_GREY "(no targetname)" ), nmWhite );
@@ -3835,14 +4039,19 @@ static void NM_DrawManage( void ) {
 	y += 42;
 	named = npc && npc->name[0] ? NM_CountNamed( npc->name ) : 0;
 	NM_Label( y, "Apply to" );
-	if ( NM_Button( NM_CTRL_X, y, 80, "This NPC", (qboolean)( nm.apply == NM_APPLY_ONE ), (qboolean)( npc != NULL ) ) )
+	marked = NM_CountMarked();
+	if ( NM_Button( NM_CTRL_X, y, 60, "This NPC", (qboolean)( nm.apply == NM_APPLY_ONE ), (qboolean)( npc != NULL ) ) )
 		nm.apply = NM_APPLY_ONE;
-	if ( NM_Button( NM_CTRL_X + 84, y, 110, named ? va( "Named alike (%i)", named ) : "Named alike", (qboolean)( nm.apply == NM_APPLY_NAME ), (qboolean)( named > 0 ) ) )
+	if ( NM_Button( NM_CTRL_X + 64, y, 100, named ? va( "Named alike (%i)", named ) : "Named alike", (qboolean)( nm.apply == NM_APPLY_NAME ), (qboolean)( named > 0 ) ) )
 		nm.apply = NM_APPLY_NAME;
-	if ( NM_Button( NM_CTRL_X + 198, y, 82, "All NPCs", (qboolean)( nm.apply == NM_APPLY_ALL ), qtrue ) )
+	// Ctrl+click in the list or on the map marks them
+	if ( NM_Button( NM_CTRL_X + 168, y, 66, marked ? va( "Marked (%i)", marked ) : "Marked", (qboolean)( nm.apply == NM_APPLY_MARKED ), (qboolean)( marked > 0 ) ) )
+		nm.apply = NM_APPLY_MARKED;
+	if ( NM_Button( NM_CTRL_X + 238, y, 42, "All", (qboolean)( nm.apply == NM_APPLY_ALL ), qtrue ) )
 		nm.apply = NM_APPLY_ALL;
 	target = NM_ApplyTarget( qfalse );
 	targetAll = NM_ApplyTarget( qtrue );
+	walker = NM_WalkTarget();
 
 	w = 66;
 	y += 24;
@@ -3903,6 +4112,25 @@ static void NM_DrawManage( void ) {
 		NM_OpenTeleBox();
 	if ( nm.apply == NM_APPLY_ALL )
 		NM_Text( NM_CTRL_X + ( w + 4 ) * 4, y + 2, S_COLOR_GREY "not on all", nmWhite );
+
+	y += 20;
+	NM_Label( y, "Walk" );
+	if ( NM_Button( NM_CTRL_X, y, 88, "Route on map...", qfalse, (qboolean)( experimental && walker != NULL ) ) )
+		NM_StartPick( NM_PICK_ROUTE );
+	// a click runs it instead, and back
+	if ( NM_Button( NM_CTRL_X + 92, y, 40, nm.routeRun ? "Run" : "Walk", qfalse, experimental ) )
+		nm.routeRun = (qboolean)!nm.routeRun;
+	// and round and round, until Stop
+	if ( NM_Button( NM_CTRL_X + 136, y, 40, nm.routeLoop ? "Loop" : "Once", qfalse, experimental ) )
+		nm.routeLoop = (qboolean)!nm.routeLoop;
+	if ( NM_Button( NM_CTRL_X + 180, y, 48, "Again", qfalse, (qboolean)( experimental && walker != NULL && nm.routeName[0] ) ) )
+		NM_Walk( nm.routeName );
+	if ( NM_Button( NM_CTRL_X + 232, y, NM_CTRL_W - 232, "Stop", qfalse, (qboolean)( experimental && walker != NULL ) ) ) {
+		const char *cmd = va( "npcmanager walk %s stop", walker );
+
+		if ( !CL_Storyteller_Capture( cmd ) )
+			Cbuf_AddText( va( "%s\n", cmd ) );
+	}
 
 	y += 20;
 	NM_Label( y, "Hologram" );
@@ -4022,7 +4250,7 @@ static void NM_DrawLabels( void ) {
 	for ( int i = 0; i < nm.numNpcs; i++ ) {
 		const nmNpc_t *n = &nm.npcs[i];
 		const char *label = n->name[0] ? va( "%i %s", n->num, n->name ) : va( "%i %s", n->num, n->type );
-		qboolean sel = (qboolean)( n->num == nm.selNum || i == hovered );
+		qboolean sel = (qboolean)( n->num == nm.selNum || i == hovered || NM_IsMarked( n->num ) );
 
 		NM_NpcOrigin( n, org );
 		org[2] += 40.0f;
@@ -4064,6 +4292,20 @@ static void NM_DrawMarker( const vec3_t pos, int yaw, const char *label, const f
 	NM_Text( hx - tw * 0.5f, hy - 15, label, color );
 }
 
+// where each of a group walking together stands at a spot: a dot, its number by it
+static void NM_DrawGroupSpots( const vec3_t spot, const vec3_t *starts, int count, const vec3_t middle, const float *color ) {
+	for ( int m = 0; m < count; m++ ) {
+		vec3_t offset, at;
+		float x, y;
+
+		VectorSubtract( starts[m], middle, offset );
+		offset[2] = 0.0f;
+		CL_NpcWalk_GroupSpot( spot, offset, at );
+		if ( NM_Project( at, &x, &y ) )
+			NM_Fill( x - 2, y - 2, 4, 4, color );
+	}
+}
+
 static const char *NM_MarkerLabel( const nmSpawn_t *s ) {
 	return s->targetname[0] ? va( "%s %s", s->type, s->targetname ) : s->type;
 }
@@ -4080,7 +4322,41 @@ static void NM_DrawPick( void ) {
 		NM_DrawMarker( nm.placed[i].pos, nm.placed[i].yaw, NM_MarkerLabel( &nm.placed[i] ), nmPlacedColor );
 
 	if ( nm.pick == NM_PICK_SELECT ) {
-		what = "Aim at an NPC's label and click to select it.   Right-click or Esc cancels";
+		what = "Aim at an NPC's label and click to select it, Ctrl+click to mark several to walk together.   Right-click or Esc cancels";
+	} else if ( nm.pick == NM_PICK_ROUTE ) {
+		const nmNpc_t *npc = NM_SelectedNpc();
+		qboolean have = (qboolean)( npc != NULL );
+		vec3_t from, starts[NM_MAX_MARKED], middle;
+		const int group = NM_GroupStarts( starts );
+
+		// from the NPC, or the middle of the marked ones, through the spots, then to where the
+		// next would go
+		if ( group ) {
+			CL_NpcWalk_GroupMiddle( starts, group, middle );
+			VectorCopy( middle, from );
+			have = qtrue;
+		} else if ( have ) {
+			NM_NpcOrigin( npc, from );
+		}
+		for ( int i = 0; i < nm.numRoute; i++ ) {
+			if ( have && NM_Project( from, &x, &y ) && NM_Project( nm.route[i], &ex, &ey ) )
+				NM_DottedLine( x, y, ex, ey, nmPlacedColor );
+			yaw = have ? NM_NormalizeYaw( NM_LegYaw( from, nm.route[i] ) ) : 0;
+			NM_DrawMarker( nm.route[i], yaw, va( "%i", i + 1 ), nmPlacedColor );
+			NM_DrawGroupSpots( nm.route[i], starts, group, middle, nmPlacedColor );
+			VectorCopy( nm.route[i], from );
+			have = qtrue;
+		}
+		if ( NM_TraceCursor( pos ) && NM_Project( pos, &ex, &ey ) ) {
+			NM_Fill( ex - 3, ey - 3, 6, 6, nmAccent );
+			if ( have && NM_Project( from, &x, &y ) )
+				NM_DottedLine( x, y, ex, ey, nmAccent );
+			NM_DrawGroupSpots( pos, starts, group, middle, nmAccent );
+		}
+		what = group > 1 ? va( "Click the spots the %i marked NPCs %s to, keeping their places.   Backspace takes the last back, Del clears them",
+			group, nm.routeRun ? "run" : "walk" )
+			: va( "Click the spots it %s to, one after the other.   Backspace takes the last back, Del clears them",
+			nm.routeRun ? "runs" : "walks" );
 	} else if ( nm.pick == NM_PICK_PLACE ) {
 		// what a click puts down, and where
 		if ( NM_TraceCursor( pos ) ) {
@@ -4111,12 +4387,16 @@ static void NM_DrawPick( void ) {
 			: "Aim and click where to teleport to.   Wheel turns it.   Right-click or Esc cancels";
 	}
 
-	NM_Box( 10, 10, SCREEN_WIDTH - 20, nm.pick == NM_PICK_PLACE ? 43 : 30, nmPanel );
+	NM_Box( 10, 10, SCREEN_WIDTH - 20, nm.pick == NM_PICK_PLACE || nm.pick == NM_PICK_ROUTE ? 43 : 30, nmPanel );
 	NM_TextClipped( 16, 13, SCREEN_WIDTH - 32, what, nmWhite );
 	NM_TextClipped( 16, 26, SCREEN_WIDTH - 32, S_COLOR_GREY "Mouse looks   WASD fly   Space/C up/down   Shift faster   Ctrl slower", nmWhite );
 	if ( nm.pick == NM_PICK_PLACE ) {
 		NM_TextClipped( 16, 39, SCREEN_WIDTH - 32, va( "%s" S_COLOR_WHITE "   Enter spawns them all   Right-click or Esc goes back, keeping them",
 			nm.numPlaced ? va( S_COLOR_GREEN "%i put down", nm.numPlaced ) : S_COLOR_GREY "None put down yet" ), nmWhite );
+	} else if ( nm.pick == NM_PICK_ROUTE ) {
+		NM_TextClipped( 16, 39, SCREEN_WIDTH - 32, va( "%s" S_COLOR_WHITE "   R: %s   Enter saves it and walks it   Right-click or Esc goes back, keeping the spots",
+			nm.numRoute ? va( S_COLOR_GREEN "%i of %i spots", nm.numRoute, NW_MAX_ROUTE_POINTS ) : S_COLOR_GREY "No spots yet",
+			nm.routeRun ? S_COLOR_YELLOW "running" S_COLOR_WHITE " (walk)" : S_COLOR_YELLOW "walking" S_COLOR_WHITE " (run)" ), nmWhite );
 	}
 
 	// the crosshair, what a click picks

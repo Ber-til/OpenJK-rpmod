@@ -394,6 +394,48 @@ to handle mirrors,
 */
 void RE_RenderWorldEffects(void);
 void RE_RenderAutoMap(void);
+void RE_SetDepthOfField( float focus, float range, float blur ) {
+	tr.dofNext[0] = focus;
+	tr.dofNext[1] = range > 1.0f ? range : 1.0f;
+	tr.dofNext[2] = blur > 0.0f ? blur : 0.0f;
+}
+
+void RE_SetSkyLook( const float *tint, const vec3_t angles, const vec3_t shift ) {
+	tr.skyLookOn = (qboolean)( tint != NULL );
+	if ( !tint )
+		return;
+	VectorCopy( tint, tr.skyLookTint );
+	VectorCopy( angles, tr.skyLookAngles );
+	VectorCopy( shift, tr.skyLookShift );
+}
+
+// the sky look on this scene: a 3D skybox's view turned the other way round its sky and moved,
+// the sky shader turned in the other views
+static void R_SkyLook( const refdef_t *fd ) {
+	matrix3_t axis;
+
+	tr.refdef.skyTinted = tr.refdef.skyTurned = qfalse;
+	if ( !tr.skyLookOn || ( fd->rdflags & RDF_NOWORLDMODEL ) )
+		return;
+	VectorCopy( tr.skyLookTint, tr.refdef.skyTint );
+	tr.refdef.skyTinted = (qboolean)( tr.skyLookTint[0] != 1.0f || tr.skyLookTint[1] != 1.0f || tr.skyLookTint[2] != 1.0f );
+	if ( VectorCompare( tr.skyLookAngles, vec3_origin ) && ( !( fd->rdflags & RDF_SKYBOXPORTAL ) || VectorCompare( tr.skyLookShift, vec3_origin ) ) )
+		return;
+	AnglesToAxis( tr.skyLookAngles, axis );
+	if ( fd->rdflags & RDF_SKYBOXPORTAL ) {
+		// what lies along a direction in the turned sky lies along it turned back in the skybox
+		for ( int i = 0; i < 3; i++ ) {
+			for ( int j = 0; j < 3; j++ )
+				tr.refdef.viewaxis[i][j] = DotProduct( fd->viewaxis[i], axis[j] );
+		}
+		VectorAdd( fd->vieworg, tr.skyLookShift, tr.refdef.vieworg );
+	} else {
+		tr.refdef.skyTurned = qtrue;
+		for ( int i = 0; i < 3; i++ )
+			VectorCopy( axis[i], tr.refdef.skyAxis[i] );
+	}
+}
+
 void RE_RenderScene( const refdef_t *fd ) {
 	viewParms_t		parms;
 	int				startTime;
@@ -460,6 +502,16 @@ void RE_RenderScene( const refdef_t *fd ) {
 		tr.refdef.frametime = 0;
 	}
 	tr.refdef.rdflags = fd->rdflags;
+
+	// the depth of field the client asked for, on the world's main view only
+	if ( !( fd->rdflags & ( RDF_NOWORLDMODEL | RDF_SKYBOXPORTAL ) ) ) {
+		tr.refdef.dofFocus = tr.dofNext[0];
+		tr.refdef.dofRange = tr.dofNext[1];
+		tr.refdef.dofBlur = tr.dofNext[2];
+	} else {
+		tr.refdef.dofBlur = 0.0f;
+	}
+	R_SkyLook( fd );
 
 	// copy the areamask data over and note if it has changed, which
 	// will force a reset of the visible leafs even if the view hasn't moved
@@ -537,12 +589,13 @@ void RE_RenderScene( const refdef_t *fd ) {
 	parms.fovX = tr.refdef.fov_x;
 	parms.fovY = tr.refdef.fov_y;
 
-	VectorCopy( fd->vieworg, parms.ori.origin );
-	VectorCopy( fd->viewaxis[0], parms.ori.axis[0] );
-	VectorCopy( fd->viewaxis[1], parms.ori.axis[1] );
-	VectorCopy( fd->viewaxis[2], parms.ori.axis[2] );
+	// the refdef's view: a 3D skybox's may be turned and moved by the sky look
+	VectorCopy( tr.refdef.vieworg, parms.ori.origin );
+	VectorCopy( tr.refdef.viewaxis[0], parms.ori.axis[0] );
+	VectorCopy( tr.refdef.viewaxis[1], parms.ori.axis[1] );
+	VectorCopy( tr.refdef.viewaxis[2], parms.ori.axis[2] );
 
-	VectorCopy( fd->vieworg, parms.pvsOrigin );
+	VectorCopy( tr.refdef.vieworg, parms.pvsOrigin );
 
 	R_RenderView( &parms );
 

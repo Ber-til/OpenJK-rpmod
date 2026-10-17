@@ -671,12 +671,32 @@ void CL_ModelManager_Draw( void );
 #define KEYCATCH_MAPEDITOR		0x0400	// engine only, the map editor owns keyboard and mouse
 #define KEYCATCH_SOUNDMANAGER	0x0800	// engine only, the sound or the music manager owns keyboard and mouse
 #define KEYCATCH_RADIALMENU		0x1000	// engine only, the radial menus' settings own keyboard and mouse
-#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELMANAGER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER | KEYCATCH_MAPEDITOR | KEYCATCH_STORYTELLER | KEYCATCH_CINEDITOR | KEYCATCH_SOUNDMANAGER | KEYCATCH_RADIALMENU )	// mods never see or clear these
+#define KEYCATCH_LANGUAGES		0x2000	// engine only, the languages window owns keyboard and mouse
+#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELMANAGER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER | KEYCATCH_MAPEDITOR | KEYCATCH_STORYTELLER | KEYCATCH_CINEDITOR | KEYCATCH_SOUNDMANAGER | KEYCATCH_RADIALMENU | KEYCATCH_LANGUAGES )	// mods never see or clear these
 
 void CL_NpcManager_Init( void );
 void CL_NpcManager_Shutdown( void );
 void CL_NpcManager_f( void );
 const char *CL_NpcManager_OutgoingChat( const char *cmd );
+int CL_NpcManager_ListTime( void );
+
+// cl_npcwalk.cpp
+#define NW_MAX_ROUTE_POINTS	32
+qboolean CL_NpcWalk_Entity( entityState_t *es, int serverTime );
+void CL_NpcWalk_Frame( void );
+void CL_NpcWalk_Reset( void );
+void CL_NpcWalk_Hook( char **argv, int argc );
+void CL_NpcWalk_GroupHook( char **argv, int argc );
+int CL_LastCommandTime( void );
+qboolean CL_NpcWalk_CanSend( void );
+void CL_Storyteller_AddToScene( const refdef_t *fd );
+int CL_NpcWalk_Target( const char *target );
+void CL_RpCinematic_ShotWalks( const char *name, qboolean local );
+void CL_NpcWalk_GroupSpot( const vec3_t spot, const vec3_t offset, vec3_t out );
+void CL_NpcWalk_GroupMiddle( const vec3_t *starts, int count, vec3_t middle );
+void CL_NpcWalk_Command( void );
+qboolean CL_NpcWalk_SaveRoute( const char *name, const vec3_t *pts, int numPts, float speed );
+int CL_NpcWalk_LoadRoute( const char *name, vec3_t *pts, int maxPts, float *speed );
 qboolean CL_NpcManager_Active( void );
 void CL_NpcManager_Frame( void );
 void CL_NpcManager_Close( void );
@@ -690,6 +710,7 @@ void CL_NpcManager_RequestList( void );
 qboolean CL_NpcManager_Waiting( void );
 int CL_NpcManager_NumNpcs( void );
 qboolean CL_NpcManager_GetNpc( int index, int *num, const char **type, const char **name );
+qboolean CL_NpcManager_NpcOrigin( int num, vec3_t out );
 const char *CL_NpcManager_SpawnCommand( const char *type, qboolean vehicle, const char *targetname, const char *team,
 	const char *model, const char *scale, const vec3_t pos, int yaw );
 qboolean CL_NpcManager_RenderScene( const refdef_t *fd );
@@ -711,13 +732,15 @@ qboolean CL_ShaderManager_RenderScene( const refdef_t *fd );
 qboolean CL_ShaderManager_FilterEntity( const refEntity_t *ent );
 qboolean CL_ShaderManager_Active( void );
 void CL_ShaderManager_Close( void );
-void CL_ShaderManager_OpenForStory( void );
+void CL_ShaderManager_OpenForStory( int tab );
 void CL_ShaderManager_KeyEvent( int key, qboolean down );
 void CL_ShaderManager_CharEvent( int ch );
 void CL_ShaderManager_MouseEvent( int dx, int dy );
 void CL_ShaderManager_Escape( void );
 void CL_ShaderManager_Frame( void );
 void CL_ShaderManager_ServerPrint( const char *text );
+void CL_ShaderManager_SkyLook( void );
+void CL_ShaderManager_SkyHook( char **argv, int argc );
 void CL_ShaderManager_Draw( void );
 const char *CL_ShaderManager_SkinName( qhandle_t h );
 qboolean CL_ShaderManager_Camera( vec3_t origin, vec3_t angles );
@@ -760,6 +783,7 @@ void CL_MapEditor_MouseEvent( int dx, int dy );
 void CL_MapEditor_Escape( void );
 void CL_MapEditor_Frame( void );
 void CL_MapEditor_Draw( void );
+void CL_MapEditor_Sounds( const vec3_t ear );
 void CL_MapEditor_AddToScene( const refdef_t *fd );
 qboolean CL_MapEditor_RenderScene( const refdef_t *fd );
 qboolean CL_MapEditor_Camera( vec3_t origin, vec3_t angles );
@@ -844,6 +868,21 @@ void CL_RadialMenu_CharEvent( int ch );
 void CL_RadialMenu_SettingsMouseEvent( int dx, int dy );
 void CL_RadialMenu_SettingsEscape( void );
 void CL_RadialMenu_DrawSettings( void );
+
+// cl_languages.cpp
+void CL_Languages_Init( void );
+void CL_Languages_Shutdown( void );
+qboolean CL_Languages_Active( void );
+void CL_Languages_Close( void );
+void CL_Languages_Frame( void );
+void CL_Languages_Draw( void );
+void CL_Languages_KeyEvent( int key, qboolean down );
+void CL_Languages_CharEvent( int ch );
+void CL_Languages_MouseEvent( int dx, int dy );
+void CL_Languages_Escape( void );
+const char *CL_Languages_OutgoingChat( const char *cmd );
+void CL_Languages_ServerCommand( void );
+const char *CL_Languages_Filter( const char *text );
 
 // cl_saberstyle.cpp
 void CL_SaberStyle_Init( void );

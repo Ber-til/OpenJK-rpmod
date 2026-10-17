@@ -275,6 +275,14 @@ void RB_ClipSkyPolygons( shaderCommands_t *input )
 			VectorSubtract( input->xyz[input->indexes[i+j]],
 							backEnd.viewParms.ori.origin,
 							p[j] );
+			// the sky look turns the sky: where it is along the sky's own axes
+			if ( backEnd.refdef.skyTurned ) {
+				vec3_t world;
+
+				VectorCopy( p[j], world );
+				for ( int k = 0; k < 3; k++ )
+					p[j][k] = DotProduct( world, backEnd.refdef.skyAxis[k] );
+			}
 		}
 		ClipSkyPolygon( 3, p[0], 0 );
 	}
@@ -471,7 +479,13 @@ static void FillCloudySkySide( const int mins[2], const int maxs[2], qboolean ad
 	{
 		for ( s = mins[0]+HALF_SKY_SUBDIVISIONS; s <= maxs[0]+HALF_SKY_SUBDIVISIONS; s++ )
 		{
-			VectorAdd( s_skyPoints[t][s], backEnd.viewParms.ori.origin, tess.xyz[tess.numVertexes] );
+			if ( backEnd.refdef.skyTurned ) {
+				VectorCopy( backEnd.viewParms.ori.origin, tess.xyz[tess.numVertexes] );
+				for ( int k = 0; k < 3; k++ )
+					VectorMA( tess.xyz[tess.numVertexes], s_skyPoints[t][s][k], backEnd.refdef.skyAxis[k], tess.xyz[tess.numVertexes] );
+			} else {
+				VectorAdd( s_skyPoints[t][s], backEnd.viewParms.ori.origin, tess.xyz[tess.numVertexes] );
+			}
 			tess.texCoords[tess.numVertexes][0][0] = s_skyTexCoords[t][s][0];
 			tess.texCoords[tess.numVertexes][0][1] = s_skyTexCoords[t][s][1];
 
@@ -819,11 +833,23 @@ void RB_StageIteratorSky( void )
 
 	// draw the outer skybox
 	if ( tess.shader->sky->outerbox[0] && tess.shader->sky->outerbox[0] != tr.defaultImage ) {
-		qglColor3f( tr.identityLight, tr.identityLight, tr.identityLight );
+		if ( backEnd.refdef.skyTinted )
+			qglColor3f( tr.identityLight * backEnd.refdef.skyTint[0], tr.identityLight * backEnd.refdef.skyTint[1], tr.identityLight * backEnd.refdef.skyTint[2] );
+		else
+			qglColor3f( tr.identityLight, tr.identityLight, tr.identityLight );
 
 		qglPushMatrix ();
 		GL_State( 0 );
 		qglTranslatef (backEnd.viewParms.ori.origin[0], backEnd.viewParms.ori.origin[1], backEnd.viewParms.ori.origin[2]);
+		// the sky look's turn: the box's axes along the sky's
+		if ( backEnd.refdef.skyTurned ) {
+			float m[16] = { 0 };
+
+			for ( int k = 0; k < 3; k++ )
+				VectorCopy( backEnd.refdef.skyAxis[k], &m[k * 4] );
+			m[15] = 1.0f;
+			qglMultMatrixf( m );
+		}
 
 		DrawSkyBox( tess.shader );
 
