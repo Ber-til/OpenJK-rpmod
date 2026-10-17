@@ -809,6 +809,7 @@ void CL_RpHooks_ChatSubtitle( void );
 qboolean CL_RpHooks_Experimental( void );
 void CL_MapEditor_Hook( char **argv, int argc, const char *message );
 void CL_RpHooks_SetExperimental( qboolean on );
+void CL_RpHooks_Unescape( char *s );
 const char *CL_RpHooks_NpcTalkCommand( const char *npc, const char *name, const char *color, const char *emote, const char *text );
 
 // cl_rpcinematic.cpp

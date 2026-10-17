@@ -152,6 +152,9 @@ static rhResult_t RH_Npc( char **argv, int argc, const char *message ) {
 		return RH_DROP;
 	}
 	rest = 2;
+	// the name and its colour may have a / or : in them, escaped
+	for ( int i = rest; i < argc; i++ )
+		CL_RpHooks_Unescape( argv[i] );
 	name = argc > rest && argv[rest][0] ? argv[rest] : npc;
 	color = RH_Color( argc > rest + 1 ? argv[rest + 1] : "" );
 	if ( !message[0] )
@@ -175,17 +178,39 @@ void CL_RpHooks_SetExperimental( qboolean on ) {
 	Com_Printf( "Experimental features %s\n", on ? S_COLOR_YELLOW "on" S_COLOR_WHITE " for this session" : "off" );
 }
 
-// a part of the hook, with what would end it early made spaces
+// a part of the hook: what would end it early, a / or the : before the message, goes as ~s and
+// ~c (a ~ as ~~), so a name like ^7::JEDI:: comes through whole
 static const char *RH_HookPart( const char *in ) {
-	static char out[4][MAX_QPATH];
+	static char out[4][MAX_QPATH * 2];
 	static int index;
 	char *o = out[index++ & 3];
 	int len = 0;
 
-	for ( ; *in && len < MAX_QPATH - 1; in++ )
-		o[len++] = ( *in == '/' || *in == ':' ) ? ' ' : *in;
+	for ( ; *in && len < MAX_QPATH * 2 - 3; in++ ) {
+		if ( *in == '/' || *in == ':' || *in == '~' ) {
+			o[len++] = '~';
+			o[len++] = *in == '/' ? 's' : *in == ':' ? 'c' : '~';
+		} else {
+			o[len++] = *in;
+		}
+	}
 	o[len] = '\0';
 	return o;
+}
+
+// a part of the hook as it was before RH_HookPart, in place
+void CL_RpHooks_Unescape( char *s ) {
+	char *o = s;
+
+	for ( ; *s; s++ ) {
+		if ( s[0] == '~' && ( s[1] == 's' || s[1] == 'c' || s[1] == '~' ) ) {
+			s++;
+			*o++ = *s == 's' ? '/' : *s == 'c' ? ':' : '~';
+		} else {
+			*o++ = *s;
+		}
+	}
+	*o = '\0';
 }
 
 // the command that has everyone with this client see the NPC say it: the storyteller's NPC talk

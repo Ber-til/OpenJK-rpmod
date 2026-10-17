@@ -2639,6 +2639,7 @@ static qboolean ST_TalkStep( const char *cmd, stStep_t *s ) {
 		while ( end < colon && *end != '/' )
 			end++;
 		Q_strncpyz( s->values[part], p, Q_min( ST_VALUE_LEN, (int)( end - p ) + 1 ) );
+		CL_RpHooks_Unescape( s->values[part] );
 		p = end < colon ? end + 1 : end;
 	}
 	for ( p = colon + 1; *p == ' '; p++ )
