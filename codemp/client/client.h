@@ -739,6 +739,8 @@ void CL_ShaderManager_MouseEvent( int dx, int dy );
 void CL_ShaderManager_Escape( void );
 void CL_ShaderManager_Frame( void );
 void CL_ShaderManager_ServerPrint( const char *text );
+void CL_ShaderManager_SkyLook( void );
+void CL_ShaderManager_SkyHook( char **argv, int argc );
 void CL_ShaderManager_Draw( void );
 const char *CL_ShaderManager_SkinName( qhandle_t h );
 qboolean CL_ShaderManager_Camera( vec3_t origin, vec3_t angles );

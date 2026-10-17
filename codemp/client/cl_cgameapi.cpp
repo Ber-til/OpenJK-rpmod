@@ -331,6 +331,8 @@ static void CL_R_AddRefEntityToScene( const refEntity_t *ent ) {
 }
 
 static void CL_R_RenderScene( const refdef_t *fd ) {
+	// the sky's look the shader manager set, spinning
+	CL_ShaderManager_SkyLook();
 	// the map editor's models and lights are in every main view
 	CL_MapEditor_AddToScene( fd );
 	// where the stories armed wait, for the storyteller

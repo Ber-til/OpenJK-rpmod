@@ -2168,6 +2168,7 @@ Q_EXPORT refexport_t* QDECL GetRefAPI( int apiVersion, refimport_t *rimp ) {
 	re.ext.G2API_GetSkins					= G2API_GetSkins;
 	re.ext.HideWorldTriangles				= RE_HideWorldTriangles;
 	re.ext.SetDepthOfField					= RE_SetDepthOfField;
+	re.ext.SetSkyLook						= RE_SetSkyLook;
 	re.ext.WorldPieceModel					= RE_WorldPieceModel;
 
 	return &re;

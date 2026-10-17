@@ -49,6 +49,10 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 //
 //   cmd:map/<verb>/...
 //     an admin's map edits, shown to everyone on the map; see cl_mapeditor.cpp.
+//
+//   cmd:sky/<r g b>/<degrees a second>/<pitch yaw roll>/<x y z>
+//     the sky tinted, spun round and turned, a 3D skybox's view also moved, until the
+//     map changes; see cl_shadermanager.cpp. cmd:sky/off puts it back.
 //     cmd:startcinematic and cmd:endcinematic start and end one too.
 //
 // Hooks only ever show things: nothing a server sends here runs a command.
@@ -371,6 +375,10 @@ static rhResult_t RH_Run( const char *text ) {
 	}
 	if ( !Q_stricmp( argv[0], "map" ) ) {
 		CL_MapEditor_Hook( argv + 1, argc - 1, message );
+		return RH_DROP;
+	}
+	if ( !Q_stricmp( argv[0], "sky" ) ) {
+		CL_ShaderManager_SkyHook( argv + 1, argc - 1 );
 		return RH_DROP;
 	}
 	if ( !Q_stricmp( argv[0], "startcinematic" ) || !Q_stricmp( argv[0], "endcinematic" ) ) {

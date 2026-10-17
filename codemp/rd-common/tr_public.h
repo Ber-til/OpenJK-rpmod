@@ -254,6 +254,10 @@ typedef struct refexport_s {
 		// camera, give or take range, and blurred away from it, up to blur pixels on a 480 high
 		// screen; blur 0 is none. Holds until changed
 		void				(*SetDepthOfField)						( float focus, float range, float blur );
+		// the shader manager's sky look, until changed: the sky shader tinted by tint (1 1 1 as it
+		// is) and turned by angles; a 3D skybox's view is turned instead, and moved by shift.
+		// A NULL tint puts the sky back as the map has it
+		void				(*SetSkyLook)							( const float *tint, const vec3_t angles, const vec3_t shift );
 	} ext;
 
 } refexport_t;
