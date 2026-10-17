@@ -22,7 +22,8 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 //
 // A story is a list of steps run one after the other: waits, a stop until the
 // storyteller says go on, chat, console commands, and the RPMod commands the
-// managers send (npc spawn/tele/kill/..., rpmodel add, rpeffect, rpshader remap).
+// managers send (npc spawn/tele/kill/..., rpmodel add, rpeffect, rpshader remap and
+// overlay, the shader manager's sky look).
 // The panel has the actions to pick from, the story, and the selected step's
 // settings. Commands go out paced by the server's flood protection, and a story
 // keeps playing with the panel closed. Stories are saved in storyteller/*.story,
@@ -110,6 +111,8 @@ typedef enum {
 	ST_A_EFFECT,
 	ST_A_SCREEN,
 	ST_A_SHADER,
+	ST_A_OVERLAY,
+	ST_A_SKY,
 	ST_A_SOUND,
 	ST_A_MUSIC,
 	ST_A_CIN_START,
@@ -149,8 +152,10 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ "Z", ST_K_NUMBER, "", NULL } } },
 	{ "command", "Run a command", "Flow", "Runs it as if typed in the console, e.g. rpcinematic intro, or exec mission.cfg. Separate several with ;", -1, -1, 1, {
 		{ "Command", ST_K_TEXT, "", NULL } } },
-	{ "say", "Say", "Speech", "Says this in chat, as you.", -1, -1, 1, {
-		{ "Text", ST_K_TEXT, "", NULL } } },
+	{ "say", "Say", "Speech", "Says this in chat, as you, or as one of the players on the server: by their number or a part of their name. As a player it shows in chat as theirs for everyone with this client (sent hidden in an rpnotify; others see the raw line in their console).", -1, -1, 3, {
+		{ "Text", ST_K_TEXT, "", NULL },
+		{ "As", ST_K_CHOICE, "me", "me|a player" },
+		{ "Player", ST_K_TEXT, "", NULL } } },
 	{ "center", "Center message", "Speech", "Shows the text in the middle of the screen with rpcentersay, for everyone (all), or one player. 0 seconds keeps each player's own setting.", -1, -1, 3, {
 		{ "Who", ST_K_TEXT, "all", NULL },
 		{ "Seconds", ST_K_NUMBER, "3", NULL },
@@ -217,6 +222,22 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ "From", ST_K_TEXT, "", NULL },
 		{ "To", ST_K_TEXT, "", NULL },
 		{ "Time offset", ST_K_NUMBER, "", NULL } } },
+	{ "overlay", "Screen overlay", "World", "Draws a shader over everyone's screen with rpshader overlay, or takes it away (by its shader or its number in the list). X, Y, width and height are on a 640x480 screen; empty is the whole screen.", -1, -1, 7, {
+		{ "Do", ST_K_CHOICE, "add", "add|remove|remove all" },
+		{ "Shader", ST_K_TEXT, "", NULL },
+		{ "Fade", ST_K_NUMBER, "", NULL },
+		{ "X", ST_K_NUMBER, "", NULL },
+		{ "Y", ST_K_NUMBER, "", NULL },
+		{ "Width", ST_K_NUMBER, "", NULL },
+		{ "Height", ST_K_NUMBER, "", NULL } } },
+	{ "sky", "Sky look", "World", "Tints the map's sky (red green blue, 255 as it is), spins it round (degrees a second) and turns it, as the shader manager's Sky tab does; a 3D skybox's view also moves. For everyone with this client, until the map changes (sent hidden in an rpnotify).", -1, -1, 7, {
+		{ "Do", ST_K_CHOICE, "set", "set|reset" },
+		{ "Colour", ST_K_TEXT, "255 255 255", NULL },
+		{ "Spin", ST_K_NUMBER, "0", NULL },
+		{ "Around", ST_K_NUMBER, "0", NULL },
+		{ "Tilt", ST_K_NUMBER, "0", NULL },
+		{ "Roll", ST_K_NUMBER, "0", NULL },
+		{ "Move", ST_K_TEXT, "0 0 0", NULL } } },
 	{ "sound", "Play sound", "World", "Plays a sound with rpsound: once, looping (until removed) or local, to everyone, you, a player or at a spot. Pick it in the sound manager to hear it first.", 4, -1, 7, {
 		{ "Sound", ST_K_TEXT, "", NULL },
 		{ "Play", ST_K_CHOICE, "once", "once|loop|local" },
@@ -298,6 +319,8 @@ typedef enum {
 	ST_PICK_MODEL,
 	ST_PICK_EFFECT,
 	ST_PICK_SHADER,
+	ST_PICK_OVERLAY,
+	ST_PICK_SKY,
 	ST_PICK_NPC_SPAWN,
 	ST_PICK_NPC_MANAGE,
 	ST_PICK_SOUND,
@@ -569,6 +592,12 @@ static qboolean ST_FieldShown( const stStep_t *s, int field ) {
 	}
 	if ( s->action == ST_A_MUSIC )
 		return (qboolean)( field != 1 || !Q_stricmp( s->values[0], "play" ) );
+	if ( s->action == ST_A_SAY )
+		return (qboolean)( field != 2 || !Q_stricmp( s->values[1], "a player" ) );
+	if ( s->action == ST_A_OVERLAY )
+		return (qboolean)( field == 0 || ( field == 1 && Q_stricmp( s->values[0], "remove all" ) ) || !Q_stricmp( s->values[0], "add" ) );
+	if ( s->action == ST_A_SKY )
+		return (qboolean)( field == 0 || Q_stricmp( s->values[0], "reset" ) );
 	if ( s->action != ST_A_TRIGGER )
 		return qtrue;
 	switch ( field ) {
@@ -666,6 +695,7 @@ static qboolean ST_HasEmote( const stStep_t *s ) {
 // sent as cmd: hooks, which only players with this client see
 static qboolean ST_Experimental( stAction_t action ) {
 	switch ( action ) {
+	case ST_A_SKY:
 	case ST_A_NPC_TALK:
 	case ST_A_NPC_WALK:
 	case ST_A_OBJECTIVE:
@@ -723,6 +753,44 @@ static const char *ST_StepExtra( const stStep_t *s, qboolean *local ) {
 	return cmd;
 }
 
+// a connected player's name, colours and all
+static const char *ST_PlayerName( int num ) {
+	const char *info;
+
+	if ( num < 0 || num >= MAX_CLIENTS )
+		return "";
+	info = cl.gameState.stringData + cl.gameState.stringOffsets[CS_PLAYERS + num];
+	return info[0] ? Info_ValueForKey( info, "n" ) : "";
+}
+
+// a player by their number, or by their name or a part of it, colours left out; -1 if no one
+static int ST_FindPlayer( const char *who ) {
+	char want[MAX_STRING_CHARS], name[MAX_STRING_CHARS];
+	int found = -1;
+
+	if ( Q_isanumber( who ) && !strchr( who, '.' ) ) {
+		const int num = atoi( who );
+
+		return ST_PlayerName( num )[0] ? num : -1;
+	}
+	Q_strncpyz( want, who, sizeof( want ) );
+	Q_StripColor( want );
+	Q_strlwr( want );
+	for ( int i = 0; i < MAX_CLIENTS; i++ ) {
+		Q_strncpyz( name, ST_PlayerName( i ), sizeof( name ) );
+		if ( !name[0] )
+			continue;
+		Q_StripColor( name );
+		Q_strlwr( name );
+		// the whole name first, else the first it's part of
+		if ( !strcmp( name, want ) )
+			return i;
+		if ( found < 0 && strstr( name, want ) )
+			found = i;
+	}
+	return found;
+}
+
 // what a step sends: a server command, or with *local a console command; NULL and why if it can't
 static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const char **error ) {
 	static char cmd[MAX_STRING_CHARS];
@@ -764,6 +832,26 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 		if ( !v[0][0] ) {
 			*error = "Type what to say";
 			return NULL;
+		}
+		if ( !Q_stricmp( v[1], "a player" ) ) {
+			static char why[MAX_STRING_CHARS];
+			int num;
+
+			// shown as their chat, which only this client's hook can do
+			if ( !CL_RpHooks_Experimental() ) {
+				*error = RP_EXPERIMENTAL_OFF;
+				return NULL;
+			}
+			if ( !v[2][0] ) {
+				*error = "Type the player's number or a part of their name";
+				return NULL;
+			}
+			if ( ( num = ST_FindPlayer( v[2] ) ) < 0 ) {
+				Com_sprintf( why, sizeof( why ), "No player %s on the server", v[2] );
+				*error = why;
+				return NULL;
+			}
+			return CL_RpHooks_NpcTalkCommand( va( "%i", num ), ST_PlayerName( num ), "^7", "", v[0] );
 		}
 		Com_sprintf( cmd, sizeof( cmd ), "say %s", v[0] );
 		return cmd;
@@ -993,6 +1081,50 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 		else
 			Com_sprintf( cmd, sizeof( cmd ), "rpshader remap %s %s", v[0], v[1] );
 		return cmd;
+
+	case ST_A_OVERLAY: {
+		// rpshader overlay add <shader> [fade] [x] [y] [width] [height], up to the last one given
+		static const char *defaults[] = { "0", "0", "0", "640", "480" };
+		int last = -1;
+
+		if ( !Q_stricmp( v[0], "remove all" ) )
+			return "rpshader overlay remove all";
+		if ( !v[1][0] ) {
+			*error = !Q_stricmp( v[0], "remove" ) ? "Type the overlay's shader, or its number in the list" : "Type the shader, or pick it in the shader manager";
+			return NULL;
+		}
+		if ( !Q_stricmp( v[0], "remove" ) ) {
+			Com_sprintf( cmd, sizeof( cmd ), "rpshader overlay remove %s", v[1] );
+			return cmd;
+		}
+		for ( int i = 0; i < 5; i++ ) {
+			if ( v[2 + i][0] )
+				last = i;
+		}
+		Com_sprintf( cmd, sizeof( cmd ), "rpshader overlay add %s", v[1] );
+		for ( int i = 0; i <= last; i++ )
+			Q_strcat( cmd, sizeof( cmd ), va( " %s", v[2 + i][0] ? v[2 + i] : defaults[i] ) );
+		return cmd;
+	}
+
+	case ST_A_SKY: {
+		vec3_t tint = { 255, 255, 255 }, shift = { 0, 0, 0 };
+
+		if ( !Q_stricmp( v[0], "reset" ) )
+			return "rpnotify -1 1 cmd:sky/off";
+		if ( v[1][0] && sscanf( v[1], "%f %f %f", &tint[0], &tint[1], &tint[2] ) != 3 ) {
+			*error = "Type the colour as red green blue, 0 to 255, e.g. 255 180 120";
+			return NULL;
+		}
+		if ( v[6][0] && sscanf( v[6], "%f %f %f", &shift[0], &shift[1], &shift[2] ) != 3 ) {
+			*error = "Type the move as x y z, e.g. 0 0 128";
+			return NULL;
+		}
+		Com_sprintf( cmd, sizeof( cmd ), "rpnotify -1 1 cmd:sky/%g %g %g/%g/%g %g %g/%g %g %g", Com_Clamp( 0, 255, tint[0] ),
+			Com_Clamp( 0, 255, tint[1] ), Com_Clamp( 0, 255, tint[2] ), ST_Number( s, 2 ), ST_Number( s, 4 ), ST_Number( s, 3 ),
+			ST_Number( s, 5 ), shift[0], shift[1], shift[2] );
+		return cmd;
+	}
 
 	default:
 		return NULL;
@@ -1419,6 +1551,24 @@ static const char *ST_StepSummary( const stStep_t *s ) {
 		break;
 	case ST_A_SHADER:
 		Com_sprintf( buf, sizeof( buf ), "Remap %s", s->values[0][0] ? s->values[0] : "?" );
+		break;
+	case ST_A_SAY:
+		if ( !Q_stricmp( s->values[1], "a player" ) )
+			Com_sprintf( buf, sizeof( buf ), "Say as %s" S_COLOR_WHITE ": %s", s->values[2][0] ? s->values[2] : "?", s->values[0] );
+		else
+			Com_sprintf( buf, sizeof( buf ), "Say: %s", s->values[0] );
+		break;
+	case ST_A_OVERLAY:
+		if ( !Q_stricmp( s->values[0], "remove all" ) )
+			Q_strncpyz( buf, "Overlays: remove all", sizeof( buf ) );
+		else
+			Com_sprintf( buf, sizeof( buf ), "Overlay %s %s", s->values[0], s->values[1][0] ? s->values[1] : "?" );
+		break;
+	case ST_A_SKY:
+		if ( !Q_stricmp( s->values[0], "reset" ) )
+			Q_strncpyz( buf, "Sky look: as the map has it", sizeof( buf ) );
+		else
+			Com_sprintf( buf, sizeof( buf ), "Sky look: %s, spin %s", s->values[1], s->values[2][0] ? s->values[2] : "0" );
 		break;
 	default:
 		Com_sprintf( buf, sizeof( buf ), "%s%s%s", def->name, s->values[0][0] ? ": " : "", s->values[0] );
@@ -2321,8 +2471,8 @@ static void ST_StartPick( stPick_t pick ) {
 		CL_ModelManager_OpenForStory();
 	else if ( pick == ST_PICK_EFFECT )
 		CL_EffectManager_OpenForStory();
-	else if ( pick == ST_PICK_SHADER )
-		CL_ShaderManager_OpenForStory();
+	else if ( pick == ST_PICK_SHADER || pick == ST_PICK_OVERLAY || pick == ST_PICK_SKY )
+		CL_ShaderManager_OpenForStory( pick == ST_PICK_OVERLAY ? 2 : pick == ST_PICK_SKY ? 3 : 0 );
 	else if ( pick == ST_PICK_SOUND )
 		CL_SoundManager_OpenForStory();
 	else if ( pick == ST_PICK_MUSIC )
@@ -2335,7 +2485,9 @@ static qboolean ST_PickOpen( void ) {
 	switch ( st.pick ) {
 	case ST_PICK_MODEL:		return CL_ModelManager_Active();
 	case ST_PICK_EFFECT:	return CL_EffectManager_Active();
-	case ST_PICK_SHADER:	return CL_ShaderManager_Active();
+	case ST_PICK_SHADER:
+	case ST_PICK_OVERLAY:
+	case ST_PICK_SKY:		return CL_ShaderManager_Active();
 	case ST_PICK_NPC_SPAWN:
 	case ST_PICK_NPC_MANAGE:	return CL_NpcManager_Active();
 	case ST_PICK_SOUND:		return CL_SoundManager_Active();
@@ -2503,8 +2655,47 @@ static void ST_StepFromCommand( const char *cmd, stStep_t *s ) {
 
 	memset( s, 0, sizeof( *s ) );
 	s->enabled = qtrue;
+
+	// rpnotify -1 1 cmd:sky/<r g b>/<spin>/<pitch yaw roll>/<x y z>, or cmd:sky/off: the shader manager's
+	// sky look; its parts have spaces in them
+	if ( !Q_stricmpn( cmd, "rpnotify -1 1 cmd:sky/", 22 ) ) {
+		vec3_t tint = { 255, 255, 255 }, angles = { 0, 0, 0 }, shift = { 0, 0, 0 };
+		float spin = 0.0f;
+
+		s->action = ST_A_SKY;
+		ST_SetDefaults( s );
+		if ( !Q_stricmpn( cmd + 22, "off", 3 ) || !Q_stricmpn( cmd + 22, "reset", 5 ) ) {
+			Q_strncpyz( s->values[0], "reset", ST_VALUE_LEN );
+			return;
+		}
+		sscanf( cmd + 22, "%f %f %f/%f/%f %f %f/%f %f %f", &tint[0], &tint[1], &tint[2], &spin, &angles[0], &angles[1], &angles[2],
+			&shift[0], &shift[1], &shift[2] );
+		Com_sprintf( s->values[1], ST_VALUE_LEN, "%g %g %g", tint[0], tint[1], tint[2] );
+		Com_sprintf( s->values[2], ST_VALUE_LEN, "%g", spin );
+		Com_sprintf( s->values[3], ST_VALUE_LEN, "%g", angles[YAW] );
+		Com_sprintf( s->values[4], ST_VALUE_LEN, "%g", angles[PITCH] );
+		Com_sprintf( s->values[5], ST_VALUE_LEN, "%g", angles[ROLL] );
+		Com_sprintf( s->values[6], ST_VALUE_LEN, "%g %g %g", shift[0], shift[1], shift[2] );
+		return;
+	}
+
 	Q_strncpyz( line, cmd, sizeof( line ) );
 	argc = ST_SplitLine( line, argv, ARRAY_LEN( argv ) );
+
+	// rpshader overlay add <shader> [fade x y width height], rpshader overlay remove <shader|number|all>
+	if ( argc >= 4 && argc <= 9 && !Q_stricmp( argv[0], "rpshader" ) && !Q_stricmp( argv[1], "overlay" )
+		&& ( !Q_stricmp( argv[2], "add" ) || !Q_stricmp( argv[2], "remove" ) ) ) {
+		s->action = ST_A_OVERLAY;
+		ST_SetDefaults( s );
+		if ( !Q_stricmp( argv[2], "remove" ) && ( !Q_stricmp( argv[3], "all" ) || !strcmp( argv[3], "-1" ) ) ) {
+			Q_strncpyz( s->values[0], "remove all", ST_VALUE_LEN );
+			return;
+		}
+		Q_strncpyz( s->values[0], argv[2], ST_VALUE_LEN );
+		for ( int i = 3; i < argc; i++ )
+			Q_strncpyz( s->values[i - 2], argv[i], ST_VALUE_LEN );
+		return;
+	}
 
 	// rpmodel add <model> <x y z> <pitch yaw roll> <scale> <solid>
 	if ( argc == 10 && !Q_stricmp( argv[0], "rpmodel" ) && !Q_stricmp( argv[1], "add" ) && ST_AllNumbers( argv, 3, 10 ) ) {
@@ -3453,6 +3644,14 @@ static void ST_DrawEdit( void ) {
 
 		if ( ST_Button( ST_EDIT_X, y, ST_EDIT_W, label, qfalse, qtrue ) ) {
 			ST_StartPick( s->action == ST_A_MODEL ? ST_PICK_MODEL : s->action == ST_A_SHADER ? ST_PICK_SHADER : ST_PICK_EFFECT );
+			return;
+		}
+		y += ST_CTRL_H + 6;
+	}
+
+	if ( s->action == ST_A_OVERLAY || s->action == ST_A_SKY ) {
+		if ( ST_Button( ST_EDIT_X, y, ST_EDIT_W, s->action == ST_A_OVERLAY ? "Pick it in the shader manager's Overlays" : "Set it in the shader manager's Sky tab", qfalse, qtrue ) ) {
+			ST_StartPick( s->action == ST_A_OVERLAY ? ST_PICK_OVERLAY : ST_PICK_SKY );
 			return;
 		}
 		y += ST_CTRL_H + 6;

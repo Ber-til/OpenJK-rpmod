@@ -1754,11 +1754,15 @@ qboolean CL_ShaderManager_Active( void ) {
 	return (qboolean)( sm.state != SM_OFF );
 }
 
-// opened from a storyteller step
-void CL_ShaderManager_OpenForStory( void ) {
+// opened from a storyteller step: on the world for a remap, else on its tab (an smTab_t)
+void CL_ShaderManager_OpenForStory( int tab ) {
 	SM_Open();
-	if ( sm.state != SM_OFF )
-		SM_SetStatus( S_COLOR_GREEN "For the story: what you send here goes in it as steps, not to the server" );
+	if ( sm.state == SM_OFF )
+		return;
+	if ( tab > SM_TAB_OBJECT && tab < SM_NUM_TABS )
+		SM_EnterEdit( (smTab_t)tab );
+	SM_SetStatus( tab == SM_TAB_SKY ? S_COLOR_GREEN "For the story: Share with all puts the sky look in it as a step"
+		: S_COLOR_GREEN "For the story: what you send here goes in it as steps, not to the server" );
 }
 
 /*

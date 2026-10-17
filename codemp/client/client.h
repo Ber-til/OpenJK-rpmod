@@ -732,7 +732,7 @@ qboolean CL_ShaderManager_RenderScene( const refdef_t *fd );
 qboolean CL_ShaderManager_FilterEntity( const refEntity_t *ent );
 qboolean CL_ShaderManager_Active( void );
 void CL_ShaderManager_Close( void );
-void CL_ShaderManager_OpenForStory( void );
+void CL_ShaderManager_OpenForStory( int tab );
 void CL_ShaderManager_KeyEvent( int key, qboolean down );
 void CL_ShaderManager_CharEvent( int ch );
 void CL_ShaderManager_MouseEvent( int dx, int dy );
