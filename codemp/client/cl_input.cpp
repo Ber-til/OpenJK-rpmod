@@ -1421,9 +1421,6 @@ usercmd_t CL_CreateCmd( void ) {
 	// store out the final values
 	CL_FinishMove( &cmd );
 
-	// impersonating an NPC, the keys move it and the player stands still
-	CL_NpcWalk_FilterCmd( &cmd );
-
 	// draw debug graphs of turning for mouse testing
 	if ( cl_debugMove->integer ) {
 		if ( cl_debugMove->integer == 1 ) {

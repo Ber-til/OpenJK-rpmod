@@ -191,9 +191,6 @@ void CL_AddReliableCommand( const char *cmd, qboolean isDisconnectCmd ) {
 	// an emote's animation is watched for, a Help click shows one
 	if ( !isDisconnectCmd )
 		CL_EmotePreview_Command( cmd );
-	// impersonating an NPC, a command too soon after its teleport waits its turn
-	if ( !isDisconnectCmd && CL_NpcWalk_HoldCommand( cmd ) )
-		return;
 
 	// if we would be losing an old command that hasn't been acknowledged,
 	// we must drop the connection
