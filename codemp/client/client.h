@@ -695,6 +695,19 @@ void CL_RpCinematic_ShotWalks( const char *name, qboolean local );
 void CL_NpcWalk_GroupSpot( const vec3_t spot, const vec3_t offset, vec3_t out );
 void CL_NpcWalk_GroupMiddle( const vec3_t *starts, int count, vec3_t middle );
 void CL_NpcWalk_Command( void );
+typedef struct {
+	int				num;		// the NPC's entity number
+	const char		*route;		// the saved route's name, "" when not told
+	qboolean		loop, driver;
+	float			speed;
+	const vec3_t	*pts;		// where it set off, then the route's spots
+	int				numPts;
+	vec3_t			pos;		// where it is now
+} npcWalkInfo_t;
+int CL_NpcWalk_NumWalks( void );
+qboolean CL_NpcWalk_GetWalk( int index, npcWalkInfo_t *out );
+const char *CL_NpcWalk_RouteOf( int num );
+void CL_NpcWalk_ListRead( int listTime );
 qboolean CL_NpcWalk_SaveRoute( const char *name, const vec3_t *pts, int numPts, float speed );
 int CL_NpcWalk_LoadRoute( const char *name, vec3_t *pts, int maxPts, float *speed );
 qboolean CL_NpcManager_Active( void );
