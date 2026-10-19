@@ -422,6 +422,8 @@ rescan:
 		if ( !CL_RpHooks_ServerCommand( &replaced ) )
 			return qfalse;
 		if ( replaced ) {
+			// the storyteller hears it as said, for "someone says"
+			CL_Storyteller_ChatLine();
 			// NPC talk is chat too: in a language, as the character playing hears it
 			CL_Languages_ServerCommand();
 			return qtrue;
@@ -537,6 +539,8 @@ rescan:
 
 	// we may want to put a "connect to other server" command here
 
+	// the storyteller hears chat as said, for "someone says"
+	CL_Storyteller_ChatLine();
 	// chat in a language the character playing doesn't know is gibberish, everywhere it shows
 	CL_Languages_ServerCommand();
 	// chat from far away stays out of the console
