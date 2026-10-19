@@ -956,6 +956,9 @@ CL_MouseEvent
 =================
 */
 void CL_MouseEvent( int dx, int dy, int time ) {
+	// the console down, full screen: its cursor
+	if ( Con_MouseMove( dx, dy ) )
+		return;
 	if (cls.cursorActive) {
 		CL_UpdateCursorPosition( dx, dy );
 	} else if (g_clAutoMapMode && cls.cgameStarted)

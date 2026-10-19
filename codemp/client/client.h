@@ -558,6 +558,12 @@ void Con_PageDown( void );
 void Con_Top( void );
 void Con_Bottom( void );
 void Con_Close( void );
+qboolean Con_MouseMove( int dx, int dy );
+qboolean Con_MouseKey( int key, qboolean down, qboolean shift );
+qboolean Con_KeyEvent( int key, int lower, qboolean ctrl, qboolean shift );
+qboolean Con_CharEvent( int ch );
+qboolean Con_FindEscape( void );
+void Con_MouseReset( void );
 
 
 //

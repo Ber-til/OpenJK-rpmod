@@ -1150,6 +1150,34 @@ static void IN_JoyMove( void )
 }
 
 
+/*
+===============
+IN_MousePosition
+
+Where the mouse is over the window, in the game's pixels, while it isn't the game's: 1. 0 while
+the game has it (no cursor, only how it moves); -1 when it's off the window, x and y still
+where it is
+===============
+*/
+int IN_MousePosition( int *x, int *y ) {
+	int gx, gy, wx, wy, w, h;
+
+	if ( !SDL_window )
+		return -1;
+	if ( mouseActive )
+		return 0;
+	SDL_GetGlobalMouseState( &gx, &gy );
+	SDL_GetWindowPosition( SDL_window, &wx, &wy );
+	SDL_GetWindowSize( SDL_window, &w, &h );
+	if ( w <= 0 || h <= 0 )
+		return -1;
+	*x = ( gx - wx ) * cls.glconfig.vidWidth / w;
+	*y = ( gy - wy ) * cls.glconfig.vidHeight / h;
+	if ( !( SDL_GetWindowFlags( SDL_window ) & SDL_WINDOW_MOUSE_FOCUS ) || gx < wx || gy < wy || gx >= wx + w || gy >= wy + h )
+		return -1;
+	return 1;
+}
+
 void IN_Frame (void) {
 	qboolean loading;
 

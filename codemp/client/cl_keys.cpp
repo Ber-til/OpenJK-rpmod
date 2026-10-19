@@ -662,6 +662,10 @@ Handles history and console scrollback
 ====================
 */
 void Console_Key( int key ) {
+	// Ctrl+F finds, and the find box takes Enter and the arrows while it's typed in
+	if ( Con_KeyEvent( key, keynames[key].lower, kg.keys[A_CTRL].down, kg.keys[A_SHIFT].down ) )
+		return;
+
 	// ctrl-L clears screen
 	if ( keynames[key].lower == 'l' && kg.keys[A_CTRL].down ) {
 		Cbuf_AddText( "clear\n" );
@@ -1331,6 +1335,9 @@ void CL_KeyDownEvent( int key, unsigned time )
 
 	// escape is always handled special
 	if ( key == A_ESCAPE ) {
+		// the console's find box closes first
+		if ( ( Key_GetCatcher( ) & KEYCATCH_CONSOLE ) && Con_FindEscape() )
+			return;
 		if ( !kg.keys[A_SHIFT].down && ( Key_GetCatcher( ) & KEYCATCH_CONSOLE ) ) {
 			Con_ToggleConsole_f();
 			Key_ClearStates();
@@ -1410,6 +1417,10 @@ void CL_KeyDownEvent( int key, unsigned time )
 		if ( !cls.cursorActive ) UIVM_KeyEvent( key, qtrue );
 		return;
 	}
+
+	// the console down takes the mouse buttons: selecting its text, copying and pasting
+	if ( Con_MouseKey( key, qtrue, kg.keys[A_SHIFT].down ) )
+		return;
 
 	// an open radial menu takes the number keys and the mouse buttons, the rest work as usual
 	if ( CL_RadialMenu_KeyDown( key ) )
@@ -1513,6 +1524,9 @@ void CL_KeyUpEvent( int key, unsigned time )
 	//
 	CL_ParseBinding( key, qfalse, time );
 
+	// a selection being dragged ends
+	Con_MouseKey( key, qfalse, qfalse );
+
 	// always, so a key held when a menu opened over the placer doesn't stay held
 	CL_ModelManager_KeyEvent( key, qfalse );
 	CL_NpcManager_KeyEvent( key, qfalse );
@@ -1558,7 +1572,7 @@ void CL_CharEvent( int key ) {
 		return;
 
 	// distribute the key down event to the appropriate handler
-		 if ( Key_GetCatcher() & KEYCATCH_CONSOLE )		Field_CharEvent( &g_consoleField, key );
+		 if ( Key_GetCatcher() & KEYCATCH_CONSOLE )		{ if ( !Con_CharEvent( key ) ) Field_CharEvent( &g_consoleField, key ); }
 	else if ( Key_GetCatcher() & KEYCATCH_UI )			UIVM_KeyEvent( key|K_CHAR_FLAG, qtrue );
 	else if ( Key_GetCatcher() & KEYCATCH_MODELMANAGER )	CL_ModelManager_CharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_NPCMANAGER )	CL_NpcManager_CharEvent( key );
