@@ -434,6 +434,12 @@ rescan:
 		return qtrue;
 	}
 
+	// the map editor reads rplock list, and hides the one it asked for
+	if ( !strcmp( cmd, "print" ) && CL_MapEditor_ServerPrint( Cmd_Argv( 1 ) ) ) {
+		Cmd_TokenizeString( "print \"\"" );
+		return qtrue;
+	}
+
 	// the shader manager shows the answer to its rpshader commands
 	if ( !strcmp( cmd, "print" ) )
 		CL_ShaderManager_ServerPrint( Cmd_Argv( 1 ) );

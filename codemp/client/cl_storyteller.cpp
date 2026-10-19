@@ -113,6 +113,7 @@ typedef enum {
 	ST_A_SHADER,
 	ST_A_OVERLAY,
 	ST_A_SKY,
+	ST_A_LOCK,
 	ST_A_SOUND,
 	ST_A_MUSIC,
 	ST_A_CIN_START,
@@ -238,6 +239,11 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ "Tilt", ST_K_NUMBER, "0", NULL },
 		{ "Roll", ST_K_NUMBER, "0", NULL },
 		{ "Move", ST_K_TEXT, "0 0 0", NULL } } },
+	{ "lock", "Lock", "World", "Locks a door or a trigger_multiple with rplock, for that rank and up (-1 no one, 0 anyone with an account), or unlocks it. The target is its targetname or entity number; the map editor's Locks tab shows both. The name is shown to whoever it refuses.", -1, -1, 4, {
+		{ "Do", ST_K_CHOICE, "lock", "lock|unlock|unlock all" },
+		{ "Target", ST_K_TEXT, "", NULL },
+		{ "Rank", ST_K_NUMBER, "0", NULL },
+		{ "Name", ST_K_TEXT, "", NULL } } },
 	{ "sound", "Play sound", "World", "Plays a sound with rpsound: once, looping (until removed) or local, to everyone, you, a player or at a spot. Pick it in the sound manager to hear it first.", 4, -1, 7, {
 		{ "Sound", ST_K_TEXT, "", NULL },
 		{ "Play", ST_K_CHOICE, "once", "once|loop|local" },
@@ -324,7 +330,8 @@ typedef enum {
 	ST_PICK_NPC_SPAWN,
 	ST_PICK_NPC_MANAGE,
 	ST_PICK_SOUND,
-	ST_PICK_MUSIC
+	ST_PICK_MUSIC,
+	ST_PICK_LOCK
 } stPick_t;
 
 #define ST_MAX_PICKED	64
@@ -598,6 +605,8 @@ static qboolean ST_FieldShown( const stStep_t *s, int field ) {
 		return (qboolean)( field == 0 || ( field == 1 && Q_stricmp( s->values[0], "remove all" ) ) || !Q_stricmp( s->values[0], "add" ) );
 	if ( s->action == ST_A_SKY )
 		return (qboolean)( field == 0 || Q_stricmp( s->values[0], "reset" ) );
+	if ( s->action == ST_A_LOCK )
+		return (qboolean)( field == 0 || ( field == 1 && Q_stricmp( s->values[0], "unlock all" ) ) || !Q_stricmp( s->values[0], "lock" ) );
 	if ( s->action != ST_A_TRIGGER )
 		return qtrue;
 	switch ( field ) {
@@ -1082,6 +1091,21 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 			Com_sprintf( cmd, sizeof( cmd ), "rpshader remap %s %s", v[0], v[1] );
 		return cmd;
 
+	case ST_A_LOCK:
+		// rplock add <target> <rank> [name], rplock remove <target|all>
+		if ( !Q_stricmp( v[0], "unlock all" ) )
+			return "rplock remove all";
+		if ( !v[1][0] || strchr( v[1], ' ' ) ) {
+			*error = "Type the door's or trigger's targetname or entity number, or pick it in the map editor";
+			return NULL;
+		}
+		if ( !Q_stricmp( v[0], "unlock" ) ) {
+			Com_sprintf( cmd, sizeof( cmd ), "rplock remove %s", v[1] );
+			return cmd;
+		}
+		Com_sprintf( cmd, sizeof( cmd ), "rplock add %s %i%s%s", v[1], Com_Clampi( -1, 15, (int)ST_Number( s, 2 ) ), v[3][0] ? " " : "", v[3] );
+		return cmd;
+
 	case ST_A_OVERLAY: {
 		// rpshader overlay add <shader> [fade] [x] [y] [width] [height], up to the last one given
 		static const char *defaults[] = { "0", "0", "0", "640", "480" };
@@ -1557,6 +1581,15 @@ static const char *ST_StepSummary( const stStep_t *s ) {
 			Com_sprintf( buf, sizeof( buf ), "Say as %s" S_COLOR_WHITE ": %s", s->values[2][0] ? s->values[2] : "?", s->values[0] );
 		else
 			Com_sprintf( buf, sizeof( buf ), "Say: %s", s->values[0] );
+		break;
+	case ST_A_LOCK:
+		if ( !Q_stricmp( s->values[0], "unlock all" ) )
+			Q_strncpyz( buf, "Unlock every lock", sizeof( buf ) );
+		else if ( !Q_stricmp( s->values[0], "unlock" ) )
+			Com_sprintf( buf, sizeof( buf ), "Unlock %s", s->values[1][0] ? s->values[1] : "?" );
+		else
+			Com_sprintf( buf, sizeof( buf ), "Lock %s: %s%s%s", s->values[1][0] ? s->values[1] : "?",
+				atoi( s->values[2] ) < 0 ? "no one" : va( "rank %s", s->values[2][0] ? s->values[2] : "0" ), s->values[3][0] ? ", " : "", s->values[3] );
 		break;
 	case ST_A_OVERLAY:
 		if ( !Q_stricmp( s->values[0], "remove all" ) )
@@ -2477,6 +2510,8 @@ static void ST_StartPick( stPick_t pick ) {
 		CL_SoundManager_OpenForStory();
 	else if ( pick == ST_PICK_MUSIC )
 		CL_MusicManager_OpenForStory();
+	else if ( pick == ST_PICK_LOCK )
+		CL_MapEditor_OpenForStory();
 	else
 		CL_NpcManager_OpenForStory( (qboolean)( pick == ST_PICK_NPC_MANAGE ) );
 }
@@ -2492,6 +2527,7 @@ static qboolean ST_PickOpen( void ) {
 	case ST_PICK_NPC_MANAGE:	return CL_NpcManager_Active();
 	case ST_PICK_SOUND:		return CL_SoundManager_Active();
 	case ST_PICK_MUSIC:		return CL_MusicManager_Active();
+	case ST_PICK_LOCK:		return CL_MapEditor_Active();
 	default:				return qfalse;
 	}
 }
@@ -2683,6 +2719,27 @@ static void ST_StepFromCommand( const char *cmd, stStep_t *s ) {
 	Q_strncpyz( line, cmd, sizeof( line ) );
 	argc = ST_SplitLine( line, argv, ARRAY_LEN( argv ) );
 
+	// rplock add <target> <rank> [name], rplock remove <target|all>
+	if ( argc >= 3 && !Q_stricmp( argv[0], "rplock" ) && ( ( !Q_stricmp( argv[1], "add" ) && argc >= 4 ) || !Q_stricmp( argv[1], "remove" ) ) ) {
+		s->action = ST_A_LOCK;
+		ST_SetDefaults( s );
+		if ( !Q_stricmp( argv[1], "remove" ) ) {
+			Q_strncpyz( s->values[0], !Q_stricmp( argv[2], "all" ) ? "unlock all" : "unlock", ST_VALUE_LEN );
+			if ( Q_stricmp( argv[2], "all" ) )
+				Q_strncpyz( s->values[1], argv[2], ST_VALUE_LEN );
+			return;
+		}
+		Q_strncpyz( s->values[0], "lock", ST_VALUE_LEN );
+		Q_strncpyz( s->values[1], argv[2], ST_VALUE_LEN );
+		Q_strncpyz( s->values[2], argv[3], ST_VALUE_LEN );
+		for ( int i = 4; i < argc; i++ ) {
+			if ( i > 4 )
+				Q_strcat( s->values[3], ST_VALUE_LEN, " " );
+			Q_strcat( s->values[3], ST_VALUE_LEN, argv[i] );
+		}
+		return;
+	}
+
 	// rpshader overlay add <shader> [fade x y width height], rpshader overlay remove <shader|number|all>
 	if ( argc >= 4 && argc <= 9 && !Q_stricmp( argv[0], "rpshader" ) && !Q_stricmp( argv[1], "overlay" )
 		&& ( !Q_stricmp( argv[2], "add" ) || !Q_stricmp( argv[2], "remove" ) ) ) {
@@ -2851,6 +2908,8 @@ static void ST_PickFrame( void ) {
 	CL_ShaderManager_Close();
 	CL_NpcManager_Close();
 	CL_SoundManager_Close();
+	if ( st.pick == ST_PICK_LOCK )
+		CL_MapEditor_Close();
 	st.pick = ST_PICK_NONE;
 	// another tool opened from it stays
 	if ( !( Key_GetCatcher() & KEYCATCH_ENGINETOOLS ) && ST_Open() && st.numPicked )
@@ -3653,6 +3712,14 @@ static void ST_DrawEdit( void ) {
 	if ( s->action == ST_A_OVERLAY || s->action == ST_A_SKY ) {
 		if ( ST_Button( ST_EDIT_X, y, ST_EDIT_W, s->action == ST_A_OVERLAY ? "Pick it in the shader manager's Overlays" : "Set it in the shader manager's Sky tab", qfalse, qtrue ) ) {
 			ST_StartPick( s->action == ST_A_OVERLAY ? ST_PICK_OVERLAY : ST_PICK_SKY );
+			return;
+		}
+		y += ST_CTRL_H + 6;
+	}
+
+	if ( s->action == ST_A_LOCK ) {
+		if ( ST_Button( ST_EDIT_X, y, ST_EDIT_W, "Pick it in the map editor's Locks tab", qfalse, qtrue ) ) {
+			ST_StartPick( ST_PICK_LOCK );
 			return;
 		}
 		y += ST_CTRL_H + 6;

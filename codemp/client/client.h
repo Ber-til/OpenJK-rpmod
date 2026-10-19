@@ -796,6 +796,8 @@ void CL_MapEditor_f( void );
 void CL_MapEditor_Open( void );
 void CL_MapEditor_Close( void );
 qboolean CL_MapEditor_Active( void );
+void CL_MapEditor_OpenForStory( void );
+qboolean CL_MapEditor_ServerPrint( const char *text );
 void CL_MapEditor_KeyEvent( int key, qboolean down );
 void CL_MapEditor_CharEvent( int ch );
 void CL_MapEditor_MouseEvent( int dx, int dy );
