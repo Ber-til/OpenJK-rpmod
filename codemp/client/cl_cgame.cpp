@@ -129,6 +129,8 @@ qboolean CL_GetSnapshot( int snapshotNumber, snapshot_t *snapshot ) {
 	Com_Memcpy( snapshot->areamask, clSnap->areamask, sizeof( snapshot->areamask ) );
 	snapshot->ps = clSnap->ps;
 	snapshot->vps = clSnap->vps; //get the vehicle ps
+	// a camera shot's animation let go: the cgame starts its own again
+	CL_RpCinematic_SnapPlayer( &snapshot->ps );
 	count = clSnap->numEntities;
 	if ( count > MAX_ENTITIES_IN_SNAPSHOT ) {
 		Com_DPrintf( "CL_GetSnapshot: truncated %i entities to %i\n", count, MAX_ENTITIES_IN_SNAPSHOT );
@@ -143,6 +145,7 @@ qboolean CL_GetSnapshot( int snapshotNumber, snapshot_t *snapshot ) {
 
 		// copy everything but the ghoul2 pointer
 		memcpy(es, &cl.parseEntities[ entNum ], sizeof(entityState_t));
+		CL_RpCinematic_SnapEntity( es );
 		// an NPC on a walk only this client shows
 		if ( CL_NpcWalk_Entity( es, snapshot->serverTime ) )
 			snapshot->numEntities++;
@@ -422,6 +425,8 @@ rescan:
 		if ( !CL_RpHooks_ServerCommand( &replaced ) )
 			return qfalse;
 		if ( replaced ) {
+			// the storyteller hears it as said, for "someone says"
+			CL_Storyteller_ChatLine();
 			// NPC talk is chat too: in a language, as the character playing hears it
 			CL_Languages_ServerCommand();
 			return qtrue;
@@ -430,6 +435,12 @@ rescan:
 
 	// the admin check reads rpstatus, and hides the reply it asked for
 	if ( !strcmp( cmd, "print" ) && CL_RpAdmin_ServerPrint( Cmd_Argv( 1 ) ) ) {
+		Cmd_TokenizeString( "print \"\"" );
+		return qtrue;
+	}
+
+	// the map editor reads rplock list, and hides the one it asked for
+	if ( !strcmp( cmd, "print" ) && CL_MapEditor_ServerPrint( Cmd_Argv( 1 ) ) ) {
 		Cmd_TokenizeString( "print \"\"" );
 		return qtrue;
 	}
@@ -531,6 +542,8 @@ rescan:
 
 	// we may want to put a "connect to other server" command here
 
+	// the storyteller hears chat as said, for "someone says"
+	CL_Storyteller_ChatLine();
 	// chat in a language the character playing doesn't know is gibberish, everywhere it shows
 	CL_Languages_ServerCommand();
 	// chat from far away stays out of the console

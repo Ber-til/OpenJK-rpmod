@@ -558,6 +558,12 @@ void Con_PageDown( void );
 void Con_Top( void );
 void Con_Bottom( void );
 void Con_Close( void );
+qboolean Con_MouseMove( int dx, int dy );
+qboolean Con_MouseKey( int key, qboolean down, qboolean shift );
+qboolean Con_KeyEvent( int key, int lower, qboolean ctrl, qboolean shift );
+qboolean Con_CharEvent( int ch );
+qboolean Con_FindEscape( void );
+void Con_MouseReset( void );
 
 
 //
@@ -695,6 +701,19 @@ void CL_RpCinematic_ShotWalks( const char *name, qboolean local );
 void CL_NpcWalk_GroupSpot( const vec3_t spot, const vec3_t offset, vec3_t out );
 void CL_NpcWalk_GroupMiddle( const vec3_t *starts, int count, vec3_t middle );
 void CL_NpcWalk_Command( void );
+typedef struct {
+	int				num;		// the NPC's entity number
+	const char		*route;		// the saved route's name, "" when not told
+	qboolean		loop, driver;
+	float			speed;
+	const vec3_t	*pts;		// where it set off, then the route's spots
+	int				numPts;
+	vec3_t			pos;		// where it is now
+} npcWalkInfo_t;
+int CL_NpcWalk_NumWalks( void );
+qboolean CL_NpcWalk_GetWalk( int index, npcWalkInfo_t *out );
+const char *CL_NpcWalk_RouteOf( int num );
+void CL_NpcWalk_ListRead( int listTime );
 qboolean CL_NpcWalk_SaveRoute( const char *name, const vec3_t *pts, int numPts, float speed );
 int CL_NpcWalk_LoadRoute( const char *name, vec3_t *pts, int maxPts, float *speed );
 qboolean CL_NpcManager_Active( void );
@@ -777,6 +796,12 @@ void CL_MapEditor_f( void );
 void CL_MapEditor_Open( void );
 void CL_MapEditor_Close( void );
 qboolean CL_MapEditor_Active( void );
+void CL_MapEditor_OpenForStory( void );
+void CL_Storyteller_ChatLine( void );
+void CL_RpCinematic_AnimHook( char **argv, int argc );
+void CL_RpCinematic_SnapEntity( entityState_t *es );
+void CL_RpCinematic_SnapPlayer( playerState_t *ps );
+qboolean CL_MapEditor_ServerPrint( const char *text );
 void CL_MapEditor_KeyEvent( int key, qboolean down );
 void CL_MapEditor_CharEvent( int ch );
 void CL_MapEditor_MouseEvent( int dx, int dy );

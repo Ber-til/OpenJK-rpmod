@@ -64,10 +64,14 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 // Storyteller's Camera shot send. NPCs walking in the shot follow it there as
 //   walk <npc> <route> walk|run <seconds into the shot>
 // lines, sent by whoever plays the shot (npcmanager walk, see cl_npcwalk.cpp) and walked
-// on the editor's screen in its preview.
+// on the editor's screen in its preview. Players and NPCs playing one of JKA's animations
+// in it, a range of its frames, backwards, or one frame held, follow as
+//   anim <who> <ANIMATION> <from> <to> play|reverse|hold loop|once <speed %> <seconds in> <seconds>
+// lines, sent in a cmd:anim hook (see Animations below).
 
 #include "client.h"
 #include "qcommon/cm_public.h"
+#include "ghoul2/G2.h"
 
 #define RC_MAX_KEYS			16
 #define RC_BAR_FRAC			0.12f		// of the screen's height, each
@@ -205,6 +209,7 @@ static cvar_t *rpc_cinThirdPerson;		// 1 while cg_thirdPerson is ours to put bac
 
 static qboolean CE_Open( void );
 static char *CE_TypedText( int *size );
+static void RC_StopAnims( qboolean editorToo );
 static qboolean RC_DepthOfField( const vec3_t org, const vec3_t ang, qboolean dof, float focus, float *now, int *time,
 	float range, float blur );
 static void RC_NoDepthOfField( void );
@@ -695,6 +700,8 @@ static void RC_Start( void ) {
 }
 
 void CL_RpCinematic_Stop( void ) {
+	// the shot's animations go with it
+	RC_StopAnims( qfalse );
 	if ( rc.bars )
 		RC_Bars( qfalse, RC_BAR_MS / 2 );
 	rc.active = qfalse;
@@ -820,6 +827,465 @@ static void RC_RunLocal( const char *hook ) {
 		RC_Hook( argv + 1, argc - 1 );
 }
 
+
+/*
+===============================================================================
+
+Animations: one of JKA's forced on a player or an NPC, on this screen
+
+Whoever plays a shot sends its animations in one hook,
+  cmd:anim/<number> <ANIMATION> <from> <to> <p|r|h> <loop> <speed> <delay ms> <ms>[/...]
+each <delay> ms after it comes (less than 0: it's already going), for <ms> (0: until
+cmd:anim/stop, or the cinematic ends). It's the animation of that name in the model's
+animation.cfg, its frames <from> to <to> (-1 its last), played (p), played backwards (r)
+or held on <from> (h), round and round with loop 1, at <speed> percent. The frame is
+worked out each time the model is drawn and set on its legs and torso, so nothing the
+server sends changes it; let go, the cgame is told to start its own again.
+
+===============================================================================
+*/
+
+#define RC_MAX_ANIMS		8			// in a shot
+#define RC_MAX_PLAYING		32
+#define RC_MAX_CFGS			4
+#define RC_MAX_ANIM_DEFS	2048
+#define RC_ANIM_NEAR		64.0f		// a model drawn this near the entity is its
+#define RC_HUMANOID_GLA		"models/players/_humanoid/_humanoid.gla"
+
+typedef enum {
+	RC_AM_PLAY,
+	RC_AM_REVERSE,
+	RC_AM_HOLD,
+	RC_NUM_AMODES
+} rcAnimMode_t;
+
+static const char rcAnimModeChars[RC_NUM_AMODES + 1] = "prh";
+static const char *rcAnimModeWords[RC_NUM_AMODES] = { "play", "reverse", "hold" };
+
+// an animation in a shot
+typedef struct {
+	char		who[MAX_QPATH];		// numbers, me, a player's name or an NPC's targetname, commas between
+	char		anim[48];			// BOTH_STAND1 and the like
+	int			from, to;			// frames into it; to -1 is its last
+	int			mode;				// rcAnimMode_t
+	qboolean	loop;
+	int			speed;				// percent
+	int			delay, ms;			// into the shot; how long, 0 to the shot's end
+} rcAnim_t;
+
+// one playing on an entity
+typedef struct {
+	qboolean	active;
+	qboolean	editor;				// the camera editor's, the one being made shown
+	int			num;
+	char		anim[48];
+	int			from, to, mode;
+	qboolean	loop;
+	float		speed;
+	int			start, end;			// cls.realtime; end 0 never
+} rcPlaying_t;
+
+typedef struct {
+	char		name[48];
+	int			first, num;
+	float		fps;
+} rcAnimDef_t;
+
+// the animation.cfg next to a .gla, read once
+static struct {
+	char		gla[MAX_QPATH];
+	rcAnimDef_t	*defs;
+	int			count;
+	int			used;
+} rcCfgs[RC_MAX_CFGS];
+static int rcCfgUse;
+
+static rcPlaying_t rcPlaying[RC_MAX_PLAYING];
+static int rcNumPlaying;
+static qboolean rcFlip[MAX_GENTITIES];			// the cgame told to start its own animation again
+static char rcEntGla[MAX_GENTITIES][MAX_QPATH];	// the skeleton each was last seen with
+
+// going out once the server takes another command: the delays from when the shot began
+static struct {
+	qboolean	pending;
+	rcAnim_t	anims[RC_MAX_ANIMS];
+	int			count, shotMs, start;
+} rcSend;
+
+// the animation.cfg of a skeleton; -1 if it has none
+static int RC_AnimCfg( const char *gla ) {
+	char path[MAX_QPATH], *buf, *slash;
+	const char *p;
+	int oldest = 0;
+
+	if ( !gla || !gla[0] )
+		return -1;
+	for ( int i = 0; i < RC_MAX_CFGS; i++ ) {
+		if ( rcCfgs[i].used && !Q_stricmp( rcCfgs[i].gla, gla ) ) {
+			rcCfgs[i].used = ++rcCfgUse;
+			return rcCfgs[i].count ? i : -1;
+		}
+		if ( rcCfgs[i].used < rcCfgs[oldest].used )
+			oldest = i;
+	}
+	// not there is kept too
+	if ( rcCfgs[oldest].defs )
+		Z_Free( rcCfgs[oldest].defs );
+	memset( &rcCfgs[oldest], 0, sizeof( rcCfgs[0] ) );
+	Q_strncpyz( rcCfgs[oldest].gla, gla, sizeof( rcCfgs[0].gla ) );
+	rcCfgs[oldest].used = ++rcCfgUse;
+
+	Q_strncpyz( path, gla, sizeof( path ) );
+	slash = strrchr( path, '/' );
+	if ( !slash )
+		return -1;
+	slash[1] = '\0';
+	Q_strcat( path, sizeof( path ), "animation.cfg" );
+	if ( FS_ReadFile( path, (void **)&buf ) <= 0 || !buf )
+		return -1;
+	rcCfgs[oldest].defs = (rcAnimDef_t *)Z_Malloc( RC_MAX_ANIM_DEFS * sizeof( rcAnimDef_t ), TAG_GENERAL, qtrue );
+	p = buf;
+	COM_BeginParseSession( path );
+	while ( rcCfgs[oldest].count < RC_MAX_ANIM_DEFS ) {
+		rcAnimDef_t *d = &rcCfgs[oldest].defs[rcCfgs[oldest].count];
+		const char *token = COM_ParseExt( &p, qtrue );
+
+		if ( !token[0] )
+			break;
+		if ( !isalpha( (unsigned char)token[0] ) ) {
+			SkipRestOfLine( &p );
+			continue;
+		}
+		Q_strncpyz( d->name, token, sizeof( d->name ) );
+		d->first = atoi( COM_ParseExt( &p, qfalse ) );
+		d->num = atoi( COM_ParseExt( &p, qfalse ) );
+		COM_ParseExt( &p, qfalse );		// loop frames
+		d->fps = (float)atof( COM_ParseExt( &p, qfalse ) );
+		SkipRestOfLine( &p );
+		if ( d->num > 0 && d->first >= 0 )
+			rcCfgs[oldest].count++;
+	}
+	FS_FreeFile( buf );
+	return rcCfgs[oldest].count ? oldest : -1;
+}
+
+static const rcAnimDef_t *RC_FindAnim( int cfg, const char *name ) {
+	if ( cfg < 0 )
+		return NULL;
+	for ( int i = 0; i < rcCfgs[cfg].count; i++ ) {
+		if ( !Q_stricmp( rcCfgs[cfg].defs[i].name, name ) )
+			return &rcCfgs[cfg].defs[i];
+	}
+	return NULL;
+}
+
+// the skeleton an entity was last drawn with, a humanoid's before it's been seen
+static int RC_EntCfg( int num ) {
+	return RC_AnimCfg( num >= 0 && num < MAX_GENTITIES && rcEntGla[num][0] ? rcEntGla[num] : RC_HUMANOID_GLA );
+}
+
+// let go: the cgame starts its own animation again with the next snapshot
+static void RC_Release( rcPlaying_t *p ) {
+	if ( !p->active )
+		return;
+	p->active = qfalse;
+	rcNumPlaying--;
+	if ( p->num >= 0 && p->num < MAX_GENTITIES )
+		rcFlip[p->num] = (qboolean)!rcFlip[p->num];
+}
+
+static void RC_StartAnim( int num, const char *anim, int from, int to, int mode, qboolean loop, int speed, int delay, int ms, qboolean editor ) {
+	rcPlaying_t *p = NULL;
+
+	if ( num < 0 || num >= MAX_GENTITIES || !anim[0] )
+		return;
+	// in place of one it's playing already, the editor's apart
+	for ( int i = 0; i < RC_MAX_PLAYING; i++ ) {
+		if ( rcPlaying[i].active && rcPlaying[i].num == num && rcPlaying[i].editor == editor ) {
+			p = &rcPlaying[i];
+			break;
+		}
+	}
+	for ( int i = 0; i < RC_MAX_PLAYING && !p; i++ ) {
+		if ( !rcPlaying[i].active ) {
+			p = &rcPlaying[i];
+			rcNumPlaying++;
+		}
+	}
+	if ( !p )
+		return;
+	memset( p, 0, sizeof( *p ) );
+	p->active = qtrue;
+	p->editor = editor;
+	p->num = num;
+	Q_strncpyz( p->anim, anim, sizeof( p->anim ) );
+	p->from = from;
+	p->to = to;
+	p->mode = Com_Clampi( 0, RC_NUM_AMODES - 1, mode );
+	p->loop = loop;
+	p->speed = Com_Clamp( 0.05f, 10.0f, speed / 100.0f );
+	p->start = cls.realtime + delay;
+	p->end = ms > 0 ? p->start + ms : 0;
+}
+
+// every one playing let go; the editor's too, or not
+static void RC_StopAnims( qboolean editorToo ) {
+	for ( int i = 0; i < RC_MAX_PLAYING; i++ ) {
+		if ( rcPlaying[i].active && ( editorToo || !rcPlaying[i].editor ) )
+			RC_Release( &rcPlaying[i] );
+	}
+}
+
+// where an entity is drawn now, near enough: where its walk has it, else the snapshot's
+static qboolean RC_EntityOrigin( int num, vec3_t out ) {
+	npcWalkInfo_t w;
+
+	if ( num == clc.clientNum ) {
+		VectorCopy( cl.snap.ps.origin, out );
+		return qtrue;
+	}
+	for ( int i = 0; CL_NpcWalk_GetWalk( i, &w ); i++ ) {
+		if ( w.num == num ) {
+			VectorCopy( w.pos, out );
+			return qtrue;
+		}
+	}
+	for ( int i = 0; i < cl.snap.numEntities; i++ ) {
+		const entityState_t *es = &cl.parseEntities[( cl.snap.parseEntitiesNum + i ) & ( MAX_PARSE_ENTITIES - 1 )];
+
+		if ( es->number == num ) {
+			VectorCopy( es->pos.trBase, out );
+			return qtrue;
+		}
+	}
+	return qfalse;
+}
+
+// the frame in the file it's on now, and the last of its frames
+static float RC_AnimFrame( const rcPlaying_t *p, const rcAnimDef_t *d, int *last ) {
+	const int end = d->num - 1;
+	const int from = Com_Clampi( 0, end, p->from );
+	const int to = p->to < 0 ? end : Com_Clampi( from, end, p->to );
+	float f = (float)from;
+
+	if ( p->mode != RC_AM_HOLD && to > from ) {
+		const float span = (float)( to - from );
+		float pos = Q_max( 0, cls.realtime - p->start ) / 1000.0f * fabsf( d->fps ) * p->speed;
+
+		pos = p->loop ? fmodf( pos, span ) : Q_min( pos, span );
+		// an animation whose frames run backwards (a negative fps) plays them backwards already
+		f = ( ( p->mode == RC_AM_REVERSE ) != ( d->fps < 0.0f ) ) ? to - pos : from + pos;
+	}
+	*last = d->first + to;
+	return d->first + f;
+}
+
+// the legs and the torso on that frame, the next one lerped to as far as the animation goes
+static void RC_SetFrame( CGhoul2Info_v &g2, float frame, int last ) {
+	static const char *bones[] = { "model_root", "lower_lumbar", "Motion" };
+	const int s = (int)floorf( frame ), e = s + 1 <= last ? s + 2 : s + 1;
+	const float set = e == s + 2 ? frame : (float)s;
+	const int time = re->G2API_GetTime( 0 );
+
+	for ( size_t i = 0; i < ARRAY_LEN( bones ); i++ )
+		re->G2API_SetBoneAnim( g2, 0, bones[i], s, e, BONE_ANIM_OVERRIDE_FREEZE, 0.001f, time, set, 0 );
+}
+
+// a model on its way to the renderer: if it's one of those playing an animation, on its frame
+static void RC_AnimateModel( const refEntity_t *ent ) {
+	CGhoul2Info_v &g2 = *(CGhoul2Info_v *)ent->ghoul2;
+	const rcPlaying_t *pick = NULL;
+	const rcAnimDef_t *def;
+	float best = RC_ANIM_NEAR, frame;
+	const char *gla;
+	int last;
+
+	if ( !re->G2API_HaveWeGhoul2Models( g2 ) )
+		return;
+	for ( int i = 0; i < RC_MAX_PLAYING; i++ ) {
+		const rcPlaying_t *p = &rcPlaying[i];
+		vec3_t org;
+
+		if ( !p->active || cls.realtime < p->start || !RC_EntityOrigin( p->num, org ) )
+			continue;
+		// the editor's first, it's what's being made
+		if ( Distance( org, ent->origin ) < best || ( pick && pick->num == p->num && p->editor ) ) {
+			best = Distance( org, ent->origin );
+			pick = p;
+		}
+	}
+	if ( !pick )
+		return;
+	gla = re->G2API_GetGLAName( g2, 0 );
+	if ( !gla || !gla[0] )
+		return;
+	// a weapon or a saber has no such animation: only the body takes it
+	def = RC_FindAnim( RC_AnimCfg( gla ), pick->anim );
+	if ( !def )
+		return;
+	Q_strncpyz( rcEntGla[pick->num], gla, sizeof( rcEntGla[0] ) );
+	frame = RC_AnimFrame( pick, def, &last );
+	RC_SetFrame( g2, frame, last );
+}
+
+// a snapshot's entity, and the player's own state, on their way to the cgame: one let go
+// starts its animation again
+void CL_RpCinematic_SnapEntity( entityState_t *es ) {
+	if ( es->number >= 0 && es->number < MAX_GENTITIES && rcFlip[es->number] ) {
+		es->legsFlip = (qboolean)!es->legsFlip;
+		es->torsoFlip = (qboolean)!es->torsoFlip;
+	}
+}
+
+void CL_RpCinematic_SnapPlayer( playerState_t *ps ) {
+	if ( ps->clientNum >= 0 && ps->clientNum < MAX_CLIENTS && rcFlip[ps->clientNum] ) {
+		ps->legsFlip = (qboolean)!ps->legsFlip;
+		ps->torsoFlip = (qboolean)!ps->torsoFlip;
+	}
+}
+
+// cmd:anim/<spec>/<spec>..., cmd:anim/stop
+void CL_RpCinematic_AnimHook( char **argv, int argc ) {
+	if ( !rpc_cinematics->integer || cls.state != CA_ACTIVE )
+		return;
+	if ( argc && !Q_stricmp( argv[0], "stop" ) ) {
+		RC_StopAnims( qfalse );
+		return;
+	}
+	for ( int i = 0; i < argc; i++ ) {
+		char anim[48], mode = 'p';
+		int num, from, to, loop, speed, delay, ms;
+
+		if ( sscanf( argv[i], "%d %47s %d %d %c %d %d %d %d", &num, anim, &from, &to, &mode, &loop, &speed, &delay, &ms ) != 9 )
+			continue;
+		RC_StartAnim( num, anim, from, to, (int)( strchr( rcAnimModeChars, mode ) ? strchr( rcAnimModeChars, mode ) - rcAnimModeChars : 0 ),
+			(qboolean)( loop != 0 ), speed, delay, ms, qfalse );
+	}
+}
+
+// who a shot's animation is for: numbers, me, a player by their name, an NPC by its targetname,
+// commas between; how many found
+static int RC_AnimTargets( const char *who, int *nums, int max ) {
+	int count = 0;
+
+	for ( const char *p = who; *p && count < max; ) {
+		char item[MAX_QPATH];
+		int len = 0, num = -1;
+
+		while ( *p && *p != ',' ) {
+			if ( len < (int)sizeof( item ) - 1 )
+				item[len++] = *p;
+			p++;
+		}
+		item[len] = '\0';
+		if ( *p )
+			p++;
+		if ( !item[0] )
+			continue;
+		if ( !Q_stricmp( item, "me" ) ) {
+			num = clc.clientNum;
+		} else if ( Q_isanumber( item ) ) {
+			num = atoi( item );
+		} else {
+			// a player, the colours left out, from three letters of it
+			for ( int c = 0; c < MAX_CLIENTS && num < 0; c++ ) {
+				const int ofs = cl.gameState.stringOffsets[CS_PLAYERS + c];
+				char name[MAX_QPATH];
+
+				if ( !ofs )
+					continue;
+				Q_strncpyz( name, Info_ValueForKey( cl.gameState.stringData + ofs, "n" ), sizeof( name ) );
+				Q_StripColor( name );
+				if ( name[0] && ( !Q_stricmp( name, item ) || ( strlen( item ) >= 3 && Q_stristr( name, item ) ) ) )
+					num = c;
+			}
+			if ( num < 0 )
+				num = CL_NpcWalk_Target( item );
+		}
+		if ( num >= 0 && num < MAX_GENTITIES )
+			nums[count++] = num;
+	}
+	return count;
+}
+
+// how long it lasts: its own, or to the shot's end
+static int RC_AnimMs( const rcAnim_t *a, int shotMs ) {
+	if ( a->ms > 0 )
+		return a->ms;
+	return shotMs > 0 ? Q_max( 500, shotMs - a->delay ) : 0;
+}
+
+// the shot's animations from now: on this screen, or sent to everyone once the server takes it
+static void RC_PlayAnims( const rcAnim_t *anims, int count, int shotMs, qboolean local ) {
+	if ( !count )
+		return;
+	if ( !local ) {
+		rcSend.pending = qtrue;
+		memcpy( rcSend.anims, anims, Q_min( count, RC_MAX_ANIMS ) * sizeof( anims[0] ) );
+		rcSend.count = Q_min( count, RC_MAX_ANIMS );
+		rcSend.shotMs = shotMs;
+		rcSend.start = cls.realtime;
+		return;
+	}
+	for ( int i = 0; i < count; i++ ) {
+		const rcAnim_t *a = &anims[i];
+		int nums[16];
+		const int n = RC_AnimTargets( a->who, nums, ARRAY_LEN( nums ) );
+
+		for ( int j = 0; j < n; j++ )
+			RC_StartAnim( nums[j], a->anim, a->from, a->to, a->mode, a->loop, a->speed, a->delay, RC_AnimMs( a, shotMs ), qfalse );
+	}
+}
+
+// the hook with them, each its delay from now, when the server takes another command
+static void RC_RunAnimSend( void ) {
+	char hook[MAX_STRING_CHARS];
+	const int late = cls.realtime - rcSend.start;
+	int parts = 0;
+
+	if ( !rcSend.pending || cls.state != CA_ACTIVE || !CL_NpcWalk_CanSend() )
+		return;
+	rcSend.pending = qfalse;
+	Q_strncpyz( hook, "rpnotify -1 1 cmd:anim", sizeof( hook ) );
+	for ( int i = 0; i < rcSend.count; i++ ) {
+		const rcAnim_t *a = &rcSend.anims[i];
+		int nums[16];
+		const int n = RC_AnimTargets( a->who, nums, ARRAY_LEN( nums ) );
+
+		if ( !n )
+			Com_Printf( S_COLOR_YELLOW "Camera shot: no one called %s to play %s\n", a->who, a->anim );
+		for ( int j = 0; j < n; j++ ) {
+			const char *spec = va( "/%i %s %i %i %c %i %i %i %i", nums[j], a->anim, a->from, a->to, rcAnimModeChars[Com_Clampi( 0, RC_NUM_AMODES - 1, a->mode )],
+				a->loop ? 1 : 0, a->speed, a->delay - late, RC_AnimMs( a, rcSend.shotMs ) );
+
+			if ( strlen( hook ) + strlen( spec ) > RC_MAX_HOOK )
+				break;
+			Q_strcat( hook, sizeof( hook ), spec );
+			parts++;
+		}
+	}
+	if ( parts )
+		CL_AddReliableCommand( hook, qfalse );
+}
+
+// the frame, every frame: the ones over let go, and the hook sent
+static void RC_RunAnims( void ) {
+	RC_RunAnimSend();
+	for ( int i = 0; i < RC_MAX_PLAYING && rcNumPlaying; i++ ) {
+		if ( rcPlaying[i].active && rcPlaying[i].end && cls.realtime >= rcPlaying[i].end )
+			RC_Release( &rcPlaying[i] );
+	}
+}
+
+// the map's going: nothing plays, nothing's to start again
+static void RC_ResetAnims( void ) {
+	memset( rcPlaying, 0, sizeof( rcPlaying ) );
+	rcNumPlaying = 0;
+	memset( rcFlip, 0, sizeof( rcFlip ) );
+	memset( rcEntGla, 0, sizeof( rcEntGla ) );
+	rcSend.pending = qfalse;
+}
+
 /*
 ===============================================================================
 
@@ -919,11 +1385,61 @@ static int RC_ReadWalks( const char *name, rcWalk_t *walks, int max ) {
 	return count;
 }
 
-// the saved shot's NPCs set off, each when the shot says: sent for everyone, or local
+
+// a shot file's animation lines:
+//   anim <who> <ANIMATION> <from> <to> play|reverse|hold loop|once <speed %> <seconds in> <seconds, 0 to the end>
+static int RC_ReadAnims( const char *name, rcAnim_t *anims, int max ) {
+	char *buf, *line, *next;
+	int count = 0;
+
+	if ( FS_ReadFile( RC_ShotPath( name ), (void **)&buf ) <= 0 || !buf )
+		return 0;
+	for ( line = buf; line && *line && count < max; line = next ) {
+		char who[MAX_QPATH], anim[48], mode[16] = "play", loop[16] = "once";
+		float delay = 0, seconds = 0;
+		int from = 0, to = -1, speed = 100;
+		rcAnim_t *a = &anims[count];
+
+		next = strchr( line, '\n' );
+		if ( next )
+			*next++ = '\0';
+		if ( Q_stricmpn( line, "anim ", 5 ) || sscanf( line + 5, "%63s %47s %d %d %15s %15s %d %f %f", who, anim, &from, &to, mode, loop, &speed, &delay, &seconds ) < 2 )
+			continue;
+		memset( a, 0, sizeof( *a ) );
+		Q_strncpyz( a->who, who, sizeof( a->who ) );
+		Q_strncpyz( a->anim, anim, sizeof( a->anim ) );
+		a->from = from;
+		a->to = to;
+		a->mode = !Q_stricmp( mode, "reverse" ) ? RC_AM_REVERSE : !Q_stricmp( mode, "hold" ) ? RC_AM_HOLD : RC_AM_PLAY;
+		a->loop = (qboolean)!Q_stricmp( loop, "loop" );
+		a->speed = Com_Clampi( 5, 1000, speed );
+		a->delay = RC_SecondsMs( delay );
+		a->ms = RC_SecondsMs( seconds );
+		count++;
+	}
+	FS_FreeFile( buf );
+	return count;
+}
+
+static const char *RC_AnimLine( const rcAnim_t *a ) {
+	return va( "anim %s %s %i %i %s %s %i %g %g\n", a->who, a->anim, a->from, a->to, rcAnimModeWords[Com_Clampi( 0, RC_NUM_AMODES - 1, a->mode )],
+		a->loop ? "loop" : "once", a->speed, RC_Seconds( a->delay ), RC_Seconds( a->ms ) );
+}
+
+static qboolean RC_ReadShot( const char *name, char *hook, int size, rcShot_t *shot );
+
+// the saved shot's NPCs set off, each when the shot says, and its animations play: sent for
+// everyone, or local
 void CL_RpCinematic_ShotWalks( const char *name, qboolean local ) {
 	rcWalk_t walks[RC_MAX_WALKS];
+	rcAnim_t anims[RC_MAX_ANIMS];
+	char hook[MAX_STRING_CHARS];
+	rcShot_t shot;
+	const int numAnims = RC_ReadAnims( name, anims, RC_MAX_ANIMS );
 
 	RC_QueueWalks( walks, RC_ReadWalks( name, walks, RC_MAX_WALKS ), local );
+	if ( numAnims )
+		RC_PlayAnims( anims, numAnims, RC_ReadShot( name, hook, sizeof( hook ), &shot ) ? RC_ShotMs( &shot ) : 0, local );
 }
 
 static void RC_ForgetShots( void ) {
@@ -1040,6 +1556,14 @@ typedef struct {
 	qboolean	bars;				// shown, and in the preview
 	qboolean	fxPage;				// the panel shows the focus and the transitions, not the spots
 	qboolean	npcPage;			// or the NPCs walking in it
+	qboolean	animPage;			// or the animations played in it
+
+	// the animations in the shot
+	rcAnim_t	anims[RC_MAX_ANIMS];
+	int			numAnims, animSel, animScroll;
+	int			typingAnim;			// 1 the who box being typed in, 2 the animation's name
+	int			pickScroll;			// the animations to pick from
+	qboolean	animLive;			// the one picked shown on its model as it's made
 
 	// the NPCs walking in the shot, their routes as last read
 	rcWalk_t	walks[RC_MAX_WALKS];
@@ -1293,6 +1817,8 @@ static void CE_New( void ) {
 	memset( &ce.shot, 0, sizeof( ce.shot ) );
 	ce.numWalks = 0;
 	ce.walkSel = -1;
+	ce.numAnims = 0;
+	ce.animSel = -1;
 	memset( ce.walkLoaded, 0, sizeof( ce.walkLoaded ) );
 	ce.name[0] = '\0';
 	ce.dirty = qfalse;
@@ -1314,6 +1840,8 @@ static qboolean CE_Load( const char *name ) {
 	ce.shot = shot;
 	ce.numWalks = RC_ReadWalks( name, ce.walks, RC_MAX_WALKS );
 	ce.walkSel = ce.numWalks ? 0 : -1;
+	ce.numAnims = RC_ReadAnims( name, ce.anims, RC_MAX_ANIMS );
+	ce.animSel = ce.numAnims ? 0 : -1;
 	Q_strncpyz( ce.name, name, sizeof( ce.name ) );
 	CE_Select( 0 );
 	// the camera a step behind where the shot starts, to see it from
@@ -1343,6 +1871,8 @@ static qboolean CE_Save( void ) {
 
 	if ( !ce.name[0] ) {
 		ce.typing = qtrue;
+		ce.typingWalk = qfalse;
+		ce.typingAnim = 0;
 		CE_Message( S_COLOR_YELLOW "Type a name for the shot first" );
 		return qfalse;
 	}
@@ -1366,6 +1896,15 @@ static qboolean CE_Save( void ) {
 		if ( !w->npc[0] || !w->route[0] )
 			continue;
 		line = va( "walk %s %s %s %g\n", w->npc, w->route, w->run ? "run" : "walk", RC_Seconds( w->delay ) );
+		FS_Write( line, strlen( line ), f );
+	}
+	// and the animations played in it
+	for ( int i = 0; i < ce.numAnims; i++ ) {
+		const char *line;
+
+		if ( !ce.anims[i].who[0] || !ce.anims[i].anim[0] )
+			continue;
+		line = RC_AnimLine( &ce.anims[i] );
 		FS_Write( line, strlen( line ), f );
 	}
 	FS_FCloseFile( f );
@@ -1408,6 +1947,7 @@ static void CE_StopPreview( void ) {
 		return;
 	ce.preview = qfalse;
 	RC_StopLocalWalks( ce.walks, ce.numWalks );
+	RC_StopAnims( qfalse );
 	// the cinematic that was on before, or none
 	rc = ce.saved;
 	rc.frame = -1;
@@ -1438,8 +1978,10 @@ static void CE_Preview( qboolean fromKey ) {
 	}
 
 	// the NPCs walk on this screen too, from the start of the shot
-	if ( !fromKey || ce.shot.orbit || ce.sel <= 0 )
+	if ( !fromKey || ce.shot.orbit || ce.sel <= 0 ) {
 		RC_QueueWalks( ce.walks, ce.numWalks, qtrue );
+		RC_PlayAnims( ce.anims, ce.numAnims, RC_ShotMs( &shown ), qtrue );
+	}
 	ce.saved = rc;
 	ce.preview = qtrue;
 	ce.flying = qfalse;
@@ -1477,6 +2019,7 @@ static void CE_SendShot( void ) {
 	}
 	CL_AddReliableCommand( va( "rpnotify -1 1 cmd:%s", hook ), qfalse );
 	RC_QueueWalks( ce.walks, ce.numWalks, qfalse );
+	RC_PlayAnims( ce.anims, ce.numAnims, RC_ShotMs( &shown ), qfalse );
 	CE_Message( S_COLOR_GREEN "Sent to everyone" );
 }
 
@@ -1687,6 +2230,16 @@ void CL_RpCinematic_EditorKeyEvent( int key, qboolean down ) {
 static char *CE_TypedText( int *size ) {
 	if ( !ce.typing )
 		return NULL;
+	if ( ce.typingAnim ) {
+		if ( ce.animSel < 0 || ce.animSel >= ce.numAnims )
+			return NULL;
+		if ( ce.typingAnim == 1 ) {
+			*size = sizeof( ce.anims[0].who );
+			return ce.anims[ce.animSel].who;
+		}
+		*size = sizeof( ce.anims[0].anim );
+		return ce.anims[ce.animSel].anim;
+	}
 	if ( ce.typingWalk ) {
 		if ( ce.walkSel < 0 || ce.walkSel >= ce.numWalks )
 			return NULL;
@@ -1704,8 +2257,11 @@ void CL_RpCinematic_EditorCharEvent( int ch ) {
 	if ( !ce.open || ce.flying || !( text = CE_TypedText( &size ) ) )
 		return;
 	// an NPC can be several, commas between
-	if ( !RC_ShotNameChar( ch ) && !( ce.typingWalk && ch == ',' ) )
+	if ( !RC_ShotNameChar( ch ) && !( ( ce.typingWalk || ce.typingAnim == 1 ) && ch == ',' ) )
 		return;
+	// the animations' names are in capitals
+	if ( ce.typingAnim == 2 )
+		ch = toupper( ch );
 	len = strlen( text );
 	if ( len < size - 1 ) {
 		text[len] = (char)ch;
@@ -2520,6 +3076,7 @@ static void CE_DrawNpcPanel( float x, float y, float w ) {
 		if ( CE_Clicked( bx, y, bw, CE_CTRL_H ) ) {
 			ce.typing = qtrue;
 			ce.typingWalk = qtrue;
+			ce.typingAnim = 0;
 		}
 	}
 	y += CE_CTRL_H + CE_GAP;
@@ -2558,6 +3115,272 @@ static void CE_DrawNpcPanel( float x, float y, float w ) {
 	CE_Text( x, y, S_COLOR_GREY "Preview walks them here.", ceWhite );
 	CE_Text( x, y + CE_ROW_H, S_COLOR_GREY "Played for everyone, sent then;", ceWhite );
 	CE_Text( x, y + CE_ROW_H * 2, S_COLOR_GREY "a second apart at the soonest", ceWhite );
+}
+
+
+// the player or NPC whose middle the crosshair is nearest: me, a player's number, an NPC's
+// targetname or number; NULL if none near
+static const char *CE_PersonAtCrosshair( void ) {
+	float best = 96.0f;
+	int found = -1;
+
+	if ( !ce.haveAim )
+		return NULL;
+	if ( Distance( cl.snap.ps.origin, ce.aim ) < best ) {
+		best = Distance( cl.snap.ps.origin, ce.aim );
+		found = clc.clientNum;
+	}
+	for ( int i = 0; i < cl.snap.numEntities; i++ ) {
+		const entityState_t *es = &cl.parseEntities[( cl.snap.parseEntitiesNum + i ) & ( MAX_PARSE_ENTITIES - 1 )];
+
+		if ( es->eType != ET_NPC && es->eType != ET_PLAYER )
+			continue;
+		if ( Distance( es->pos.trBase, ce.aim ) < best ) {
+			best = Distance( es->pos.trBase, ce.aim );
+			found = es->number;
+		}
+	}
+	if ( found < 0 )
+		return NULL;
+	if ( found == clc.clientNum )
+		return "me";
+	if ( found < MAX_CLIENTS )
+		return va( "%i", found );
+	for ( int i = 0; i < CL_NpcManager_NumNpcs(); i++ ) {
+		const char *type, *name;
+		int num;
+
+		if ( CL_NpcManager_GetNpc( i, &num, &type, &name ) && num == found && name[0] )
+			return name;
+	}
+	return va( "%i", found );
+}
+
+// the animation picked, its frames as the model has them; NULL if the name isn't one of them
+static const rcAnimDef_t *CE_AnimDef( const rcAnim_t *a, int *cfg ) {
+	int nums[4];
+	const int n = RC_AnimTargets( a->who, nums, ARRAY_LEN( nums ) );
+
+	*cfg = RC_EntCfg( n ? nums[0] : -1 );
+	return RC_FindAnim( *cfg, a->anim );
+}
+
+// the one picked on its model as it's made, held or playing round; off with the page
+static void CE_LiveAnim( void ) {
+	static rcAnim_t shown;
+	static int shownNum = -1;
+	const rcAnim_t *a = ce.animSel >= 0 && ce.animSel < ce.numAnims ? &ce.anims[ce.animSel] : NULL;
+	int nums[4], n = 0;
+
+	if ( a && ce.open && ce.animPage && ce.animLive && !ce.preview )
+		n = RC_AnimTargets( a->who, nums, ARRAY_LEN( nums ) );
+	if ( !n ) {
+		if ( shownNum >= 0 ) {
+			for ( int i = 0; i < RC_MAX_PLAYING; i++ ) {
+				if ( rcPlaying[i].active && rcPlaying[i].editor )
+					RC_Release( &rcPlaying[i] );
+			}
+			shownNum = -1;
+		}
+		return;
+	}
+	// started again when it changes
+	if ( shownNum == nums[0] && !memcmp( &shown, a, sizeof( shown ) ) )
+		return;
+	if ( shownNum >= 0 && shownNum != nums[0] ) {
+		for ( int i = 0; i < RC_MAX_PLAYING; i++ ) {
+			if ( rcPlaying[i].active && rcPlaying[i].editor )
+				RC_Release( &rcPlaying[i] );
+		}
+	}
+	shown = *a;
+	shownNum = nums[0];
+	RC_StartAnim( nums[0], a->anim, a->from, a->to, a->mode, (qboolean)( a->loop || a->mode != RC_AM_HOLD ), a->speed, 0, 0, qtrue );
+}
+
+// the animations: on who, which, which frames, how, when
+static void CE_DrawAnimPanel( float x, float y, float w ) {
+	const float half = ( w - 4 ) * 0.5f;
+	const int listRows = 4, pickRows = 4;
+	static int picks[RC_MAX_ANIM_DEFS];
+	const rcAnimDef_t *def;
+	rcAnim_t *a;
+	int steps, cfg, numPicks = 0;
+
+	CE_Text( x, y, va( "Animations (%i)", ce.numAnims ), ceWhite );
+	y += CE_ROW_H + 2;
+	CE_Box( x, y, w, listRows * CE_ROW_H + 2, cePanelLight );
+	if ( ce.wheel && CE_InRect( x, y, w, listRows * CE_ROW_H ) ) {
+		ce.animScroll += ce.wheel;
+		ce.wheel = 0;
+	}
+	ce.animScroll = Com_Clampi( 0, Q_max( 0, ce.numAnims - listRows ), ce.animScroll );
+	for ( int r = 0; r < listRows && ce.animScroll + r < ce.numAnims; r++ ) {
+		const int i = ce.animScroll + r;
+		const rcAnim_t *an = &ce.anims[i];
+		const float ry = y + 1 + r * CE_ROW_H;
+
+		if ( i == ce.animSel )
+			CE_Fill( x + 1, ry, w - 2, CE_ROW_H, ceHighlight );
+		else if ( CE_InRect( x, ry, w, CE_ROW_H ) )
+			CE_Fill( x + 1, ry, w - 2, CE_ROW_H, ceHoverBox );
+		CE_TextClipped( x + 4, ry, w - 8, va( "%s" S_COLOR_GREY "  %s at %.1f s", an->who[0] ? an->who : S_COLOR_YELLOW "no one",
+			an->anim[0] ? an->anim : S_COLOR_YELLOW "none", RC_Seconds( an->delay ) ), ceWhite );
+		if ( CE_Clicked( x, ry, w, CE_ROW_H ) ) {
+			ce.animSel = i;
+			ce.typing = qfalse;
+		}
+	}
+	if ( !ce.numAnims )
+		CE_Text( x + 4, y + 2, S_COLOR_GREY "None: Add one", ceWhite );
+	y += listRows * CE_ROW_H + 6;
+
+	if ( CE_Button( x, y, half, "Add", qfalse, (qboolean)( ce.numAnims < RC_MAX_ANIMS ) ) ) {
+		a = &ce.anims[ce.numAnims];
+		memset( a, 0, sizeof( *a ) );
+		// the one the crosshair is on, standing, to start from
+		Q_strncpyz( a->who, CE_PersonAtCrosshair() ? CE_PersonAtCrosshair() : "", sizeof( a->who ) );
+		Q_strncpyz( a->anim, "BOTH_STAND1", sizeof( a->anim ) );
+		a->to = -1;
+		a->speed = 100;
+		ce.animSel = ce.numAnims++;
+		ce.animScroll = Q_max( 0, ce.numAnims - listRows );
+		CE_Changed();
+	}
+	if ( CE_Button( x + half + 4, y, half, "Remove", qfalse, (qboolean)( ce.animSel >= 0 && ce.animSel < ce.numAnims ) ) ) {
+		ce.numAnims--;
+		memmove( &ce.anims[ce.animSel], &ce.anims[ce.animSel + 1], ( ce.numAnims - ce.animSel ) * sizeof( ce.anims[0] ) );
+		ce.animSel = Q_min( ce.animSel, ce.numAnims - 1 );
+		ce.typing = qfalse;
+		CE_Changed();
+	}
+	y += CE_CTRL_H + CE_GAP + 2;
+	if ( ce.animSel < 0 || ce.animSel >= ce.numAnims ) {
+		CE_Text( x, y, S_COLOR_GREY "JKA's own animations, forced on", ceWhite );
+		CE_Text( x, y + CE_ROW_H, S_COLOR_GREY "players and NPCs while it plays", ceWhite );
+		return;
+	}
+	a = &ce.anims[ce.animSel];
+
+	// who: typed, or the one at the crosshair
+	{
+		const qboolean typing = (qboolean)( ce.typing && ce.typingAnim == 1 );
+		const float bx = x + 40, bw = w - 40 - 34;
+
+		CE_Text( x, y + 2, "Who", ceDim );
+		CE_Box( bx, y, bw, CE_CTRL_H, typing ? ceFocus : cePanelLight );
+		CE_TextClipped( bx + 4, y + 2, bw - 8, a->who[0] || typing ? va( "%s%s", a->who, typing && ( ( cls.realtime >> 8 ) & 1 ) ? "_" : "" )
+			: S_COLOR_GREY "me, number, name", ceWhite );
+		if ( CE_Clicked( bx, y, bw, CE_CTRL_H ) ) {
+			ce.typing = qtrue;
+			ce.typingWalk = qfalse;
+			ce.typingAnim = 1;
+		}
+		if ( CE_Button( x + w - 30, y, 30, "Aim", qfalse, (qboolean)( CE_PersonAtCrosshair() != NULL ) ) ) {
+			Q_strncpyz( a->who, CE_PersonAtCrosshair(), sizeof( a->who ) );
+			ce.typing = qfalse;
+			CE_Changed();
+		}
+	}
+	y += CE_CTRL_H + CE_GAP;
+
+	// which: typed, the list under it the ones with that in their name
+	def = CE_AnimDef( a, &cfg );
+	{
+		const qboolean typing = (qboolean)( ce.typing && ce.typingAnim == 2 );
+		const float bx = x + 40, bw = w - 40;
+
+		CE_Text( x, y + 2, "Anim", ceDim );
+		CE_Box( bx, y, bw, CE_CTRL_H, typing ? ceFocus : cePanelLight );
+		CE_TextClipped( bx + 4, y + 2, bw - 8, va( "%s%s%s", def || typing ? "" : S_COLOR_YELLOW, a->anim, typing && ( ( cls.realtime >> 8 ) & 1 ) ? "_" : "" ), ceWhite );
+		if ( CE_Clicked( bx, y, bw, CE_CTRL_H ) ) {
+			ce.typing = qtrue;
+			ce.typingWalk = qfalse;
+			ce.typingAnim = 2;
+			ce.pickScroll = 0;
+		}
+	}
+	y += CE_CTRL_H + 1;
+	if ( cfg >= 0 ) {
+		for ( int i = 0; i < rcCfgs[cfg].count; i++ ) {
+			if ( !a->anim[0] || Q_stristr( rcCfgs[cfg].defs[i].name, a->anim ) )
+				picks[numPicks++] = i;
+		}
+	}
+	CE_Box( x, y, w, pickRows * CE_ROW_H + 2, cePanelLight );
+	if ( ce.wheel && CE_InRect( x, y, w, pickRows * CE_ROW_H ) ) {
+		ce.pickScroll += ce.wheel;
+		ce.wheel = 0;
+	}
+	ce.pickScroll = Com_Clampi( 0, Q_max( 0, numPicks - pickRows ), ce.pickScroll );
+	for ( int r = 0; r < pickRows && ce.pickScroll + r < numPicks; r++ ) {
+		const rcAnimDef_t *d = &rcCfgs[cfg].defs[picks[ce.pickScroll + r]];
+		const float ry = y + 1 + r * CE_ROW_H;
+
+		if ( def == d )
+			CE_Fill( x + 1, ry, w - 2, CE_ROW_H, ceHighlight );
+		else if ( CE_InRect( x, ry, w, CE_ROW_H ) )
+			CE_Fill( x + 1, ry, w - 2, CE_ROW_H, ceHoverBox );
+		CE_TextClipped( x + 4, ry, w - 8, va( "%s" S_COLOR_GREY " %i", d->name, d->num ), ceWhite );
+		if ( CE_Clicked( x, ry, w, CE_ROW_H ) ) {
+			Q_strncpyz( a->anim, d->name, sizeof( a->anim ) );
+			a->from = 0;
+			a->to = -1;
+			ce.typing = qfalse;
+			CE_Changed();
+		}
+	}
+	if ( !numPicks )
+		CE_Text( x + 4, y + 2, S_COLOR_GREY "No animation by that name", ceWhite );
+	y += pickRows * CE_ROW_H + 6;
+
+	// the frames: a range, played forward or back, or one held
+	if ( CE_Button( x, y, half, a->mode == RC_AM_HOLD ? "Holds a frame" : a->mode == RC_AM_REVERSE ? "Plays backwards" : "Plays", qfalse, qtrue ) ) {
+		a->mode = ( a->mode + 1 ) % RC_NUM_AMODES;
+		CE_Changed();
+	}
+	if ( CE_Button( x + half + 4, y, half, a->loop ? "Loops" : "Once", a->loop, (qboolean)( a->mode != RC_AM_HOLD ) ) ) {
+		a->loop = (qboolean)!a->loop;
+		CE_Changed();
+	}
+	y += CE_CTRL_H + CE_GAP;
+	{
+		const int last = def ? def->num - 1 : 999;
+		const int to = a->to < 0 ? last : a->to;
+
+		steps = CE_Stepper( x, y, w, a->mode == RC_AM_HOLD ? "Frame" : "From", def ? va( "%i of %i", Com_Clampi( 0, last, a->from ), last ) : va( "%i", a->from ) );
+		if ( steps ) {
+			a->from = Com_Clampi( 0, last, a->from + steps * ( CE_ShiftDown() ? 10 : 1 ) );
+			if ( a->to >= 0 && a->to < a->from )
+				a->to = a->from;
+			CE_Changed();
+		}
+		y += CE_CTRL_H + CE_GAP;
+		if ( a->mode != RC_AM_HOLD ) {
+			steps = CE_Stepper( x, y, w, "To", a->to < 0 ? "its last" : va( "%i", to ) );
+			if ( steps ) {
+				const int now = Com_Clampi( a->from, last, to + steps * ( CE_ShiftDown() ? 10 : 1 ) );
+
+				a->to = now >= last && def ? -1 : now;
+				CE_Changed();
+			}
+			y += CE_CTRL_H + CE_GAP;
+			steps = CE_Stepper( x, y, w, "Speed", va( "%i%%", a->speed ) );
+			if ( steps ) {
+				a->speed = Com_Clampi( 5, 1000, a->speed + steps * ( CE_ShiftDown() ? 50 : 10 ) );
+				CE_Changed();
+			}
+			y += CE_CTRL_H + CE_GAP;
+		}
+	}
+	steps = CE_Stepper( x, y, w, "Starts", va( "%.1f s in", RC_Seconds( a->delay ) ) );
+	CE_AdjustMs( &a->delay, steps, 0.5f, 0 );
+	y += CE_CTRL_H + CE_GAP;
+	steps = CE_Stepper( x, y, w, "Lasts", a->ms ? va( "%.1f s", RC_Seconds( a->ms ) ) : "to the end" );
+	CE_AdjustMs( &a->ms, steps, 0.5f, 0 );
+	y += CE_CTRL_H + CE_GAP;
+	if ( CE_Button( x, y, w, ce.animLive ? "Shown on the model" : "Not shown while made", ce.animLive, qtrue ) )
+		ce.animLive = (qboolean)!ce.animLive;
 }
 
 static qboolean CE_Project( const vec3_t point, float *x, float *y ) {
@@ -2652,7 +3475,7 @@ static void CE_DrawEditor( void ) {
 	CE_Text( x, y, "Shot", ceWhite );
 	{
 		const float bx = x + 32, bw = w - 32;
-		const qboolean typing = (qboolean)( ce.typing && !ce.typingWalk );
+		const qboolean typing = (qboolean)( ce.typing && !ce.typingWalk && !ce.typingAnim );
 		const char *label = ce.name[0] || typing ? va( "%s%s%s", ce.name, typing && ( ( cls.realtime >> 8 ) & 1 ) ? "_" : "",
 			ce.dirty ? S_COLOR_YELLOW " *" : "" ) : S_COLOR_GREY "click to name it";
 
@@ -2661,6 +3484,7 @@ static void CE_DrawEditor( void ) {
 		if ( CE_Clicked( bx, y - 2, bw, CE_CTRL_H ) ) {
 			ce.typing = qtrue;
 			ce.typingWalk = qfalse;
+			ce.typingAnim = 0;
 		}
 	}
 	y += CE_CTRL_H + CE_GAP;
@@ -2695,20 +3519,30 @@ static void CE_DrawEditor( void ) {
 			ce.bars = (qboolean)!ce.bars;
 		y += CE_CTRL_H + CE_GAP;
 		// what the panel shows of it
-		if ( CE_Button( x, y, third, ce.shot.orbit ? "Orbit" : "Spots", (qboolean)( !ce.fxPage && !ce.npcPage ), qtrue ) )
-			ce.fxPage = ce.npcPage = qfalse;
-		if ( CE_Button( x + third + 4, y, third, "Focus, fades", ce.fxPage, qtrue ) ) {
-			ce.fxPage = qtrue;
-			ce.npcPage = qfalse;
-		}
-		if ( CE_Button( x + ( third + 4 ) * 2, y, third, ce.numWalks ? va( "NPCs (%i)", ce.numWalks ) : "NPCs", ce.npcPage, qtrue ) ) {
-			ce.npcPage = qtrue;
-			ce.fxPage = qfalse;
-			CE_ListRoutes();
+		{
+			const float quarter = ( w - 12 ) / 4.0f;
+
+			if ( CE_Button( x, y, quarter, ce.shot.orbit ? "Orbit" : "Spots", (qboolean)( !ce.fxPage && !ce.npcPage && !ce.animPage ), qtrue ) )
+				ce.fxPage = ce.npcPage = ce.animPage = qfalse;
+			if ( CE_Button( x + quarter + 4, y, quarter, "Fades", ce.fxPage, qtrue ) ) {
+				ce.fxPage = qtrue;
+				ce.npcPage = ce.animPage = qfalse;
+			}
+			if ( CE_Button( x + ( quarter + 4 ) * 2, y, quarter, ce.numWalks ? va( "NPCs %i", ce.numWalks ) : "NPCs", ce.npcPage, qtrue ) ) {
+				ce.npcPage = qtrue;
+				ce.fxPage = ce.animPage = qfalse;
+				CE_ListRoutes();
+			}
+			if ( CE_Button( x + ( quarter + 4 ) * 3, y, quarter, ce.numAnims ? va( "Anims %i", ce.numAnims ) : "Anims", ce.animPage, qtrue ) ) {
+				ce.animPage = qtrue;
+				ce.fxPage = ce.npcPage = qfalse;
+			}
 		}
 		y += CE_CTRL_H + CE_GAP + 6;
 
-		if ( ce.npcPage )
+		if ( ce.animPage )
+			CE_DrawAnimPanel( x, y, w );
+		else if ( ce.npcPage )
 			CE_DrawNpcPanel( x, y, w );
 		else if ( ce.fxPage )
 			CE_DrawFxPanel( x, y, w );
@@ -2970,12 +3804,17 @@ qboolean CL_RpCinematic_Camera( vec3_t origin, vec3_t angles ) {
 const refEntity_t *CL_RpCinematic_Entity( const refEntity_t *ent, refEntity_t *copy ) {
 	if ( ( rc.active || ce.open ) && ( ent->renderfx & RF_FIRST_PERSON ) )
 		return NULL;
+	// a player or an NPC playing a shot's animation, on its frame
+	if ( rcNumPlaying && ent->ghoul2 && ent->reType == RT_MODEL )
+		RC_AnimateModel( ent );
 	return ent;
 }
 
 void CL_RpCinematic_Frame( void ) {
 	RC_RunQueue();
+	RC_RunAnims();
 	CE_Frame();
+	CE_LiveAnim();
 }
 
 // the black bars, over the scene and under the menus, then the editor
@@ -3044,6 +3883,38 @@ static void CL_CinCam_f( void ) {
 		CL_RpCinematic_Stop();
 		return;
 	}
+	// an animation tried on this screen: cincam anim <who> <ANIMATION> [from] [to] [play|reverse|hold] [loop] [speed] [seconds]
+	if ( !Q_stricmp( verb, "anim" ) ) {
+		rcAnim_t a;
+
+		if ( cls.state != CA_ACTIVE ) {
+			Com_Printf( "Not connected to a server.\n" );
+			return;
+		}
+		if ( !Q_stricmp( Cmd_Argv( 2 ), "stop" ) ) {
+			RC_StopAnims( qfalse );
+			return;
+		}
+		if ( Cmd_Argc() < 4 ) {
+			Com_Printf( "cincam anim <me|number|name> <ANIMATION> [from] [to|-1] [play|reverse|hold] [loop|once] [speed %%] [seconds, 0 for good]\n"
+				"cincam anim stop : let them all go\n" );
+			return;
+		}
+		memset( &a, 0, sizeof( a ) );
+		Q_strncpyz( a.who, Cmd_Argv( 2 ), sizeof( a.who ) );
+		Q_strncpyz( a.anim, Cmd_Argv( 3 ), sizeof( a.anim ) );
+		Q_strupr( a.anim );
+		a.from = Cmd_Argc() > 4 ? atoi( Cmd_Argv( 4 ) ) : 0;
+		a.to = Cmd_Argc() > 5 ? atoi( Cmd_Argv( 5 ) ) : -1;
+		a.mode = !Q_stricmp( Cmd_Argv( 6 ), "reverse" ) ? RC_AM_REVERSE : !Q_stricmp( Cmd_Argv( 6 ), "hold" ) ? RC_AM_HOLD : RC_AM_PLAY;
+		a.loop = (qboolean)!Q_stricmp( Cmd_Argv( 7 ), "loop" );
+		a.speed = Cmd_Argc() > 8 ? Com_Clampi( 5, 1000, atoi( Cmd_Argv( 8 ) ) ) : 100;
+		a.ms = Cmd_Argc() > 9 ? RC_SecondsMs( (float)atof( Cmd_Argv( 9 ) ) ) : 0;
+		if ( !RC_FindAnim( RC_EntCfg( -1 ), a.anim ) )
+			Com_Printf( S_COLOR_YELLOW "%s isn't one of the humanoid's animations; another model may have it\n", a.anim );
+		RC_PlayAnims( &a, 1, 0, qtrue );
+		return;
+	}
 	if ( !Q_stricmp( verb, "edit" ) ) {
 		if ( ce.open && Cmd_Argc() < 3 )
 			CL_RpCinematic_EditorClose();
@@ -3061,6 +3932,7 @@ static void CL_CinCam_f( void ) {
 			"cincam [local] play <shot> : a shot made there (local: on this screen only, to try it)\n"
 			"cincam here : the spot you look from, as x y z pitch yaw roll fov\n"
 			"cincam stop : leave the cinematic, on this screen\n"
+			"cincam anim <who> <ANIMATION> [from] [to] [play|reverse|hold] [loop] [speed %] [seconds] : try one on this screen\n"
 			"cincam [local] start [/hud] [/bars] : the cinematic starts\n"
 			"cincam [local] path [/linear] [/look <x y z>] /<spot> [/<seconds> /<spot>...]\n"
 			"cincam [local] move <seconds> [/linear] /<spot> [/<seconds> /<spot>...]\n"
@@ -3117,6 +3989,8 @@ void CL_RpCinematic_Init( void ) {
 	ce.sel = -1;
 	ce.bars = qtrue;
 	ce.camFov = RC_DEFAULT_FOV;
+	ce.animSel = -1;
+	ce.animLive = qtrue;
 	RC_ForgetShots();
 	rpc_cinematics = Cvar_Get( "rpc_cinematics", "1", CVAR_ARCHIVE_ND, "Let cinematics sent through RPMod take over the camera" );
 	rpc_cinThirdPerson = Cvar_Get( "rpc_cinThirdPerson", "0", CVAR_ARCHIVE_ND | CVAR_INTERNAL, "" );
@@ -3132,6 +4006,7 @@ void CL_RpCinematic_Shutdown( void ) {
 // leaving the map or the server ends it, bars, editor and all
 void CL_RpCinematic_Reset( void ) {
 	CL_RpCinematic_EditorClose();
+	RC_ResetAnims();
 	rc.active = qfalse;
 	rc.playing = qfalse;
 	rc.bars = qfalse;

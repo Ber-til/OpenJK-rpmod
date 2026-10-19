@@ -33,6 +33,8 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 // or everywhere on the map, as a target_speaker would; saved as one.
 // Styles: the map's light styles, the switchable lights it was built with, given a
 // pattern and a colour of our own.
+// Locks: RPMod's rplock on the map's doors and trigger_multiples, by rank, with a name; the
+// server keeps those, not this screen.
 //
 // RPMod has no server side for any of it yet, so only this screen sees the edits. They
 // are kept in mapedits/<map>.ent, written as entities a server could spawn later, and
@@ -103,10 +105,12 @@ typedef enum {
 	ME_TAB_TRIGGERS,
 	ME_TAB_SOUNDS,
 	ME_TAB_STYLES,
+	ME_TAB_LOCKS,
 	ME_NUM_TABS
 } meTab_t;
 
-static const char *meTabNames[ME_NUM_TABS] = { "Map", "Models", "Lights", "Triggers", "Sounds", "Styles" };
+static const char *meTabNames[ME_NUM_TABS] = { "Map", "Models", "Lights", "Triggers", "Sounds", "Styles", "Locks" };
+#define ME_TABS_PER_ROW		4
 
 // what can be chosen
 typedef enum {
@@ -237,7 +241,8 @@ typedef enum {
 	ME_FIELD_COMMAND,		// a trigger's
 	ME_FIELD_PATTERN,		// a light style's
 	ME_FIELD_LAYOUT,		// a layout's name
-	ME_FIELD_SOUND			// a speaker's sound
+	ME_FIELD_SOUND,			// a speaker's sound
+	ME_FIELD_LOCKNAME		// a lock's name
 } meField_t;
 
 typedef struct {
@@ -387,6 +392,7 @@ static const byte meAimColor[4]		= { 255, 140, 40, 255 };
 static const byte meReachColor[4]	= { 255, 255, 255, 70 };
 static const byte meCandColor[4]	= { 255, 90, 200, 255 };
 static const byte meSpeakerColor[4]	= { 190, 120, 255, 255 };
+static const byte meLockedColor[4]	= { 255, 50, 50, 255 };
 
 static int ME_Round( float f ) {
 	return (int)( f < 0 ? f - 0.5f : f + 0.5f );
@@ -417,6 +423,270 @@ static meEnt_t *ME_SelectedEnt( void ) {
 		return NULL;
 	return &me.ents[me.sel];
 }
+
+/*
+===============================================================================
+
+Locks: RPMod's rplock on the map's doors and triggers
+
+Only a func_door or a trigger_multiple takes one. It's added by its targetname when every
+entity with that name can take it (a pair of doors locks together), else by its entity
+number, read from the baselines the server sent with the map. "rplock list" is read, its
+reply kept out of the console, to show what's locked.
+
+===============================================================================
+*/
+
+#define ME_MAX_LOCKS		256
+#define ME_LOCK_HEADER		"List of all current locks in this map:"
+#define ME_LOCK_LINE_GAP	1500	// ms between the list's lines before it's over
+#define ME_LOCK_ASK_MS		3000	// the list asked for comes this soon
+#define ME_LOCK_REPLY_MS	4000	// prints this soon after a command are its reply
+#define ME_LOCK_QUEUE		8
+#define ME_LOCK_NAME_LEN	64
+
+typedef struct {
+	int		num;
+	int		rank;
+	char	rankName[48];
+	char	name[ME_LOCK_NAME_LEN];
+	char	type[32];
+	char	targetname[64];		// "" for none
+} meLock_t;
+
+static struct {
+	meLock_t	locks[ME_MAX_LOCKS];
+	int			numLocks;
+	qboolean	haveList;			// read since the map came up
+	int			askTime;			// the list asked for, its reply hidden; 0 not waiting
+	qboolean	ours;				// the list being read was asked for here
+	int			lineTime;			// the last of its lines, 0 not reading one
+	char		queue[ME_LOCK_QUEUE][MAX_STRING_CHARS];	// out one at a time, as the server takes them
+	int			numQueue;
+	char		reply[MAX_STRING_CHARS];
+	int			replyTime, sentTime;
+	int			rank;				// what a lock is added with
+	char		name[ME_LOCK_NAME_LEN];
+	qboolean	showDoors, showTriggers, onlyLocked;
+	int			scroll;
+	int			confirmTime;		// "Remove every lock" armed
+} ml;
+
+static qboolean ME_LocksTab( void ) {
+	return (qboolean)( me.open && me.tab == ME_TAB_LOCKS && !me.showLayouts );
+}
+
+static qboolean ME_IsDoor( const meEnt_t *e ) {
+	return (qboolean)!Q_stricmp( e->classname, "func_door" );
+}
+
+static qboolean ME_Lockable( const meEnt_t *e ) {
+	return (qboolean)( ME_IsDoor( e ) || !Q_stricmp( e->classname, "trigger_multiple" ) );
+}
+
+// its number on the server, from the baselines or what's in view; -1 not known
+static int ME_EntNumber( const meEnt_t *e ) {
+	if ( !e->bmodel )
+		return -1;
+	for ( int i = MAX_CLIENTS; i < MAX_GENTITIES; i++ ) {
+		const entityState_t *b = &cl.entityBaselines[i];
+
+		if ( b->number == i && b->solid == SOLID_BMODEL && b->modelindex == e->bmodel )
+			return i;
+	}
+	for ( int i = 0; i < cl.snap.numEntities; i++ ) {
+		const entityState_t *es = &cl.parseEntities[( cl.snap.parseEntitiesNum + i ) & ( MAX_PARSE_ENTITIES - 1 )];
+
+		if ( es->solid == SOLID_BMODEL && es->modelindex == e->bmodel )
+			return es->number;
+	}
+	return -1;
+}
+
+// how many share its targetname, and whether every one of them takes a lock
+static int ME_NamedAlike( const meEnt_t *e, qboolean *allLockable ) {
+	int count = 0;
+
+	*allLockable = qtrue;
+	if ( !e->targetname[0] )
+		return 0;
+	for ( int i = 0; i < me.numEnts; i++ ) {
+		if ( Q_stricmp( me.ents[i].targetname, e->targetname ) )
+			continue;
+		count++;
+		if ( !ME_Lockable( &me.ents[i] ) )
+			*allLockable = qfalse;
+	}
+	return count;
+}
+
+// what rplock is given for it: its targetname, or its number; NULL when neither will do
+static const char *ME_LockTarget( const meEnt_t *e ) {
+	qboolean allLockable;
+	int num;
+
+	if ( ME_NamedAlike( e, &allLockable ) && allLockable )
+		return va( "%s", e->targetname );
+	num = ME_EntNumber( e );
+	return num >= 0 ? va( "%i", num ) : NULL;
+}
+
+// its lock in the list read, NULL none
+static const meLock_t *ME_FindLock( const meEnt_t *e ) {
+	const int num = ME_EntNumber( e );
+
+	for ( int i = 0; i < ml.numLocks; i++ ) {
+		const meLock_t *l = &ml.locks[i];
+
+		if ( num >= 0 ? l->num == num : ( e->targetname[0] && !Q_stricmp( l->targetname, e->targetname ) && !Q_stricmp( l->type, e->classname ) ) )
+			return l;
+	}
+	return NULL;
+}
+
+static const char *ME_RankLabel( int rank, const char *rankName ) {
+	if ( rank < 0 )
+		return "no one";
+	if ( rankName && rankName[0] )
+		return va( "rank %i, %s", rank, rankName );
+	return rank ? va( "rank %i", rank ) : "rank 0, no rank";
+}
+
+// a command for the server, after the ones waiting; opened from the storyteller, a lock goes
+// in the story instead. The list and trace are never a step
+static void ME_LockSend( const char *cmd ) {
+	const qboolean story = (qboolean)( Q_stricmpn( cmd, "rplock list", 11 ) && Q_stricmpn( cmd, "rplock trace", 12 ) );
+
+	if ( story && CL_Storyteller_Capture( cmd ) ) {
+		ME_Message( S_COLOR_GREEN "Put in the story" );
+		return;
+	}
+	for ( int i = 0; i < ml.numQueue; i++ ) {
+		if ( !Q_stricmp( ml.queue[i], cmd ) )
+			return;
+	}
+	if ( ml.numQueue >= ME_LOCK_QUEUE ) {
+		ME_Message( S_COLOR_YELLOW "Still sending the last ones" );
+		return;
+	}
+	Q_strncpyz( ml.queue[ml.numQueue++], cmd, sizeof( ml.queue[0] ) );
+	// what's locked now, once it's done
+	if ( story && ml.numQueue < ME_LOCK_QUEUE )
+		Q_strncpyz( ml.queue[ml.numQueue++], "rplock list", sizeof( ml.queue[0] ) );
+}
+
+// every frame: the next command once the server's flood protection takes it
+static void ME_RunLocks( void ) {
+	if ( ml.askTime && cls.realtime - ml.askTime > ME_LOCK_ASK_MS )
+		ml.askTime = 0;
+	if ( !ml.numQueue || cls.state != CA_ACTIVE || !CL_NpcWalk_CanSend() )
+		return;
+	CL_AddReliableCommand( ml.queue[0], qfalse );
+	if ( !Q_stricmp( ml.queue[0], "rplock list" ) ) {
+		ml.askTime = cls.realtime;
+	} else {
+		ml.sentTime = cls.realtime;
+		Com_Printf( S_COLOR_GREEN "Map editor: " S_COLOR_WHITE "%s\n", ml.queue[0] );
+	}
+	ml.numQueue--;
+	memmove( ml.queue[0], ml.queue[1], ml.numQueue * sizeof( ml.queue[0] ) );
+}
+
+// " 123: rank: 3 (Captain), name: Bridge, type: func_door, target name: bridgedoor"
+static qboolean ME_ParseLock( const char *line ) {
+	const char *open, *name, *type, *target, *p;
+	meLock_t *l;
+	int num, rank;
+
+	if ( sscanf( line, "%d: rank: %d", &num, &rank ) != 2 || !( open = strchr( line, '(' ) ) || !( name = strstr( open, "), name: " ) ) )
+		return qfalse;
+	// the last ones: a lock's name could have them in it
+	for ( type = NULL, p = name; ( p = strstr( p, ", type: " ) ) != NULL; p++ )
+		type = p;
+	for ( target = NULL, p = name; ( p = strstr( p, ", target name: " ) ) != NULL; p++ )
+		target = p;
+	if ( !type || !target || target < type || ml.numLocks >= ME_MAX_LOCKS )
+		return qfalse;
+	l = &ml.locks[ml.numLocks++];
+	l->num = num;
+	l->rank = rank;
+	Q_strncpyz( l->rankName, open + 1, Com_Clampi( 1, sizeof( l->rankName ), (int)( name - open ) ) );
+	Q_strncpyz( l->name, name + 9, Com_Clampi( 1, sizeof( l->name ), (int)( type - name - 9 ) + 1 ) );
+	Q_strncpyz( l->type, type + 8, Com_Clampi( 1, sizeof( l->type ), (int)( target - type - 8 ) + 1 ) );
+	Q_strncpyz( l->targetname, target + 15, sizeof( l->targetname ) );
+	if ( !Q_stricmp( l->name, "<unnamed>" ) )
+		l->name[0] = '\0';
+	if ( !Q_stricmp( l->targetname, "<none>" ) )
+		l->targetname[0] = '\0';
+	return qtrue;
+}
+
+// every server print on its way to the cgame: rplock list read, and hidden when asked for here;
+// qtrue keeps it out of the console
+qboolean CL_MapEditor_ServerPrint( const char *text ) {
+	char buf[MAX_STRING_CHARS], *line, *next;
+	qboolean swallow = qtrue, any = qfalse;
+
+	Q_strncpyz( buf, text, sizeof( buf ) );
+	for ( line = buf; line; line = next ) {
+		next = strchr( line, '\n' );
+		if ( next )
+			*next++ = '\0';
+		Q_StripColor( line );
+		while ( *line == ' ' || *line == '\t' )
+			line++;
+		for ( int len = strlen( line ); len > 0 && ( line[len - 1] == ' ' || line[len - 1] == '\r' ); len-- )
+			line[len - 1] = '\0';
+		if ( !line[0] )
+			continue;
+		any = qtrue;
+		if ( !Q_stricmpn( line, ME_LOCK_HEADER, strlen( ME_LOCK_HEADER ) ) ) {
+			// a list someone typed for is read too, and shown
+			ml.ours = (qboolean)( ml.askTime != 0 );
+			ml.askTime = 0;
+			ml.lineTime = cls.realtime;
+			ml.numLocks = 0;
+			ml.haveList = qtrue;
+		} else if ( ml.lineTime && cls.realtime - ml.lineTime < ME_LOCK_LINE_GAP && ( ME_ParseLock( line ) || !Q_stricmp( line, "None." ) ) ) {
+			ml.lineTime = cls.realtime;
+		} else {
+			ml.lineTime = 0;
+			swallow = qfalse;
+			if ( cls.realtime - ml.sentTime < ME_LOCK_REPLY_MS ) {
+				Q_strncpyz( ml.reply, line, sizeof( ml.reply ) );
+				ml.replyTime = cls.realtime;
+			}
+			continue;
+		}
+		if ( !ml.ours )
+			swallow = qfalse;
+	}
+	return (qboolean)( any && swallow );
+}
+
+
+// the Locks tab shows what takes a lock, doors and triggers as asked
+static qboolean ME_LockShown( const meEnt_t *e ) {
+	if ( !ME_Lockable( e ) )
+		return qfalse;
+	return ME_IsDoor( e ) ? ml.showDoors : ml.showTriggers;
+}
+
+static char *ME_LockNameBuffer( int *size ) {
+	*size = sizeof( ml.name );
+	return ml.name;
+}
+
+// opened from a storyteller step: Lock and Unlock go in the story, not to the server
+void CL_MapEditor_OpenForStory( void ) {
+	CL_MapEditor_Open();
+	if ( !me.open )
+		return;
+	me.tab = ME_TAB_LOCKS;
+	me.showLayouts = qfalse;
+	ME_Message( S_COLOR_GREEN "For the story: Lock and Unlock go in it as steps, not to the server" );
+}
+
 
 static int ME_ItemTab( int kind ) {
 	return kind == ME_ITEM_MODEL || kind == ME_ITEM_PROP ? ME_TAB_MODELS : kind == ME_ITEM_LIGHT ? ME_TAB_LIGHTS
@@ -532,6 +802,9 @@ static void ME_EntCenter( const meEnt_t *e, vec3_t out ) {
 static qboolean ME_EntDrawn( const meEnt_t *e ) {
 	if ( !e->bmodel && !e->hasOrigin )
 		return qfalse;
+	// the Locks tab: what takes a lock, nothing else
+	if ( ME_LocksTab() )
+		return ME_LockShown( e );
 	if ( e->kind == ME_ENT_TRIGGER )
 		return me.showTriggers;
 	if ( e->kind == ME_ENT_BRUSH )
@@ -2237,7 +2510,7 @@ static qboolean ME_Pick( const vec3_t org, const vec3_t dir, int *kind, int *ind
 	CM_BoxTrace( &tr, org, end, vec3_origin, vec3_origin, 0, CONTENTS_SOLID | CONTENTS_TERRAIN, qfalse );
 	best = tr.fraction * ME_TRACE_DIST + 8.0f;
 
-	for ( int i = 0; i < me.numItems; i++ ) {
+	for ( int i = 0; i < me.numItems && !ME_LocksTab(); i++ ) {
 		float t;
 
 		// a removed prop is found in the list only
@@ -2297,6 +2570,12 @@ static void ME_ClickWorld( float x, float y ) {
 		return;
 	}
 	ME_CursorRay( x, y, dir );
+	// the Locks tab picks a door or a trigger, never a prop
+	if ( ME_LocksTab() ) {
+		if ( ME_Pick( me.camOrg, dir, &kind, &index ) && kind == ME_SEL_ENT )
+			ME_Select( kind, index );
+		return;
+	}
 	if ( !ME_Pick( me.camOrg, dir, &kind, &index ) || ( kind == ME_SEL_ENT && me.ents[index].kind == ME_ENT_TRIGGER ) ) {
 		float dist;
 
@@ -2382,6 +2661,8 @@ static char *ME_FieldBuffer( int *size ) {
 			return NULL;
 		*size = sizeof( it->noise );
 		return it->noise;
+	case ME_FIELD_LOCKNAME:
+		return ME_LockNameBuffer( size );
 	default:
 		return NULL;
 	}
@@ -2392,7 +2673,7 @@ static void ME_FieldEdited( void ) {
 		me.entScroll = 0;
 	else if ( me.field == ME_FIELD_SEARCH )
 		me.searchScroll = 0;
-	else if ( me.field != ME_FIELD_LAYOUT )
+	else if ( me.field != ME_FIELD_LAYOUT && me.field != ME_FIELD_LOCKNAME )
 		ME_Changed();
 	// another sound: heard as typed, once it's one
 	if ( me.field == ME_FIELD_SOUND && ME_SelectedItem() ) {
@@ -2523,6 +2804,9 @@ static qboolean ME_FieldChar( int field, int ch ) {
 	case ME_FIELD_COMMAND:
 		// an entity's value can't hold a quote
 		return (qboolean)( ch >= ' ' && ch < 127 && ch != '"' );
+	case ME_FIELD_LOCKNAME:
+		// a word or more, nothing that would end the command
+		return (qboolean)( ch >= ' ' && ch < 127 && ch != '"' && ch != ';' );
 	default:
 		return (qboolean)( ch > ' ' && ch < 127 && ch != '"' );
 	}
@@ -2688,6 +2972,7 @@ void CL_MapEditor_Frame( void ) {
 		ME_ApplyProps();
 	ME_RunTriggers();
 	ME_RunShare();
+	ME_RunLocks();
 	if ( me.open )
 		ME_EditorFrame();
 }
@@ -2944,7 +3229,7 @@ static void ME_AddEditorLines( void ) {
 		const int i = near_[n].index;
 		const meEnt_t *e = &me.ents[i];
 		const qboolean mark = (qboolean)( ME_IsSel( ME_SEL_ENT, i ) || ME_IsHover( ME_SEL_ENT, i ) );
-		const byte *color = mark ? meSelColor : e->hidden ? meHiddenColor
+		const byte *color = mark ? meSelColor : ME_LocksTab() && ME_FindLock( e ) ? meLockedColor : e->hidden ? meHiddenColor
 			: e->kind == ME_ENT_TRIGGER ? meTriggerColor : e->kind == ME_ENT_BRUSH ? meBrushColor : mePointColor;
 
 		if ( e->bmodel )
@@ -3206,9 +3491,141 @@ static const char *ME_EntName( const meEnt_t *e ) {
 	return e->classname[0] ? e->classname : "(no class)";
 }
 
+static void ME_DrawLockRow( float x, float y, float w, const meEnt_t *e ) {
+	const meLock_t *l = ME_FindLock( e );
+	const int num = ME_EntNumber( e );
+	const char *right = !l ? S_COLOR_GREY "-" : l->rank < 0 ? S_COLOR_RED "no one" : va( S_COLOR_YELLOW "rank %i", l->rank );
+	const float rw = ME_TextWidth( right );
+
+	ME_TextClipped( x, y, w - rw - 6, va( "%s%s " S_COLOR_WHITE "%s", ME_IsDoor( e ) ? S_COLOR_CYAN : S_COLOR_ORANGE, ME_IsDoor( e ) ? "door" : "trigger",
+		e->targetname[0] ? e->targetname : num >= 0 ? va( S_COLOR_GREY "#%i", num ) : S_COLOR_GREY "(no name)" ), meWhite );
+	ME_Text( x + w - rw, y, right, meWhite );
+}
+
+static void ME_DrawLocksTab( float x, float y, float w ) {
+	const float third = ( w - 8 ) / 3.0f, half = ( w - 4 ) * 0.5f;
+	const int rows = 12;
+	static int matches[ME_MAX_ENTS];
+	int numMatches = 0, doors = 0, triggers = 0, locked = 0, clicked, selRow = -1;
+	meEnt_t *e;
+
+	if ( !ml.haveList && !ml.askTime && !ml.numQueue )
+		ME_LockSend( "rplock list" );
+	if ( ME_Button( x, y, third, "Refresh", qfalse, qtrue ) )
+		ME_LockSend( "rplock list" );
+	// the server tells the numbers and names of what's used
+	if ( ME_Button( x + third + 4, y, third, "Trace on", qfalse, qtrue ) )
+		ME_LockSend( "rplock trace on" );
+	if ( ME_Button( x + ( third + 4 ) * 2, y, third, "Trace off", qfalse, qtrue ) )
+		ME_LockSend( "rplock trace off" );
+	y += ME_CTRL_H + ME_GAP;
+
+	for ( int i = 0; i < me.numEnts; i++ ) {
+		const meEnt_t *ent = &me.ents[i];
+
+		if ( !ME_Lockable( ent ) )
+			continue;
+		if ( ME_IsDoor( ent ) )
+			doors++;
+		else
+			triggers++;
+		if ( ME_FindLock( ent ) )
+			locked++;
+		if ( !ME_EntDrawn( ent ) || !ME_EntMatches( ent ) || ( ml.onlyLocked && !ME_FindLock( ent ) ) )
+			continue;
+		if ( ME_IsSel( ME_SEL_ENT, i ) )
+			selRow = numMatches;
+		matches[numMatches++] = i;
+	}
+	if ( ME_Button( x, y, third, va( "Doors (%i)", doors ), ml.showDoors, qtrue ) )
+		ml.showDoors = (qboolean)!ml.showDoors;
+	if ( ME_Button( x + third + 4, y, third, va( "Triggers (%i)", triggers ), ml.showTriggers, qtrue ) )
+		ml.showTriggers = (qboolean)!ml.showTriggers;
+	if ( ME_Button( x + ( third + 4 ) * 2, y, third, va( "Locked (%i)", locked ), ml.onlyLocked, qtrue ) )
+		ml.onlyLocked = (qboolean)!ml.onlyLocked;
+	y += ME_CTRL_H + ME_GAP;
+	ME_TextBox( x, y, w, ME_FIELD_FILTER, me.filter, "type to find a class or name" );
+	y += ME_CTRL_H + ME_GAP;
+
+	clicked = ME_ListRows( x, y, w, rows, numMatches, &ml.scroll );
+	if ( selRow >= 0 )
+		ME_RowHighlight( x, y, w, selRow, ml.scroll, rows );
+	for ( int r = 0; r < rows && ml.scroll + r < numMatches; r++ )
+		ME_DrawLockRow( x + 4, y + 1 + r * ME_ROW_H, w - 8, &me.ents[matches[ml.scroll + r]] );
+	if ( !numMatches )
+		ME_Text( x + 4, y + 1, S_COLOR_GREY "No doors or triggers to lock", meWhite );
+	if ( clicked >= 0 ) {
+		ME_Select( ME_SEL_ENT, matches[clicked] );
+		ml.confirmTime = 0;
+	}
+	y += rows * ME_ROW_H + 8;
+
+	e = ME_SelectedEnt();
+	if ( !e || !ME_Lockable( e ) ) {
+		ME_TextClipped( x, y, w, S_COLOR_GREY "Click a door or a trigger, in the world or the list", meWhite );
+		ME_TextClipped( x, y + ME_ROW_H, w, S_COLOR_GREY "RPMod locks func_door and trigger_multiple", meWhite );
+	} else {
+		const meLock_t *l = ME_FindLock( e );
+		const char *target = ME_LockTarget( e );
+		qboolean allLockable;
+		const int alike = ME_NamedAlike( e, &allLockable );
+		vec3_t center, size;
+		int steps;
+
+		ME_TextClipped( x, y, w, va( "%s " S_COLOR_GREY "%s", e->classname, !target ? "number not known: Trace on, then use it"
+			: alike > 1 && allLockable ? va( "%s, with the %i named alike", target, alike - 1 ) : Q_isanumber( target ) ? va( "entity %s", target ) : target ), meWhite );
+		y += ME_ROW_H;
+		if ( l )
+			ME_TextClipped( x, y, w, va( S_COLOR_YELLOW "Locked" S_COLOR_WHITE ": %s%s", ME_RankLabel( l->rank, l->rankName ), l->name[0] ? va( ", \"%s" S_COLOR_WHITE "\"", l->name ) : "" ), meWhite );
+		else
+			ME_TextClipped( x, y, w, ml.haveList ? S_COLOR_GREEN "Not locked" : S_COLOR_GREY "Asking the server...", meWhite );
+		y += ME_ROW_H + 2;
+
+		steps = ME_Stepper( x, y, w, "Rank", ml.rank < 0 ? "-1: no one" : ml.rank ? va( "%i", ml.rank ) : "0: no rank" );
+		if ( steps )
+			ml.rank = Com_Clampi( -1, 15, ml.rank + steps );
+		y += ME_CTRL_H + ME_GAP;
+		ME_TextBox( x, y, w, ME_FIELD_LOCKNAME, ml.name, "lock name, shown when it's refused" );
+		y += ME_CTRL_H + ME_GAP;
+		if ( ME_Button( x, y, third, l ? "Change lock" : "Lock", qfalse, (qboolean)( target != NULL ) ) )
+			ME_LockSend( va( "rplock add %s %i%s%s", target, ml.rank, ml.name[0] ? " " : "", ml.name ) );
+		if ( ME_Button( x + third + 4, y, third, "Unlock", qfalse, (qboolean)( target != NULL && ( l || !ml.haveList ) ) ) )
+			ME_LockSend( va( "rplock remove %s", target ) );
+		ME_EntCenter( e, center );
+		VectorSubtract( e->maxs, e->mins, size );
+		if ( ME_Button( x + ( third + 4 ) * 2, y, third, "Go to it", qfalse, qtrue ) )
+			ME_GoTo( center, VectorLength( size ) * 0.5f );
+		y += ME_CTRL_H + ME_GAP;
+		if ( target )
+			ME_TextClipped( x, y, w, va( S_COLOR_GREY "rplock add %s %i%s%s", target, ml.rank, ml.name[0] ? " " : "", ml.name ), meWhite );
+	}
+	y += ME_ROW_H + 6;
+
+	// every lock in the map, a click to arm it and one to do it
+	{
+		const qboolean armed = (qboolean)( ml.confirmTime && cls.realtime - ml.confirmTime < 3000 );
+
+		if ( ME_Button( x, y, w, armed ? "Click again to remove every lock" : "Remove every lock in the map", armed, (qboolean)( ml.numLocks > 0 || !ml.haveList ) ) ) {
+			if ( armed ) {
+				ml.confirmTime = 0;
+				ME_LockSend( "rplock remove all" );
+			} else {
+				ml.confirmTime = cls.realtime;
+			}
+		}
+		y += ME_CTRL_H + ME_GAP;
+	}
+	if ( ml.numQueue )
+		ME_TextClipped( x, y, w, va( S_COLOR_YELLOW "Sending, %i to go", ml.numQueue ), meWhite );
+	else if ( ml.reply[0] && cls.realtime - ml.replyTime < 8000 )
+		ME_TextClipped( x, y, w, va( S_COLOR_YELLOW "Server: " S_COLOR_WHITE "%s", ml.reply ), meWhite );
+	else
+		ME_TextClipped( x, y, w, S_COLOR_GREY "RPMod's rp_locks has to be 2 to add or remove", meWhite );
+}
+
 static void ME_DrawMapTab( float x, float y, float w ) {
 	const float third = ( w - 8 ) / 3.0f;
-	const int rows = 12, kvRows = 13;
+	const int rows = 11, kvRows = 12;
 	static int matches[ME_MAX_ENTS];
 	meEnt_t *e;
 	int numMatches = 0, clicked, selRow = -1;
@@ -3775,7 +4192,14 @@ static void ME_DrawLabels( void ) {
 			continue;
 		if ( !ME_Project( center, &sx, &sy ) )
 			continue;
-		ME_Text( sx + 4, sy - 12, va( "%s%s", mark ? S_COLOR_WHITE : S_COLOR_GREY, ME_EntName( e ) ), meWhite );
+		if ( ME_LocksTab() && ME_FindLock( e ) ) {
+			const meLock_t *l = ME_FindLock( e );
+
+			ME_Text( sx + 4, sy - 12, va( "%s%s " S_COLOR_RED "[%s%s]", mark ? S_COLOR_WHITE : S_COLOR_GREY, ME_EntName( e ),
+				l->rank < 0 ? "no one" : va( "rank %i", l->rank ), l->name[0] ? va( " %s", l->name ) : "" ), meWhite );
+		} else {
+			ME_Text( sx + 4, sy - 12, va( "%s%s", mark ? S_COLOR_WHITE : S_COLOR_GREY, ME_EntName( e ) ), meWhite );
+		}
 		labels++;
 	}
 	for ( int i = 0; i < me.numItems; i++ ) {
@@ -3922,7 +4346,7 @@ static void ME_DrawExperimentalBox( void ) {
 
 static void ME_DrawEditor( void ) {
 	const float x = ME_PANEL_X + 6, w = ME_PANEL_W - 12;
-	const float third = ( w - 8 ) / 3.0f, tabW = ( w - 4.0f * ( ME_NUM_TABS - 1 ) ) / ME_NUM_TABS;
+	const float third = ( w - 8 ) / 3.0f, tabW = ( w - 4.0f * ( ME_TABS_PER_ROW - 1 ) ) / ME_TABS_PER_ROW;
 	// the warning sits on top and gets the clicks first, but is drawn last
 	const qboolean popup = me.experimentalBox, click = me.click;
 	const int wheel = me.wheel;
@@ -3970,13 +4394,15 @@ static void ME_DrawEditor( void ) {
 	y += ME_CTRL_H + ME_GAP + 4;
 
 	for ( int i = 0; i < ME_NUM_TABS; i++ ) {
-		if ( ME_Button( x + i * ( tabW + 4 ), y, tabW, meTabNames[i], (qboolean)( me.tab == i && !me.showLayouts ), qtrue ) ) {
+		const float tx = x + ( i % ME_TABS_PER_ROW ) * ( tabW + 4 ), ty = y + ( i / ME_TABS_PER_ROW ) * ( ME_CTRL_H + 2 );
+
+		if ( ME_Button( tx, ty, tabW, meTabNames[i], (qboolean)( me.tab == i && !me.showLayouts ), qtrue ) ) {
 			me.tab = i;
 			me.showLayouts = qfalse;
 			me.field = ME_FIELD_NONE;
 		}
 	}
-	y += ME_CTRL_H + ME_GAP + 6;
+	y += ( ME_CTRL_H + 2 ) * ( ( ME_NUM_TABS + ME_TABS_PER_ROW - 1 ) / ME_TABS_PER_ROW ) + ME_GAP + 4;
 
 	if ( me.showLayouts )
 		ME_DrawLayouts( x, y, w );
@@ -3986,6 +4412,7 @@ static void ME_DrawEditor( void ) {
 	case ME_TAB_LIGHTS:		ME_DrawLightsTab( x, y, w );	break;
 	case ME_TAB_TRIGGERS:	ME_DrawTriggersTab( x, y, w );	break;
 	case ME_TAB_SOUNDS:		ME_DrawSoundsTab( x, y, w );	break;
+	case ME_TAB_LOCKS:		ME_DrawLocksTab( x, y, w );		break;
 	default:				ME_DrawStylesTab( x, y, w );	break;
 	}
 
@@ -4092,6 +4519,8 @@ void CL_MapEditor_Init( void ) {
 	rpc_mapEdits = Cvar_Get( "rpc_mapEdits", "1", CVAR_ARCHIVE_ND, "Show the map edits made with /mapedit outside the editor too" );
 	rpc_mapShare = Cvar_Get( "rpc_mapShare", "1", CVAR_ARCHIVE_ND, "Show the map edits an admin shares with everyone" );
 	me.layoutSel = -1;
+	memset( &ml, 0, sizeof( ml ) );
+	ml.showDoors = ml.showTriggers = qtrue;
 }
 
 // the cgame is going, maybe to another map: the renderer's handles go with it
@@ -4107,4 +4536,9 @@ void CL_MapEditor_Shutdown( void ) {
 	me.numCandSeeds = 0;
 	if ( me.selKind == ME_SEL_PROP )
 		me.selKind = ME_SEL_NONE;
+	// the next map's locks are its own
+	ml.numLocks = ml.numQueue = 0;
+	ml.haveList = qfalse;
+	ml.askTime = ml.lineTime = 0;
+	ml.scroll = 0;
 }

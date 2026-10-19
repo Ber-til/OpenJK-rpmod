@@ -406,6 +406,10 @@ static rhResult_t RH_Run( const char *text ) {
 		CL_ShaderManager_SkyHook( argv + 1, argc - 1 );
 		return RH_DROP;
 	}
+	if ( !Q_stricmp( argv[0], "anim" ) ) {
+		CL_RpCinematic_AnimHook( argv + 1, argc - 1 );
+		return RH_DROP;
+	}
 	if ( !Q_stricmp( argv[0], "startcinematic" ) || !Q_stricmp( argv[0], "endcinematic" ) ) {
 		char *verb = (char *)( !Q_stricmp( argv[0], "startcinematic" ) ? "start" : "end" );
 

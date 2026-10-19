@@ -62,6 +62,7 @@ extern int			chat_playerNum;
 
 void	Field_KeyDownEvent	( field_t *edit, int key );
 void	Field_CharEvent		( field_t *edit, int ch );
+void	Field_Paste			( field_t *edit );
 void	Field_Draw			( field_t *edit, int x, int y, qboolean showCursor, qboolean noColorEscape );
 void	Field_BigDraw		( field_t *edit, int x, int y, qboolean showCursor, qboolean noColorEscape );
 

@@ -98,9 +98,13 @@ typedef enum {
 	ST_A_WAIT,
 	ST_A_PAUSE,
 	ST_A_TRIGGER,
+	ST_A_IF,
+	ST_A_ELSE,
+	ST_A_ENDIF,
 	ST_A_COMMAND,
 	ST_A_SAY,
 	ST_A_CENTER,
+	ST_A_NOTIFY,
 	ST_A_NPC_TALK,
 	ST_A_OBJECTIVE,
 	ST_A_NPC_SPAWN,
@@ -113,6 +117,7 @@ typedef enum {
 	ST_A_SHADER,
 	ST_A_OVERLAY,
 	ST_A_SKY,
+	ST_A_LOCK,
 	ST_A_SOUND,
 	ST_A_MUSIC,
 	ST_A_CIN_START,
@@ -141,15 +146,29 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ "Seconds", ST_K_NUMBER, "2", NULL } } },
 	{ "pause", "Wait for me", "Flow", "Stops until you press Continue, or run /storyteller continue (bind it to a key). The note shows while it waits.", -1, -1, 1, {
 		{ "Note", ST_K_TEXT, "", NULL } } },
-	{ "trigger", "When someone comes", "Flow", "Waits until someone comes into a map trigger or near a spot or an effect, or a door moves. A story starting with it can be armed. Only people near you are seen.", 5, -1, 8, {
-		{ "Where", ST_K_CHOICE, "map trigger", "map trigger|near a spot|near an effect|door or button" },
+	{ "trigger", "When someone comes", "Flow", "Waits until someone comes into a map trigger or near a spot or an effect, a door moves, or someone says one of the words (| between them). With For, they have to stay in that many seconds. A story starting with it can be armed. Only people near you are seen.", 5, -1, 9, {
+		{ "Where", ST_K_CHOICE, "map trigger", "map trigger|near a spot|near an effect|door or button|someone says" },
 		{ "Which", ST_K_TEXT, "", NULL },
 		{ "Who", ST_K_CHOICE, "any player", "any player|any NPC|anyone|me|named" },
 		{ "Name", ST_K_TEXT, "", NULL },
 		{ "Radius", ST_K_NUMBER, "96", NULL },
 		{ "X", ST_K_NUMBER, "", NULL },
 		{ "Y", ST_K_NUMBER, "", NULL },
-		{ "Z", ST_K_NUMBER, "", NULL } } },
+		{ "Z", ST_K_NUMBER, "", NULL },
+		{ "For (s)", ST_K_NUMBER, "0", NULL } } },
+	{ "if", "If", "Flow", "Looks once, there and then: how many are in a map trigger or near a spot or an effect, or whether someone has said one of the words (| between them) since the story began. True, the steps after it play; false, the ones after its Else, or after its End if.", 5, -1, 10, {
+		{ "Where", ST_K_CHOICE, "map trigger", "map trigger|near a spot|near an effect|someone says" },
+		{ "Which", ST_K_TEXT, "", NULL },
+		{ "Who", ST_K_CHOICE, "any player", "any player|any NPC|anyone|me|named" },
+		{ "Name", ST_K_TEXT, "", NULL },
+		{ "Radius", ST_K_NUMBER, "96", NULL },
+		{ "X", ST_K_NUMBER, "", NULL },
+		{ "Y", ST_K_NUMBER, "", NULL },
+		{ "Z", ST_K_NUMBER, "", NULL },
+		{ "How many", ST_K_CHOICE, "at least", "at least|at most|exactly" },
+		{ "Count", ST_K_NUMBER, "1", NULL } } },
+	{ "else", "Else", "Flow", "The steps after it play when the If before it was false, up to its End if.", -1, -1, 0, { } },
+	{ "endif", "End if", "Flow", "Where an If's steps end: the story goes on from here either way.", -1, -1, 0, { } },
 	{ "command", "Run a command", "Flow", "Runs it as if typed in the console, e.g. rpcinematic intro, or exec mission.cfg. Separate several with ;", -1, -1, 1, {
 		{ "Command", ST_K_TEXT, "", NULL } } },
 	{ "say", "Say", "Speech", "Says this in chat, as you, or as one of the players on the server: by their number or a part of their name. As a player it shows in chat as theirs for everyone with this client (sent hidden in an rpnotify; others see the raw line in their console).", -1, -1, 3, {
@@ -160,6 +179,11 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ "Who", ST_K_TEXT, "all", NULL },
 		{ "Seconds", ST_K_NUMBER, "3", NULL },
 		{ "Text", ST_K_TEXT, "", NULL } } },
+	{ "notify", "Notification", "Speech", "Shows the text in the top left corner with rpnotify, for everyone (all) or one player, this many seconds. A countdown is a live count of the seconds left (rpnotify's <timer>), on each player's screen; or type <timer> in the text where it goes.", -1, -1, 4, {
+		{ "Who", ST_K_TEXT, "all", NULL },
+		{ "Seconds", ST_K_NUMBER, "10", NULL },
+		{ "Text", ST_K_TEXT, "", NULL },
+		{ "Countdown", ST_K_CHOICE, "no", "no|after the text|before the text" } } },
 	{ "npctalk", "NPC talk", "Speech", "The NPC says it in chat, as a player would, for everyone with this client (sent hidden in an rpnotify; others see the raw line in their console). The emote is played on the NPC with npc emote.", -1, -1, 5, {
 		{ "NPC", ST_K_TEXT, "", NULL },
 		{ "Name", ST_K_TEXT, "", NULL },
@@ -238,6 +262,11 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ "Tilt", ST_K_NUMBER, "0", NULL },
 		{ "Roll", ST_K_NUMBER, "0", NULL },
 		{ "Move", ST_K_TEXT, "0 0 0", NULL } } },
+	{ "lock", "Lock", "World", "Locks a door or a trigger_multiple with rplock, for that rank and up (-1 no one, 0 anyone with an account), or unlocks it. The target is its targetname or entity number; the map editor's Locks tab shows both. The name is shown to whoever it refuses.", -1, -1, 4, {
+		{ "Do", ST_K_CHOICE, "lock", "lock|unlock|unlock all" },
+		{ "Target", ST_K_TEXT, "", NULL },
+		{ "Rank", ST_K_NUMBER, "0", NULL },
+		{ "Name", ST_K_TEXT, "", NULL } } },
 	{ "sound", "Play sound", "World", "Plays a sound with rpsound: once, looping (until removed) or local, to everyone, you, a player or at a spot. Pick it in the sound manager to hear it first.", 4, -1, 7, {
 		{ "Sound", ST_K_TEXT, "", NULL },
 		{ "Play", ST_K_CHOICE, "once", "once|loop|local" },
@@ -312,6 +341,9 @@ typedef struct {
 	int			numInside;
 	int			moverTime, moverATime;	// the door's last move
 	char		by[MAX_QPATH];			// who set it off
+	int			since[ST_MAX_PEOPLE];	// when each one inside came in, to stay a while
+	int			chatFrom;				// the chat heard since then counts
+	int			started;				// cls.realtime the story began, for an If's chat
 } stRun_t;
 
 typedef enum {
@@ -324,7 +356,8 @@ typedef enum {
 	ST_PICK_NPC_SPAWN,
 	ST_PICK_NPC_MANAGE,
 	ST_PICK_SOUND,
-	ST_PICK_MUSIC
+	ST_PICK_MUSIC,
+	ST_PICK_LOCK
 } stPick_t;
 
 #define ST_MAX_PICKED	64
@@ -574,6 +607,24 @@ static qboolean ST_TriggerDoor( const stStep_t *s ) {
 	return (qboolean)!Q_stricmp( s->values[0], "door or button" );
 }
 
+static qboolean ST_TriggerChat( const stStep_t *s ) {
+	return (qboolean)!Q_stricmp( s->values[0], "someone says" );
+}
+
+// a "when someone comes" or an If: an area, or what's said
+static qboolean ST_Watches( const stStep_t *s ) {
+	return (qboolean)( s->action == ST_A_TRIGGER || s->action == ST_A_IF );
+}
+
+// a field's label: an area's Which is the words, for what's said
+static const char *ST_FieldLabel( const stStep_t *s, int field, const char *label ) {
+	if ( field == 1 && ST_Watches( s ) && ST_TriggerChat( s ) )
+		return "Words";
+	return label;
+}
+
+static qboolean ST_ChatSaid( const stStep_t *s, int since, char *by, int bySize );
+
 // "*12" as the map's inline model 12, 0 if it isn't one
 static int ST_ModelNum( const char *which ) {
 	const int m = atoi( which[0] == '*' ? which + 1 : which );
@@ -598,8 +649,14 @@ static qboolean ST_FieldShown( const stStep_t *s, int field ) {
 		return (qboolean)( field == 0 || ( field == 1 && Q_stricmp( s->values[0], "remove all" ) ) || !Q_stricmp( s->values[0], "add" ) );
 	if ( s->action == ST_A_SKY )
 		return (qboolean)( field == 0 || Q_stricmp( s->values[0], "reset" ) );
-	if ( s->action != ST_A_TRIGGER )
+	if ( s->action == ST_A_LOCK )
+		return (qboolean)( field == 0 || ( field == 1 && Q_stricmp( s->values[0], "unlock all" ) ) || !Q_stricmp( s->values[0], "lock" ) );
+	if ( s->action == ST_A_NOTIFY )
 		return qtrue;
+	if ( !ST_Watches( s ) )
+		return qtrue;
+	if ( ST_TriggerChat( s ) )
+		return (qboolean)( field <= 2 || ( field == 3 && !Q_stricmp( s->values[2], "named" ) ) );
 	switch ( field ) {
 	case 1:		return (qboolean)( !ST_TriggerNear( s ) || ST_TriggerEffect( s ) );
 	case 2:		return (qboolean)!ST_TriggerDoor( s );
@@ -608,6 +665,7 @@ static qboolean ST_FieldShown( const stStep_t *s, int field ) {
 	case 5:
 	case 6:
 	case 7:		return ST_TriggerNear( s );
+	case 8:		return (qboolean)( s->action == ST_A_IF || !ST_TriggerDoor( s ) );
 	default:	return qtrue;
 	}
 }
@@ -615,7 +673,7 @@ static qboolean ST_FieldShown( const stStep_t *s, int field ) {
 static qboolean ST_HavePos( const stStep_t *s ) {
 	const stActionDef_t *def = ST_Def( s );
 
-	if ( s->action == ST_A_TRIGGER && !ST_TriggerNear( s ) )
+	if ( ST_Watches( s ) && !ST_TriggerNear( s ) )
 		return qtrue;
 	if ( s->action == ST_A_SOUND && Q_stricmp( s->values[2], "spot" ) )
 		return qtrue;
@@ -816,8 +874,18 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 	case ST_A_PAUSE:
 		return NULL;
 
+	case ST_A_ELSE:
+	case ST_A_ENDIF:
+		return NULL;
+
+	case ST_A_IF:
 	case ST_A_TRIGGER:
-		if ( !ST_TriggerNear( s ) && !ST_ModelNum( v[1] ) ) {
+		if ( ST_TriggerChat( s ) ) {
+			if ( !v[1][0] ) {
+				*error = "Type the words to listen for, | between them";
+				return NULL;
+			}
+		} else if ( !ST_TriggerNear( s ) && !ST_ModelNum( v[1] ) ) {
 			*error = ST_TriggerDoor( s ) ? "Pick the door or button: aim at it, or pick it from the list"
 				: "Pick the trigger: stand in it, or pick it from the list";
 			return NULL;
@@ -827,6 +895,35 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 			return NULL;
 		}
 		return NULL;
+
+	case ST_A_NOTIFY: {
+		// rpnotify <player|all|-1> <seconds> <message>, <timer> counting down in it
+		char text[ST_VALUE_LEN + 16];
+
+		if ( ST_Number( s, 1 ) <= 0 ) {
+			*error = "Give it some seconds";
+			return NULL;
+		}
+		if ( !Q_stricmpn( v[2], "cmd:", 4 ) ) {
+			*error = "Text starting with cmd: is a hook, not a notification";
+			return NULL;
+		}
+		Q_strncpyz( text, v[2], sizeof( text ) );
+		if ( Q_stricmp( v[3], "no" ) && !Q_stristr( text, "<timer>" ) ) {
+			if ( !text[0] )
+				Q_strncpyz( text, "<timer>", sizeof( text ) );
+			else if ( !Q_stricmp( v[3], "before the text" ) )
+				Com_sprintf( text, sizeof( text ), "<timer> %s", v[2] );
+			else
+				Q_strcat( text, sizeof( text ), " <timer>" );
+		}
+		if ( !text[0] ) {
+			*error = "Type the text, or have it count down";
+			return NULL;
+		}
+		Com_sprintf( cmd, sizeof( cmd ), "rpnotify %s %g %s", v[0][0] ? v[0] : "all", ST_Number( s, 1 ), text );
+		return cmd;
+	}
 
 	case ST_A_SAY:
 		if ( !v[0][0] ) {
@@ -1082,6 +1179,21 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 			Com_sprintf( cmd, sizeof( cmd ), "rpshader remap %s %s", v[0], v[1] );
 		return cmd;
 
+	case ST_A_LOCK:
+		// rplock add <target> <rank> [name], rplock remove <target|all>
+		if ( !Q_stricmp( v[0], "unlock all" ) )
+			return "rplock remove all";
+		if ( !v[1][0] || strchr( v[1], ' ' ) ) {
+			*error = "Type the door's or trigger's targetname or entity number, or pick it in the map editor";
+			return NULL;
+		}
+		if ( !Q_stricmp( v[0], "unlock" ) ) {
+			Com_sprintf( cmd, sizeof( cmd ), "rplock remove %s", v[1] );
+			return cmd;
+		}
+		Com_sprintf( cmd, sizeof( cmd ), "rplock add %s %i%s%s", v[1], Com_Clampi( -1, 15, (int)ST_Number( s, 2 ) ), v[3][0] ? " " : "", v[3] );
+		return cmd;
+
 	case ST_A_OVERLAY: {
 		// rpshader overlay add <shader> [fade] [x] [y] [width] [height], up to the last one given
 		static const char *defaults[] = { "0", "0", "0", "640", "480" };
@@ -1250,9 +1362,41 @@ static const char *ST_WhoText( const stStep_t *s ) {
 	return "a player";
 }
 
+// more than one of who's counted
+static const char *ST_WhoPlural( const stStep_t *s ) {
+	const char *who = s->values[2];
+
+	if ( !Q_stricmp( who, "any NPC" ) )		return "NPCs";
+	if ( !Q_stricmp( who, "anyone" ) )		return "people";
+	if ( !Q_stricmp( who, "me" ) )			return "of you";
+	if ( !Q_stricmp( who, "named" ) )		return va( "named %s", s->values[3][0] ? s->values[3] : "?" );
+	return "players";
+}
+
+// where an area is, for a summary
+static const char *ST_AreaText( const stStep_t *s ) {
+	if ( ST_TriggerEffect( s ) )
+		return va( "near %s", s->values[1][0] ? s->values[1] : "an effect" );
+	if ( ST_TriggerNear( s ) )
+		return va( "within %g of %s %s %s", ST_Number( s, 4 ) > 0 ? ST_Number( s, 4 ) : 96.0f, s->values[5], s->values[6], s->values[7] );
+	return va( "in %s", ST_EntLabel( s->values[1] ) );
+}
+
+static const char *ST_IfSummary( const stStep_t *s ) {
+	if ( ST_TriggerChat( s ) )
+		return va( "If %s said \"%s\"", ST_WhoText( s ), s->values[1] );
+	return va( "If %s %i %s %s", s->values[8], (int)ST_Number( s, 9 ), ST_WhoPlural( s ), ST_AreaText( s ) );
+}
+
 static const char *ST_TriggerSummary( const stStep_t *s ) {
+	const float stay = ST_Number( s, 8 );
+
 	if ( ST_TriggerDoor( s ) )
 		return va( "When %s moves", ST_EntLabel( s->values[1] ) );
+	if ( ST_TriggerChat( s ) )
+		return va( "When %s says \"%s\"", ST_WhoText( s ), s->values[1] );
+	if ( stay > 0 )
+		return va( "When %s stays %s for %g s", ST_WhoText( s ), ST_AreaText( s ), stay );
 	if ( ST_TriggerEffect( s ) )
 		return va( "When %s comes near %s", ST_WhoText( s ), s->values[1][0] ? s->values[1] : "an effect" );
 	if ( ST_TriggerNear( s ) )
@@ -1437,12 +1581,22 @@ static int ST_CommandGap( void );
 // who is in already
 static qboolean ST_TriggerFired( stRun_t *r, const stStep_t *s ) {
 	stPerson_t people[ST_MAX_PEOPLE];
-	int now[ST_MAX_PEOPLE], numNow = 0, n;
+	int now[ST_MAX_PEOPLE], nowSince[ST_MAX_PEOPLE], numNow = 0, n, stay;
 	qboolean fired = qfalse;
 
 	if ( !cl.snap.valid )
 		return qfalse;
 	r->by[0] = '\0';
+
+	// what's said from when it began listening
+	if ( ST_TriggerChat( s ) ) {
+		if ( !r->watching ) {
+			r->watching = qtrue;
+			r->chatFrom = cls.realtime;
+			return qfalse;
+		}
+		return ST_ChatSaid( s, r->chatFrom, r->by, sizeof( r->by ) );
+	}
 
 	if ( ST_TriggerDoor( s ) ) {
 		const entityState_t *es = ST_FindMover( ST_ModelNum( s->values[1] ) );
@@ -1466,26 +1620,94 @@ static qboolean ST_TriggerFired( stRun_t *r, const stStep_t *s ) {
 		st.nextSend = Q_max( st.nextSend, cls.realtime + ST_CommandGap() );
 	}
 
+	// to stay in a while: from when they came, or from the first look for the ones in already
+	stay = (int)( ST_Number( s, 8 ) * 1000.0f );
 	n = ST_People( people, ST_MAX_PEOPLE );
 	for ( int i = 0; i < n; i++ ) {
 		qboolean was = qfalse;
+		int since = cls.realtime;
 
 		if ( !ST_Counts( s, &people[i] ) || !ST_Inside( s, people[i].org ) )
 			continue;
-		now[numNow++] = people[i].num;
 		for ( int j = 0; j < r->numInside; j++ ) {
-			if ( r->inside[j] == people[i].num )
+			if ( r->inside[j] == people[i].num ) {
 				was = qtrue;
+				since = r->since[j];
+			}
 		}
-		if ( !was && r->watching && !fired ) {
+		nowSince[numNow] = since;
+		now[numNow++] = people[i].num;
+		if ( fired || !r->watching )
+			continue;
+		if ( stay > 0 ? cls.realtime - since >= stay : !was ) {
 			fired = qtrue;
 			ST_PersonName( &people[i], r->by, sizeof( r->by ) );
 		}
 	}
 	memcpy( r->inside, now, numNow * sizeof( now[0] ) );
+	memcpy( r->since, nowSince, numNow * sizeof( nowSince[0] ) );
 	r->numInside = numNow;
 	r->watching = qtrue;
 	return fired;
+}
+
+// an If, looked at once: how many of who it counts are in the area, or whether they said it
+// since the story began
+static qboolean ST_IfTrue( const stRun_t *r, const stStep_t *s ) {
+	stPerson_t people[ST_MAX_PEOPLE];
+	int n, count = 0;
+	const int want = (int)ST_Number( s, 9 );
+
+	if ( ST_TriggerChat( s ) )
+		return ST_ChatSaid( s, r->started, NULL, 0 );
+	n = ST_People( people, ST_MAX_PEOPLE );
+	for ( int i = 0; i < n; i++ ) {
+		if ( ST_Counts( s, &people[i] ) && ST_Inside( s, people[i].org ) )
+			count++;
+	}
+	if ( !Q_stricmp( s->values[8], "at most" ) )
+		return (qboolean)( count <= want );
+	if ( !Q_stricmp( s->values[8], "exactly" ) )
+		return (qboolean)( count == want );
+	return (qboolean)( count >= want );
+}
+
+// from an If or an Else, the step after its Else (toElse) or its End if, Ifs inside it skipped
+// whole; the end of the story when there's none
+static int ST_SkipBranch( const stStep_t *steps, int numSteps, int pc, qboolean toElse ) {
+	int depth = 0;
+
+	for ( int i = pc + 1; i < numSteps; i++ ) {
+		if ( !steps[i].enabled )
+			continue;
+		if ( steps[i].action == ST_A_IF ) {
+			depth++;
+		} else if ( steps[i].action == ST_A_ENDIF ) {
+			if ( !depth )
+				return i + 1;
+			depth--;
+		} else if ( steps[i].action == ST_A_ELSE && !depth && toElse ) {
+			return i + 1;
+		}
+	}
+	return numSteps;
+}
+
+// how deep in Ifs a step is, for the list
+static int ST_Depth( const stStep_t *steps, int row ) {
+	int depth = 0;
+
+	for ( int i = 0; i < row; i++ ) {
+		if ( !steps[i].enabled )
+			continue;
+		if ( steps[i].action == ST_A_IF )
+			depth++;
+		else if ( steps[i].action == ST_A_ENDIF && depth )
+			depth--;
+	}
+	if ( steps[row].enabled && ( steps[row].action == ST_A_ELSE || steps[row].action == ST_A_ENDIF ) && depth )
+		depth--;
+	return depth;
 }
 
 // one line about a step, for the story list
@@ -1502,6 +1724,19 @@ static const char *ST_StepSummary( const stStep_t *s ) {
 		break;
 	case ST_A_TRIGGER:
 		Q_strncpyz( buf, ST_TriggerSummary( s ), sizeof( buf ) );
+		break;
+	case ST_A_IF:
+		Q_strncpyz( buf, ST_IfSummary( s ), sizeof( buf ) );
+		break;
+	case ST_A_ELSE:
+		Q_strncpyz( buf, "Else", sizeof( buf ) );
+		break;
+	case ST_A_ENDIF:
+		Q_strncpyz( buf, "End if", sizeof( buf ) );
+		break;
+	case ST_A_NOTIFY:
+		Com_sprintf( buf, sizeof( buf ), "Notify %s, %s s%s: %s", s->values[0][0] ? s->values[0] : "all", s->values[1],
+			Q_stricmp( s->values[3], "no" ) || Q_stristr( s->values[2], "<timer>" ) ? ", counting down" : "", s->values[2] );
 		break;
 	case ST_A_SOUND:
 		Com_sprintf( buf, sizeof( buf ), "Sound %s (%s, %s%s%s)", s->values[0][0] ? s->values[0] : "?", s->values[1], s->values[2],
@@ -1557,6 +1792,15 @@ static const char *ST_StepSummary( const stStep_t *s ) {
 			Com_sprintf( buf, sizeof( buf ), "Say as %s" S_COLOR_WHITE ": %s", s->values[2][0] ? s->values[2] : "?", s->values[0] );
 		else
 			Com_sprintf( buf, sizeof( buf ), "Say: %s", s->values[0] );
+		break;
+	case ST_A_LOCK:
+		if ( !Q_stricmp( s->values[0], "unlock all" ) )
+			Q_strncpyz( buf, "Unlock every lock", sizeof( buf ) );
+		else if ( !Q_stricmp( s->values[0], "unlock" ) )
+			Com_sprintf( buf, sizeof( buf ), "Unlock %s", s->values[1][0] ? s->values[1] : "?" );
+		else
+			Com_sprintf( buf, sizeof( buf ), "Lock %s: %s%s%s", s->values[1][0] ? s->values[1] : "?",
+				atoi( s->values[2] ) < 0 ? "no one" : va( "rank %s", s->values[2][0] ? s->values[2] : "0" ), s->values[3][0] ? ", " : "", s->values[3] );
 		break;
 	case ST_A_OVERLAY:
 		if ( !Q_stricmp( s->values[0], "remove all" ) )
@@ -1788,6 +2032,7 @@ static void ST_StartRun( stRun_t *r, int from ) {
 	memset( r, 0, sizeof( *r ) );
 	r->running = qtrue;
 	r->pc = from;
+	r->started = cls.realtime;
 }
 
 static void ST_Run( int from ) {
@@ -1878,6 +2123,27 @@ static qboolean ST_Play( stRun_t *r, stStep_t *steps, int numSteps, const char *
 			Com_Printf( S_COLOR_GREEN "%s" S_COLOR_WHITE "step %i set off%s%s\n", prefix, r->pc + 1, r->by[0] ? " by " : "", r->by );
 			r->watching = qfalse;
 			r->numInside = 0;
+			r->pc++;
+			continue;
+
+		case ST_A_IF: {
+			qboolean yes;
+
+			ST_StepCommand( s, &local, &error );
+			if ( error )
+				Com_Printf( S_COLOR_YELLOW "%sstep %i taken as false: %s\n", prefix, r->pc + 1, error );
+			yes = (qboolean)( !error && ST_IfTrue( r, s ) );
+			Com_Printf( S_COLOR_GREEN "%s" S_COLOR_WHITE "step %i: %s, %s\n", prefix, r->pc + 1, ST_IfSummary( s ), yes ? "yes" : "no" );
+			r->pc = yes ? r->pc + 1 : ST_SkipBranch( steps, numSteps, r->pc, qtrue );
+			continue;
+		}
+
+		case ST_A_ELSE:
+			// the If's steps played: the Else's don't
+			r->pc = ST_SkipBranch( steps, numSteps, r->pc, qfalse );
+			continue;
+
+		case ST_A_ENDIF:
 			r->pc++;
 			continue;
 
@@ -2454,6 +2720,105 @@ void CL_Storyteller_ShotSaved( const char *name ) {
 	}
 }
 
+
+/*
+===============================================================================
+
+Chat heard, for "someone says"
+
+===============================================================================
+*/
+
+#define ST_MAX_CHAT		64
+
+static struct {
+	int		time;					// cls.realtime it came
+	char	name[MAX_QPATH];		// without colours
+	char	text[MAX_STRING_CHARS / 2];
+} stChat[ST_MAX_CHAT];
+static int stChatNext;
+
+// a chat command from the server, before a language turns it into gibberish: kept a while.
+// "chat" "name\x19: message", "lchat" "name" "location" "colour" "message"
+void CL_Storyteller_ChatLine( void ) {
+	const char *cmd = Cmd_Argv( 0 );
+	char name[MAX_STRING_CHARS], text[MAX_STRING_CHARS];
+
+	if ( !strcmp( cmd, "chat" ) || !strcmp( cmd, "tchat" ) ) {
+		const char *line = Cmd_Argv( 1 ), *sep = strstr( line, "\x19:" );
+
+		if ( sep ) {
+			Q_strncpyz( name, line, Q_min( (int)sizeof( name ), (int)( sep - line ) + 1 ) );
+			line = sep + 2;
+		} else {
+			name[0] = '\0';
+		}
+		Q_strncpyz( text, line, sizeof( text ) );
+	} else if ( !strcmp( cmd, "lchat" ) || !strcmp( cmd, "ltchat" ) ) {
+		Q_strncpyz( name, Cmd_Argv( 1 ), sizeof( name ) );
+		Q_strncpyz( text, Cmd_Argv( 4 ), sizeof( text ) );
+	} else {
+		return;
+	}
+	Q_StripColor( name );
+	Q_StripColor( text );
+	stChat[stChatNext].time = cls.realtime;
+	Q_strncpyz( stChat[stChatNext].name, name, sizeof( stChat[0].name ) );
+	Q_strncpyz( stChat[stChatNext].text, text, sizeof( stChat[0].text ) );
+	stChatNext = ( stChatNext + 1 ) % ST_MAX_CHAT;
+}
+
+// whether one of the words, | between them, is in the text
+static qboolean ST_HasWords( const char *text, const char *words ) {
+	char word[ST_VALUE_LEN];
+
+	while ( *words ) {
+		int len = 0;
+
+		while ( *words == '|' || *words == ' ' )
+			words++;
+		while ( *words && *words != '|' && len < (int)sizeof( word ) - 1 )
+			word[len++] = *words++;
+		while ( len && word[len - 1] == ' ' )
+			len--;
+		word[len] = '\0';
+		if ( len && Q_stristr( text, word ) )
+			return qtrue;
+	}
+	return qfalse;
+}
+
+// someone the step counts said its words since then; who, in by when it's given
+static qboolean ST_ChatSaid( const stStep_t *s, int since, char *by, int bySize ) {
+	const char *who = s->values[2];
+	char mine[MAX_QPATH];
+
+	Q_strncpyz( mine, Info_ValueForKey( cl.gameState.stringData + cl.gameState.stringOffsets[CS_PLAYERS + clc.clientNum], "n" ), sizeof( mine ) );
+	Q_StripColor( mine );
+	for ( int n = 0; n < ST_MAX_CHAT; n++ ) {
+		const int i = ( stChatNext + n ) % ST_MAX_CHAT;
+
+		if ( !stChat[i].time || stChat[i].time < since )
+			continue;
+		if ( !Q_stricmp( who, "me" ) && Q_stricmp( stChat[i].name, mine ) )
+			continue;
+		if ( !Q_stricmp( who, "named" ) ) {
+			char typed[MAX_QPATH];
+
+			Q_strncpyz( typed, s->values[3], sizeof( typed ) );
+			Q_StripColor( typed );
+			if ( !typed[0] || ( Q_stricmp( stChat[i].name, typed ) && ( strlen( typed ) < 3 || !Q_stristr( stChat[i].name, typed ) ) ) )
+				continue;
+		}
+		if ( !ST_HasWords( stChat[i].text, s->values[1] ) )
+			continue;
+		if ( by )
+			Q_strncpyz( by, stChat[i].name, bySize );
+		return qtrue;
+	}
+	return qfalse;
+}
+
 /*
 ===============================================================================
 
@@ -2477,6 +2842,8 @@ static void ST_StartPick( stPick_t pick ) {
 		CL_SoundManager_OpenForStory();
 	else if ( pick == ST_PICK_MUSIC )
 		CL_MusicManager_OpenForStory();
+	else if ( pick == ST_PICK_LOCK )
+		CL_MapEditor_OpenForStory();
 	else
 		CL_NpcManager_OpenForStory( (qboolean)( pick == ST_PICK_NPC_MANAGE ) );
 }
@@ -2492,6 +2859,7 @@ static qboolean ST_PickOpen( void ) {
 	case ST_PICK_NPC_MANAGE:	return CL_NpcManager_Active();
 	case ST_PICK_SOUND:		return CL_SoundManager_Active();
 	case ST_PICK_MUSIC:		return CL_MusicManager_Active();
+	case ST_PICK_LOCK:		return CL_MapEditor_Active();
 	default:				return qfalse;
 	}
 }
@@ -2683,6 +3051,42 @@ static void ST_StepFromCommand( const char *cmd, stStep_t *s ) {
 	Q_strncpyz( line, cmd, sizeof( line ) );
 	argc = ST_SplitLine( line, argv, ARRAY_LEN( argv ) );
 
+	// rpnotify <who> <seconds> <text>, not a hook
+	if ( argc >= 4 && !Q_stricmp( argv[0], "rpnotify" ) && ST_IsNumber( argv[2] ) && !Q_stristr( cmd, "cmd:" ) ) {
+		s->action = ST_A_NOTIFY;
+		ST_SetDefaults( s );
+		Q_strncpyz( s->values[0], argv[1], ST_VALUE_LEN );
+		Q_strncpyz( s->values[1], argv[2], ST_VALUE_LEN );
+		s->values[2][0] = '\0';
+		for ( int i = 3; i < argc; i++ ) {
+			if ( i > 3 )
+				Q_strcat( s->values[2], ST_VALUE_LEN, " " );
+			Q_strcat( s->values[2], ST_VALUE_LEN, argv[i] );
+		}
+		return;
+	}
+
+	// rplock add <target> <rank> [name], rplock remove <target|all>
+	if ( argc >= 3 && !Q_stricmp( argv[0], "rplock" ) && ( ( !Q_stricmp( argv[1], "add" ) && argc >= 4 ) || !Q_stricmp( argv[1], "remove" ) ) ) {
+		s->action = ST_A_LOCK;
+		ST_SetDefaults( s );
+		if ( !Q_stricmp( argv[1], "remove" ) ) {
+			Q_strncpyz( s->values[0], !Q_stricmp( argv[2], "all" ) ? "unlock all" : "unlock", ST_VALUE_LEN );
+			if ( Q_stricmp( argv[2], "all" ) )
+				Q_strncpyz( s->values[1], argv[2], ST_VALUE_LEN );
+			return;
+		}
+		Q_strncpyz( s->values[0], "lock", ST_VALUE_LEN );
+		Q_strncpyz( s->values[1], argv[2], ST_VALUE_LEN );
+		Q_strncpyz( s->values[2], argv[3], ST_VALUE_LEN );
+		for ( int i = 4; i < argc; i++ ) {
+			if ( i > 4 )
+				Q_strcat( s->values[3], ST_VALUE_LEN, " " );
+			Q_strcat( s->values[3], ST_VALUE_LEN, argv[i] );
+		}
+		return;
+	}
+
 	// rpshader overlay add <shader> [fade x y width height], rpshader overlay remove <shader|number|all>
 	if ( argc >= 4 && argc <= 9 && !Q_stricmp( argv[0], "rpshader" ) && !Q_stricmp( argv[1], "overlay" )
 		&& ( !Q_stricmp( argv[2], "add" ) || !Q_stricmp( argv[2], "remove" ) ) ) {
@@ -2851,6 +3255,8 @@ static void ST_PickFrame( void ) {
 	CL_ShaderManager_Close();
 	CL_NpcManager_Close();
 	CL_SoundManager_Close();
+	if ( st.pick == ST_PICK_LOCK )
+		CL_MapEditor_Close();
 	st.pick = ST_PICK_NONE;
 	// another tool opened from it stays
 	if ( !( Key_GetCatcher() & KEYCATCH_ENGINETOOLS ) && ST_Open() && st.numPicked )
@@ -3457,8 +3863,12 @@ static void ST_DrawStepRow( int row, float x, float y, float w ) {
 	Com_sprintf( num, sizeof( num ), "%i", row + 1 );
 	const char *summary = ST_StepSummary( s );
 
+	// inside an If, indented
+	const float indent = 24.0f + Q_min( 6, ST_Depth( st.steps, row ) ) * 10.0f;
+
 	ST_Text( x + 18 - ST_TextWidth( num ), y, num, stDim );
-	ST_TextClipped( x + 24, y, w - 24, s->enabled ? summary : va( "(off) %s", summary ), color );
+	ST_TextClipped( x + indent, y, w - indent, s->enabled ? summary : va( "(off) %s", summary ),
+		s->enabled && ( s->action == ST_A_IF || s->action == ST_A_ELSE || s->action == ST_A_ENDIF ) && ST_StepUsable( s ) ? stAccent : color );
 }
 
 static const float *ST_StepFill( int row ) {
@@ -3581,7 +3991,7 @@ static void ST_DrawEdit( void ) {
 		if ( !ST_FieldShown( s, i ) )
 			continue;
 
-		ST_Text( ST_EDIT_X, y + 2, f->label, stDim );
+		ST_Text( ST_EDIT_X, y + 2, ST_FieldLabel( s, i, f->label ), stDim );
 		if ( f->kind == ST_K_CHOICE ) {
 			// click for the next one, right side for the one before
 			const int n = ST_NumChoices( f->choices ), at = ST_ChoiceIndex( f->choices, s->values[i] );
@@ -3600,7 +4010,7 @@ static void ST_DrawEdit( void ) {
 			st.focus = i;
 	}
 
-	if ( s->action == ST_A_TRIGGER && !ST_TriggerNear( s ) ) {
+	if ( ST_Watches( s ) && !ST_TriggerNear( s ) && !ST_TriggerChat( s ) ) {
 		const qboolean door = ST_TriggerDoor( s );
 		const float bw = ( ST_EDIT_W - 4 ) * 0.5f;
 
@@ -3618,7 +4028,7 @@ static void ST_DrawEdit( void ) {
 			ST_OpenChoose( door ? ST_CHOOSE_DOOR : ST_CHOOSE_TRIGGER );
 		y += ST_CTRL_H + 6;
 	}
-	if ( s->action == ST_A_TRIGGER && ST_TriggerEffect( s ) ) {
+	if ( ST_Watches( s ) && ST_TriggerEffect( s ) ) {
 		if ( ST_Button( ST_EDIT_X, y, ST_EDIT_W, "Pick an effect in the map", qfalse, qtrue ) )
 			ST_OpenChoose( ST_CHOOSE_EFFECT );
 		y += ST_CTRL_H + 6;
@@ -3653,6 +4063,14 @@ static void ST_DrawEdit( void ) {
 	if ( s->action == ST_A_OVERLAY || s->action == ST_A_SKY ) {
 		if ( ST_Button( ST_EDIT_X, y, ST_EDIT_W, s->action == ST_A_OVERLAY ? "Pick it in the shader manager's Overlays" : "Set it in the shader manager's Sky tab", qfalse, qtrue ) ) {
 			ST_StartPick( s->action == ST_A_OVERLAY ? ST_PICK_OVERLAY : ST_PICK_SKY );
+			return;
+		}
+		y += ST_CTRL_H + 6;
+	}
+
+	if ( s->action == ST_A_LOCK ) {
+		if ( ST_Button( ST_EDIT_X, y, ST_EDIT_W, "Pick it in the map editor's Locks tab", qfalse, qtrue ) ) {
+			ST_StartPick( ST_PICK_LOCK );
 			return;
 		}
 		y += ST_CTRL_H + 6;
@@ -3717,7 +4135,17 @@ static void ST_DrawEdit( void ) {
 		const int lines = ST_TextWrapped( ST_EDIT_X, y, ST_EDIT_W, va( "%s, then goes on.", ST_TriggerSummary( s ) ), stDim, 3 );
 		ST_TextWrapped( ST_EDIT_X, y + ( lines + 1 ) * ST_ROW_H, ST_EDIT_W, ST_TriggerDoor( s )
 			? "Whoever opens it: your game can't see who used it."
+			: ST_TriggerChat( s ) ? "Said in chat from when this step starts waiting, any of the words, | between them."
+			: ST_Number( s, 8 ) > 0 ? "Someone in already counts from when the step starts. Only who your game can see counts."
 			: "Someone already in has to leave and come back. Only who your game can see counts.", stDim, 3 );
+	} else if ( s->action == ST_A_IF ) {
+		const int lines = ST_TextWrapped( ST_EDIT_X, y, ST_EDIT_W, va( "%s: the steps after it play, else the ones after its Else.", ST_IfSummary( s ) ), stDim, 3 );
+		ST_TextWrapped( ST_EDIT_X, y + ( lines + 1 ) * ST_ROW_H, ST_EDIT_W, ST_TriggerChat( s )
+			? "Said in chat since the story began playing. End the If's steps with End if."
+			: "Looked at once, when the story gets to it; only who your game can see counts. End the If's steps with End if.", stDim, 3 );
+	} else if ( s->action == ST_A_ELSE || s->action == ST_A_ENDIF ) {
+		ST_TextWrapped( ST_EDIT_X, y, ST_EDIT_W, s->action == ST_A_ELSE ? "The steps from here to the End if play when the If was false."
+			: "The If's steps end here; the story goes on either way.", stDim, 3 );
 	} else if ( s->action == ST_A_WAIT ) {
 		ST_TextWrapped( ST_EDIT_X, y, ST_EDIT_W, va( "Waits %.1f seconds, then goes on.", ST_Number( s, 0 ) ), stDim, 2 );
 	} else if ( s->action == ST_A_PAUSE ) {
@@ -3893,7 +4321,7 @@ static void ST_ChooseApply( int row ) {
 		}
 		return;
 	}
-	if ( !s || s->action != ST_A_TRIGGER )
+	if ( !s || !ST_Watches( s ) )
 		return;
 	if ( st.chooseKind == ST_CHOOSE_EFFECT ) {
 		const char *path;
@@ -4151,6 +4579,10 @@ static void ST_Line( const vec3_t a, const vec3_t b, const byte *color ) {
 static qboolean ST_DrawTrigger( const stStep_t *s, const byte *color, vec3_t top ) {
 	vec3_t mins, maxs;
 
+	// what's said is nowhere
+	if ( ST_TriggerChat( s ) )
+		return qfalse;
+
 	if ( ST_TriggerNear( s ) ) {
 		// a ring on the floor round the spot, and one over it, posts between
 		const float radius = ST_Number( s, 4 ) > 0 ? ST_Number( s, 4 ) : 96.0f;
@@ -4252,7 +4684,7 @@ void CL_Storyteller_AddToScene( const refdef_t *fd ) {
 	// the story shown, while it's being made or played
 	if ( st.open || ST_RunHere() ) {
 		for ( int i = 0; i < st.numSteps; i++ ) {
-			if ( st.steps[i].enabled && st.steps[i].action == ST_A_TRIGGER )
+			if ( st.steps[i].enabled && ST_Watches( &st.steps[i] ) )
 				ST_AddMarker( &st.steps[i], stShownColor, va( S_COLOR_CYAN "%s" S_COLOR_GREY "  step %i", st.name[0] ? st.name : "this story", i + 1 ) );
 		}
 	}

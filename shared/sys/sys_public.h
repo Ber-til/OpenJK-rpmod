@@ -108,6 +108,8 @@ char	*Sys_GetCurrentUser( void );
 void	NORETURN QDECL Sys_Error( const char *error, ... );
 void	NORETURN Sys_Quit (void);
 char	*Sys_GetClipboardData( void );	// note that this isn't journaled...
+void	Sys_SetClipboardData( const char *text );
+int		IN_MousePosition( int *x, int *y );
 
 void	Sys_Print( const char *msg );
 
