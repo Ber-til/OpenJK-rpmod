@@ -2172,6 +2172,10 @@ Q_EXPORT refexport_t* QDECL GetRefAPI( int apiVersion, refimport_t *rimp ) {
 	re.ext.HideWorldTriangles				= RE_HideWorldTriangles;
 	re.ext.SetDepthOfField					= RE_SetDepthOfField;
 	re.ext.SetScreenFilter					= RE_SetScreenFilter;
+	re.ext.GetFogs							= RE_GetFogs;
+	re.ext.SetFog							= RE_SetFog;
+	re.ext.AddFog							= RE_AddFog;
+	re.ext.ClearAddedFogs					= RE_ClearAddedFogs;
 	re.ext.SetSkyLook						= RE_SetSkyLook;
 	re.ext.WorldPieceModel					= RE_WorldPieceModel;
 

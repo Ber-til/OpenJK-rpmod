@@ -276,6 +276,16 @@ typedef struct refexport_s {
 		// the client's cinematic camera: a filter over the next world scene rendered, after its
 		// depth of field; NULL for none. Holds until changed
 		void				(*SetScreenFilter)						( const struct screenFilter_s *filter );
+		// the client's map editor: the map's fogs, 1 to the count returned less one (0 is no fog), as the
+		// map has them: their colour, how deep it takes to see nothing through them and their box;
+		// *global is the fog over the whole map, -1 none
+		int					(*GetFogs)								( vec3_t *colors, float *depths, vec3_t *mins, vec3_t *maxs, int *global, int max );
+		// a fog's colour and depth until the next map; a NULL colour puts the map's back
+		void				(*SetFog)								( int fog, const float *color, float depth );
+		// a fog volume of the client's own, until the next map or ClearAddedFogs: the world's surfaces in
+		// the box that aren't in one of the map's volumes are in it; its fog number, 0 if there's no room
+		int					(*AddFog)								( const vec3_t mins, const vec3_t maxs, const float *color, float depth );
+		void				(*ClearAddedFogs)						( void );
 	} ext;
 
 } refexport_t;

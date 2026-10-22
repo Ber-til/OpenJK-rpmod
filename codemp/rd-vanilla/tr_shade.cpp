@@ -1300,6 +1300,21 @@ static void ComputeColors( shaderStage_t *pStage, int forceRGBGen )
 			break;
 	}
 
+	// the map's normal light, style 0, set to other than white by the client's map editor: the
+	// world's lightmaps follow it as its models and vertex lit surfaces already do
+	if ( pStage->rgbGen != CGEN_LIGHTMAPSTYLE && !pStage->lightmapStyle
+		&& ( pStage->bundle[0].isLightmap || pStage->bundle[1].isLightmap ) ) {
+		const byte *s = styleColors[0];
+
+		if ( s[0] != 255 || s[1] != 255 || s[2] != 255 ) {
+			for ( i = 0; i < tess.numVertexes; i++ ) {
+				colors[i][0] = (byte)( colors[i][0] * s[0] / 255 );
+				colors[i][1] = (byte)( colors[i][1] * s[1] / 255 );
+				colors[i][2] = (byte)( colors[i][2] * s[2] / 255 );
+			}
+		}
+	}
+
 	//
 	// alphaGen
 	//
@@ -1601,8 +1616,21 @@ static void RB_IterateStagesGeneric( shaderCommands_t *input )
 
 			qglFogi(GL_FOG_MODE, GL_LINEAR);
 
-			qglFogf(GL_FOG_START, fStart);
-			qglFogf(GL_FOG_END, tr.distanceCull);
+			// the client's map editor's fog: opaque where it says, not at the cull distance
+			if ( fog->overridden )
+			{
+				if ( fStart > fog->parms.depthForOpaque * 0.25f )
+				{
+					fStart = fog->parms.depthForOpaque * 0.25f;
+				}
+				qglFogf(GL_FOG_START, fStart);
+				qglFogf(GL_FOG_END, fog->parms.depthForOpaque);
+			}
+			else
+			{
+				qglFogf(GL_FOG_START, fStart);
+				qglFogf(GL_FOG_END, tr.distanceCull);
+			}
 		}
 		else
 		{
