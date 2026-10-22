@@ -1367,6 +1367,27 @@ void R_CreateBuiltinImages( void ) {
 	qglTexParameteri( GL_TEXTURE_RECTANGLE_ARB, GL_TEXTURE_WRAP_T, GL_CLAMP );
 	qglDisable( GL_TEXTURE_RECTANGLE_ARB );
 
+	// the cinematic camera's filter: the ramp its brightness is coloured along, grey until a
+	// filter gives it colours, and the grain's noise
+	{
+		static byte ramp[256][4], noise[64][64][4];
+
+		for ( x = 0; x < 256; x++ ) {
+			ramp[x][0] = ramp[x][1] = ramp[x][2] = (byte)x;
+			ramp[x][3] = 255;
+		}
+		for ( y = 0; y < 64; y++ ) {
+			for ( x = 0; x < 64; x++ ) {
+				noise[y][x][0] = noise[y][x][1] = noise[y][x][2] = (byte)( rand() & 255 );
+				noise[y][x][3] = 255;
+			}
+		}
+		tr.filterRampImage = R_CreateImage( "*filterramp", (byte *)ramp, 256, 1, GL_RGBA, qfalse, qfalse, qfalse, GL_CLAMP );
+		tr.filterNoiseImage = R_CreateImage( "*filternoise", (byte *)noise, 64, 64, GL_RGBA, qfalse, qfalse, qfalse, GL_REPEAT );
+		for ( x = 0; x < 5; x++ )
+			tr.filterRamp[x][0] = tr.filterRamp[x][1] = tr.filterRamp[x][2] = (byte)( x * 255 / 4 );
+	}
+
 	if ( glConfigExt.doGammaCorrectionWithShaders )
 	{
 		qglEnable( GL_TEXTURE_3D );

@@ -32,6 +32,21 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 
 #define	REF_API_VERSION 10
 
+// a filter over the cinematic camera's view: its colours mixed, its brightness coloured along a
+// ramp, then grain, scanlines and darkened corners, all of it mixed with the view as it was
+typedef struct screenFilter_s {
+	float	matrix[3][4];		// red, green and blue out: each row . ( r, g, b, 1 )
+	float	ramp;				// how much the brightness coloured along rampColors takes over, 0-1
+	float	rampGain;			// the brightness times this before it's coloured
+	byte	rampColors[5][3];	// dark to light
+	float	grain;				// noise up to this much either way, 0-1
+	float	vignette;			// the corners darkened by up to this, 0-1
+	float	scanlines;			// dark lines this deep, 0-1
+	float	scanlineCount;		// lines down the screen
+	float	aberration;			// red and blue pulled apart this many pixels on a 480 high screen
+	float	strength;			// 0 none of it, 1 all
+} screenFilter_t;
+
 //
 // these are the functions exported by the refresh module
 //
@@ -258,6 +273,9 @@ typedef struct refexport_s {
 		// is) and turned by angles; a 3D skybox's view is turned instead, and moved by shift.
 		// A NULL tint puts the sky back as the map has it
 		void				(*SetSkyLook)							( const float *tint, const vec3_t angles, const vec3_t shift );
+		// the client's cinematic camera: a filter over the next world scene rendered, after its
+		// depth of field; NULL for none. Holds until changed
+		void				(*SetScreenFilter)						( const struct screenFilter_s *filter );
 	} ext;
 
 } refexport_t;

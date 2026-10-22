@@ -1868,6 +1868,9 @@ void RE_Shutdown( qboolean destroyWindow, qboolean restarting ) {
 		if ( tr.dofPxShader )
 			qglDeleteProgramsARB( 1, &tr.dofPxShader );
 		tr.dofVtxShader = tr.dofPxShader = 0;
+		if ( tr.filterPxShader )
+			qglDeleteProgramsARB( 1, &tr.filterPxShader );
+		tr.filterPxShader = 0;
 
 		qglDeleteTextures(1, &tr.gammaCorrectLUTImage);
 
@@ -2168,6 +2171,7 @@ Q_EXPORT refexport_t* QDECL GetRefAPI( int apiVersion, refimport_t *rimp ) {
 	re.ext.G2API_GetSkins					= G2API_GetSkins;
 	re.ext.HideWorldTriangles				= RE_HideWorldTriangles;
 	re.ext.SetDepthOfField					= RE_SetDepthOfField;
+	re.ext.SetScreenFilter					= RE_SetScreenFilter;
 	re.ext.SetSkyLook						= RE_SetSkyLook;
 	re.ext.WorldPieceModel					= RE_WorldPieceModel;
 

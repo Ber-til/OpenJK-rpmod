@@ -571,6 +571,10 @@ typedef struct trRefdef_s {
 	// pixels on a 480 high screen away from it; dofBlur 0 is none
 	float		dofFocus, dofRange, dofBlur;
 
+	// the cinematic camera's filter, over the view after its depth of field
+	qboolean		filterOn;
+	screenFilter_t	filter;
+
 	// the sky look: the sky shader tinted by skyTint, and drawn with its axes along skyAxis
 	// when skyTurned; a 3D skybox's view is turned itself, so its sky isn't
 	qboolean	skyTinted, skyTurned;
@@ -1043,6 +1047,15 @@ typedef struct trGlobals_s {
 	GLuint					dofPxShader;
 	float					dofNext[3];		// focus, range and blur the next world scene takes
 
+	// the cinematic camera's filter: its program (0 if it didn't compile), the ramp its brightness
+	// is coloured along and the grain's noise, and the filter the next world scene takes
+	GLuint					filterPxShader;
+	image_t					*filterRampImage;
+	image_t					*filterNoiseImage;
+	byte					filterRamp[5][3];	// the colours the ramp image has now
+	qboolean				filterNextOn;
+	screenFilter_t			filterNext;
+
 	// the sky look the client asked for, for every world scene until changed
 	qboolean				skyLookOn;
 	vec3_t					skyLookTint, skyLookAngles, skyLookShift;
@@ -1411,6 +1424,7 @@ model_t		*R_AllocModel( void );
 extern int	tr_worldLoads;
 void		RE_HideWorldTriangles( const int *surfaces, const int *triangles, int count );
 void		RE_SetDepthOfField( float focus, float range, float blur );
+void		RE_SetScreenFilter( const screenFilter_t *filter );
 void		RE_SetSkyLook( const float *tint, const vec3_t angles, const vec3_t shift );
 qhandle_t	RE_WorldPieceModel( const int *surfaces, const int *triangles, int count, const vec3_t origin );
 

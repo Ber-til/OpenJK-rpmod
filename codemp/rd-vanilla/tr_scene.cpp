@@ -400,6 +400,12 @@ void RE_SetDepthOfField( float focus, float range, float blur ) {
 	tr.dofNext[2] = blur > 0.0f ? blur : 0.0f;
 }
 
+void RE_SetScreenFilter( const screenFilter_t *filter ) {
+	tr.filterNextOn = (qboolean)( filter && filter->strength > 0.0f );
+	if ( tr.filterNextOn )
+		tr.filterNext = *filter;
+}
+
 void RE_SetSkyLook( const float *tint, const vec3_t angles, const vec3_t shift ) {
 	tr.skyLookOn = (qboolean)( tint != NULL );
 	if ( !tint )
@@ -508,8 +514,12 @@ void RE_RenderScene( const refdef_t *fd ) {
 		tr.refdef.dofFocus = tr.dofNext[0];
 		tr.refdef.dofRange = tr.dofNext[1];
 		tr.refdef.dofBlur = tr.dofNext[2];
+		tr.refdef.filterOn = tr.filterNextOn;
+		if ( tr.filterNextOn )
+			tr.refdef.filter = tr.filterNext;
 	} else {
 		tr.refdef.dofBlur = 0.0f;
+		tr.refdef.filterOn = qfalse;
 	}
 	R_SkyLook( fd );
 

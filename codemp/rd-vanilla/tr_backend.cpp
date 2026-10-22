@@ -1664,6 +1664,87 @@ static void RB_DepthOfField( void ) {
 
 /*
 =============
+RB_ScreenFilter
+
+The view as drawn, through the cinematic camera's filter
+=============
+*/
+static void RB_ScreenFilter( void ) {
+	const screenFilter_t *f = &backEnd.refdef.filter;
+	const float x = (float)backEnd.viewParms.viewportX, y = (float)backEnd.viewParms.viewportY;
+	const float w = (float)backEnd.viewParms.viewportWidth, h = (float)backEnd.viewParms.viewportHeight;
+	const float px = glConfig.vidHeight / 480.0f;
+	const float grainPx = px > 1.0f ? px : 1.0f;
+
+	if ( w <= 0.0f || h <= 0.0f )
+		return;
+
+	// the ramp's colours, when they're new: five spread over its 256
+	if ( memcmp( tr.filterRamp, f->rampColors, sizeof( tr.filterRamp ) ) ) {
+		byte ramp[256][4];
+
+		for ( int i = 0; i < 256; i++ ) {
+			const float at = i / 255.0f * 4.0f;
+			const int k = at >= 4.0f ? 3 : (int)at;
+			const float frac = at - k;
+
+			for ( int c = 0; c < 3; c++ )
+				ramp[i][c] = (byte)( f->rampColors[k][c] + ( f->rampColors[k + 1][c] - f->rampColors[k][c] ) * frac + 0.5f );
+			ramp[i][3] = 255;
+		}
+		GL_SelectTexture( 0 );
+		GL_Bind( tr.filterRampImage );
+		qglTexSubImage2D( GL_TEXTURE_2D, 0, 0, 0, 256, 1, GL_RGBA, GL_UNSIGNED_BYTE, ramp );
+		memcpy( tr.filterRamp, f->rampColors, sizeof( tr.filterRamp ) );
+	}
+
+	GL_State( GLS_DEPTHTEST_DISABLE );
+	GL_Cull( CT_TWO_SIDED );
+	GL_SelectTexture( 1 );
+	GL_Bind( tr.filterRampImage );
+	// the renderer keeps track of two units only, and uses no more: the third is bound here alone
+	qglActiveTextureARB( GL_TEXTURE2_ARB );
+	qglBindTexture( GL_TEXTURE_2D, tr.filterNoiseImage->texnum );
+	qglActiveTextureARB( GL_TEXTURE1_ARB );
+	GL_SelectTexture( 0 );
+
+	qglViewport( (int)x, (int)y, (int)w, (int)h );
+	qglScissor( (int)x, (int)y, (int)w, (int)h );
+	qglBindProgramARB( GL_VERTEX_PROGRAM_ARB, tr.dofVtxShader );
+	qglBindProgramARB( GL_FRAGMENT_PROGRAM_ARB, tr.filterPxShader );
+	for ( int i = 0; i < 3; i++ )
+		qglProgramLocalParameter4fARB( GL_FRAGMENT_PROGRAM_ARB, i, f->matrix[i][0], f->matrix[i][1], f->matrix[i][2], f->matrix[i][3] );
+	qglProgramLocalParameter4fARB( GL_FRAGMENT_PROGRAM_ARB, 3, f->ramp, f->grain, f->vignette * 0.5f, f->strength );
+	qglProgramLocalParameter4fARB( GL_FRAGMENT_PROGRAM_ARB, 4, f->scanlines, 2.0f * M_PI * f->scanlineCount / h, f->aberration * px,
+		f->rampGain > 0.0f ? f->rampGain : 1.0f );
+	qglProgramLocalParameter4fARB( GL_FRAGMENT_PROGRAM_ARB, 5, x + w * 0.5f, y + h * 0.5f, 2.0f / w, 2.0f / h );
+	qglProgramLocalParameter4fARB( GL_FRAGMENT_PROGRAM_ARB, 6, ( rand() & 1023 ) / 1024.0f, ( rand() & 1023 ) / 1024.0f,
+		1.0f / ( 64.0f * grainPx ), 1.0f / ( 64.0f * grainPx ) );
+	qglEnable( GL_VERTEX_PROGRAM_ARB );
+	qglEnable( GL_FRAGMENT_PROGRAM_ARB );
+
+	qglBindTexture( GL_TEXTURE_RECTANGLE_ARB, tr.sceneImage );
+	qglCopyTexSubImage2D( GL_TEXTURE_RECTANGLE_ARB, 0, 0, 0, 0, 0, glConfig.vidWidth, glConfig.vidHeight );
+	qglBegin( GL_QUADS );
+		qglTexCoord2f( x, y );
+		qglVertex2f( -1.0f, -1.0f );
+		qglTexCoord2f( x, y + h );
+		qglVertex2f( -1.0f, 1.0f );
+		qglTexCoord2f( x + w, y + h );
+		qglVertex2f( 1.0f, 1.0f );
+		qglTexCoord2f( x + w, y );
+		qglVertex2f( 1.0f, -1.0f );
+	qglEnd();
+
+	qglDisable( GL_VERTEX_PROGRAM_ARB );
+	qglDisable( GL_FRAGMENT_PROGRAM_ARB );
+	qglBindTexture( GL_TEXTURE_2D, glState.currenttextures[0] );
+	SetViewportAndScissor();
+}
+
+
+/*
+=============
 RB_DrawSurfs
 
 =============
@@ -1768,6 +1849,10 @@ const void	*RB_DrawSurfs( const void *data ) {
 	if ( backEnd.refdef.dofBlur > 0.0f && tr.dofPxShader && !backEnd.viewParms.isPortal
 		&& !( backEnd.refdef.rdflags & RDF_NOWORLDMODEL ) )
 		RB_DepthOfField();
+	// and its filter over that
+	if ( backEnd.refdef.filterOn && tr.filterPxShader && tr.filterRampImage && tr.filterNoiseImage && !backEnd.viewParms.isPortal
+		&& !( backEnd.refdef.rdflags & RDF_NOWORLDMODEL ) )
+		RB_ScreenFilter();
 
 	return (const void *)(cmd + 1);
 }
