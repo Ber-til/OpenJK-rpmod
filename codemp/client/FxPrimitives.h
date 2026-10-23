@@ -151,6 +151,9 @@ protected:
 
 public:
 
+	// part of this player's own effect, -1 none: what it plays on dying, hitting or emitting is theirs too
+	int			mOwner;
+
 	CEffect();
 	virtual ~CEffect() {}
 

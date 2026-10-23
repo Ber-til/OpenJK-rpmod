@@ -46,6 +46,7 @@ CMediaHandles &CMediaHandles::operator=(const CMediaHandles &that )
 //------------------------------------------------------
 CFxScheduler::CFxScheduler()
 {
+	mOwner = -1;
 	mNextFree2DEffect = 0;
 	memset( &mEffectTemplates, 0, sizeof( mEffectTemplates ));
 	memset( &mLoopedEffectArray, 0, sizeof( mLoopedEffectArray ));
@@ -146,7 +147,9 @@ void CFxScheduler::AddLoopedEffects()
 			data->mEntityNum = entNum;
 			CGVM_GetLerpOrigin();
 
+			mOwner = CL_ShaderManager_Owner( NULL, entNum );
 			PlayEffect( mLoopedEffectArray[i].mId, data->mPoint, 0, mLoopedEffectArray[i].mBoltInfo, mLoopedEffectArray[i].mGhoul2, -1, mLoopedEffectArray[i].mPortalEffect, false, mLoopedEffectArray[i].mIsRelative );	//very important to send FALSE to not recursively add me!
+			mOwner = -1;
 			mLoopedEffectArray[i].mNextTime = theFxHelper.mTime + mEffectTemplates[mLoopedEffectArray[i].mId].mRepeatDelay;
 			if (mLoopedEffectArray[i].mLoopStopTime && mLoopedEffectArray[i].mLoopStopTime < theFxHelper.mTime)	//time's up
 			{//kill this entry
@@ -960,6 +963,7 @@ void CFxScheduler::PlayEffect( int id, vec3_t origin, matrix3_t axis, const int 
 				sfx->mStartTime = theFxHelper.mTime + delay;
 				sfx->mpTemplate = prim;
 				sfx->mIsRelative = isRelative;
+				sfx->mOwner = (short)mOwner;
 				sfx->mPortalEffect = isPortal;
 
 				if ( boltInfo == -1 )
@@ -1100,6 +1104,8 @@ void CFxScheduler::AddScheduledEffects( bool portal )
 
 		if (portal == effect->mPortalEffect && effect->mStartTime <= theFxHelper.mTime )
 		{ //only render portal fx on the skyportal pass and vice versa
+			// whose it is was decided when it was played
+			mOwner = effect->mOwner;
 			if (effect->mBoltNum == -1)
 			{// ok, are we spawning a bolt on effect or a normal one?
 				if ( effect->mEntNum != ENTITYNUM_NONE )
@@ -1152,6 +1158,7 @@ void CFxScheduler::AddScheduledEffects( bool portal )
 				}
 			}
 
+			mOwner = -1;
 			mScheduledEffectsPool.Free (effect);
 			itr = mFxSchedule.erase(itr);
 		}
@@ -1165,6 +1172,12 @@ void CFxScheduler::AddScheduledEffects( bool portal )
 	FX_Add( !!portal );
 
 	gEffectsInPortal = false;
+}
+
+// a piece's shader: for a player's own effect, their shader manager player shader in its place
+qhandle_t CFxScheduler::MineMedia( qhandle_t shader ) const
+{
+	return mOwner >= 0 ? CL_ShaderManager_OwnerShader( mOwner, shader ) : shader;
 }
 
 bool CFxScheduler::Add2DEffect(float x, float y, float w, float h, vec4_t color, qhandle_t shaderHandle)
@@ -1488,7 +1501,7 @@ void CFxScheduler::CreateEffect( CPrimitiveTemplate *fx, const vec3_t origin, ma
 						fx->mRotation.GetVal(), fx->mRotationDelta.GetVal(),
 						fx->mMin, fx->mMax, fx->mElasticity.GetVal(),
 						fx->mDeathFxHandles.GetHandle(), fx->mImpactFxHandles.GetHandle(),
-						fx->mLife.GetVal(), fx->mMediaHandles.GetHandle(), flags, fx->mMatImpactFX, fxParm,
+						fx->mLife.GetVal(), MineMedia( fx->mMediaHandles.GetHandle() ), flags, fx->mMatImpactFX, fxParm,
 						ghoul2, entNum, modelNum, boltNum );
 		break;
 
@@ -1500,7 +1513,7 @@ void CFxScheduler::CreateEffect( CPrimitiveTemplate *fx, const vec3_t origin, ma
 						fx->mSizeStart.GetVal(), fx->mSizeEnd.GetVal(), fx->mSizeParm.GetVal(),
 						fx->mAlphaStart.GetVal(), fx->mAlphaEnd.GetVal(), fx->mAlphaParm.GetVal(),
 						sRGB, eRGB, fx->mRGBParm.GetVal(),
-						fx->mLife.GetVal(), fx->mMediaHandles.GetHandle(), flags, fx->mMatImpactFX, fxParm,
+						fx->mLife.GetVal(), MineMedia( fx->mMediaHandles.GetHandle() ), flags, fx->mMatImpactFX, fxParm,
 						ghoul2, entNum, modelNum, boltNum);
 		break;
 
@@ -1515,7 +1528,7 @@ void CFxScheduler::CreateEffect( CPrimitiveTemplate *fx, const vec3_t origin, ma
 						sRGB, eRGB, fx->mRGBParm.GetVal(),
 						fx->mMin, fx->mMax, fx->mElasticity.GetVal(),
 						fx->mDeathFxHandles.GetHandle(), fx->mImpactFxHandles.GetHandle(),
-						fx->mLife.GetVal(), fx->mMediaHandles.GetHandle(), flags, fx->mMatImpactFX, fxParm,
+						fx->mLife.GetVal(), MineMedia( fx->mMediaHandles.GetHandle() ), flags, fx->mMatImpactFX, fxParm,
 						ghoul2, entNum, modelNum, boltNum);
 		break;
 
@@ -1527,7 +1540,7 @@ void CFxScheduler::CreateEffect( CPrimitiveTemplate *fx, const vec3_t origin, ma
 						fx->mSizeStart.GetVal(), fx->mSizeEnd.GetVal(), fx->mSizeParm.GetVal(),
 						fx->mAlphaStart.GetVal(), fx->mAlphaEnd.GetVal(), fx->mAlphaParm.GetVal(),
 						sRGB, eRGB, fx->mRGBParm.GetVal(),
-						fx->mElasticity.GetVal(), fx->mLife.GetVal(), fx->mMediaHandles.GetHandle(), flags,
+						fx->mElasticity.GetVal(), fx->mLife.GetVal(), MineMedia( fx->mMediaHandles.GetHandle() ), flags,
 						fx->mMatImpactFX, fxParm,
 						ghoul2, entNum, modelNum, boltNum);
 		break;
@@ -1542,7 +1555,7 @@ void CFxScheduler::CreateEffect( CPrimitiveTemplate *fx, const vec3_t origin, ma
 						fx->mLengthStart.GetVal(), fx->mLengthEnd.GetVal(), fx->mLengthParm.GetVal(),
 						fx->mAlphaStart.GetVal(), fx->mAlphaEnd.GetVal(), fx->mAlphaParm.GetVal(),
 						sRGB, eRGB, fx->mRGBParm.GetVal(),
-						fx->mLife.GetVal(), fx->mMediaHandles.GetHandle(), flags, fx->mMatImpactFX, fxParm,
+						fx->mLife.GetVal(), MineMedia( fx->mMediaHandles.GetHandle() ), flags, fx->mMatImpactFX, fxParm,
 						ghoul2, entNum, modelNum, boltNum,
 						(qboolean)( fx->mSpawnFlags & FX_ORG2_FROM_TRACE ));
 		break;
@@ -1616,7 +1629,7 @@ void CFxScheduler::CreateEffect( CPrimitiveTemplate *fx, const vec3_t origin, ma
 							0,			// deathID
 							0,			// impactID
 							20000,		// lifetime
-							fx->mMediaHandles.GetHandle(),
+							MineMedia( fx->mMediaHandles.GetHandle() ),
 							(fx->mFlags&~FX_ALPHA_PARM_MASK)|FX_ALPHA_NONLINEAR,
 							MATIMPACTFX_NONE, -1);
 				}
@@ -1627,7 +1640,7 @@ void CFxScheduler::CreateEffect( CPrimitiveTemplate *fx, const vec3_t origin, ma
 					color.rgba.b = sRGB[2] * 0xff;
 					color.rgba.a = fx->mAlphaStart.GetVal() * 0xff;
 
-					CG_ImpactMark( fx->mMediaHandles.GetHandle(), org, ax[0],
+					CG_ImpactMark( MineMedia( fx->mMediaHandles.GetHandle() ), org, ax[0],
 								fx->mRotation.GetVal(), color.c, 12000, 8000,
 								true, fx->mSizeStart.GetVal(), false );
 				}
@@ -1640,16 +1653,16 @@ void CFxScheduler::CreateEffect( CPrimitiveTemplate *fx, const vec3_t origin, ma
 			color.rgba.b = sRGB[2] * 0xff;
 			color.rgba.a = fx->mAlphaStart.GetVal() * 0xff;
 
-			CG_ImpactMark( fx->mMediaHandles.GetHandle(), org, ax[0],
+			CG_ImpactMark( MineMedia( fx->mMediaHandles.GetHandle() ), org, ax[0],
 						fx->mRotation.GetVal(), color.c, 12000, 8000,
 						true, fx->mSizeStart.GetVal(), false );
 		} */
 
-		theFxHelper.AddDecalToScene ( fx->mMediaHandles.GetHandle(), org, ax[0], fx->mRotation.GetVal(), sRGB[0], sRGB[1], sRGB[2], fx->mAlphaStart.GetVal(), qtrue, fx->mSizeStart.GetVal(), qfalse );
+		theFxHelper.AddDecalToScene ( MineMedia( fx->mMediaHandles.GetHandle() ), org, ax[0], fx->mRotation.GetVal(), sRGB[0], sRGB[1], sRGB[2], fx->mAlphaStart.GetVal(), qtrue, fx->mSizeStart.GetVal(), qfalse );
 
 		if (fx->mFlags & FX_GHOUL2_DECALS)
 		{
-			theFxHelper.AddGhoul2Decal(fx->mMediaHandles.GetHandle(), org, ax[0], fx->mSizeStart.GetVal());
+			theFxHelper.AddGhoul2Decal(MineMedia( fx->mMediaHandles.GetHandle() ), org, ax[0], fx->mSizeStart.GetVal());
 		}
 
 		break;
@@ -1665,7 +1678,7 @@ void CFxScheduler::CreateEffect( CPrimitiveTemplate *fx, const vec3_t origin, ma
 					fx->mRotation.GetVal(), fx->mRotationDelta.GetVal(),
 					fx->mMin, fx->mMax, fx->mElasticity.GetVal(),
 					fx->mDeathFxHandles.GetHandle(), fx->mImpactFxHandles.GetHandle(),
-					fx->mLife.GetVal(), fx->mMediaHandles.GetHandle(), flags, fx->mMatImpactFX, fxParm,
+					fx->mLife.GetVal(), MineMedia( fx->mMediaHandles.GetHandle() ), flags, fx->mMatImpactFX, fxParm,
 					ghoul2, entNum, modelNum, boltNum);
 		break;
 
@@ -1715,7 +1728,7 @@ void CFxScheduler::CreateEffect( CPrimitiveTemplate *fx, const vec3_t origin, ma
 		FX_AddFlash( org, fx->mSizeStart.GetVal(), fx->mSizeEnd.GetVal(), fx->mSizeParm.GetVal(),
 					fx->mAlphaStart.GetVal(), fx->mAlphaEnd.GetVal(), fx->mAlphaParm.GetVal(),
 					sRGB, eRGB, fx->mRGBParm.GetVal(),
-					fx->mLife.GetVal(), fx->mMediaHandles.GetHandle(), flags, fx->mMatImpactFX, fxParm );
+					fx->mLife.GetVal(), MineMedia( fx->mMediaHandles.GetHandle() ), flags, fx->mMatImpactFX, fxParm );
 		break;
 
 	default:

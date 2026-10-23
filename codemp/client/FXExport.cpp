@@ -29,6 +29,11 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 	#include <float.h>
 #endif // __FXCHECKER
 
+void FX_SetOwner( int owner )
+{
+	theFxScheduler.mOwner = owner;
+}
+
 int	FX_RegisterEffect(const char *file)
 {
 	return theFxScheduler.RegisterEffect(file, true);

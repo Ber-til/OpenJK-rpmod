@@ -1070,6 +1070,12 @@ typedef struct trGlobals_s {
 	qboolean				skyLookOn;
 	vec3_t					skyLookTint, skyLookAngles, skyLookShift;
 
+	// the client's sky portal: the map seen from portalSkyOrg in place of the sky
+	qboolean				portalSkyOn;
+	vec3_t					portalSkyOrg;
+	qboolean				portalSkyDrawn;		// a sky portal scene came since the last world scene
+	qboolean				inPortalSky;		// rendering the client's one
+
 	shader_t				*defaultShader;
 	shader_t				*shadowShader;
 	shader_t				*distortionShader;
@@ -1440,6 +1446,7 @@ void		RE_SetFog( int fog, const float *color, float depth );
 int			RE_AddFog( const vec3_t mins, const vec3_t maxs, const float *color, float depth );
 void		RE_ClearAddedFogs( void );
 void		RE_SetSkyLook( const float *tint, const vec3_t angles, const vec3_t shift );
+void		RE_SetSkyPortal( const vec3_t origin );
 qhandle_t	RE_WorldPieceModel( const int *surfaces, const int *triangles, int count, const vec3_t origin );
 
 void    	R_Init( void );

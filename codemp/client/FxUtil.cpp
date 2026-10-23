@@ -247,6 +247,7 @@ void FX_AddPrimitive( CEffect *pEffect, int killTime )
 	item->mEffect = pEffect;
 	item->mKillTime = theFxHelper.mTime + killTime;
 	item->mPortal = gEffectsInPortal;	//global set in AddScheduledEffects
+	pEffect->mOwner = theFxScheduler.mOwner;	// whose effect it is part of, set while it is played
 
 	activeFx++;
 

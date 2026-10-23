@@ -286,6 +286,10 @@ typedef struct refexport_s {
 		// the box that aren't in one of the map's volumes are in it; its fog number, 0 if there's no room
 		int					(*AddFog)								( const vec3_t mins, const vec3_t maxs, const float *color, float depth );
 		void				(*ClearAddedFogs)						( void );
+		// the shader manager's sky portal, until changed: the map seen from origin takes the sky's
+		// place in every world scene, as a 3D skybox's view does; a map's own 3D skybox is moved
+		// there. NULL puts the sky back as the map has it
+		void				(*SetSkyPortal)							( const vec3_t origin );
 	} ext;
 
 } refexport_t;

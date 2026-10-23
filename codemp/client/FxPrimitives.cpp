@@ -36,7 +36,8 @@ CEffect::CEffect(void) :
 	mMatImpactFX(MATIMPACTFX_NONE),
 	mMatImpactParm(-1),
 	mSoundRadius(-1),
-	mSoundVolume(-1)
+	mSoundVolume(-1),
+	mOwner(-1)
 {
 	memset( &mRefEnt, 0, sizeof( mRefEnt ));
 }
@@ -69,7 +70,9 @@ void CParticle::Die(void)
 		VectorSet( norm, flrand(-1.0f, 1.0f), flrand(-1.0f, 1.0f), flrand(-1.0f, 1.0f));
 		VectorNormalize( norm );
 
+		theFxScheduler.mOwner = mOwner;
 		theFxScheduler.PlayEffect( mDeathFxID, mOrigin1, norm );
+		theFxScheduler.mOwner = -1;
 	}
 }
 
@@ -265,7 +268,9 @@ bool CParticle::UpdateOrigin(void)
 				{
 					static vec3_t bsNormal = {0, 1, 0};
 
+					theFxScheduler.mOwner = mOwner;
 					theFxScheduler.PlayEffect( mImpactFxID, trace.endpos, bsNormal );
+					theFxScheduler.mOwner = -1;
 				}
 
 				mFlags &= ~(FX_APPLY_PHYSICS | FX_IMPACT_RUNS_FX);
@@ -276,7 +281,9 @@ bool CParticle::UpdateOrigin(void)
 			{
 				if ( mFlags & FX_IMPACT_RUNS_FX && !(trace.surfaceFlags & SURF_NOIMPACT ))
 				{
+					theFxScheduler.mOwner = mOwner;
 					theFxScheduler.PlayEffect( mImpactFxID, trace.endpos, trace.plane.normal );
+					theFxScheduler.mOwner = -1;
 				}
 
 				// may need to interact with the material type we hit
@@ -1374,7 +1381,9 @@ void CEmitter::Draw(void)
 				step *= step;
 
 				// We met the step criteria so, we should add in the effect
+				theFxScheduler.mOwner = mOwner;
 				theFxScheduler.PlayEffect( mEmitterFxID, org, mRefEnt.axis );
+				theFxScheduler.mOwner = -1;
 
 				VectorCopy( org, mOldOrigin );
 				VectorCopy( v, mOldVelocity );

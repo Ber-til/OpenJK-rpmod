@@ -764,6 +764,13 @@ void CL_ShaderManager_Draw( void );
 const char *CL_ShaderManager_SkinName( qhandle_t h );
 qboolean CL_ShaderManager_Camera( vec3_t origin, vec3_t angles );
 void CL_ShaderManager_AddEffect( qhandle_t shader, const vec3_t mins, const vec3_t maxs, float radius );
+// the Mine tab's player shaders, this player's and those others shared, each on their own
+// effects, sabers and shells only
+int CL_ShaderManager_Owner( const vec3_t org, int entNum );
+qhandle_t CL_ShaderManager_OwnerShader( int owner, qhandle_t shader );
+qhandle_t CL_ShaderManager_MineFor( qhandle_t shader, const vec3_t org, int entNum );
+const refEntity_t *CL_ShaderManager_MineEntity( const refEntity_t *ent, refEntity_t *copy );
+void CL_ShaderManager_MineHook( char **argv, int argc, const char *message );
 
 //
 // cl_effectmanager.cpp
@@ -833,7 +840,7 @@ void CL_RpHooks_Draw( void );
 void CL_RpHooks_DrawSubtitles( void );
 void CL_RpHooks_ChatSubtitle( void );
 // the features sent as cmd: hooks, which only players with this client see: off until turned on
-// in a tool's TOGGLE EXPERIMENTAL, for the session
+// in a tool's TOGGLE EXPERIMENTAL, for the session, or with rpexperimental, for good
 #define RP_EXPERIMENTAL_LABEL	"TOGGLE EXPERIMENTAL"
 #define RP_EXPERIMENTAL_WARNING	"These features are a work in progress. They should not be used on Temple, and can only be viewed by the people currently in-game with OpenJK-rpmod installed and up to date."
 #define RP_EXPERIMENTAL_OFF		"Experimental: turn it on with " RP_EXPERIMENTAL_LABEL
