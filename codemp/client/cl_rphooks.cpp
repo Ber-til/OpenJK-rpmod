@@ -402,6 +402,10 @@ static rhResult_t RH_Run( const char *text ) {
 		CL_MapEditor_Hook( argv + 1, argc - 1, message );
 		return RH_DROP;
 	}
+	if ( !Q_stricmp( argv[0], "story" ) ) {
+		CL_Storyteller_Hook( argv + 1, argc - 1, message );
+		return RH_DROP;
+	}
 	if ( !Q_stricmp( argv[0], "sky" ) ) {
 		CL_ShaderManager_SkyHook( argv + 1, argc - 1 );
 		return RH_DROP;

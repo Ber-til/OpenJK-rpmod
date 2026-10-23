@@ -41,10 +41,10 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 // Fog: the fog the map was built with, over all of it or in volumes, given a colour and a
 // thickness of our own, or taken away; and fog volumes of our own, boxes of fog anywhere.
 //
-// RPMod has no server side for any of it yet, so only this screen sees the edits. They
-// are kept in mapedits/<map>.ent, written as entities a server could spawn later, and
-// come back with the map whenever rpc_mapEdits is on. Layouts are more of them kept by
-// name, in mapedits/<map>/<name>.ent, to load when wanted.
+// RPMod has no server side for any of it yet, so only this screen sees the edits. A map
+// always starts without any: they're kept only by name as layouts, in
+// mapedits/<map>/<name>.ent (entities a server could spawn later), loaded when wanted and
+// shared, so no one's edits come back on their own over someone else's.
 //
 // Shared, an admin's edits go to everyone on the map with this client, hidden in rpnotify
 // prints (see cl_rphooks.cpp):
@@ -408,6 +408,10 @@ typedef struct {
 	qboolean	useDown;
 	int			useAim;
 
+	// opened from the storyteller to click a trigger for a step: 0 a map trigger, 1 a door or
+	// button, 2 a use trigger; -1 not
+	int			storyPick;
+
 	// a prop chosen in the map, not lifted yet
 	int			candSeeds[ME_MAX_SEEDS][2];
 	int			numCandSeeds;
@@ -750,6 +754,21 @@ static qboolean ME_LockShown( const meEnt_t *e ) {
 static char *ME_LockNameBuffer( int *size ) {
 	*size = sizeof( ml.name );
 	return ml.name;
+}
+
+// opened from a storyteller step to click its trigger: 0 a map trigger, 1 a door or button, 2 a
+// use trigger
+void CL_MapEditor_PickForStory( int kind ) {
+	CL_MapEditor_Open();
+	if ( !me.open )
+		return;
+	me.storyPick = kind;
+	me.tab = kind == 2 ? ME_TAB_TRIGGERS : ME_TAB_MAP;
+	me.showLayouts = qfalse;
+	me.showTriggers = me.showBrushes = qtrue;
+	me.selKind = ME_SEL_NONE;
+	me.sel = -1;
+	me.grabbing = qfalse;
 }
 
 // opened from a storyteller step: Lock and Unlock go in the story, not to the server
@@ -1934,7 +1953,12 @@ static const char *ME_LayoutDir( void ) {
 	return va( ME_DIR "/%s", ME_MapBase() );
 }
 
+// the edits a map used to load by itself, mapedits/<map>.ent, now a layout like the others
+#define ME_OLD_LAYOUT		"old-saved-edits"
+
 static const char *ME_LayoutPath( const char *name ) {
+	if ( !Q_stricmp( name, ME_OLD_LAYOUT ) )
+		return ME_Path();
 	return va( ME_DIR "/%s/%s" ME_EXT, ME_MapBase(), name );
 }
 
@@ -2075,15 +2099,21 @@ static int ME_SaveTo( const char *path ) {
 	return count;
 }
 
-// the map's own file, what comes back with it
-static qboolean ME_Save( void ) {
-	const int count = ME_SaveTo( ME_Path() );
+static qboolean ME_LayoutNameOk( const char *name );
+static void ME_SaveLayout( const char *name );
 
-	if ( count < 0 )
-		return qfalse;
-	me.dirty = qfalse;
-	ME_Message( va( S_COLOR_GREEN "Saved %i edits to %s", count, ME_Path() ) );
-	return qtrue;
+// edits are kept only as layouts, never by the map itself: the layout named, or the
+// Layouts panel to name one
+static qboolean ME_Save( void ) {
+	if ( ME_LayoutNameOk( me.layoutName ) ) {
+		ME_SaveLayout( me.layoutName );
+		me.dirty = qfalse;
+		return qtrue;
+	}
+	me.showLayouts = qtrue;
+	me.field = ME_FIELD_LAYOUT;
+	ME_Message( S_COLOR_YELLOW "Name a layout to keep the edits in" );
+	return qfalse;
 }
 
 typedef struct {
@@ -2244,8 +2274,11 @@ static qboolean ME_LoadFrom( const char *path ) {
 	return qtrue;
 }
 
+// no edits: a map always starts without any, until a layout is loaded or someone shares theirs
 static void ME_Load( void ) {
-	ME_LoadFrom( ME_Path() );
+	ME_Clear();
+	me.shared = qfalse;
+	ME_RebuildHidden();
 }
 
 /*
@@ -2270,6 +2303,8 @@ static void ME_ListLayouts( void ) {
 		if ( me.layouts[me.numLayouts][0] )
 			me.numLayouts++;
 	}
+	if ( FS_FileExists( ME_Path() ) && me.numLayouts < ME_MAX_LAYOUTS )
+		Q_strncpyz( me.layouts[me.numLayouts++], ME_OLD_LAYOUT, sizeof( me.layouts[0] ) );
 	if ( me.layoutSel >= me.numLayouts )
 		me.layoutSel = -1;
 }
@@ -2294,9 +2329,9 @@ static void ME_LoadLayout( const char *name ) {
 		ME_Load();
 		return;
 	}
-	// what's shown isn't what comes back with the map until it's saved
-	me.dirty = qtrue;
-	ME_Message( va( S_COLOR_GREEN "Loaded %s: Save keeps it as this map's edits", name ) );
+	me.dirty = qfalse;
+	Q_strncpyz( me.layoutName, name, sizeof( me.layoutName ) );
+	ME_Message( va( S_COLOR_GREEN "Loaded %s: Share shows it to everyone", name ) );
 }
 
 static void ME_DeleteLayout( const char *name ) {
@@ -2369,6 +2404,18 @@ static const char *ME_ShareItem( const meItem_t *it ) {
 	} else if ( it->kind == ME_ITEM_LIGHT ) {
 		Q_strcat( out, sizeof( out ), va( "l %s %i %g %g %g %i", ME_Vec( it->org ), ME_Round( it->radius ),
 			it->color[0], it->color[1], it->color[2], it->style ) );
+	} else if ( it->kind == ME_ITEM_TRIGGER && it->use ) {
+		char words[sizeof( it->name ) + sizeof( it->display ) + 2];
+
+		// the name and what it's shown as, ~ between, spaces as `: the edit's spaces are taken out
+		Com_sprintf( words, sizeof( words ), "%s~%s", it->name, it->display );
+		for ( char *c = words; *c; c++ ) {
+			if ( *c == ' ' )
+				*c = '`';
+		}
+		Q_strcat( out, sizeof( out ), va( "u %s", ME_Vec( it->org ) ) );
+		Q_strcat( out, sizeof( out ), va( " %s ", ME_Vec( it->size ) ) );
+		ME_AppendSplit( out, sizeof( out ), words );
 	} else if ( it->kind == ME_ITEM_FOG ) {
 		Q_strcat( out, sizeof( out ), va( "v %s", ME_Vec( it->org ) ) );
 		Q_strcat( out, sizeof( out ), va( " %s %g %g %g %i", ME_Vec( it->size ), it->color[0], it->color[1], it->color[2], ME_Round( it->fogDepth ) ) );
@@ -2553,6 +2600,27 @@ static void ME_ApplyShared( const char *edit ) {
 		ME_KV( "_color", va( "%g %g %g", f[1], f[2], f[3] ) );
 		ME_KV( "value", rest );
 		break;
+	case 'u':
+		if ( sscanf( edit + 1, "%f %f %f %f %f %f %n", &f[0], &f[1], &f[2], &f[3], &f[4], &f[5], &used ) < 6 || !used )
+			return;
+		ME_Unsplit( edit + 1 + used, rest, sizeof( rest ) );
+		for ( char *c = rest; *c; c++ ) {
+			if ( *c == '`' )
+				*c = ' ';
+		}
+		{
+			char *bar = strchr( rest, '~' );
+
+			if ( bar )
+				*bar++ = '\0';
+			ME_KV( "classname", "rpm_trigger" );
+			ME_KV( "origin", va( "%g %g %g", f[0], f[1], f[2] ) );
+			ME_KV( "size", va( "%g %g %g", f[3], f[4], f[5] ) );
+			ME_KV( "use", "1" );
+			ME_KV( "targetname", rest );
+			ME_KV( "displayname", bar ? bar : "" );
+		}
+		break;
 	case 'v':
 		if ( sscanf( edit + 1, "%f %f %f %f %f %f %f %f %f %f", &f[0], &f[1], &f[2], &f[3], &f[4], &f[5], &f[6], &f[7], &f[8], &f[9] ) < 10 )
 			return;
@@ -2589,9 +2657,11 @@ static void ME_ApplyBatch( void ) {
 	int before;
 
 	// ours aren't lost under theirs
-	if ( me.dirty && !me.shared ) {
-		ME_Save();
-		Com_Printf( "Map editor: your edits were saved before the shared ones came in\n" );
+	if ( me.dirty && !me.shared && me.numItems ) {
+		const char *name = ME_LayoutNameOk( me.layoutName ) ? me.layoutName : "before-shared";
+
+		ME_SaveLayout( name );
+		Com_Printf( "Map editor: your edits were kept as the layout %s before the shared ones came in\n", name );
 	}
 	ME_Clear();
 	for ( ; *p; p = end ) {
@@ -2795,6 +2865,7 @@ void CL_MapEditor_Close( void ) {
 	ME_CancelGrab();
 	me.open = qfalse;
 	me.field = ME_FIELD_NONE;
+	me.storyPick = -1;
 	ME_ReleaseKeys();
 	Key_SetCatcher( Key_GetCatcher() & ~KEYCATCH_MAPEDITOR );
 	if ( me.dirty )
@@ -2976,9 +3047,73 @@ static void ME_ScrollToSelection( void ) {
 	}
 }
 
+// for the storyteller, the trigger of the kind it wants the ray meets: kind ME_SEL_ENT or
+// ME_SEL_ITEM; qfalse if none
+static qboolean ME_StoryPickAt( const vec3_t org, const vec3_t dir, int *kind, int *index ) {
+	float best;
+	trace_t tr;
+	vec3_t end;
+
+	*kind = ME_SEL_NONE;
+	*index = -1;
+	VectorMA( org, ME_TRACE_DIST, dir, end );
+	CM_BoxTrace( &tr, org, end, vec3_origin, vec3_origin, 0, CONTENTS_SOLID | CONTENTS_TERRAIN, qfalse );
+	best = tr.fraction * ME_TRACE_DIST + 8.0f;
+	if ( me.storyPick == 2 ) {
+		for ( int i = 0; i < me.numItems; i++ ) {
+			float t;
+
+			if ( me.items[i].kind != ME_ITEM_TRIGGER || !me.items[i].use )
+				continue;
+			t = ME_ItemRay( &me.items[i], org, dir );
+			if ( t >= 0.0f && t < best ) {
+				best = t;
+				*kind = ME_SEL_ITEM;
+				*index = i;
+			}
+		}
+	} else {
+		for ( int i = 0; i < me.numEnts; i++ ) {
+			const meEnt_t *e = &me.ents[i];
+			float t;
+
+			if ( !e->bmodel || e->kind != ( me.storyPick == 0 ? ME_ENT_TRIGGER : ME_ENT_BRUSH ) )
+				continue;
+			t = ME_RayBox( org, dir, e->mins, e->maxs );
+			// a door's box we're in is found by its walls; a trigger's we stand in counts
+			if ( t < 0.0f || ( t == 0.0f && me.storyPick == 1 ) || t >= best )
+				continue;
+			best = t;
+			*kind = ME_SEL_ENT;
+			*index = i;
+		}
+	}
+	return (qboolean)( *kind != ME_SEL_NONE );
+}
+
 static void ME_ClickWorld( float x, float y ) {
 	vec3_t dir;
 	int kind, index;
+
+	// for the storyteller: the trigger clicked goes in its step
+	if ( me.storyPick >= 0 ) {
+		ME_CursorRay( x, y, dir );
+		if ( !ME_StoryPickAt( me.camOrg, dir, &kind, &index ) ) {
+			ME_Message( S_COLOR_YELLOW "Nothing of that kind there" );
+			return;
+		}
+		if ( kind == ME_SEL_ITEM ) {
+			if ( !me.items[index].name[0] ) {
+				ME_Select( kind, index );
+				ME_Message( S_COLOR_YELLOW "Give it a name first, in the Triggers tab, then click it again" );
+				return;
+			}
+			CL_Storyteller_TriggerPicked( me.items[index].name );
+		} else {
+			CL_Storyteller_TriggerPicked( va( "*%i", me.ents[index].bmodel ) );
+		}
+		return;
+	}
 
 	if ( me.grabbing ) {
 		me.grabbing = qfalse;
@@ -3029,6 +3164,8 @@ static qboolean ME_ProjectAny( const vec3_t point, float *x, float *y );
 static meItem_t *ME_GizmoItem( void ) {
 	meItem_t *it = ME_SelectedItem();
 
+	if ( me.storyPick >= 0 )
+		return NULL;
 	if ( !it || me.grabbing || ( it->kind == ME_ITEM_PROP && it->removed ) )
 		return NULL;
 	return it;
@@ -3316,9 +3453,12 @@ static qboolean ME_FieldChar( int field, int ch ) {
 	case ME_FIELD_LAYOUT:
 		return ME_LayoutChar( ch );
 	case ME_FIELD_COMMAND:
-	case ME_FIELD_TRIGGERDISPLAY:
 		// an entity's value can't hold a quote
 		return (qboolean)( ch >= ' ' && ch < 127 && ch != '"' );
+	case ME_FIELD_TRIGGERNAME:
+	case ME_FIELD_TRIGGERDISPLAY:
+		// shared, they can't hold what splits the edits up
+		return (qboolean)( ch >= ( me.field == ME_FIELD_TRIGGERNAME ? '!' : ' ' ) && ch < 127 && !strchr( "\"|~`", ch ) );
 	case ME_FIELD_LOCKNAME:
 		// a word or more, nothing that would end the command
 		return (qboolean)( ch >= ' ' && ch < 127 && ch != '"' && ch != ';' );
@@ -3359,6 +3499,11 @@ void CL_MapEditor_MouseEvent( int dx, int dy ) {
 
 // escape backs out one level: the text box, carrying, the selection, then the editor
 void CL_MapEditor_Escape( void ) {
+	// picking for the storyteller: straight back to it
+	if ( me.storyPick >= 0 && !me.field && !me.experimentalBox ) {
+		CL_MapEditor_Close();
+		return;
+	}
 	if ( me.experimentalBox ) {
 		me.experimentalBox = qfalse;
 	} else if ( me.field ) {
@@ -3412,14 +3557,19 @@ static int ME_UseAimed( void ) {
 	return found;
 }
 
+// the storyteller's: the name of the use trigger looked at, "" if it has none, NULL if none's looked at
+const char *CL_MapEditor_AimedUseTrigger( void ) {
+	if ( me.useAim < 0 || me.useAim >= me.numItems )
+		return NULL;
+	return me.items[me.useAim].name;
+}
+
+// a use trigger does nothing of its own: the player reaches out to it (RPMod's emote), and the
+// storytellers hear it was used; their stories decide what it does
 static void ME_UseTrigger( meItem_t *it ) {
-	// the player reaches out to it, RPMod's emote
 	if ( cls.state == CA_ACTIVE )
 		CL_AddReliableCommand( "emreach", qfalse );
-	if ( !it->command[0] || ( it->once && it->fired ) )
-		return;
-	it->fired = qtrue;
-	Cbuf_AddText( va( "%s\n", it->command ) );
+	CL_Storyteller_TriggerUsed( it->name );
 }
 
 // our triggers: walking into one runs its command, and pressing use looking at a use one
@@ -3468,6 +3618,7 @@ static void ME_EditorFrame( void ) {
 		// something else cleared the catchers
 		ME_CancelGrab();
 		me.open = qfalse;
+		me.storyPick = -1;
 		me.field = ME_FIELD_NONE;
 		ME_ReleaseKeys();
 		return;
@@ -3521,7 +3672,9 @@ static void ME_EditorFrame( void ) {
 	} else {
 		me.gizmoAxis = ME_GizmoHover();
 	}
-	if ( !me.flying && me.cursorX < ME_PANEL_X && !me.grabbing && me.gizmoAxis < 0 )
+	if ( !me.flying && me.cursorX < ME_PANEL_X && me.storyPick >= 0 )
+		ME_StoryPickAt( me.camOrg, dir, &me.hoverKind, &me.hover );
+	else if ( !me.flying && me.cursorX < ME_PANEL_X && !me.grabbing && me.gizmoAxis < 0 )
 		ME_Pick( me.camOrg, dir, &me.hoverKind, &me.hover );
 	else
 		me.hoverKind = ME_SEL_NONE;
@@ -4363,8 +4516,9 @@ static meItem_t *ME_DrawItemList( float *py, float x, float w, int kind, const c
 			text = va( "%i  %s" S_COLOR_GREY "  %s%s", r + me.itemScroll[tab] + 1, row->noise[0] ? COM_SkipPath( (char *)row->noise ) : S_COLOR_YELLOW "no sound",
 				row->global ? "everywhere" : "here", row->off ? ", stopped" : "" );
 		else
-			text = va( "%i  %s%s%s", r + me.itemScroll[tab] + 1, row->use ? S_COLOR_CYAN "use " S_COLOR_WHITE : "",
-				row->name[0] ? va( "%s: ", row->name ) : "", row->command[0] ? row->command : S_COLOR_GREY "no command" );
+			text = row->use ? va( "%i  " S_COLOR_CYAN "use " S_COLOR_WHITE "%s" S_COLOR_GREY "  %s", r + me.itemScroll[tab] + 1,
+				row->name[0] ? row->name : S_COLOR_YELLOW "no name", row->display )
+				: va( "%i  %s%s", r + me.itemScroll[tab] + 1, row->name[0] ? va( "%s: ", row->name ) : "", row->command[0] ? row->command : S_COLOR_GREY "no command" );
 		ME_TextClipped( x + 4, ry, w - 8, text, meWhite );
 	}
 	if ( !numMatches )
@@ -4568,7 +4722,8 @@ static void ME_DrawTriggersTab( float x, float y, float w ) {
 
 	if ( !it ) {
 		ME_Text( x, y + 4, S_COLOR_GREY "A box that runs a console command when you", meWhite );
-		ME_Text( x, y + 4 + ME_ROW_H, S_COLOR_GREY "walk into it, or press use looking at it", meWhite );
+		ME_Text( x, y + 4 + ME_ROW_H, S_COLOR_GREY "walk into it; or one the storyteller's stories", meWhite );
+		ME_Text( x, y + 4 + ME_ROW_H * 2, S_COLOR_GREY "act on, used with the use key looking at it", meWhite );
 		return;
 	}
 	// walked into, or used: the use key, looking at it, within reach
@@ -4598,6 +4753,13 @@ static void ME_DrawTriggersTab( float x, float y, float w ) {
 	steps = ME_Stepper( x, y, w, "Tall", va( "%i", ME_Round( it->size[2] * 2 ) ) );
 	ME_Adjust( &it->size[2], steps, 8.0f, 1.0f, 4096.0f );
 	y += ME_CTRL_H + ME_GAP + 4;
+	// a use trigger's doing is the storyteller's
+	if ( it->use ) {
+		ME_Text( x, y, S_COLOR_GREY "What it does is up to the storyteller: a story's", meWhite );
+		ME_Text( x, y + ME_ROW_H, S_COLOR_GREY "\"When someone uses\" with its name. Using it", meWhite );
+		ME_Text( x, y + ME_ROW_H * 2, S_COLOR_GREY "plays the reach emote.", meWhite );
+		return;
+	}
 	ME_Text( x, y, "Runs", meDim );
 	y += ME_ROW_H;
 	ME_TextBox( x, y, w, ME_FIELD_COMMAND, it->command, "a console command, e.g. play sound/..." );
@@ -5168,9 +5330,9 @@ static void ME_DrawLayouts( float x, float y, float w ) {
 		}
 	}
 	y += ME_CTRL_H + ME_GAP;
-	if ( ME_Button( x, y, w, "Back to this map's saved edits", qfalse, qtrue ) ) {
+	if ( ME_Button( x, y, w, "Clear: no edits", qfalse, qtrue ) ) {
 		ME_Load();
-		ME_Message( "Back to the saved edits" );
+		ME_Message( "No edits now; a layout loads them again" );
 	}
 	y += ME_CTRL_H + ME_GAP + 10;
 
@@ -5204,8 +5366,8 @@ static void ME_DrawLayouts( float x, float y, float w ) {
 		ME_TextClipped( x, y, w, S_COLOR_CYAN "Showing edits shared with you", meWhite );
 		y += ME_ROW_H + 2;
 	}
-	ME_Text( x, y, S_COLOR_GREY "Models, props, lights, styles, fog and", meWhite );
-	ME_Text( x, y + ME_ROW_H, S_COLOR_GREY "hidden brushes go; triggers stay here.", meWhite );
+	ME_Text( x, y, S_COLOR_GREY "Models, props, lights, styles, fog, hidden", meWhite );
+	ME_Text( x, y + ME_ROW_H, S_COLOR_GREY "brushes and use triggers go (not commands).", meWhite );
 	ME_Text( x, y + ME_ROW_H * 2, S_COLOR_GREY "Only the look changes: no collision.", meWhite );
 	ME_Text( x, y + ME_ROW_H * 3, S_COLOR_GREY "Who joins later needs it shared again.", meWhite );
 }
@@ -5269,7 +5431,10 @@ static void ME_DrawEditor( void ) {
 
 	// top left: what this is, how it went
 	ME_Text( 8, 40, va( "Map editor" S_COLOR_GREY "   %s   fov %i", me.map, ME_Round( me.camFov ) ), meWhite );
-	if ( me.grabbing )
+	if ( me.storyPick >= 0 )
+		ME_Text( 8, 40 + ME_ROW_H, va( S_COLOR_CYAN "For the story: click the %s it waits on   " S_COLOR_GREY "Esc goes back",
+			me.storyPick == 0 ? "map trigger" : me.storyPick == 1 ? "door or button" : "use trigger" ), meWhite );
+	else if ( me.grabbing )
 		ME_Text( 8, 40 + ME_ROW_H, S_COLOR_CYAN "Carrying: it goes where you point; click or G puts it down, Esc puts it back", meWhite );
 	if ( me.message[0] && cls.realtime - me.messageTime < ME_MESSAGE_MS )
 		ME_TextClipped( 8, 40 + ME_ROW_H * 2, ME_PANEL_X - 16, me.message, meWhite );
@@ -5376,7 +5541,7 @@ Commands
 ===============================================================================
 */
 
-// mapedit: the editor; mapedit save|reload: the edits; mapedit on|off: shown outside it
+// mapedit: the editor; mapedit save|load|clear: the edits; mapedit on|off: shown outside it
 void CL_MapEditor_f( void ) {
 	const char *arg = Cmd_Argv( 1 );
 
@@ -5405,9 +5570,9 @@ void CL_MapEditor_f( void ) {
 	} else if ( !Q_stricmp( arg, "load" ) && Cmd_Argv( 2 )[0] ) {
 		ME_LoadLayout( Cmd_Argv( 2 ) );
 		Com_Printf( "%s\n", me.message );
-	} else if ( !Q_stricmp( arg, "reload" ) ) {
+	} else if ( !Q_stricmp( arg, "clear" ) || !Q_stricmp( arg, "reload" ) ) {
 		ME_Load();
-		Com_Printf( "Map edits reloaded from %s\n", ME_Path() );
+		Com_Printf( "Map edits cleared: a layout loads them again\n" );
 	} else if ( !Q_stricmp( arg, "layouts" ) ) {
 		ME_ListLayouts();
 		Com_Printf( "Layouts for %s, in %s:\n", me.map, ME_LayoutDir() );
@@ -5423,13 +5588,13 @@ void CL_MapEditor_f( void ) {
 		Com_Printf( "%s\n", me.message );
 	} else {
 		Com_Printf( "mapedit : open or close the map editor\n"
-			"mapedit save [name] : keep the edits, in %s, or as a layout of that name\n"
+			"mapedit save [name] : keep the edits as a layout: the one loaded, or of that name\n"
 			"mapedit load <name> : a layout in place of the edits shown\n"
-			"mapedit layouts : the layouts kept for this map\n"
-			"mapedit reload : back to the saved edits\n"
+			"mapedit layouts : the layouts kept for this map, in %s\n"
+			"mapedit clear : no edits; a map always starts without any\n"
 			"mapedit share : the edits to everyone on the map with this client (experimental)\n"
 			"mapedit unshare : everyone back to their own\n"
-			"mapedit on|off : show them outside the editor too, or not\n", ME_Path() );
+			"mapedit on|off : show them outside the editor too, or not\n", ME_LayoutDir() );
 	}
 }
 
@@ -5449,6 +5614,7 @@ void CL_MapEditor_Init( void ) {
 	me.candBrush = -1;
 	me.gizmoAxis = me.dragAxis = -1;
 	me.useAim = -1;
+	me.storyPick = -1;
 	memset( &ml, 0, sizeof( ml ) );
 	ml.showDoors = ml.showTriggers = qtrue;
 }
