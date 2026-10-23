@@ -56,6 +56,8 @@ cvar_t	*r_dynamiclight;
 // rjr - removed for hacking cvar_t	*r_dlightBacks;
 
 cvar_t	*r_lodbias;
+cvar_t	*r_safeModels;
+cvar_t	*r_safePlayerModels;
 cvar_t	*r_lodscale;
 cvar_t	*r_autolodscalevalue;
 
@@ -1600,6 +1602,8 @@ void R_Register( void )
 	r_singleShader						= ri.Cvar_Get( "r_singleShader",					"0",						CVAR_CHEAT|CVAR_LATCH, "" );
 	r_lodCurveError						= ri.Cvar_Get( "r_lodCurveError",					"250",						CVAR_ARCHIVE_ND, "" );
 	r_lodbias							= ri.Cvar_Get( "r_lodbias",						"0",						CVAR_ARCHIVE_ND, "" );
+	r_safeModels						= ri.Cvar_Get( "cl_safeModels",					"0",						CVAR_ARCHIVE_ND, "A model with more on a surface than the game draws shows as a missing model, not dropping you, for models loaded from then on" );
+	r_safePlayerModels					= ri.Cvar_Get( "cl_safePlayerModels",			"0",						CVAR_ARCHIVE_ND, "A player model with more on a surface than the game draws shows as Kyle, not dropping you, for models loaded from then on" );
 	r_autolodscalevalue					= ri.Cvar_Get( "r_autolodscalevalue",				"0",						CVAR_ROM, "" );
 	r_flares							= ri.Cvar_Get( "r_flares",							"1",						CVAR_ARCHIVE_ND, "" );
 

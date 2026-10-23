@@ -1189,6 +1189,8 @@ extern cvar_t	*r_texturebitslm;		// number of desired lightmap texture bits
 extern cvar_t	*r_measureOverdraw;		// enables stencil buffer overdraw measurement
 
 extern cvar_t	*r_lodbias;				// push/pull LOD transitions
+extern cvar_t	*r_safeModels;			// too big a model shows as a missing one instead of dropping the client
+extern cvar_t	*r_safePlayerModels;	// too big a player model shows as Kyle instead
 extern cvar_t	*r_lodscale;
 extern cvar_t	*r_autolodscalevalue;
 

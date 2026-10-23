@@ -880,6 +880,103 @@ void CL_AdjustAngles( void ) {
 
 /*
 ================
+CL_WallStick
+
+With cl_wallStick on (cl_wallstick), once the player hangs on a wall holding jump, jump stays held
+for them, through chat, the console or a menu, until they come off the wall. Pressing jump again
+pushes them off: it's held released for them until they're off.
+Typing sends no talk button meanwhile: the game takes every move away from a player who talks
+================
+*/
+cvar_t	*cl_wallStick;
+
+static struct {
+	qboolean	holding;
+	qboolean	jumpReleased;		// jump let go of since: pressing it again lets go of the wall
+	int			offWallTime;		// the snapshot first said they weren't on it
+	int			letGoTime;			// jump pressed again then: it's held released until they're off the wall
+} clWallStick;
+
+#define CL_WALLSTICK_LETGO	1000	// at most this long, should the wall keep them anyway
+
+static qboolean CL_OnWall( void ) {
+	const playerState_t *ps = &cl.snap.ps;
+
+	if ( !cl.snap.valid || ps->pm_type != 0 )	// PM_NORMAL
+		return qfalse;
+	return (qboolean)( ( ps->pm_flags & PMF_STUCK_TO_WALL )
+		|| ( ps->legsAnim >= BOTH_FORCEWALLHOLD_FORWARD && ps->legsAnim <= BOTH_FORCEWALLHOLD_RIGHT ) );
+}
+
+// 1: jump held for them; -1: jump held released, so they push off; 0: their keys as they are
+static int CL_WallStick( void ) {
+	if ( !cl_wallStick || !cl_wallStick->integer || clc.demoplaying ) {
+		clWallStick.holding = qfalse;
+		clWallStick.letGoTime = 0;
+		return 0;
+	}
+	// letting go: jump released as the game sees it, whatever the key does, until they're off the wall,
+	// and no catching the same wall again meanwhile
+	if ( clWallStick.letGoTime ) {
+		if ( CL_OnWall() && cls.realtime - clWallStick.letGoTime < CL_WALLSTICK_LETGO )
+			return -1;
+		clWallStick.letGoTime = 0;
+		// still holding the key off the wall: a new grab needs a new press
+		if ( in_up.active )
+			clWallStick.jumpReleased = qfalse;
+		return 0;
+	}
+	if ( !clWallStick.holding ) {
+		// caught hold of a wall with jump held: from now on it's held for them
+		if ( in_up.active && CL_OnWall() ) {
+			clWallStick.holding = qtrue;
+			clWallStick.jumpReleased = qfalse;
+			clWallStick.offWallTime = 0;
+		}
+		return 0;
+	}
+	// jump pressed again: they push off, as letting go of jump does without cl_wallstick
+	if ( !in_up.active ) {
+		clWallStick.jumpReleased = qtrue;
+	} else if ( clWallStick.jumpReleased ) {
+		clWallStick.holding = qfalse;
+		clWallStick.letGoTime = cls.realtime;
+		return -1;
+	}
+	// pushed off, hit or dropped: over, once the snapshots agree for a moment
+	if ( CL_OnWall() ) {
+		clWallStick.offWallTime = 0;
+	} else if ( !clWallStick.offWallTime ) {
+		clWallStick.offWallTime = cls.realtime;
+	} else if ( cls.realtime - clWallStick.offWallTime > 500 ) {
+		clWallStick.holding = qfalse;
+		return 0;
+	}
+	return 1;
+}
+
+// cl_wallstick [on|off]; the cvar it sets has the same name, so "cl_wallStick 1" in a config works too
+static void CL_WallStick_f( void ) {
+	const char *arg = Cmd_Argv( 1 );
+	qboolean on;
+
+	if ( !arg[0] )
+		on = (qboolean)!cl_wallStick->integer;
+	else if ( !Q_stricmp( arg, "on" ) || !Q_stricmp( arg, "1" ) )
+		on = qtrue;
+	else if ( !Q_stricmp( arg, "off" ) || !Q_stricmp( arg, "0" ) )
+		on = qfalse;
+	else {
+		Com_Printf( "usage: cl_wallstick [on|off]   hanging on a wall, stay there until you press jump again (%s)\n", cl_wallStick->integer ? "on" : "off" );
+		return;
+	}
+	Cvar_Set( "cl_wallStick", on ? "1" : "0" );
+	Com_Printf( "Wall stick %s\n", on ? "on: grab a wall holding jump and you stay on it, chatting or not, until you press jump again"
+		: "off: you let go of a wall when you let go of jump" );
+}
+
+/*
+================
 CL_AutoCrouch
 
 cl_crouch only crouches on foot: anywhere else holding down flies, swims or steers down
@@ -937,6 +1034,16 @@ void CL_KeyMove( usercmd_t *cmd ) {
 
 	up += movespeed * CL_KeyState (&in_up);
 	up -= movespeed * CL_KeyState (&in_down);
+
+	// hanging on a wall with cl_wallstick: jump held for them, then released as they press it again
+	{
+		const int stick = CL_WallStick();
+
+		if ( stick > 0 )
+			up = 127;
+		else if ( stick < 0 && up > 0 )
+			up = 0;
+	}
 
 	// jumping still works: holding jump stands you up for it
 	if ( up <= 0 && CL_AutoCrouch() )
@@ -1280,7 +1387,9 @@ void CL_CmdButtons( usercmd_t *cmd ) {
 		}
 	}
 
-	if ( Key_GetCatcher( ) ) {
+	// typing: the talk balloon, but not while hanging on a wall with cl_wallstick, as the game
+	// takes every move from a player who talks, the jump holding them there too
+	if ( Key_GetCatcher( ) && !clWallStick.holding ) {
 		cmd->buttons |= BUTTON_TALK;
 	}
 
@@ -1826,6 +1935,8 @@ CL_InitInput
 */
 void CL_InitInput( void ) {
 	Cmd_AddCommandList( inputCmds );
+	cl_wallStick = Cvar_Get( "cl_wallStick", "0", CVAR_ARCHIVE, "Stay on a wall you grabbed until you press jump again (cl_wallstick)" );
+	Cmd_AddCommand( "cl_wallstick", CL_WallStick_f, "Hanging on a wall holding jump, stay on it until you press jump again, even while chatting" );
 
 	cl_nodelta = Cvar_Get ("cl_nodelta", "0", 0);
 	cl_debugMove = Cvar_Get ("cl_debugMove", "0", 0);
@@ -1838,4 +1949,5 @@ CL_ShutdownInput
 */
 void CL_ShutdownInput( void ) {
 	Cmd_RemoveCommandList( inputCmds );
+	Cmd_RemoveCommand( "cl_wallstick" );
 }

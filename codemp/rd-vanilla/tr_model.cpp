@@ -1202,6 +1202,50 @@ optimization to prevent disk rescanning if they are
 asked for again.
 ====================
 */
+/*
+================
+R_ModelSurfaceSizes
+
+The most verts and triangles any surface of a model file has. One with more than the renderer
+draws at once (SHADER_MAX_VERTEXES) drops the client as it loads, or as it's drawn
+================
+*/
+#define R_SAFE_PLAYER_MODEL	"models/players/kyle/model.glm"
+
+static void R_ModelSurfaceSizes( const byte *buf, unsigned ident, int *verts, int *tris ) {
+	*verts = *tris = 0;
+	if ( ident == MD3_IDENT ) {
+		const md3Header_t *h = (const md3Header_t *)buf;
+		const md3Surface_t *s = (const md3Surface_t *)( buf + h->ofsSurfaces );
+
+		for ( int i = 0; i < h->numSurfaces && i < 256; i++ ) {
+			*verts = Q_max( *verts, s->numVerts );
+			*tris = Q_max( *tris, s->numTriangles );
+			if ( s->ofsEnd <= 0 )
+				break;
+			s = (const md3Surface_t *)( (const byte *)s + s->ofsEnd );
+		}
+	} else if ( ident == MDXM_IDENT ) {
+		const mdxmHeader_t *h = (const mdxmHeader_t *)buf;
+		const mdxmLOD_t *lod = (const mdxmLOD_t *)( buf + h->ofsLODs );
+
+		for ( int l = 0; l < h->numLODs && l < 16; l++ ) {
+			const mdxmSurface_t *s = (const mdxmSurface_t *)( (const byte *)lod + sizeof( mdxmLOD_t ) + h->numSurfaces * sizeof( mdxmLODSurfOffset_t ) );
+
+			for ( int i = 0; i < h->numSurfaces && i < 1024; i++ ) {
+				*verts = Q_max( *verts, s->numVerts );
+				*tris = Q_max( *tris, s->numTriangles );
+				if ( s->ofsEnd <= 0 )
+					break;
+				s = (const mdxmSurface_t *)( (const byte *)s + s->ofsEnd );
+			}
+			if ( lod->ofsEnd <= 0 )
+				break;
+			lod = (const mdxmLOD_t *)( (const byte *)lod + lod->ofsEnd );
+		}
+	}
+}
+
 static qhandle_t RE_RegisterModel_Actual( const char *name ) {
 	model_t		*mod;
 	unsigned	*buf;
@@ -1346,6 +1390,40 @@ Ghoul2 Insert End
 		if (!bAlreadyCached)
 		{
 			LL(ident);
+		}
+
+		// the safeguards: too big a surface for the renderer, which would drop the client, never loads.
+		// A player model loads Kyle in its place, any other shows as a missing one
+		if ( ( ident == MD3_IDENT || ident == MDXM_IDENT ) && ( r_safeModels->integer || r_safePlayerModels->integer ) ) {
+			int verts, tris;
+
+			R_ModelSurfaceSizes( (const byte *)buf, ident, &verts, &tris );
+			if ( verts >= SHADER_MAX_VERTEXES || tris * 3 >= SHADER_MAX_INDEXES ) {
+				const qboolean player = (qboolean)( ident == MDXM_IDENT && !Q_stricmpn( name, "models/players/", 15 )
+					&& Q_stricmp( filename, R_SAFE_PLAYER_MODEL ) );
+
+				if ( player && r_safePlayerModels->integer ) {
+					ri.Printf( PRINT_WARNING, "WARNING: %s has %i verts and %i triangles on a surface, more than the game draws (%i, %i): shown as Kyle\n",
+						name, verts, tris, SHADER_MAX_VERTEXES - 1, SHADER_MAX_INDEXES / 3 - 1 );
+					if ( !bAlreadyCached )
+						ri.FS_FreeFile( buf );
+					strcpy( filename, R_SAFE_PLAYER_MODEL );
+					bAlreadyCached = qfalse;
+					if ( !RE_RegisterModels_GetDiskFile( filename, (void **)&buf, &bAlreadyCached ) )
+						goto fail;
+					ident = *(unsigned *)buf;
+					if ( !bAlreadyCached )
+					{
+						LL(ident);
+					}
+				} else if ( !player && r_safeModels->integer ) {
+					ri.Printf( PRINT_WARNING, "WARNING: %s has %i verts and %i triangles on a surface, more than the game draws (%i, %i): shown as a missing model\n",
+						name, verts, tris, SHADER_MAX_VERTEXES - 1, SHADER_MAX_INDEXES / 3 - 1 );
+					if ( !bAlreadyCached )
+						ri.FS_FreeFile( buf );
+					goto fail;
+				}
+			}
 		}
 
 		switch (ident)
