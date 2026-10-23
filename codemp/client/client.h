@@ -738,6 +738,14 @@ qboolean CL_NpcManager_FilterEntity( const refEntity_t *ent );
 void CL_NpcManager_Draw( void );
 
 //
+// cl_favorites.cpp: the managers' favorites, by list ("models", "effects", "shaders")
+//
+qboolean CL_Fav_Has( const char *list, const char *name );
+qboolean CL_Fav_Toggle( const char *list, const char *name );
+int CL_Fav_Count( const char *list );
+const char *CL_Fav_Star( qboolean on );
+
+//
 // cl_shadermanager.cpp
 //
 void CL_ShaderManager_Init( void );

@@ -98,6 +98,8 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define MM_FILTER_GAP		4.0f
 #define MM_SEARCH_W			( SCREEN_WIDTH - MM_FOLDER_X * 2 - MM_FILTER_COUNT * ( MM_FILTER_W + MM_FILTER_GAP ) )
 #define MM_VISIBLE_ROWS		((int)(MM_LIST_H / MM_ROW_H))
+#define MM_STAR_W			11.0f	// the favorite star a model row starts with
+#define MM_FAV_LIST			"models"
 
 typedef enum {
 	MM_OFF,
@@ -135,6 +137,7 @@ typedef enum {
 typedef enum {
 	MM_ROW_SAVED,
 	MM_ROW_STATES,
+	MM_ROW_FAVES,		// the starred models
 	MM_ROW_CATEGORY,	// Base or Custom
 	MM_ROW_SOURCE,		// a custom pk3
 	MM_ROW_FOLDER
@@ -520,6 +523,11 @@ static void MM_BuildRows( void ) {
 	mm.rows[0].count = mm.numSaves;
 	MM_AddRow( MM_ROW_STATES, "Saved states", 0 );
 	mm.rows[1].count = mm.numStates;
+	MM_AddRow( MM_ROW_FAVES, "Favorites", 0 );
+	for ( int i = 0; i < mm.numListed; i++ ) {
+		if ( MM_PassesFilter( &mm.models[i] ) && CL_Fav_Has( MM_FAV_LIST, mm.models[i].path ) )
+			mm.rows[2].count++;
+	}
 
 	for ( int i = 0; i < mm.numListed; i++ ) {
 		const mmModel_t *m = &mm.models[i];
@@ -701,6 +709,11 @@ static void MM_RebuildView( void ) {
 			mm.viewStates = qtrue;
 			for ( int i = 0; i < mm.numStates; i++ )
 				mm.view[mm.numView++] = i;
+		} else if ( r->type == MM_ROW_FAVES ) {
+			for ( int i = 0; i < mm.numListed && mm.numView < MM_MAX_MODELS; i++ ) {
+				if ( MM_PassesFilter( &mm.models[i] ) && CL_Fav_Has( MM_FAV_LIST, mm.models[i].path ) )
+					mm.view[mm.numView++] = i;
+			}
 		} else {
 			for ( int i = 0; i < r->count; i++ )
 				mm.view[mm.numView++] = r->first + i;
@@ -733,7 +746,8 @@ static void MM_SetRow( int row ) {
 }
 
 static void MM_SetFilter( mmFilter_t filter ) {
-	const qboolean onSaves = (qboolean)( mm.row < mm.numRows && ( mm.rows[mm.row].type == MM_ROW_SAVED || mm.rows[mm.row].type == MM_ROW_STATES ) );
+	const qboolean onSaves = (qboolean)( mm.row < mm.numRows && ( mm.rows[mm.row].type == MM_ROW_SAVED || mm.rows[mm.row].type == MM_ROW_STATES
+		|| mm.rows[mm.row].type == MM_ROW_FAVES ) );
 
 	if ( filter == mm.filter )
 		return;
@@ -2678,6 +2692,27 @@ static void MM_PlaceSelected( void ) {
 	MM_StartTemplate( sel );
 }
 
+// a model starred or not any more: the Favorites row counts it, and lists it if it's the one shown
+static void MM_ToggleFavorite( int model ) {
+	const mmModel_t *m = &mm.models[model];
+	const qboolean on = CL_Fav_Toggle( MM_FAV_LIST, m->path );
+	const int selected = MM_Selected();
+
+	MM_Message( va( on ? "Favorite: %s" : "No longer a favorite: %s", m->path ) );
+	for ( int i = 0; i < mm.numRows; i++ ) {
+		if ( mm.rows[i].type == MM_ROW_FAVES )
+			mm.rows[i].count += on ? 1 : -1;
+	}
+	if ( !mm.search[0] && mm.row < mm.numRows && mm.rows[mm.row].type == MM_ROW_FAVES ) {
+		MM_RebuildView();
+		// the selection stays on the model it was on, if it's still listed
+		for ( int i = 0; i < mm.numView; i++ ) {
+			if ( mm.view[i] == selected )
+				mm.selRow = i;
+		}
+	}
+}
+
 static void MM_BrowseClick( void ) {
 	int row;
 
@@ -2699,6 +2734,11 @@ static void MM_BrowseClick( void ) {
 		row = mm.modelScroll + (int)( ( mm.cursorY - MM_LIST_Y ) / MM_ROW_H );
 		if ( row >= mm.numView )
 			return;
+		// the star: a favorite, or not any more
+		if ( !mm.viewSaves && !mm.viewStates && mm.cursorX < MM_MODEL_X + 4 + MM_STAR_W ) {
+			MM_ToggleFavorite( mm.view[row] );
+			return;
+		}
 		if ( row == mm.lastClickRow && cls.realtime - mm.lastClickTime < MM_DOUBLECLICK_MS ) {
 			mm.lastClickTime = 0;
 			MM_PlaceSelected();
@@ -3587,6 +3627,9 @@ static void MM_DrawRows( void ) {
 		case MM_ROW_STATES:
 			label = va( S_COLOR_CYAN "%s " S_COLOR_GREY "(%i)", r->name, r->count );
 			break;
+		case MM_ROW_FAVES:
+			label = va( S_COLOR_YELLOW "* " S_COLOR_WHITE "%s " S_COLOR_GREY "(%i)", r->name, r->count );
+			break;
 		case MM_ROW_CATEGORY:
 			label = va( S_COLOR_YELLOW "%s " S_COLOR_GREY "(%i)", r->name, r->count );
 			break;
@@ -3645,7 +3688,9 @@ static void MM_DrawBrowser( void ) {
 	MM_Box( MM_MODEL_X, MM_LIST_Y, MM_MODEL_W, MM_LIST_H, mmPanelLight );
 	if ( !mm.numView )
 		MM_Text( MM_MODEL_X + 4, MM_LIST_Y + 1, mm.viewSaves ? "None yet: select models, press K"
-			: mm.viewStates ? "None yet: Shift+K in the free camera" : "No models match", mmDim );
+			: mm.viewStates ? "None yet: Shift+K in the free camera"
+			: !mm.search[0] && mm.row < mm.numRows && mm.rows[mm.row].type == MM_ROW_FAVES ? "None yet: click the * by a model"
+			: "No models match", mmDim );
 	for ( int i = 0; i < MM_VISIBLE_ROWS; i++ ) {
 		const char *label;
 		qboolean failed = qfalse;
@@ -3670,6 +3715,10 @@ static void MM_DrawBrowser( void ) {
 			failed = m->failed;
 			// a folder lists names, anything wider lists where they are
 			label = ( mm.search[0] || r->type != MM_ROW_FOLDER ) ? MM_FolderLabel( m->path ) : m->base;
+			// the star: click it for a favorite
+			MM_Text( MM_MODEL_X + 4, y + 1, CL_Fav_Star( CL_Fav_Has( MM_FAV_LIST, m->path ) ), mmWhite );
+			MM_TextClipped( MM_MODEL_X + 4 + MM_STAR_W, y + 1, MM_MODEL_W - 8 - MM_STAR_W, label, failed ? mmRed : mmWhite );
+			continue;
 		}
 		MM_TextClipped( MM_MODEL_X + 4, y + 1, MM_MODEL_W - 8, label, failed ? mmRed : mmWhite );
 	}

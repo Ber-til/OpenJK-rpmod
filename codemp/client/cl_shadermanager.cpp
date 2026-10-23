@@ -157,8 +157,12 @@ typedef enum {
 	SM_FILTER_ALL,
 	SM_FILTER_TEXTURES,
 	SM_FILTER_MODELS,
-	SM_FILTER_GFX
+	SM_FILTER_GFX,
+	SM_FILTER_FAVES		// the starred ones
 } smFilter_t;
+
+#define SM_FAV_LIST			"shaders"
+#define SM_STAR_W			11.0f	// the favorite star a shader row starts with
 
 typedef enum {
 	SM_F_NONE,			// typing goes to the search box
@@ -328,7 +332,8 @@ static struct {
 	smHitKind_t	selKind;
 	char		selWhat[MAX_QPATH * 2];
 	std::vector<std::string> selShaders;
-	smList_t	selList;
+	smList_t	selList;				// its rows: selShaders, or with selFaves only the starred ones
+	qboolean	selFaves;
 	int			selSurf;			// map surface to outline, -1 for none
 	char		selBModel[MAX_QPATH];	// "*n" when that surface belongs to a brush entity
 	qboolean	selFx;					// an effect, in this box when it was picked
@@ -1892,7 +1897,7 @@ static qboolean SM_RemapAllowed( const char *from, const char *to ) {
 static const char *SM_SelectedOriginal( void );
 
 static void SM_RebuildShaderView( void ) {
-	static const char *prefixes[] = { "", "textures/", "models/", "gfx/" };
+	static const char *prefixes[] = { "", "textures/", "models/", "gfx/", "" };
 	const char *search = sm.fields[SM_F_SEARCH], *prefix = prefixes[sm.filter];
 	int prefixLen = strlen( prefix ), oldSel = -1;
 
@@ -1906,6 +1911,8 @@ static void SM_RebuildShaderView( void ) {
 		if ( prefixLen && Q_stricmpn( name, prefix, prefixLen ) )
 			continue;
 		if ( sm.viewSky && !SM_IsSky( name ) )
+			continue;
+		if ( sm.filter == SM_FILTER_FAVES && !CL_Fav_Has( SM_FAV_LIST, name ) )
 			continue;
 		if ( SM_ContainsNoCase( name, search ) )
 			sm.shaderView.push_back( (int)i );
@@ -1975,10 +1982,36 @@ static smField_t SM_TypingField( void ) {
 	return sm.typingPath && sm.tab == SM_TAB_OBJECT ? SM_F_PATH : SM_F_SEARCH;
 }
 
-static const char *SM_SelectedOriginal( void ) {
-	if ( !sm.haveSel || sm.selList.sel < 0 || sm.selList.sel >= (int)sm.selShaders.size() )
+// the shaders on what was clicked as listed: all, or with selFaves only the starred ones
+static int SM_SelCount( void ) {
+	int count = 0;
+
+	if ( !sm.selFaves )
+		return (int)sm.selShaders.size();
+	for ( size_t i = 0; i < sm.selShaders.size(); i++ ) {
+		if ( CL_Fav_Has( SM_FAV_LIST, sm.selShaders[i].c_str() ) )
+			count++;
+	}
+	return count;
+}
+
+// the shader on a row of that list, NULL past its end
+static const char *SM_SelShader( int row ) {
+	if ( row < 0 )
 		return NULL;
-	return sm.selShaders[sm.selList.sel].c_str();
+	for ( size_t i = 0; i < sm.selShaders.size(); i++ ) {
+		if ( sm.selFaves && !CL_Fav_Has( SM_FAV_LIST, sm.selShaders[i].c_str() ) )
+			continue;
+		if ( !row-- )
+			return sm.selShaders[i].c_str();
+	}
+	return NULL;
+}
+
+static const char *SM_SelectedOriginal( void ) {
+	if ( !sm.haveSel )
+		return NULL;
+	return SM_SelShader( sm.selList.sel );
 }
 
 // a 2D handle to preview a shader by, registered the first time it is shown
@@ -2129,6 +2162,7 @@ static void SM_SelectShader( const char *shader ) {
 	sm.selShaders.clear();
 	sm.selShaders.push_back( shader );
 	sm.selList.sel = sm.selList.scroll = 0;
+	sm.selFaves = qfalse;	// the one asked for shows, starred or not
 	sm.selSurf = -1;
 	sm.selBModel[0] = '\0';
 	sm.selFx = qfalse;
@@ -3022,17 +3056,45 @@ static int SM_List( smList_t *list, int count, float x, float y, float w, int ro
 	return clicked;
 }
 
-static void SM_DrawSelRow( int row, float x, float y, float w ) {
-	const char *shader = sm.selShaders[row].c_str(), *remap = SM_RemappedTo( shader );
+// the star a shader row starts with: click it for a favorite
+static void SM_DrawStar( float x, float y, const char *shader ) {
+	SM_Text( x, y, CL_Fav_Star( CL_Fav_Has( SM_FAV_LIST, shader ) ), smWhite );
+}
 
+static void SM_DrawSelRow( int row, float x, float y, float w ) {
+	const char *shader = SM_SelShader( row ), *remap;
+
+	if ( !shader )
+		return;
+	remap = SM_RemappedTo( shader );
+	SM_DrawStar( x, y, shader );
 	if ( remap )
-		SM_TextClipped( x, y, w, va( "%s " S_COLOR_CYAN "-> %s", shader, remap ), smWhite );
+		SM_TextClipped( x + SM_STAR_W, y, w - SM_STAR_W, va( "%s " S_COLOR_CYAN "-> %s", shader, remap ), smWhite );
 	else
-		SM_TextClipped( x, y, w, shader, smWhite );
+		SM_TextClipped( x + SM_STAR_W, y, w - SM_STAR_W, shader, smWhite );
 }
 
 static void SM_DrawShaderRow( int row, float x, float y, float w ) {
-	SM_TextClipped( x, y, w, sm.shaderNames[sm.shaderView[row]].c_str(), smWhite );
+	const char *shader = sm.shaderNames[sm.shaderView[row]].c_str();
+
+	SM_DrawStar( x, y, shader );
+	SM_TextClipped( x + SM_STAR_W, y, w - SM_STAR_W, shader, smWhite );
+}
+
+// a row's star clicked: that shader a favorite, or not any more. The lists showing only the
+// starred ones are made again; returns whether it was the star
+static qboolean SM_StarClicked( int clicked, float x, const char *shader ) {
+	qboolean on;
+
+	if ( clicked < 0 || !shader || sm.clickX >= x + 4 + SM_STAR_W )
+		return qfalse;
+	on = CL_Fav_Toggle( SM_FAV_LIST, shader );
+	SM_SetStatus( va( on ? "Favorite: %s" : "No longer a favorite: %s", shader ) );
+	if ( sm.filter == SM_FILTER_FAVES )
+		SM_RebuildShaderView();
+	if ( sm.selFaves )
+		sm.selList.sel = Com_Clampi( 0, Q_max( SM_SelCount() - 1, 0 ), sm.selList.sel );
+	return qtrue;
 }
 
 static void SM_DrawRemapRow( int row, float x, float y, float w ) {
@@ -3192,9 +3254,22 @@ static void SM_DrawObjectTab( float x, float y, float w ) {
 	SM_TextClipped( x, y, w, va( S_COLOR_GREY "%s", sm.haveSel ? sm.selWhat : "Nothing selected: click something in the view" ), smWhite );
 	y += 14;
 	SM_Text( x, y, "Shaders on it", smDim );
-	y += 12;
+	// only the starred ones, or all
+	if ( SM_Button( x + w - 52, y - 3, 52, "Faves", sm.selFaves, qtrue ) ) {
+		sm.selFaves = (qboolean)!sm.selFaves;
+		sm.selList.sel = sm.selList.scroll = 0;
+		SM_RebuildShaderView();
+	}
+	y += 14;
 	if ( sm.haveSel ) {
-		SM_List( &sm.selList, (int)sm.selShaders.size(), x, y, w, 5, SM_DrawSelRow );
+		const int selRows = SM_SelCount();
+		const int before = sm.selList.sel;
+		const int clickedSel = SM_List( &sm.selList, selRows, x, y, w, 5, SM_DrawSelRow );
+
+		if ( clickedSel >= 0 && SM_StarClicked( clickedSel, x, SM_SelShader( clickedSel ) ) )
+			sm.selList.sel = Com_Clampi( 0, Q_max( SM_SelCount() - 1, 0 ), before );
+		if ( !selRows )
+			SM_Text( x + 4, y + 1, sm.selFaves ? "No favorites on it: Faves shows all again" : "None", smDim );
 	} else {
 		SM_Box( x, y, w, 5 * SM_ROW_H, smPanelLight );
 	}
@@ -3219,15 +3294,15 @@ static void SM_DrawObjectTab( float x, float y, float w ) {
 	SM_Text( x, y + 2, "With", smDim );
 	{
 		// the list, filtered by where the shaders are, or a path typed in; as wide as their labels, from the right
-		static const char *labels[] = { "All", "textures", "models", "gfx", "Path..." };
-		float widths[5], bx = x + w + 2;
+		static const char *labels[] = { "All", "textures", "models", "gfx", "Faves", "Path..." };
+		float widths[6], bx = x + w + 2;
 
-		for ( int i = 4; i >= 0; i-- ) {
+		for ( int i = 5; i >= 0; i-- ) {
 			widths[i] = SM_TextWidth( labels[i] ) + 8;
 			bx -= widths[i] + 2;
 		}
-		for ( int i = 0; i < 5; bx += widths[i] + 2, i++ ) {
-			const qboolean path = (qboolean)( i == 4 );
+		for ( int i = 0; i < 6; bx += widths[i] + 2, i++ ) {
+			const qboolean path = (qboolean)( i == 5 );
 
 			if ( !SM_Button( bx, y, widths[i], labels[i], path ? sm.typingPath : (qboolean)( !sm.typingPath && sm.filter == i ), qtrue ) )
 				continue;
@@ -3271,9 +3346,11 @@ static void SM_DrawObjectTab( float x, float y, float w ) {
 			SM_Field( SM_F_SEARCH, x, y, w, va( "Type to search %i shaders", (int)sm.shaderNames.size() ) );
 		y += 18;
 		clicked = SM_List( &sm.shaderList, (int)sm.shaderView.size(), x, y, w, rows, SM_DrawShaderRow );
+		if ( clicked >= 0 && clicked < (int)sm.shaderView.size() )
+			SM_StarClicked( clicked, x, sm.shaderNames[sm.shaderView[clicked]].c_str() );
 		if ( sm.shaderView.empty() )
-			SM_Text( x + 4, y + 1, sm.viewSky ? "No sky shaders match" : "No shaders match", smDim );
-		(void)clicked;
+			SM_Text( x + 4, y + 1, sm.filter == SM_FILTER_FAVES ? ( sm.viewSky ? "No favorite skies: click the * by one" : "No favorites: click the * by a shader" )
+				: sm.viewSky ? "No sky shaders match" : "No shaders match", smDim );
 	}
 	y += rows * SM_ROW_H + 4;
 	replacement = SM_HighlightedShader();
@@ -4116,7 +4193,12 @@ static void SM_DrawMineTab( float x, float y, float w ) {
 	y += 14;
 	SM_Field( SM_F_SEARCH, x, y, w, va( "With: type to search %i shaders", (int)sm.shaderNames.size() ) );
 	y += 18;
-	SM_List( &sm.shaderList, (int)sm.shaderView.size(), x, y, w, rows, SM_DrawShaderRow );
+	{
+		const int clickedWith = SM_List( &sm.shaderList, (int)sm.shaderView.size(), x, y, w, rows, SM_DrawShaderRow );
+
+		if ( clickedWith >= 0 && clickedWith < (int)sm.shaderView.size() )
+			SM_StarClicked( clickedWith, x, sm.shaderNames[sm.shaderView[clickedWith]].c_str() );
+	}
 	if ( sm.shaderView.empty() )
 		SM_Text( x + 4, y + 1, "No shaders match", smDim );
 	y += rows * SM_ROW_H + 4;
