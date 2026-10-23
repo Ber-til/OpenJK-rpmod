@@ -192,6 +192,60 @@ TEX c, tc, texture[0], RECT;\
 ADD sum, sum, c;\
 MUL result.color, sum, 0.0666667;\
 END";
+
+// The cinematic camera's filter, over the view (texture 0) after its depth of field: red and blue
+// pulled apart by local[4].z pixels, the colours mixed by the rows local[0-2], the brightness
+// coloured along the ramp (texture 1) by local[3].x, times local[4].w first, grain from the noise (texture 2, at
+// local[6]) by local[3].y, scanlines local[4].x deep at local[4].y across a pixel, the corners
+// darkened by local[3].z round the view's middle and size local[5], and all of it mixed with the
+// view by local[3].w.
+static const char *filterPxShader =
+"!!ARBfp1.0\
+OPTION ARB_precision_hint_fastest;\
+PARAM mr = program.local[0];\
+PARAM mg = program.local[1];\
+PARAM mb = program.local[2];\
+PARAM p = program.local[3];\
+PARAM q = program.local[4];\
+PARAM view = program.local[5];\
+PARAM nz = program.local[6];\
+TEMP o, c, t, tc, l, n;\
+TEX o, fragment.texcoord[0], texture[0], RECT;\
+MOV c, o;\
+MAD tc, q.z, { 1.0, 0.0, 0.0, 0.0 }, fragment.texcoord[0];\
+TEX t, tc, texture[0], RECT;\
+MOV c.x, t.x;\
+MAD tc, q.z, { -1.0, 0.0, 0.0, 0.0 }, fragment.texcoord[0];\
+TEX t, tc, texture[0], RECT;\
+MOV c.z, t.z;\
+MOV c.w, 1.0;\
+DP4 t.x, c, mr;\
+DP4 t.y, c, mg;\
+DP4 t.z, c, mb;\
+DP3 l.x, c, { 0.299, 0.587, 0.114, 0.0 };\
+MUL l.x, l.x, q.w;\
+MOV l.y, 0.5;\
+TEX n, l, texture[1], 2D;\
+LRP t.xyz, p.x, n, t;\
+MAD tc, fragment.texcoord[0], nz.zwzw, nz.xyxy;\
+TEX n, tc, texture[2], 2D;\
+MAD n.x, n.x, 2.0, -1.0;\
+MAD t.xyz, n.x, p.y, t;\
+MUL l.x, fragment.texcoord[0].y, q.y;\
+SIN l.x, l.x;\
+MAD l.x, l.x, 0.5, 0.5;\
+MAD l.x, -l.x, q.x, 1.0;\
+MUL t.xyz, t, l.x;\
+SUB tc, fragment.texcoord[0], view;\
+MUL tc, tc, view.zwzw;\
+MUL tc, tc, tc;\
+ADD l.x, tc.x, tc.y;\
+MAD_SAT l.x, -l.x, p.z, 1.0;\
+MUL t.xyz, t, l.x;\
+MOV_SAT t, t;\
+LRP result.color.xyz, p.w, t, o;\
+MOV result.color.w, 1.0;\
+END";
 /***********************************************************************************************************/
 
 #define GL_PROGRAM_ERROR_STRING_ARB						0x8874
@@ -319,5 +373,19 @@ void ARB_InitGPUShaders(void) {
 			qglDeleteProgramsARB( 1, &tr.dofPxShader );
 		qglDeleteProgramsARB( 1, &tr.dofVtxShader );
 		tr.dofVtxShader = tr.dofPxShader = 0;
+	}
+
+	// the cinematic camera's filter, drawn with the depth of field's vertex program
+	tr.filterPxShader = 0;
+	if ( tr.dofVtxShader ) {
+		qglGenProgramsARB( 1, &tr.filterPxShader );
+		qglBindProgramARB( GL_FRAGMENT_PROGRAM_ARB, tr.filterPxShader );
+		qglProgramStringARB( GL_FRAGMENT_PROGRAM_ARB, GL_PROGRAM_FORMAT_ASCII_ARB, strlen( filterPxShader ), filterPxShader );
+		qglGetIntegerv( GL_PROGRAM_ERROR_POSITION_ARB, &errorChar );
+		if ( errorChar != -1 ) {
+			Com_Printf( S_COLOR_YELLOW "Camera filters unavailable: their shader didn't compile (character %d)\n", errorChar );
+			qglDeleteProgramsARB( 1, &tr.filterPxShader );
+			tr.filterPxShader = 0;
+		}
 	}
 }

@@ -471,6 +471,7 @@ if(BuildMPEngine)
 		"${MPDir}/client/cl_effectmanager.cpp"
 		"${MPDir}/client/cl_mapeditor.cpp"
 		"${MPDir}/client/cl_storyteller.cpp"
+		"${MPDir}/client/cl_favorites.cpp"
 		"${MPDir}/client/cl_soundmanager.cpp"
 		"${MPDir}/client/cl_radialmenu.cpp"
 		"${MPDir}/client/cl_saberstyle.cpp"

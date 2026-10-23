@@ -35,9 +35,15 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 //                                   the same from where the camera is; spots without their
 //                                   own seconds share the first out
 //                                   Before the spots, a path or orbit can also have
-//                                   dof <focus> <range> <blur>: what's focus away is sharp,
-//                                   give or take range, the rest blurred up to blur (1-10);
-//                                   focus 0 is whatever the camera looks at
+//                                   dof <focus> <range> <blur> [<who>]: what's focus away is
+//                                   sharp, give or take range, the rest blurred up to blur
+//                                   (1-10); focus 0 is whatever the camera looks at, -1 who
+//                                   (a player or NPC, by number; a name where it's played)
+//                                   filter <name> <strength %>: one of rcFilters' words over
+//                                   the picture
+//                                   A path's spot can end in its own <focus> <range> <blur>
+//                                   after its fov: the depth of field goes from one spot's
+//                                   to the next's
 //                                   in|out <cut|fade|left|right|top|bottom> <seconds> <r g b>:
 //                                   the shot fades in from the colour, or is wiped in from
 //                                   that side, and out to it at its end; the screen stays
@@ -106,6 +112,10 @@ typedef struct {
 	vec3_t	ang;
 	float	fov;		// cg_fov's; 0 is as the key before
 	int		ms;			// from the key before
+
+	// its own depth of field, or the one before's
+	qboolean	dofSet;
+	float		dofFocus, dofRange, dofBlur;
 } rcKey_t;
 
 // how a shot comes in or goes: cut, faded from or to a colour, or wiped across from a side
@@ -121,6 +131,25 @@ typedef enum {
 
 static const char *rcTransWords[RC_NUM_TRANSITIONS] = { "cut", "fade", "left", "right", "top", "bottom" };
 
+// a filter over the picture
+typedef enum {
+	RC_FI_NONE,
+	RC_FI_BW,
+	RC_FI_NOIR,
+	RC_FI_SEPIA,
+	RC_FI_OLDFILM,
+	RC_FI_NIGHT,
+	RC_FI_THERMAL,
+	RC_FI_CCTV,
+	RC_FI_VHS,
+	RC_FI_HOLOGRAM,
+	RC_FI_WARM,
+	RC_FI_COLD,
+	RC_FI_FADED,
+	RC_FI_NEGATIVE,
+	RC_NUM_FILTERS
+} rcFilter_t;
+
 typedef struct {
 	int			type;			// rcTransType_t
 	int			ms;
@@ -131,6 +160,8 @@ typedef struct {
 #define RC_DOF_BLUR			4.0f
 #define RC_DOF_MAX_BLUR		10.0f
 #define RC_DOF_FOCUS_RATE	6.0f		// an automatic focus follows what's looked at this quickly
+#define RC_DOF_FOLLOW_RATE	12.0f		// and someone followed this quickly
+#define RC_DOF_FOLLOW_UP	24.0f		// someone followed is in focus this far over their middle
 #define RC_TRANS_MS			1000
 #define RC_WIPE_SOFT		0.06f		// a wipe's edge, soft over this much of the screen
 
@@ -140,8 +171,13 @@ typedef struct {
 
 	// depth of field
 	qboolean	dof;
-	float		dofFocus;		// 0 is what the camera looks at
+	float		dofFocus;		// 0 is what the camera looks at, -1 dofWho
 	float		dofRange, dofBlur;
+	char		dofWho[MAX_QPATH];
+
+	// a filter over it all, rcFilter_t
+	int			filter;
+	int			filterStrength;	// percent
 
 	// coming in, going out
 	rcTrans_t	in, out;
@@ -185,9 +221,10 @@ typedef struct {
 	// the last shot's transitions, its out holding after it; qfalse after a cut
 	qboolean	trans;
 
-	// the depth of field, until another shot; dofNow is where an automatic one has got to
+	// the last shot's depth of field and filter, until another shot; dofNow is where a focus
+	// that follows something has got to
 	qboolean	dof;
-	float		dofFocus, dofRange, dofBlur;
+	qboolean	filter;
 	float		dofNow;
 	int			dofTime;
 
@@ -210,9 +247,17 @@ static cvar_t *rpc_cinThirdPerson;		// 1 while cg_thirdPerson is ours to put bac
 static qboolean CE_Open( void );
 static char *CE_TypedText( int *size );
 static void RC_StopAnims( qboolean editorToo );
-static qboolean RC_DepthOfField( const vec3_t org, const vec3_t ang, qboolean dof, float focus, float *now, int *time,
-	float range, float blur );
+static qboolean RC_DepthOfField( const rcShot_t *s, int prev, int next, float frac, const vec3_t org, const vec3_t ang,
+	float *now, int *time );
+static qboolean RC_ShotDepthOfField( const rcShot_t *s, int ms, const vec3_t org, const vec3_t ang, float *now, int *time );
 static void RC_NoDepthOfField( void );
+static qboolean RC_Filter( int type, int strength );
+static void RC_NoFilter( void );
+static int RC_FilterByWord( const char *word );
+static const char *RC_FilterWord( int type );
+static const char *RC_FilterName( int type );
+static qboolean RC_FocusTarget( const char *who, vec3_t out );
+static void RC_KeyDof( const rcShot_t *s, int key, float *focus, float *range, float *blur );
 
 // the cgame only draws the player's own body in third person; the camera is ours either way
 static void RC_ThirdPerson( qboolean on ) {
@@ -377,12 +422,30 @@ static qboolean RC_ParseOption( const char *p, rcShot_t *s ) {
 	}
 	if ( !Q_stricmpn( p, "dof ", 4 ) ) {
 		float v[3];
+		int n = 0;
 
-		if ( sscanf( p + 4, "%f %f %f", &v[0], &v[1], &v[2] ) == 3 && v[2] > 0.0f ) {
+		if ( sscanf( p + 4, "%f %f %f %n", &v[0], &v[1], &v[2], &n ) >= 3 && v[2] > 0.0f ) {
 			s->dof = qtrue;
-			s->dofFocus = Q_max( 0.0f, v[0] );
+			s->dofFocus = v[0] < 0.0f ? -1.0f : v[0];
 			s->dofRange = Q_max( 1.0f, v[1] );
 			s->dofBlur = Com_Clamp( 0.0f, RC_DOF_MAX_BLUR, v[2] );
+			// who it follows, after the numbers
+			if ( n > 0 )
+				Q_strncpyz( s->dofWho, p + 4 + n, sizeof( s->dofWho ) );
+			if ( s->dofFocus < 0.0f && !s->dofWho[0] )
+				s->dofFocus = 0.0f;
+		}
+		return qtrue;
+	}
+	if ( !Q_stricmpn( p, "filter ", 7 ) ) {
+		char word[32];
+		int strength = 100;
+
+		if ( sscanf( p + 7, "%31s %i", word, &strength ) >= 1 ) {
+			s->filter = RC_FilterByWord( word );
+			s->filterStrength = Com_Clampi( 0, 100, strength );
+			if ( !s->filterStrength )
+				s->filter = 0;
 		}
 		return qtrue;
 	}
@@ -409,12 +472,30 @@ static qboolean RC_ParseOption( const char *p, rcShot_t *s ) {
 	return qfalse;
 }
 
+// the shot, or one of its spots, keeps someone in focus
+static qboolean RC_ShotFollows( const rcShot_t *s ) {
+	if ( !s->dof )
+		return qfalse;
+	if ( s->dofFocus < 0.0f )
+		return qtrue;
+	for ( int i = 0; i < s->numKeys; i++ ) {
+		if ( s->keys[i].dofSet && s->keys[i].dofFocus < 0.0f )
+			return qtrue;
+	}
+	return qfalse;
+}
+
 // the options as a hook writes them, each after a /
 static void RC_WriteOptions( const rcShot_t *s, char *out, int size ) {
 	const rcTrans_t *trs[2] = { &s->in, &s->out };
 
-	if ( s->dof )
+	if ( s->dof ) {
 		Q_strcat( out, size, va( "/dof %i %i %g", RC_Round( s->dofFocus ), RC_Round( s->dofRange ), s->dofBlur ) );
+		if ( s->dofWho[0] && ( s->dofFocus < 0.0f || RC_ShotFollows( s ) ) )
+			Q_strcat( out, size, va( " %s", s->dofWho ) );
+	}
+	if ( s->filter && s->filterStrength > 0 )
+		Q_strcat( out, size, va( "/filter %s %i", RC_FilterWord( s->filter ), s->filterStrength ) );
 	for ( int i = 0; i < 2; i++ ) {
 		const rcTrans_t *tr = trs[i];
 
@@ -440,14 +521,14 @@ static void RC_ParseKeys( char **argv, int argc, rcShot_t *s, const vec3_t ang )
 
 	for ( int i = 0; i < argc; i++ ) {
 		const char *p = argv[i];
-		float v[7];
+		float v[10];
 		int n;
 
 		if ( RC_IsWord( p ) ) {
 			RC_ParseOption( p, s );
 			continue;
 		}
-		n = sscanf( p, "%f %f %f %f %f %f %f", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6] );
+		n = sscanf( p, "%f %f %f %f %f %f %f %f %f %f", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &v[6], &v[7], &v[8], &v[9] );
 		if ( n == 1 ) {
 			if ( s->numKeys == first && lead < 0 )
 				lead = v[0];
@@ -469,6 +550,12 @@ static void RC_ParseKeys( char **argv, int argc, rcShot_t *s, const vec3_t ang )
 			key->ang[ROLL] = n >= 6 ? v[5] : 0;
 		}
 		key->fov = n >= 7 ? v[6] : 0;
+		key->dofSet = (qboolean)( n >= 10 );
+		if ( key->dofSet ) {
+			key->dofFocus = v[7] < 0.0f ? -1.0f : v[7];
+			key->dofRange = Q_max( 1.0f, v[8] );
+			key->dofBlur = Com_Clamp( 0.0f, RC_DOF_MAX_BLUR, v[9] );
+		}
 		key->ms = own >= 0 ? RC_SecondsMs( own ) : -1;
 		if ( key->ms < 0 && s->numKeys )
 			without++;
@@ -551,6 +638,8 @@ static void RC_WriteShot( const rcShot_t *s, char *out, int size ) {
 		Q_strcat( out, size, va( "/%i %i %i %i %i %i %i", RC_Round( k->org[0] ), RC_Round( k->org[1] ), RC_Round( k->org[2] ),
 			RC_Round( AngleNormalize180( k->ang[PITCH] ) ), RC_Round( AngleNormalize360( k->ang[YAW] ) ),
 			RC_Round( AngleNormalize180( k->ang[ROLL] ) ), RC_Round( k->fov ) ) );
+		if ( k->dofSet && s->dof )
+			Q_strcat( out, size, va( " %i %i %g", RC_Round( k->dofFocus ), RC_Round( k->dofRange ), k->dofBlur ) );
 	}
 }
 
@@ -641,14 +730,13 @@ static void RC_Play( const rcShot_t *shot ) {
 	rc.shotFov = qtrue;
 	rc.start = cls.realtime;
 	rc.frame = -1;
-	// its transitions, and its focus until another shot
+	// its transitions, and its focus and filter until another shot; a focus that follows
+	// something starts where the last left off, a set one where it's set
 	rc.trans = qtrue;
-	if ( rc.dof != shot->dof || ( shot->dof && shot->dofFocus > 0.0f ) )
-		rc.dofNow = shot->dofFocus;
+	if ( !rc.dof )
+		rc.dofNow = 0.0f;
 	rc.dof = shot->dof;
-	rc.dofFocus = shot->dofFocus;
-	rc.dofRange = shot->dofRange;
-	rc.dofBlur = shot->dofBlur;
+	rc.filter = (qboolean)( shot->filter != 0 );
 }
 
 static void RC_ZoomTo( float fovY, int ms ) {
@@ -684,6 +772,7 @@ static void RC_Start( void ) {
 	rc.shotFov = qfalse;
 	rc.trans = qfalse;
 	rc.dof = qfalse;
+	rc.filter = qfalse;
 	rc.frame = -1;
 	if ( rc.haveView ) {
 		VectorCopy( rc.viewOrg, rc.holdOrg );
@@ -708,6 +797,7 @@ void CL_RpCinematic_Stop( void ) {
 	rc.playing = qfalse;
 	rc.trans = qfalse;
 	rc.dof = qfalse;
+	rc.filter = qfalse;
 	RC_SyncThirdPerson();
 }
 
@@ -1479,6 +1569,27 @@ static qboolean RC_ReadShot( const char *name, char *hook, int size, rcShot_t *s
 	return RC_ParseShot( argv + 1, argc - 1, shot, vec3_origin );
 }
 
+// a hook going out: the one its focus follows by their number, every screen knowing who that
+// is; a name nobody here goes by is left for the others to look for
+static void RC_ResolveFocusWho( char *hook, int size ) {
+	char *part = (char *)Q_stristr( hook, "/dof " ), *who, *end, rest[MAX_STRING_CHARS], name[MAX_QPATH];
+	float v[3];
+	int n = 0, num, len;
+
+	if ( !part || sscanf( part + 5, "%f %f %f %n", &v[0], &v[1], &v[2], &n ) < 3 || n <= 0 )
+		return;
+	who = part + 5 + n;
+	end = strchr( who, '/' );
+	len = end ? (int)( end - who ) : (int)strlen( who );
+	if ( len <= 0 || len >= (int)sizeof( name ) )
+		return;
+	Q_strncpyz( name, who, len + 1 );
+	if ( Q_isanumber( name ) || RC_AnimTargets( name, &num, 1 ) < 1 )
+		return;
+	Q_strncpyz( rest, end ? end : "", sizeof( rest ) );
+	Com_sprintf( who, size - (int)( who - hook ), "%i%s", num, rest );
+}
+
 // a saved shot's hook and how long it lasts, for /cincam play and the Storyteller
 qboolean CL_RpCinematic_ShotHook( const char *name, char *hook, int size, int *ms ) {
 	rcShot_t shot;
@@ -1490,6 +1601,7 @@ qboolean CL_RpCinematic_ShotHook( const char *name, char *hook, int size, int *m
 			if ( !rcShotCache[i].hook[0] )
 				return qfalse;
 			Q_strncpyz( hook, rcShotCache[i].hook, size );
+			RC_ResolveFocusWho( hook, size );
 			if ( ms )
 				*ms = rcShotCache[i].ms;
 			return qtrue;
@@ -1508,6 +1620,7 @@ qboolean CL_RpCinematic_ShotHook( const char *name, char *hook, int size, int *m
 	}
 	rcShotCache[oldest].ms = RC_ShotMs( &shot );
 	Q_strncpyz( hook, rcShotCache[oldest].hook, size );
+	RC_ResolveFocusWho( hook, size );
 	if ( ms )
 		*ms = rcShotCache[oldest].ms;
 	return qtrue;
@@ -1554,7 +1667,9 @@ typedef struct {
 	int			sel;				// the key, -1 none
 	int			keyScroll;
 	qboolean	bars;				// shown, and in the preview
-	qboolean	fxPage;				// the panel shows the focus and the transitions, not the spots
+	qboolean	focusPage;			// the panel shows the depth of field, not the spots
+	qboolean	lookPage;			// or the filter and the transitions
+	qboolean	typingFocus;		// the box being typed in is who the focus follows
 	qboolean	npcPage;			// or the NPCs walking in it
 	qboolean	animPage;			// or the animations played in it
 
@@ -1873,6 +1988,7 @@ static qboolean CE_Save( void ) {
 		ce.typing = qtrue;
 		ce.typingWalk = qfalse;
 		ce.typingAnim = 0;
+		ce.typingFocus = qfalse;
 		CE_Message( S_COLOR_YELLOW "Type a name for the shot first" );
 		return qfalse;
 	}
@@ -1970,6 +2086,8 @@ static void CE_Preview( qboolean fromKey ) {
 		part.numKeys = ce.shot.numKeys - ce.sel;
 		memmove( part.keys, &ce.shot.keys[ce.sel], part.numKeys * sizeof( part.keys[0] ) );
 		part.keys[0].ms = 0;
+		RC_KeyDof( &ce.shot, ce.sel, &part.keys[0].dofFocus, &part.keys[0].dofRange, &part.keys[0].dofBlur );
+		part.keys[0].dofSet = qtrue;
 		RC_WriteShot( &part, hook, sizeof( hook ) );
 		shown.numKeys = part.numKeys;
 		memcpy( shown.keys, part.keys, sizeof( part.keys ) );
@@ -2017,6 +2135,7 @@ static void CE_SendShot( void ) {
 		CE_Message( S_COLOR_YELLOW RP_EXPERIMENTAL_OFF " in the storyteller or NPC manager" );
 		return;
 	}
+	RC_ResolveFocusWho( hook, sizeof( hook ) );
 	CL_AddReliableCommand( va( "rpnotify -1 1 cmd:%s", hook ), qfalse );
 	RC_QueueWalks( ce.walks, ce.numWalks, qfalse );
 	RC_PlayAnims( ce.anims, ce.numAnims, RC_ShotMs( &shown ), qfalse );
@@ -2190,7 +2309,7 @@ void CL_RpCinematic_EditorKeyEvent( int key, qboolean down ) {
 		if ( key == A_BACKSPACE && len ) {
 			text[len - 1] = '\0';
 			CE_Changed();
-		} else if ( ( key == A_ENTER || key == A_KP_ENTER ) && ce.typingWalk ) {
+		} else if ( ( key == A_ENTER || key == A_KP_ENTER ) && ( ce.typingWalk || ce.typingFocus ) ) {
 			ce.typing = qfalse;
 		} else if ( key == A_ENTER || key == A_KP_ENTER ) {
 			CE_Save();
@@ -2226,10 +2345,15 @@ void CL_RpCinematic_EditorKeyEvent( int key, qboolean down ) {
 	}
 }
 
-// what's being typed in: the shot's name, or the walking NPC's; NULL if nothing
+// what's being typed in: the shot's name, the walking NPC's, an animation's, or who the focus
+// follows; NULL if nothing
 static char *CE_TypedText( int *size ) {
 	if ( !ce.typing )
 		return NULL;
+	if ( ce.typingFocus ) {
+		*size = sizeof( ce.shot.dofWho );
+		return ce.shot.dofWho;
+	}
 	if ( ce.typingAnim ) {
 		if ( ce.animSel < 0 || ce.animSel >= ce.numAnims )
 			return NULL;
@@ -2576,10 +2700,18 @@ static void CE_RenderScene( const refdef_t *fd ) {
 		VectorCopy( view.viewaxis[2], ce.viewAxis[2] );
 		ce.viewFovX = view.fov_x;
 		ce.viewFovY = view.fov_y;
-		if ( ( ce.fxPage || ce.through ) && !ce.listing && RC_DepthOfField( ce.camOrg, ce.camAng, ce.shot.dof, ce.shot.dofFocus,
-			&ce.dofNow, &ce.dofTime, ce.shot.dofRange, ce.shot.dofBlur ) ) {
+		{
+			const int at = ce.sel >= 0 ? ce.sel : 0;
+			const qboolean dof = (qboolean)( ( ce.focusPage || ce.through ) && !ce.listing
+				&& RC_DepthOfField( &ce.shot, at, at, 0.0f, ce.camOrg, ce.camAng, &ce.dofNow, &ce.dofTime ) );
+			const qboolean filter = (qboolean)( ( ce.lookPage || ce.through ) && !ce.listing
+				&& RC_Filter( ce.shot.filter, ce.shot.filterStrength ) );
+
 			re->RenderScene( &view );
-			RC_NoDepthOfField();
+			if ( dof )
+				RC_NoDepthOfField();
+			if ( filter )
+				RC_NoFilter();
 			return;
 		}
 	}
@@ -2913,16 +3045,95 @@ static float CE_DrawTransition( float x, float y, float w, const char *label, rc
 	return y + CE_CTRL_H + CE_GAP;
 }
 
-// the shot's depth of field and how it comes in and goes out
-static void CE_DrawFxPanel( float x, float y, float w ) {
+static const char *CE_PersonAtCrosshair( void );
+
+// a focus: what's in the middle, a distance, or someone; how far it's sharp and how blurred the
+// rest is. Where the next row goes
+static float CE_FocusControls( float x, float y, float w, float *focus, float *range, float *blur, qboolean whoBox ) {
+	rcShot_t *s = &ce.shot;
+	const float third = ( w - 8 ) / 3.0f;
+	int steps;
+
+	CE_Text( x, y + 2, "Focus on", ceDim );
+	y += CE_ROW_H + 1;
+	if ( CE_Button( x, y, third, "The middle", (qboolean)( *focus == 0.0f ), qtrue ) ) {
+		*focus = 0.0f;
+		CE_Changed();
+	}
+	if ( CE_Button( x + third + 4, y, third, "A distance", (qboolean)( *focus > 0.0f ), qtrue ) ) {
+		if ( *focus <= 0.0f )
+			*focus = ce.haveAim ? Q_max( 1.0f, Distance( ce.camOrg, ce.aim ) ) : 256.0f;
+		CE_Changed();
+	}
+	if ( CE_Button( x + ( third + 4 ) * 2, y, third, "Someone", (qboolean)( *focus < 0.0f ), qtrue ) ) {
+		*focus = -1.0f;
+		if ( !s->dofWho[0] && CE_PersonAtCrosshair() )
+			Q_strncpyz( s->dofWho, CE_PersonAtCrosshair(), sizeof( s->dofWho ) );
+		CE_Changed();
+	}
+	y += CE_CTRL_H + CE_GAP;
+
+	if ( *focus > 0.0f ) {
+		steps = CE_Stepper( x, y, w, "Distance", va( "%i away", RC_Round( *focus ) ) );
+		CE_Adjust( focus, steps, 16.0f, 1.0f, 8192.0f );
+		y += CE_CTRL_H + CE_GAP;
+		if ( CE_Button( x, y, w, "Set to the crosshair", qfalse, ce.haveAim ) ) {
+			*focus = Q_max( 1.0f, Distance( ce.camOrg, ce.aim ) );
+			CE_Changed();
+		}
+		y += CE_CTRL_H + CE_GAP;
+	} else if ( *focus < 0.0f ) {
+		vec3_t at;
+
+		if ( whoBox ) {
+			const float bx = x + 62, bw = w - 62 - 34;
+			const qboolean typing = (qboolean)( ce.typing && ce.typingFocus );
+
+			CE_Text( x, y + 2, "Who", ceDim );
+			CE_Box( bx, y, bw, CE_CTRL_H, typing ? ceFocus : cePanelLight );
+			CE_TextClipped( bx + 4, y + 2, bw - 8, s->dofWho[0] || typing ? va( "%s%s", s->dofWho, typing && ( ( cls.realtime >> 8 ) & 1 ) ? "_" : "" )
+				: S_COLOR_GREY "me, a number or a name", ceWhite );
+			if ( CE_Clicked( bx, y, bw, CE_CTRL_H ) ) {
+				ce.typing = ce.typingFocus = qtrue;
+				ce.typingWalk = qfalse;
+				ce.typingAnim = 0;
+			}
+			if ( CE_Button( x + w - 30, y, 30, "Aim", qfalse, (qboolean)( CE_PersonAtCrosshair() != NULL ) ) ) {
+				Q_strncpyz( s->dofWho, CE_PersonAtCrosshair(), sizeof( s->dofWho ) );
+				CE_Changed();
+			}
+			y += CE_CTRL_H + CE_GAP;
+		}
+		if ( !s->dofWho[0] )
+			CE_Text( x, y, S_COLOR_YELLOW "Nobody yet: the middle instead", ceWhite );
+		else if ( RC_FocusTarget( s->dofWho, at ) )
+			CE_TextClipped( x, y, w, va( S_COLOR_GREEN "%s" S_COLOR_GREY ", %i away from here", s->dofWho, RC_Round( Distance( ce.camOrg, at ) ) ), ceWhite );
+		else
+			CE_TextClipped( x, y, w, va( S_COLOR_YELLOW "%s isn't here: the middle meanwhile", s->dofWho ), ceWhite );
+		y += CE_ROW_H + CE_GAP;
+	}
+
+	steps = CE_Stepper( x, y, w, "Sharp", va( "%i either side", RC_Round( *range ) ) );
+	CE_Adjust( range, steps, 16.0f, 8.0f, 4096.0f );
+	y += CE_CTRL_H + CE_GAP;
+	steps = CE_Stepper( x, y, w, "Blur", *blur > 0.0f ? va( "%i", RC_Round( *blur ) ) : "none, sharp" );
+	CE_Adjust( blur, steps, 1.0f, whoBox ? 1.0f : 0.0f, RC_DOF_MAX_BLUR );
+	return y + CE_CTRL_H + CE_GAP;
+}
+
+// the shot's depth of field, and how it changes along the shot from spot to spot
+static void CE_DrawFocusPanel( float x, float y, float w ) {
 	rcShot_t *s = &ce.shot;
 	const float half = ( w - 4 ) * 0.5f;
-	int steps;
+	rcKey_t *k;
 
 	CE_Text( x, y, "Depth of field", ceWhite );
 	y += CE_ROW_H + 2;
-	CE_Text( x, y + 2, "Blur", ceDim );
-	if ( CE_Button( x + 62, y, w - 62, s->dof ? "On: away from the focus" : "Off: all sharp", s->dof, (qboolean)( re->ext.SetDepthOfField != NULL ) ) ) {
+	if ( !re->ext.SetDepthOfField ) {
+		CE_Text( x, y, S_COLOR_GREY "This renderer has none", ceWhite );
+		return;
+	}
+	if ( CE_Button( x, y, w, s->dof ? "On: blurred away from the focus" : "Off: all sharp", s->dof, qtrue ) ) {
 		s->dof = (qboolean)!s->dof;
 		if ( s->dof && s->dofRange <= 0.0f )
 			s->dofRange = RC_DOF_RANGE;
@@ -2931,32 +3142,78 @@ static void CE_DrawFxPanel( float x, float y, float w ) {
 		CE_Changed();
 	}
 	y += CE_CTRL_H + CE_GAP;
-	if ( s->dof ) {
-		steps = CE_Stepper( x, y, w, "Focus", s->dofFocus > 0.0f ? va( "%i away", RC_Round( s->dofFocus ) ) : "what it sees" );
-		CE_Adjust( &s->dofFocus, steps, 16.0f, 0.0f, 8192.0f );
-		y += CE_CTRL_H + CE_GAP;
-		if ( CE_Button( x, y, half, "What it sees", (qboolean)( s->dofFocus <= 0.0f ), qtrue ) ) {
-			s->dofFocus = 0.0f;
-			CE_Changed();
-		}
-		if ( CE_Button( x + half + 4, y, half, "The crosshair", qfalse, ce.haveAim ) ) {
-			s->dofFocus = Q_max( 1.0f, Distance( ce.camOrg, ce.aim ) );
-			CE_Changed();
-		}
-		y += CE_CTRL_H + CE_GAP;
-		steps = CE_Stepper( x, y, w, "Sharp", va( "%i either side", RC_Round( s->dofRange ) ) );
-		CE_Adjust( &s->dofRange, steps, 16.0f, 8.0f, 4096.0f );
-		y += CE_CTRL_H + CE_GAP;
-		steps = CE_Stepper( x, y, w, "Strength", va( "%i", RC_Round( s->dofBlur ) ) );
-		CE_Adjust( &s->dofBlur, steps, 1.0f, 1.0f, RC_DOF_MAX_BLUR );
-		y += CE_CTRL_H + CE_GAP;
-		CE_Text( x, y, S_COLOR_GREY "Shown here as it is set", ceWhite );
-		y += CE_ROW_H;
-	} else if ( !re->ext.SetDepthOfField ) {
-		CE_Text( x, y, S_COLOR_GREY "This renderer has none", ceWhite );
-		y += CE_ROW_H;
+	if ( !s->dof )
+		return;
+	y = CE_FocusControls( x, y, w, &s->dofFocus, &s->dofRange, &s->dofBlur, qtrue );
+
+	// along the shot: a spot can have its own, the shot going from one to the next
+	if ( s->orbit || !s->numKeys ) {
+		CE_Text( x, y + 2, S_COLOR_GREY "Shown here as it is set", ceWhite );
+		return;
 	}
-	y += 6;
+	y += 4;
+	CE_Text( x, y, "Along the shot", ceWhite );
+	y += CE_ROW_H + 2;
+	{
+		const int steps = CE_Stepper( x, y, w, "At spot", va( "%i of %i", ce.sel + 1, s->numKeys ) );
+
+		if ( steps )
+			CE_Select( ce.sel + steps );
+	}
+	y += CE_CTRL_H + CE_GAP;
+	k = CE_SelectedKey();
+	if ( !k )
+		return;
+	if ( CE_Button( x, y, half, ce.sel ? "As the one before" : "As the shot's", (qboolean)!k->dofSet, qtrue ) && k->dofSet ) {
+		k->dofSet = qfalse;
+		CE_Changed();
+	}
+	if ( CE_Button( x + half + 4, y, half, "Its own", k->dofSet, qtrue ) && !k->dofSet ) {
+		// from what it has now
+		RC_KeyDof( s, ce.sel, &k->dofFocus, &k->dofRange, &k->dofBlur );
+		k->dofSet = qtrue;
+		CE_Changed();
+	}
+	y += CE_CTRL_H + CE_GAP;
+	if ( k->dofSet ) {
+		y = CE_FocusControls( x, y, w, &k->dofFocus, &k->dofRange, &k->dofBlur, qfalse );
+		CE_Text( x, y + 2, S_COLOR_GREY "It goes there from the spot before", ceWhite );
+	} else {
+		CE_Text( x, y + 2, S_COLOR_GREY "Shown here as at this spot", ceWhite );
+	}
+}
+
+// the filter over the picture, and how the shot comes in and goes out
+static void CE_DrawLookPanel( float x, float y, float w ) {
+	rcShot_t *s = &ce.shot;
+	int steps;
+
+	CE_Text( x, y, "Filter", ceWhite );
+	y += CE_ROW_H + 2;
+	if ( !re->ext.SetScreenFilter ) {
+		CE_Text( x, y, S_COLOR_GREY "This renderer has none", ceWhite );
+		y += CE_ROW_H + 6;
+	} else {
+		steps = CE_Stepper( x, y, w, "Look", RC_FilterName( s->filter ) );
+		if ( steps ) {
+			s->filter = ( ( s->filter + steps ) % RC_NUM_FILTERS + RC_NUM_FILTERS ) % RC_NUM_FILTERS;
+			if ( s->filter && !s->filterStrength )
+				s->filterStrength = 100;
+			CE_Changed();
+		}
+		y += CE_CTRL_H + CE_GAP;
+		if ( s->filter ) {
+			float strength = (float)s->filterStrength;
+
+			steps = CE_Stepper( x, y, w, "Strength", va( "%i%%", s->filterStrength ) );
+			CE_Adjust( &strength, steps, 10.0f, 10.0f, 100.0f );
+			s->filterStrength = RC_Round( strength );
+			y += CE_CTRL_H + CE_GAP;
+			CE_Text( x, y, S_COLOR_GREY "Over the whole shot, shown here", ceWhite );
+			y += CE_ROW_H;
+		}
+		y += 6;
+	}
 
 	CE_Text( x, y, "Transitions", ceWhite );
 	y += CE_ROW_H + 2;
@@ -3077,6 +3334,7 @@ static void CE_DrawNpcPanel( float x, float y, float w ) {
 			ce.typing = qtrue;
 			ce.typingWalk = qtrue;
 			ce.typingAnim = 0;
+			ce.typingFocus = qfalse;
 		}
 	}
 	y += CE_CTRL_H + CE_GAP;
@@ -3275,6 +3533,7 @@ static void CE_DrawAnimPanel( float x, float y, float w ) {
 			ce.typing = qtrue;
 			ce.typingWalk = qfalse;
 			ce.typingAnim = 1;
+			ce.typingFocus = qfalse;
 		}
 		if ( CE_Button( x + w - 30, y, 30, "Aim", qfalse, (qboolean)( CE_PersonAtCrosshair() != NULL ) ) ) {
 			Q_strncpyz( a->who, CE_PersonAtCrosshair(), sizeof( a->who ) );
@@ -3297,6 +3556,7 @@ static void CE_DrawAnimPanel( float x, float y, float w ) {
 			ce.typing = qtrue;
 			ce.typingWalk = qfalse;
 			ce.typingAnim = 2;
+			ce.typingFocus = qfalse;
 			ce.pickScroll = 0;
 		}
 	}
@@ -3485,6 +3745,7 @@ static void CE_DrawEditor( void ) {
 			ce.typing = qtrue;
 			ce.typingWalk = qfalse;
 			ce.typingAnim = 0;
+			ce.typingFocus = qfalse;
 		}
 	}
 	y += CE_CTRL_H + CE_GAP;
@@ -3520,22 +3781,28 @@ static void CE_DrawEditor( void ) {
 		y += CE_CTRL_H + CE_GAP;
 		// what the panel shows of it
 		{
-			const float quarter = ( w - 12 ) / 4.0f;
+			const float fifth = ( w - 16 ) / 5.0f;
+			int page = -1;
 
-			if ( CE_Button( x, y, quarter, ce.shot.orbit ? "Orbit" : "Spots", (qboolean)( !ce.fxPage && !ce.npcPage && !ce.animPage ), qtrue ) )
-				ce.fxPage = ce.npcPage = ce.animPage = qfalse;
-			if ( CE_Button( x + quarter + 4, y, quarter, "Fades", ce.fxPage, qtrue ) ) {
-				ce.fxPage = qtrue;
-				ce.npcPage = ce.animPage = qfalse;
-			}
-			if ( CE_Button( x + ( quarter + 4 ) * 2, y, quarter, ce.numWalks ? va( "NPCs %i", ce.numWalks ) : "NPCs", ce.npcPage, qtrue ) ) {
-				ce.npcPage = qtrue;
-				ce.fxPage = ce.animPage = qfalse;
-				CE_ListRoutes();
-			}
-			if ( CE_Button( x + ( quarter + 4 ) * 3, y, quarter, ce.numAnims ? va( "Anims %i", ce.numAnims ) : "Anims", ce.animPage, qtrue ) ) {
-				ce.animPage = qtrue;
-				ce.fxPage = ce.npcPage = qfalse;
+			if ( CE_Button( x, y, fifth, ce.shot.orbit ? "Orbit" : "Spots", (qboolean)( !ce.focusPage && !ce.lookPage && !ce.npcPage && !ce.animPage ), qtrue ) )
+				page = 0;
+			if ( CE_Button( x + fifth + 4, y, fifth, "Focus", ce.focusPage, qtrue ) )
+				page = 1;
+			if ( CE_Button( x + ( fifth + 4 ) * 2, y, fifth, "Look", ce.lookPage, qtrue ) )
+				page = 2;
+			if ( CE_Button( x + ( fifth + 4 ) * 3, y, fifth, ce.numWalks ? va( "NPC %i", ce.numWalks ) : "NPCs", ce.npcPage, qtrue ) )
+				page = 3;
+			if ( CE_Button( x + ( fifth + 4 ) * 4, y, fifth, ce.numAnims ? va( "Anim %i", ce.numAnims ) : "Anims", ce.animPage, qtrue ) )
+				page = 4;
+			if ( page >= 0 ) {
+				ce.focusPage = (qboolean)( page == 1 );
+				ce.lookPage = (qboolean)( page == 2 );
+				ce.npcPage = (qboolean)( page == 3 );
+				ce.animPage = (qboolean)( page == 4 );
+				if ( ce.npcPage )
+					CE_ListRoutes();
+				if ( !ce.focusPage && ce.typingFocus )
+					ce.typing = ce.typingFocus = qfalse;
 			}
 		}
 		y += CE_CTRL_H + CE_GAP + 6;
@@ -3544,8 +3811,10 @@ static void CE_DrawEditor( void ) {
 			CE_DrawAnimPanel( x, y, w );
 		else if ( ce.npcPage )
 			CE_DrawNpcPanel( x, y, w );
-		else if ( ce.fxPage )
-			CE_DrawFxPanel( x, y, w );
+		else if ( ce.focusPage )
+			CE_DrawFocusPanel( x, y, w );
+		else if ( ce.lookPage )
+			CE_DrawLookPanel( x, y, w );
 		else if ( ce.shot.orbit )
 			CE_DrawOrbitPanel( x, y, w );
 		else
@@ -3648,30 +3917,305 @@ static float RC_LookDistance( const vec3_t org, const vec3_t ang ) {
 	return best;
 }
 
-// the depth of field the camera at org has now; qfalse if none
-static qboolean RC_DepthOfField( const vec3_t org, const vec3_t ang, qboolean dof, float focus, float *now, int *time,
-	float range, float blur ) {
-	if ( !dof || !re->ext.SetDepthOfField )
-		return qfalse;
-	if ( focus <= 0.0f ) {
-		const float to = RC_LookDistance( org, ang );
-		const float dt = Com_Clamp( 0.0f, 0.2f, ( cls.realtime - *time ) * 0.001f );
+// where someone is, to keep in focus: a little over their middle; qfalse if they aren't here
+static qboolean RC_FocusTarget( const char *who, vec3_t out ) {
+	int num;
 
-		// eased onto what's looked at, not snapping from one thing to the next
-		if ( *now <= 0.0f || dt <= 0.0f )
-			*now = to;
-		else
-			*now += ( to - *now ) * Com_Clamp( 0.0f, 1.0f, dt * RC_DOF_FOCUS_RATE );
-		*time = cls.realtime;
-		focus = *now;
-	}
-	re->ext.SetDepthOfField( focus, range, blur );
+	if ( !who[0] || RC_AnimTargets( who, &num, 1 ) < 1 || !RC_EntityOrigin( num, out ) )
+		return qfalse;
+	out[2] += RC_DOF_FOLLOW_UP;
 	return qtrue;
+}
+
+// a spot's depth of field: its own, or the last one set before it, or the shot's
+static void RC_KeyDof( const rcShot_t *s, int key, float *focus, float *range, float *blur ) {
+	*focus = s->dofFocus;
+	*range = s->dofRange;
+	*blur = s->dofBlur;
+	for ( int i = 0; i <= key && i < s->numKeys; i++ ) {
+		if ( s->keys[i].dofSet ) {
+			*focus = s->keys[i].dofFocus;
+			*range = s->keys[i].dofRange;
+			*blur = s->keys[i].dofBlur;
+		}
+	}
+}
+
+// how far off a focus is from org: as set, what's looked at, or the one followed (what's
+// looked at while they aren't here)
+static float RC_FocusDistance( const rcShot_t *s, float focus, const vec3_t org, const vec3_t ang ) {
+	vec3_t at;
+
+	if ( focus > 0.0f )
+		return focus;
+	if ( focus < 0.0f && RC_FocusTarget( s->dofWho, at ) )
+		return Q_max( 1.0f, Distance( org, at ) );
+	return RC_LookDistance( org, ang );
+}
+
+// where ms into the shot is among its spots: between prev and next, frac of the way, eased as
+// the camera is
+static void RC_ShotPlace( const rcShot_t *s, int ms, int *prev, int *next, float *frac ) {
+	const int total = RC_ShotMs( s );
+	float u, from = 0;
+	int i;
+
+	*prev = *next = Q_max( 0, s->numKeys - 1 );
+	*frac = 0.0f;
+	if ( s->orbit || s->numKeys < 2 || total <= 0 )
+		return;
+	u = RC_Ease( (float)ms / total, s->linear ) * total;
+	for ( i = 1; i < s->numKeys - 1 && u > from + s->keys[i].ms; i++ )
+		from += s->keys[i].ms;
+	*prev = i - 1;
+	*next = i;
+	*frac = s->keys[i].ms > 0 ? Com_Clamp( 0.0f, 1.0f, ( u - from ) / s->keys[i].ms ) : 1.0f;
+}
+
+// the depth of field the camera at org has frac of the way from spot prev's to next's; a focus
+// on what's looked at or on someone is eased onto, not snapped. qfalse if none
+static qboolean RC_DepthOfField( const rcShot_t *s, int prev, int next, float frac, const vec3_t org, const vec3_t ang,
+	float *now, int *time ) {
+	float f0, r0, b0, f1, r1, b1, to, range, blur;
+
+	if ( !s->dof || !re->ext.SetDepthOfField )
+		return qfalse;
+	RC_KeyDof( s, prev, &f0, &r0, &b0 );
+	RC_KeyDof( s, next, &f1, &r1, &b1 );
+	frac = Com_Clamp( 0.0f, 1.0f, frac );
+	range = r0 + ( r1 - r0 ) * frac;
+	blur = b0 + ( b1 - b0 ) * frac;
+	if ( blur <= 0.0f )
+		return qfalse;
+	to = RC_FocusDistance( s, f0, org, ang );
+	if ( frac > 0.0f && f1 != f0 )
+		to += ( RC_FocusDistance( s, f1, org, ang ) - to ) * frac;
+
+	if ( ( f0 > 0.0f && f1 > 0.0f ) || *now <= 0.0f ) {
+		*now = to;
+	} else {
+		const float dt = Com_Clamp( 0.0f, 0.2f, ( cls.realtime - *time ) * 0.001f );
+		const float rate = ( f0 == 0.0f || f1 == 0.0f ) ? RC_DOF_FOCUS_RATE : RC_DOF_FOLLOW_RATE;
+
+		*now += ( to - *now ) * Com_Clamp( 0.0f, 1.0f, dt * rate );
+	}
+	*time = cls.realtime;
+	re->ext.SetDepthOfField( *now, range, blur );
+	return qtrue;
+}
+
+// the depth of field ms into the shot
+static qboolean RC_ShotDepthOfField( const rcShot_t *s, int ms, const vec3_t org, const vec3_t ang, float *now, int *time ) {
+	int prev, next;
+	float frac;
+
+	RC_ShotPlace( s, ms, &prev, &next, &frac );
+	return RC_DepthOfField( s, prev, next, frac, org, ang, now, time );
 }
 
 static void RC_NoDepthOfField( void ) {
 	if ( re->ext.SetDepthOfField )
 		re->ext.SetDepthOfField( 0.0f, 1.0f, 0.0f );
+}
+
+/*
+===============================================================================
+
+Filters: a look over the whole picture, like a video editor's
+
+===============================================================================
+*/
+
+static const char *rcFilterWords[RC_NUM_FILTERS] = { "none", "bw", "noir", "sepia", "oldfilm", "nightvision", "thermal", "cctv",
+	"vhs", "hologram", "warm", "cold", "faded", "negative" };
+static const char *rcFilterNames[RC_NUM_FILTERS] = { "None", "Black and white", "Noir", "Sepia", "Old film", "Night vision",
+	"Thermal", "Security camera", "VHS tape", "Hologram", "Warm", "Cold", "Faded", "Negative" };
+
+static int RC_FilterByWord( const char *word ) {
+	for ( int i = 0; i < RC_NUM_FILTERS; i++ ) {
+		if ( !Q_stricmp( word, rcFilterWords[i] ) )
+			return i;
+	}
+	return RC_FI_NONE;
+}
+
+static const char *RC_FilterWord( int type ) {
+	return rcFilterWords[Com_Clampi( 0, RC_NUM_FILTERS - 1, type )];
+}
+
+static const char *RC_FilterName( int type ) {
+	return rcFilterNames[Com_Clampi( 0, RC_NUM_FILTERS - 1, type )];
+}
+
+// the colours mixed by a after what the filter does already
+static void RC_FilterMix( screenFilter_t *f, const float a[3][4] ) {
+	float m[3][4];
+
+	for ( int i = 0; i < 3; i++ ) {
+		for ( int j = 0; j < 4; j++ ) {
+			m[i][j] = a[i][0] * f->matrix[0][j] + a[i][1] * f->matrix[1][j] + a[i][2] * f->matrix[2][j];
+			if ( j == 3 )
+				m[i][j] += a[i][3];
+		}
+	}
+	memcpy( f->matrix, m, sizeof( m ) );
+}
+
+// how colourful: 0 grey, 1 as it is
+static void RC_FilterSaturation( screenFilter_t *f, float sat ) {
+	const float lr = 0.299f * ( 1.0f - sat ), lg = 0.587f * ( 1.0f - sat ), lb = 0.114f * ( 1.0f - sat );
+	const float a[3][4] = { { lr + sat, lg, lb, 0 }, { lr, lg + sat, lb, 0 }, { lr, lg, lb + sat, 0 } };
+
+	RC_FilterMix( f, a );
+}
+
+// darks darker and lights lighter round pivot, above 1; JKA's maps are dark, so their middle
+// is lower than half
+static void RC_FilterContrast( screenFilter_t *f, float c, float pivot ) {
+	const float o = pivot * ( 1.0f - c );
+	const float a[3][4] = { { c, 0, 0, o }, { 0, c, 0, o }, { 0, 0, c, o } };
+
+	RC_FilterMix( f, a );
+}
+
+// each colour times its own, and the black lifted to lift
+static void RC_FilterTint( screenFilter_t *f, float r, float g, float b, float lift ) {
+	const float k = 1.0f - lift;
+	const float a[3][4] = { { r * k, 0, 0, lift }, { 0, g * k, 0, lift }, { 0, 0, b * k, lift } };
+
+	RC_FilterMix( f, a );
+}
+
+static void RC_FilterRamp( screenFilter_t *f, float gain, const byte colors[5][3] ) {
+	f->ramp = 1.0f;
+	f->rampGain = gain;
+	memcpy( f->rampColors, colors, sizeof( f->rampColors ) );
+}
+
+// a filter's look now: some flicker as time goes
+static void RC_BuildFilter( int type, screenFilter_t *f ) {
+	static const byte night[5][3] = { { 0, 8, 0 }, { 10, 70, 10 }, { 40, 170, 40 }, { 140, 255, 120 }, { 230, 255, 220 } };
+	static const byte thermal[5][3] = { { 10, 0, 40 }, { 80, 0, 150 }, { 220, 30, 60 }, { 255, 170, 0 }, { 255, 255, 210 } };
+	static const byte holo[5][3] = { { 0, 10, 30 }, { 10, 60, 130 }, { 40, 140, 230 }, { 130, 210, 255 }, { 220, 245, 255 } };
+	static const float sepia[3][4] = { { 0.393f, 0.769f, 0.189f, 0 }, { 0.349f, 0.686f, 0.168f, 0 }, { 0.272f, 0.534f, 0.131f, 0 } };
+	const float t = cls.realtime * 0.001f;
+	float flicker = 0.0f;
+
+	memset( f, 0, sizeof( *f ) );
+	for ( int i = 0; i < 3; i++ )
+		f->matrix[i][i] = 1.0f;
+	f->rampGain = 1.0f;
+	for ( int i = 0; i < 5; i++ )
+		f->rampColors[i][0] = f->rampColors[i][1] = f->rampColors[i][2] = (byte)( i * 255 / 4 );
+
+	switch ( type ) {
+	case RC_FI_BW:
+		RC_FilterSaturation( f, 0.0f );
+		break;
+	case RC_FI_NOIR:
+		RC_FilterSaturation( f, 0.0f );
+		RC_FilterContrast( f, 1.5f, 0.25f );
+		f->vignette = 0.5f;
+		f->grain = 0.05f;
+		break;
+	case RC_FI_SEPIA:
+		RC_FilterMix( f, sepia );
+		f->vignette = 0.25f;
+		break;
+	case RC_FI_OLDFILM:
+		RC_FilterMix( f, sepia );
+		RC_FilterContrast( f, 1.1f, 0.25f );
+		f->grain = 0.12f;
+		f->vignette = 0.55f;
+		flicker = 0.05f * sinf( t * 31.0f ) + 0.04f * sinf( t * 13.7f );
+		break;
+	case RC_FI_NIGHT:
+		RC_FilterRamp( f, 2.6f, night );
+		f->grain = 0.12f;
+		f->vignette = 1.0f;
+		f->scanlines = 0.12f;
+		f->scanlineCount = 240.0f;
+		break;
+	case RC_FI_THERMAL:
+		RC_FilterRamp( f, 1.25f, thermal );
+		f->grain = 0.03f;
+		break;
+	case RC_FI_CCTV:
+		RC_FilterSaturation( f, 0.25f );
+		RC_FilterTint( f, 0.9f, 1.0f, 0.95f, 0.0f );
+		RC_FilterContrast( f, 1.15f, 0.25f );
+		f->scanlines = 0.25f;
+		f->scanlineCount = 200.0f;
+		f->grain = 0.08f;
+		f->vignette = 0.5f;
+		f->aberration = 0.4f;
+		break;
+	case RC_FI_VHS:
+		RC_FilterSaturation( f, 1.25f );
+		RC_FilterTint( f, 1.05f, 1.0f, 0.95f, 0.04f );
+		f->aberration = 1.6f;
+		f->scanlines = 0.15f;
+		f->scanlineCount = 240.0f;
+		f->grain = 0.06f;
+		f->vignette = 0.3f;
+		break;
+	case RC_FI_HOLOGRAM:
+		RC_FilterRamp( f, 1.2f, holo );
+		f->scanlines = 0.35f;
+		f->scanlineCount = 160.0f;
+		f->grain = 0.06f;
+		f->aberration = 0.6f;
+		flicker = 0.06f * sinf( t * 40.0f ) + 0.04f * sinf( t * 9.3f );
+		break;
+	case RC_FI_WARM:
+		RC_FilterTint( f, 1.12f, 1.0f, 0.82f, 0.0f );
+		RC_FilterSaturation( f, 1.1f );
+		break;
+	case RC_FI_COLD:
+		RC_FilterTint( f, 0.85f, 0.98f, 1.15f, 0.0f );
+		RC_FilterSaturation( f, 0.9f );
+		break;
+	case RC_FI_FADED:
+		RC_FilterSaturation( f, 0.55f );
+		RC_FilterContrast( f, 0.9f, 0.25f );
+		RC_FilterTint( f, 1.05f, 1.0f, 0.92f, 0.1f );
+		f->vignette = 0.3f;
+		break;
+	case RC_FI_NEGATIVE:
+		{
+			const float a[3][4] = { { -1, 0, 0, 1 }, { 0, -1, 0, 1 }, { 0, 0, -1, 1 } };
+
+			RC_FilterMix( f, a );
+		}
+		break;
+	default:
+		break;
+	}
+	// a flicker: the whole picture lighter and darker
+	if ( flicker != 0.0f ) {
+		for ( int i = 0; i < 3; i++ ) {
+			for ( int j = 0; j < 4; j++ )
+				f->matrix[i][j] *= 1.0f + flicker;
+		}
+		f->rampGain *= 1.0f + flicker;
+	}
+}
+
+// the filter over the next world scene; qfalse if none
+static qboolean RC_Filter( int type, int strength ) {
+	screenFilter_t f;
+
+	if ( type <= RC_FI_NONE || type >= RC_NUM_FILTERS || strength <= 0 || !re->ext.SetScreenFilter )
+		return qfalse;
+	RC_BuildFilter( type, &f );
+	f.strength = Com_Clampi( 0, 100, strength ) / 100.0f;
+	re->ext.SetScreenFilter( &f );
+	return qtrue;
+}
+
+static void RC_NoFilter( void ) {
+	if ( re->ext.SetScreenFilter )
+		re->ext.SetScreenFilter( NULL );
 }
 
 // a strip of a wipe, from a0 to a1 of the way across from the side it comes from
@@ -3774,9 +4318,17 @@ qboolean CL_RpCinematic_RenderScene( const refdef_t *fd ) {
 		view.viewContents = CM_PointContents( rc.org, 0 );
 		// the snapshot's area mask is from the player's position, the camera can be anywhere
 		memset( view.areamask, 0, sizeof( view.areamask ) );
-		if ( RC_DepthOfField( rc.org, rc.ang, rc.dof, rc.dofFocus, &rc.dofNow, &rc.dofTime, rc.dofRange, rc.dofBlur ) ) {
+		{
+			// the shot's, where it's got to; held after it, as it ended
+			const int ms = rc.playing ? cls.realtime - rc.start : RC_ShotMs( &rc.shot );
+			const qboolean dof = (qboolean)( rc.dof && RC_ShotDepthOfField( &rc.shot, ms, rc.org, rc.ang, &rc.dofNow, &rc.dofTime ) );
+			const qboolean filter = (qboolean)( rc.filter && RC_Filter( rc.shot.filter, rc.shot.filterStrength ) );
+
 			re->RenderScene( &view );
-			RC_NoDepthOfField();
+			if ( dof )
+				RC_NoDepthOfField();
+			if ( filter )
+				RC_NoFilter();
 			return qtrue;
 		}
 	}
@@ -3801,12 +4353,28 @@ qboolean CL_RpCinematic_Camera( vec3_t origin, vec3_t angles ) {
 
 // what the cgame adds to the scene, NULL to leave it out: a view weapon would float where
 // the player stands, the frame before third person takes over
+// the filter over the picture now: the shot's, or the editor's where it's shown
+static int RC_FilterNow( void ) {
+	if ( CE_Viewing() )
+		return ( ( ce.lookPage || ce.through ) && !ce.listing && ce.shot.filterStrength > 0 ) ? ce.shot.filter : RC_FI_NONE;
+	if ( rc.active && rc.filter && rc.shot.filterStrength > 0 )
+		return rc.shot.filter;
+	return RC_FI_NONE;
+}
+
 const refEntity_t *CL_RpCinematic_Entity( const refEntity_t *ent, refEntity_t *copy ) {
 	if ( ( rc.active || ce.open ) && ( ent->renderfx & RF_FIRST_PERSON ) )
 		return NULL;
 	// a player or an NPC playing a shot's animation, on its frame
 	if ( rcNumPlaying && ent->ghoul2 && ent->reType == RT_MODEL )
 		RC_AnimateModel( ent );
+	// through a thermal camera, people are white hot
+	if ( ent->ghoul2 && ent->reType == RT_MODEL && RC_FilterNow() == RC_FI_THERMAL ) {
+		*copy = *ent;
+		copy->customShader = cls.whiteShader;
+		copy->renderfx &= ~RF_RGB_TINT;
+		return copy;
+	}
 	return ent;
 }
 
@@ -3943,8 +4511,9 @@ static void CL_CinCam_f( void ) {
 			"cincam [local] bars on|off [/<seconds>]\n"
 			"cincam [local] hud on|off\n"
 			"cincam [local] end\n"
-			"A spot is x y z [pitch yaw [roll [fov]]]; parts are separated by /\n"
-			"Before its spots a path or orbit can have /dof <focus|0 for what it sees> <range> <blur 1-10>\n"
+			"A spot is x y z [pitch yaw [roll [fov [focus range blur]]]]; parts are separated by /\n"
+			"Before its spots a path or orbit can have /dof <focus|0 for what it sees|-1 for who> <range> <blur 1-10> [who],\n"
+			"/filter <none|bw|noir|sepia|oldfilm|nightvision|thermal|cctv|vhs|hologram|warm|cold|faded|negative> <strength %>\n"
 			"and /in|out <cut|fade|left|right|top|bottom> <seconds> <r g b>\n" );
 		return;
 	}

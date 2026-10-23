@@ -325,9 +325,38 @@ static void CL_R_AddRefEntityToScene( const refEntity_t *ent ) {
 	ent = CL_RpCinematic_Entity( ent, &copy );
 	if ( !ent )
 		return;
+	// the shader manager's player shaders on each player's own sabers and shells
+	ent = CL_ShaderManager_MineEntity( ent, &copy );
 	CL_ShaderManager_AddEntity( ent );
 	CL_EffectManager_AddEntity( ent );
 	re->AddRefEntityToScene( ent );
+}
+
+// polys cgame draws: a player's own take their shader manager player shaders
+static void CL_R_AddPolysToScene( qhandle_t hShader, int numVerts, const polyVert_t *verts, int num ) {
+	if ( numVerts > 0 && verts )
+		hShader = CL_ShaderManager_MineFor( hShader, verts[0].xyz, -1 );
+	re->AddPolyToScene( hShader, numVerts, verts, num );
+}
+
+// the effects cgame plays are this player's own when bolted to them, or started nearer them
+// than anyone else: force powers come out of the caster's hand
+static void CL_FX_PlayEffect( const char *file, vec3_t org, vec3_t fwd, int vol, int rad ) {
+	FX_SetOwner( CL_ShaderManager_Owner( org, -1 ) );
+	FX_PlayEffect( file, org, fwd, vol, rad );
+	FX_SetOwner( -1 );
+}
+
+static void CL_FX_PlayEffectID( int id, vec3_t org, vec3_t fwd, int vol, int rad, qboolean isPortal ) {
+	FX_SetOwner( CL_ShaderManager_Owner( org, -1 ) );
+	FX_PlayEffectID( id, org, fwd, vol, rad, isPortal );
+	FX_SetOwner( -1 );
+}
+
+static void CL_FX_PlayEntityEffectID( int id, vec3_t org, matrix3_t axis, const int boltInfo, const int entNum, int vol, int rad ) {
+	FX_SetOwner( CL_ShaderManager_Owner( org, entNum ) );
+	FX_PlayEntityEffectID( id, org, axis, boltInfo, entNum, vol, rad );
+	FX_SetOwner( -1 );
 }
 
 static void CL_R_RenderScene( const refdef_t *fd ) {
@@ -450,29 +479,43 @@ static void CL_OpenUIMenu( int menuID ) {
 	UIVM_SetActiveMenu( (uiMenuCommand_t)menuID );
 }
 
+// the pieces cgame draws itself: a player's own (saber trails and the like) take their shader manager player shaders
 static void CGFX_AddLine( vec3_t start, vec3_t end, float size1, float size2, float sizeParm, float alpha1, float alpha2, float alphaParm, vec3_t sRGB, vec3_t eRGB, float rgbParm, int killTime, qhandle_t shader, int flags ) {
-	FX_AddLine( start, end, size1, size2, sizeParm, alpha1, alpha2, alphaParm, sRGB, eRGB, rgbParm, killTime, shader, flags );
+	FX_AddLine( start, end, size1, size2, sizeParm, alpha1, alpha2, alphaParm, sRGB, eRGB, rgbParm, killTime, CL_ShaderManager_MineFor( shader, start, -1 ), flags );
 }
 
 static void CGFX_AddPoly( addpolyArgStruct_t *p ) {
-	FX_AddPoly( p->p, p->ev, p->numVerts, p->vel, p->accel, p->alpha1, p->alpha2, p->alphaParm, p->rgb1, p->rgb2, p->rgbParm, p->rotationDelta, p->bounce, p->motionDelay, p->killTime, p->shader, p->flags );
+	FX_AddPoly( p->p, p->ev, p->numVerts, p->vel, p->accel, p->alpha1, p->alpha2, p->alphaParm, p->rgb1, p->rgb2, p->rgbParm, p->rotationDelta, p->bounce, p->motionDelay, p->killTime,
+		CL_ShaderManager_MineFor( p->shader, p->p[0], -1 ), p->flags );
 }
 
 static void CGFX_AddBezier( addbezierArgStruct_t *b ) {
-	FX_AddBezier( b->start, b->end, b->control1, b->control1Vel, b->control2, b->control2Vel, b->size1, b->size2, b->sizeParm, b->alpha1, b->alpha2, b->alphaParm, b->sRGB, b->eRGB, b->rgbParm, b->killTime, b->shader, b->flags );
+	FX_AddBezier( b->start, b->end, b->control1, b->control1Vel, b->control2, b->control2Vel, b->size1, b->size2, b->sizeParm, b->alpha1, b->alpha2, b->alphaParm, b->sRGB, b->eRGB, b->rgbParm, b->killTime,
+		CL_ShaderManager_MineFor( b->shader, b->start, -1 ), b->flags );
 }
 
 static void CGFX_AddPrimitive( effectTrailArgStruct_t *e ) {
+	const qhandle_t shader = CL_ShaderManager_MineFor( e->mShader, e->mVerts[0].origin, -1 );
+
+	if ( shader != e->mShader ) {
+		effectTrailArgStruct_t mine = *e;
+
+		mine.mShader = shader;
+		FX_FeedTrail( &mine );
+		return;
+	}
 	FX_FeedTrail( e );
 }
 
 static void CGFX_AddSprite( addspriteArgStruct_t *s ) {
 	vec3_t rgb = { 1.0f, 1.0f, 1.0f };
-	FX_AddParticle( s->origin, s->vel, s->accel, s->scale, s->dscale, 0, s->sAlpha, s->eAlpha, 0, rgb, rgb, 0, s->rotation, 0, vec3_origin, vec3_origin, s->bounce, 0, 0, s->life, s->shader, s->flags );
+	FX_AddParticle( s->origin, s->vel, s->accel, s->scale, s->dscale, 0, s->sAlpha, s->eAlpha, 0, rgb, rgb, 0, s->rotation, 0, vec3_origin, vec3_origin, s->bounce, 0, 0, s->life,
+		CL_ShaderManager_MineFor( s->shader, s->origin, -1 ), s->flags );
 }
 
 static void CGFX_AddElectricity( addElectricityArgStruct_t *p ) {
-	FX_AddElectricity( p->start, p->end, p->size1, p->size2, p->sizeParm, p->alpha1, p->alpha2, p->alphaParm, p->sRGB, p->eRGB, p->rgbParm, p->chaos, p->killTime, p->shader, p->flags );
+	FX_AddElectricity( p->start, p->end, p->size1, p->size2, p->sizeParm, p->alpha1, p->alpha2, p->alphaParm, p->sRGB, p->eRGB, p->rgbParm, p->chaos, p->killTime,
+		CL_ShaderManager_MineFor( p->shader, p->start, -1 ), p->flags );
 }
 
 static qboolean CL_ROFF_Clean( void ) {
@@ -528,7 +571,10 @@ static qboolean CGFX_PlayBoltedEffectID( int id, vec3_t org, void *ghoul2, const
 	int boltInfo=0;
 	if ( re->G2API_AttachEnt( &boltInfo, g2, modelNum, boltNum, entNum, modelNum ) )
 	{
+		// bolted to an entity: the player's own when it is one
+		FX_SetOwner( CL_ShaderManager_Owner( org, entNum ) );
 		FX_PlayBoltedEffectID(id, org, boltInfo, &g2, iLooptime, isRelative );
+		FX_SetOwner( -1 );
 		return qtrue;
 	}
 	return qfalse;
@@ -1233,11 +1279,11 @@ intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 		return 0;
 
 	case CG_R_ADDPOLYTOSCENE:
-		re->AddPolyToScene( args[1], args[2], (const polyVert_t *)VMA(3), 1 );
+		CL_R_AddPolysToScene( args[1], args[2], (const polyVert_t *)VMA(3), 1 );
 		return 0;
 
 	case CG_R_ADDPOLYSTOSCENE:
-		re->AddPolyToScene( args[1], args[2], (const polyVert_t *)VMA(3), args[4] );
+		CL_R_AddPolysToScene( args[1], args[2], (const polyVert_t *)VMA(3), args[4] );
 		return 0;
 
 	case CG_R_ADDDECALTOSCENE:
@@ -1453,7 +1499,7 @@ intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 		return FX_RegisterEffect((const char *)VMA(1));
 
 	case CG_FX_PLAY_EFFECT:
-		FX_PlayEffect((const char *)VMA(1), (float *)VMA(2), (float *)VMA(3), args[4], args[5] );
+		CL_FX_PlayEffect((const char *)VMA(1), (float *)VMA(2), (float *)VMA(3), args[4], args[5] );
 		return 0;
 
 	case CG_FX_PLAY_ENTITY_EFFECT:
@@ -1461,15 +1507,15 @@ intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 		return 0;
 
 	case CG_FX_PLAY_EFFECT_ID:
-		FX_PlayEffectID(args[1], (float *)VMA(2), (float *)VMA(3), args[4], args[5] );
+		CL_FX_PlayEffectID(args[1], (float *)VMA(2), (float *)VMA(3), args[4], args[5], qfalse );
 		return 0;
 
 	case CG_FX_PLAY_PORTAL_EFFECT_ID:
-		FX_PlayEffectID(args[1], (float *)VMA(2), (float *)VMA(3), args[4], args[5], qtrue );
+		CL_FX_PlayEffectID(args[1], (float *)VMA(2), (float *)VMA(3), args[4], args[5], qtrue );
 		return 0;
 
 	case CG_FX_PLAY_ENTITY_EFFECT_ID:
-		FX_PlayEntityEffectID(args[1], (float *)VMA(2), (vec3_t *)VMA(3), args[4], args[5], args[6], args[7] );
+		CL_FX_PlayEntityEffectID(args[1], (float *)VMA(2), (vec3_t *)VMA(3), args[4], args[5], args[6], args[7] );
 		return 0;
 
 	case CG_FX_PLAY_BOLTED_EFFECT_ID:
@@ -1862,7 +1908,7 @@ void CL_BindCGame( void ) {
 		cgi.R_AddAdditiveLightToScene			= re->AddAdditiveLightToScene;
 		cgi.R_AddDecalToScene					= re->AddDecalToScene;
 		cgi.R_AddLightToScene					= re->AddLightToScene;
-		cgi.R_AddPolysToScene					= re->AddPolyToScene;
+		cgi.R_AddPolysToScene					= CL_R_AddPolysToScene;
 		cgi.R_AddRefEntityToScene				= CL_R_AddRefEntityToScene;
 		cgi.R_AnyLanguage_ReadCharFromString	= re->AnyLanguage_ReadCharFromString;
 		cgi.R_AutomapElevationAdjustment		= re->AutomapElevationAdjustment;
@@ -1932,9 +1978,9 @@ void CL_BindCGame( void ) {
 		cgi.CIN_StopCinematic					= CIN_StopCinematic;
 		cgi.FX_AddLine							= CGFX_AddLine;
 		cgi.FX_RegisterEffect					= FX_RegisterEffect;
-		cgi.FX_PlayEffect						= FX_PlayEffect;
-		cgi.FX_PlayEffectID						= FX_PlayEffectID;
-		cgi.FX_PlayEntityEffectID				= FX_PlayEntityEffectID;
+		cgi.FX_PlayEffect						= CL_FX_PlayEffect;
+		cgi.FX_PlayEffectID						= CL_FX_PlayEffectID;
+		cgi.FX_PlayEntityEffectID				= CL_FX_PlayEntityEffectID;
 		cgi.FX_PlayBoltedEffectID				= CGFX_PlayBoltedEffectID;
 		cgi.FX_AddScheduledEffects				= CL_FX_AddScheduledEffects;
 		cgi.FX_InitSystem						= FX_InitSystem;

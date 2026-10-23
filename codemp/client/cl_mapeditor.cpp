@@ -26,20 +26,25 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 // Models: models placed here, carried to the crosshair, turned and scaled; and the map's
 // own props. Those were melted into the map when it was built, so a click finds the
 // triangles under the cursor and the ones joined to them; lifted out, they're hidden in
-// the world and drawn as a model of their own, with the light they had.
+// the world and drawn as a model of their own, with the light they had. What's joined to
+// the whole map is taken a brush at a time instead: the faces lying on the brush clicked.
+// What's chosen has red, green and blue arrows to drag it along X, Y and Z.
 // Lights: dynamic lights, their colour and reach, and a light style they can follow.
-// Triggers: boxes that run a console command when the player walks in.
+// Triggers: boxes that run a console command when the player walks in, or presses use
+// looking at one within reach.
 // Sounds: speakers playing a sound or a piece of music round and round, heard near them
 // or everywhere on the map, as a target_speaker would; saved as one.
-// Styles: the map's light styles, the switchable lights it was built with, given a
-// pattern and a colour of our own.
+// Styles: the map's light styles, the switchable lights it was built with, and style 0,
+// the light of the whole map, given a pattern and a colour of our own.
 // Locks: RPMod's rplock on the map's doors and trigger_multiples, by rank, with a name; the
 // server keeps those, not this screen.
+// Fog: the fog the map was built with, over all of it or in volumes, given a colour and a
+// thickness of our own, or taken away; and fog volumes of our own, boxes of fog anywhere.
 //
-// RPMod has no server side for any of it yet, so only this screen sees the edits. They
-// are kept in mapedits/<map>.ent, written as entities a server could spawn later, and
-// come back with the map whenever rpc_mapEdits is on. Layouts are more of them kept by
-// name, in mapedits/<map>/<name>.ent, to load when wanted.
+// RPMod has no server side for any of it yet, so only this screen sees the edits. A map
+// always starts without any: they're kept only by name as layouts, in
+// mapedits/<map>/<name>.ent (entities a server could spawn later), loaded when wanted and
+// shared, so no one's edits come back on their own over someone else's.
 //
 // Shared, an admin's edits go to everyone on the map with this client, hidden in rpnotify
 // prints (see cl_rphooks.cpp):
@@ -97,6 +102,10 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define ME_MAX_SOUNDS		8192		// sounds and music to pick from
 #define ME_SOUND_POOL		( ME_MAX_SOUNDS * 48 )
 #define ME_SOUND_NEAR		256.0f		// a speaker's sound is at its loudest this near
+#define ME_GIZMO_PX			6.0f		// an arrow is pointed at this near, on the 640x480 screen
+#define ME_USE_REACH		96.0f		// a use trigger is used from this near
+#define ME_MAX_FOGS			64
+#define ME_FOG_NONE			65536.0f	// a fog this thin isn't seen
 
 typedef enum {
 	ME_TAB_MAP,
@@ -106,10 +115,11 @@ typedef enum {
 	ME_TAB_SOUNDS,
 	ME_TAB_STYLES,
 	ME_TAB_LOCKS,
+	ME_TAB_FOG,
 	ME_NUM_TABS
 } meTab_t;
 
-static const char *meTabNames[ME_NUM_TABS] = { "Map", "Models", "Lights", "Triggers", "Sounds", "Styles", "Locks" };
+static const char *meTabNames[ME_NUM_TABS] = { "Map", "Models", "Lights", "Triggers", "Sounds", "Styles", "Locks", "Fog" };
 #define ME_TABS_PER_ROW		4
 
 // what can be chosen
@@ -118,7 +128,8 @@ typedef enum {
 	ME_SEL_ENT,			// one of the map's own
 	ME_SEL_ITEM,		// one of ours
 	ME_SEL_STYLE,
-	ME_SEL_PROP			// a prop of the map's, not lifted yet
+	ME_SEL_PROP,		// a prop of the map's, not lifted yet
+	ME_SEL_FOG
 } meSelKind_t;
 
 typedef enum {
@@ -145,7 +156,8 @@ typedef enum {
 	ME_ITEM_LIGHT,
 	ME_ITEM_TRIGGER,
 	ME_ITEM_PROP,		// a prop of the map's, lifted out
-	ME_ITEM_SPEAKER		// a sound playing round and round
+	ME_ITEM_SPEAKER,	// a sound playing round and round
+	ME_ITEM_FOG			// a fog volume of ours: a box, its colour, how thick
 } meItemKind_t;
 
 typedef struct {
@@ -171,11 +183,18 @@ typedef struct {
 	sfxHandle_t	sfx;
 	qboolean	sfxRegistered;
 
-	// a trigger: a box that size either way from org
+	// a trigger: a box that size either way from org, walked into or used, with a name
 	vec3_t		size;
 	char		command[ME_CMD_LEN];
 	qboolean	once;
 	qboolean	inside, fired;
+	qboolean	use;
+	char		name[48];			// what the storyteller knows it by
+	char		display[48];		// what a use trigger is shown as, looked at
+
+	// a fog volume: the box as a trigger's, its colour as a light's, and how deep it takes to
+	// see nothing through it
+	float		fogDepth;
 
 	// a map prop: the pieces it's found from, surface and triangle, where it was, and
 	// whether it's gone; org, ang and scale are a model's
@@ -207,6 +226,16 @@ typedef struct {
 	vec3_t		mins, maxs;
 } meStyle_t;
 
+// a fog of the map's: as the map has it, and ours over it
+typedef struct {
+	vec3_t		mapColor;
+	float		mapDepth;
+	vec3_t		mins, maxs;
+	qboolean	override;
+	vec3_t		color;
+	float		depth;				// how deep it takes to see nothing through it
+} meFog_t;
+
 typedef struct {
 	const char	*name;
 	const char	*pattern;
@@ -221,6 +250,24 @@ static const meStylePreset_t meStylePresets[] = {
 	{ "Pulse",		"abcdefghijklmnopqrstuvwxyzyxwvutsrqponmlkjihgfedcb" },
 	{ "Strobe",		"mamamamamama" },
 	{ "Blink",		"zzzzzzzzzzaaaaaaaaaa" },
+};
+
+// a style's colour and pattern together, for the whole map's light most of all
+typedef struct {
+	const char	*name;
+	vec3_t		color;
+	const char	*pattern;
+} meStyleLook_t;
+
+static const meStyleLook_t meStyleLooks[] = {
+	{ "Normal",		{ 1.0f, 1.0f, 1.0f },		"z" },
+	{ "Dim",		{ 0.55f, 0.55f, 0.55f },	"z" },
+	{ "Night",		{ 0.3f, 0.36f, 0.6f },		"z" },
+	{ "Dusk",		{ 1.0f, 0.62f, 0.42f },		"z" },
+	{ "Alarm",		{ 1.0f, 0.22f, 0.18f },		"mnopqrstuvwxyzyxwvutsrqpon" },
+	{ "Blackout",	{ 1.0f, 1.0f, 1.0f },		"b" },
+	{ "Storm",		{ 0.45f, 0.5f, 0.65f },		"jjjjjjjjjjjjjjjjjjjjzjzjjjjjjjjjjjjjjjj" },
+	{ "Eerie",		{ 0.45f, 0.9f, 0.6f },		"kklmnmlkkjjkllmnnmlk" },
 };
 
 static const vec3_t meLightColors[] = {
@@ -242,7 +289,9 @@ typedef enum {
 	ME_FIELD_PATTERN,		// a light style's
 	ME_FIELD_LAYOUT,		// a layout's name
 	ME_FIELD_SOUND,			// a speaker's sound
-	ME_FIELD_LOCKNAME		// a lock's name
+	ME_FIELD_LOCKNAME,		// a lock's name
+	ME_FIELD_TRIGGERNAME,	// a trigger's name, the storyteller's
+	ME_FIELD_TRIGGERDISPLAY	// what a use trigger is shown as
 } meField_t;
 
 typedef struct {
@@ -270,6 +319,12 @@ typedef struct {
 	qboolean	allStyles;
 	int			styleScroll;
 	int			flashStyle, flashUntil;
+	meFog_t		fogs[ME_MAX_FOGS];	// 1 on, as the renderer counts them
+	int			numFogs, globalFog;
+	qboolean	fogsRead, fogsDirty, fogsShown;
+	int			fogScroll;
+	qboolean	fogAdded;			// the tab shows ours, not the map's
+	unsigned	fogItemsSum;		// ours as they were last applied
 	qhandle_t	hidden[ME_MAX_HIDDEN];
 	int			numHidden;
 	qboolean	dirty;
@@ -337,6 +392,26 @@ typedef struct {
 	int			numCompTris;
 	qboolean	propsDirty, propsShown;
 
+	// the world's solid brushes, to take one whole: their planes, and boxes to skip them by
+	float		( *brushPlanes )[4];
+	int			*brushFirst, *brushNum;
+	vec3_t		*brushMins, *brushMaxs;
+	int			numBrushes;
+	int			candBrush;			// the brush under the last click, -1 none
+
+	// the arrows on what's chosen: the one pointed at, the one dragged and from where
+	int			gizmoAxis, dragAxis;
+	vec3_t		dragFrom;
+	float		dragT0;
+
+	// use triggers: the use key as it was, and the one looked at
+	qboolean	useDown;
+	int			useAim;
+
+	// opened from the storyteller to click a trigger for a step: 0 a map trigger, 1 a door or
+	// button, 2 a use trigger; -1 not
+	int			storyPick;
+
 	// a prop chosen in the map, not lifted yet
 	int			candSeeds[ME_MAX_SEEDS][2];
 	int			numCandSeeds;
@@ -393,6 +468,10 @@ static const byte meReachColor[4]	= { 255, 255, 255, 70 };
 static const byte meCandColor[4]	= { 255, 90, 200, 255 };
 static const byte meSpeakerColor[4]	= { 190, 120, 255, 255 };
 static const byte meLockedColor[4]	= { 255, 50, 50, 255 };
+static const byte meUseTrigger[4]	= { 80, 230, 255, 255 };
+static const byte meAxisColors[3][4] = { { 255, 60, 60, 255 }, { 60, 230, 60, 255 }, { 70, 120, 255, 255 } };
+static const byte meAxisLit[4]		= { 255, 230, 40, 255 };
+static const vec3_t meAxes[3]		= { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } };
 
 static int ME_Round( float f ) {
 	return (int)( f < 0 ? f - 0.5f : f + 0.5f );
@@ -677,6 +756,21 @@ static char *ME_LockNameBuffer( int *size ) {
 	return ml.name;
 }
 
+// opened from a storyteller step to click its trigger: 0 a map trigger, 1 a door or button, 2 a
+// use trigger
+void CL_MapEditor_PickForStory( int kind ) {
+	CL_MapEditor_Open();
+	if ( !me.open )
+		return;
+	me.storyPick = kind;
+	me.tab = kind == 2 ? ME_TAB_TRIGGERS : ME_TAB_MAP;
+	me.showLayouts = qfalse;
+	me.showTriggers = me.showBrushes = qtrue;
+	me.selKind = ME_SEL_NONE;
+	me.sel = -1;
+	me.grabbing = qfalse;
+}
+
 // opened from a storyteller step: Lock and Unlock go in the story, not to the server
 void CL_MapEditor_OpenForStory( void ) {
 	CL_MapEditor_Open();
@@ -690,11 +784,12 @@ void CL_MapEditor_OpenForStory( void ) {
 
 static int ME_ItemTab( int kind ) {
 	return kind == ME_ITEM_MODEL || kind == ME_ITEM_PROP ? ME_TAB_MODELS : kind == ME_ITEM_LIGHT ? ME_TAB_LIGHTS
-		: kind == ME_ITEM_SPEAKER ? ME_TAB_SOUNDS : ME_TAB_TRIGGERS;
+		: kind == ME_ITEM_SPEAKER ? ME_TAB_SOUNDS : kind == ME_ITEM_FOG ? ME_TAB_FOG : ME_TAB_TRIGGERS;
 }
 
 static int ME_TabItemKind( int tab ) {
-	return tab == ME_TAB_MODELS ? ME_ITEM_MODEL : tab == ME_TAB_LIGHTS ? ME_ITEM_LIGHT : tab == ME_TAB_SOUNDS ? ME_ITEM_SPEAKER : ME_ITEM_TRIGGER;
+	return tab == ME_TAB_MODELS ? ME_ITEM_MODEL : tab == ME_TAB_LIGHTS ? ME_ITEM_LIGHT : tab == ME_TAB_SOUNDS ? ME_ITEM_SPEAKER
+		: tab == ME_TAB_FOG ? ME_ITEM_FOG : ME_ITEM_TRIGGER;
 }
 
 /*
@@ -843,7 +938,8 @@ The map's props: the world's triangles, and which are joined
 
 static void ME_FreeTris( void ) {
 	void **mem[] = { (void **)&me.bspVerts, (void **)&me.tris, (void **)&me.surfFirstTri, (void **)&me.keys,
-		(void **)&me.triStamp, (void **)&me.triTaken, (void **)&me.compTris };
+		(void **)&me.triStamp, (void **)&me.triTaken, (void **)&me.compTris, (void **)&me.brushPlanes, (void **)&me.brushFirst,
+		(void **)&me.brushNum, (void **)&me.brushMins, (void **)&me.brushMaxs };
 
 	for ( int i = 0; i < (int)ARRAY_LEN( mem ); i++ ) {
 		if ( *mem[i] )
@@ -851,7 +947,9 @@ static void ME_FreeTris( void ) {
 		*mem[i] = NULL;
 	}
 	me.numBspVerts = me.numTris = me.numBspSurfs = me.numKeys = me.numCompTris = 0;
+	me.numBrushes = 0;
 	me.numCandSeeds = 0;
+	me.candBrush = -1;
 }
 
 static void ME_KeyFor( const vec3_t p, meVertKey_t *k ) {
@@ -971,6 +1069,85 @@ static void ME_BuildTris( const byte *buf, int len ) {
 		}
 	}
 	qsort( me.keys, me.numKeys, sizeof( me.keys[0] ), ME_CompareKeys );
+
+	// the world's solid brushes, their planes and, from the planes along the axes, their boxes
+	if ( ME_LumpOk( header, LUMP_PLANES, len, sizeof( dplane_t ) ) && ME_LumpOk( header, LUMP_BRUSHES, len, sizeof( dbrush_t ) )
+		&& ME_LumpOk( header, LUMP_BRUSHSIDES, len, sizeof( dbrushside_t ) ) ) {
+		const dplane_t *planes = (const dplane_t *)( buf + LittleLong( header->lumps[LUMP_PLANES].fileofs ) );
+		const int numPlanes = LittleLong( header->lumps[LUMP_PLANES].filelen ) / sizeof( dplane_t );
+		const dbrush_t *brushes = (const dbrush_t *)( buf + LittleLong( header->lumps[LUMP_BRUSHES].fileofs ) );
+		const int numBrushLump = LittleLong( header->lumps[LUMP_BRUSHES].filelen ) / sizeof( dbrush_t );
+		const dbrushside_t *sides = (const dbrushside_t *)( buf + LittleLong( header->lumps[LUMP_BRUSHSIDES].fileofs ) );
+		const int numSides = LittleLong( header->lumps[LUMP_BRUSHSIDES].filelen ) / sizeof( dbrushside_t );
+		const int fb = Com_Clampi( 0, numBrushLump, LittleLong( world->firstBrush ) );
+		const int nb = Com_Clampi( 0, numBrushLump - fb, LittleLong( world->numBrushes ) );
+		int total = 0, out = 0;
+
+		for ( int i = 0; i < nb; i++ )
+			total += Q_max( 0, LittleLong( brushes[fb + i].numSides ) );
+		if ( nb > 0 && total > 0 ) {
+			me.numBrushes = nb;
+			me.brushPlanes = (float ( * )[4])Z_Malloc( total * sizeof( me.brushPlanes[0] ), TAG_GENERAL, qfalse );
+			me.brushFirst = (int *)Z_Malloc( nb * sizeof( int ), TAG_GENERAL, qfalse );
+			me.brushNum = (int *)Z_Malloc( nb * sizeof( int ), TAG_GENERAL, qtrue );
+			me.brushMins = (vec3_t *)Z_Malloc( nb * sizeof( vec3_t ), TAG_GENERAL, qfalse );
+			me.brushMaxs = (vec3_t *)Z_Malloc( nb * sizeof( vec3_t ), TAG_GENERAL, qfalse );
+			for ( int i = 0; i < nb; i++ ) {
+				const dbrush_t *db = &brushes[fb + i];
+				const int shader = LittleLong( db->shaderNum ), first = LittleLong( db->firstSide ), n = LittleLong( db->numSides );
+				const int contents = shader >= 0 && shader < numShaders ? LittleLong( shaders[shader].contentFlags ) : 0;
+
+				me.brushFirst[i] = out;
+				VectorSet( me.brushMins[i], -MAX_WORLD_COORD, -MAX_WORLD_COORD, -MAX_WORLD_COORD );
+				VectorSet( me.brushMaxs[i], MAX_WORLD_COORD, MAX_WORLD_COORD, MAX_WORLD_COORD );
+				if ( !( contents & CONTENTS_SOLID ) || first < 0 || n <= 0 || first + n > numSides )
+					continue;
+				for ( int k = 0; k < n && out < total; k++ ) {
+					const int pn = LittleLong( sides[first + k].planeNum );
+					float *pl;
+
+					if ( pn < 0 || pn >= numPlanes )
+						continue;
+					pl = me.brushPlanes[out++];
+					pl[0] = LittleFloat( planes[pn].normal[0] );
+					pl[1] = LittleFloat( planes[pn].normal[1] );
+					pl[2] = LittleFloat( planes[pn].normal[2] );
+					pl[3] = LittleFloat( planes[pn].dist );
+					me.brushNum[i]++;
+					for ( int a = 0; a < 3; a++ ) {
+						if ( pl[a] == 1.0f )
+							me.brushMaxs[i][a] = pl[3];
+						else if ( pl[a] == -1.0f )
+							me.brushMins[i][a] = -pl[3];
+					}
+				}
+			}
+		}
+	}
+}
+
+// a point inside a brush, give or take eps
+static qboolean ME_PointInBrush( const vec3_t p, int b, float eps ) {
+	for ( int i = 0; i < 3; i++ ) {
+		if ( p[i] < me.brushMins[b][i] - eps || p[i] > me.brushMaxs[b][i] + eps )
+			return qfalse;
+	}
+	for ( int k = 0; k < me.brushNum[b]; k++ ) {
+		const float *pl = me.brushPlanes[me.brushFirst[b] + k];
+
+		if ( DotProduct( p, pl ) - pl[3] > eps )
+			return qfalse;
+	}
+	return qtrue;
+}
+
+// a triangle lying on a brush: one of its faces, or part of one
+static qboolean ME_TriOnBrush( int tri, int b ) {
+	for ( int c = 0; c < 3; c++ ) {
+		if ( !ME_PointInBrush( me.bspVerts[me.tris[tri].v[c]], b, 0.5f ) )
+			return qfalse;
+	}
+	return qtrue;
 }
 
 // the first key at a corner
@@ -1039,7 +1216,26 @@ static qboolean ME_Grow( int seed, qboolean skipTaken, vec3_t mins, vec3_t maxs 
 	return qtrue;
 }
 
-// the triangles of a prop found from its pieces, in order, onto compTris
+// a brush's faces, the triangles lying on it, onto compTris; qfalse if it has none
+static qboolean ME_AddBrush( int b, qboolean skipTaken, vec3_t mins, vec3_t maxs ) {
+	int found = 0;
+
+	if ( b < 0 || b >= me.numBrushes || !me.brushNum[b] )
+		return qfalse;
+	for ( int i = 0; i < me.numTris; i++ ) {
+		if ( me.triStamp[i] == me.stamp || ( skipTaken && me.triTaken[i] ) || !ME_TriOnBrush( i, b ) )
+			continue;
+		me.triStamp[i] = me.stamp;
+		me.compTris[me.numCompTris++] = i;
+		for ( int c = 0; c < 3; c++ )
+			AddPointToBounds( me.bspVerts[me.tris[i].v[c]], mins, maxs );
+		found++;
+	}
+	return (qboolean)( found > 0 );
+}
+
+// the triangles of a prop found from its pieces, in order, onto compTris; a piece of -1:<n>
+// is brush n's faces
 static qboolean ME_CollectSeeds( const int ( *seeds )[2], int numSeeds, qboolean skipTaken, vec3_t mins, vec3_t maxs ) {
 	me.stamp++;
 	me.numCompTris = 0;
@@ -1047,6 +1243,10 @@ static qboolean ME_CollectSeeds( const int ( *seeds )[2], int numSeeds, qboolean
 	if ( !me.tris )
 		return qfalse;
 	for ( int i = 0; i < numSeeds; i++ ) {
+		if ( seeds[i][0] == -1 ) {
+			ME_AddBrush( seeds[i][1], skipTaken, mins, maxs );
+			continue;
+		}
 		const int tri = ME_SeedTri( seeds[i][0], seeds[i][1] );
 
 		if ( tri >= 0 && !ME_Grow( tri, skipTaken, mins, maxs ) )
@@ -1272,6 +1472,86 @@ int CL_MapEditor_LightStyle( int style, int color ) {
 /*
 ===============================================================================
 
+Fog: the map's, ours over it
+
+===============================================================================
+*/
+
+// what the map has, once it's up; ours kept
+static void ME_ReadFogs( void ) {
+	static vec3_t colors[ME_MAX_FOGS], mins[ME_MAX_FOGS], maxs[ME_MAX_FOGS];
+	static float depths[ME_MAX_FOGS];
+
+	me.fogsRead = qtrue;
+	me.numFogs = 0;
+	me.globalFog = -1;
+	if ( !re->ext.GetFogs || cls.state != CA_ACTIVE )
+		return;
+	me.numFogs = re->ext.GetFogs( colors, depths, mins, maxs, &me.globalFog, ME_MAX_FOGS );
+	for ( int i = 1; i < me.numFogs; i++ ) {
+		meFog_t *f = &me.fogs[i];
+
+		VectorCopy( colors[i], f->mapColor );
+		f->mapDepth = depths[i];
+		VectorCopy( mins[i], f->mins );
+		VectorCopy( maxs[i], f->maxs );
+		if ( !f->override ) {
+			VectorCopy( f->mapColor, f->color );
+			f->depth = f->mapDepth;
+		}
+	}
+	me.fogsDirty = qtrue;
+}
+
+// our fog volumes as they are, to tell when one's changed
+static unsigned ME_FogItemsSum( void ) {
+	unsigned sum = 0;
+
+	for ( int i = 0; i < me.numItems; i++ ) {
+		const meItem_t *it = &me.items[i];
+		const float v[10] = { it->org[0], it->org[1], it->org[2], it->size[0], it->size[1], it->size[2], it->color[0], it->color[1], it->color[2], it->fogDepth };
+
+		if ( it->kind != ME_ITEM_FOG )
+			continue;
+		sum = sum * 31 + i;
+		for ( int k = 0; k < 10; k++ )
+			sum = sum * 31 + (unsigned)ME_Round( v[k] * 64.0f );
+	}
+	return sum;
+}
+
+// ours to the renderer, or the map's back: its fogs as we have them, and our volumes
+static void ME_ApplyFogs( void ) {
+	me.fogsDirty = qfalse;
+	me.fogsShown = ME_Shown();
+	me.fogItemsSum = ME_FogItemsSum();
+	if ( re->ext.SetFog ) {
+		for ( int i = 1; i < me.numFogs; i++ ) {
+			const meFog_t *f = &me.fogs[i];
+
+			re->ext.SetFog( i, me.fogsShown && f->override ? f->color : NULL, f->depth );
+		}
+	}
+	if ( !re->ext.AddFog || !re->ext.ClearAddedFogs || cls.state != CA_ACTIVE )
+		return;
+	re->ext.ClearAddedFogs();
+	if ( !me.fogsShown )
+		return;
+	for ( int i = 0; i < me.numItems; i++ ) {
+		const meItem_t *it = &me.items[i];
+		vec3_t mins, maxs;
+
+		if ( it->kind != ME_ITEM_FOG )
+			continue;
+		VectorSubtract( it->org, it->size, mins );
+		VectorAdd( it->org, it->size, maxs );
+		re->ext.AddFog( mins, maxs, it->color, it->fogDepth );
+	}
+}
+
+/*
+===============================================================================
+
 Our things
 
 ===============================================================================
@@ -1298,6 +1578,7 @@ static void ME_ForgetHandles( void ) {
 	me.numHidden = 0;
 	// the renderer's world comes back whole
 	me.propsDirty = qtrue;
+	me.fogsRead = qfalse;
 }
 
 static void ME_Clear( void ) {
@@ -1309,6 +1590,12 @@ static void ME_Clear( void ) {
 	}
 	for ( int i = 0; i < me.numEnts; i++ )
 		me.ents[i].hidden = qfalse;
+	for ( int i = 0; i < ME_MAX_FOGS; i++ ) {
+		me.fogs[i].override = qfalse;
+		VectorCopy( me.fogs[i].mapColor, me.fogs[i].color );
+		me.fogs[i].depth = me.fogs[i].mapDepth;
+	}
+	me.fogsDirty = qtrue;
 	me.numHidden = 0;
 	me.selKind = ME_SEL_NONE;
 	me.sel = -1;
@@ -1317,12 +1604,20 @@ static void ME_Clear( void ) {
 	me.propsDirty = qtrue;
 }
 
+static const char *ME_ServerPattern( int style );
+
 static void ME_Select( int kind, int index ) {
 	me.grabbing = qfalse;
+	me.dragAxis = -1;
 	me.selKind = kind;
 	me.sel = index;
 	if ( kind == ME_SEL_ENT )
 		ME_ReadKeys( index );
+	// a style not ours yet shows the server's, ready to change
+	if ( kind == ME_SEL_STYLE && index >= 0 && index < MAX_LIGHT_STYLES && !me.styles[index].override ) {
+		Q_strncpyz( me.styles[index].pattern, ME_ServerPattern( index )[0] ? ME_ServerPattern( index ) : "z", sizeof( me.styles[index].pattern ) );
+		VectorSet( me.styles[index].color, 1, 1, 1 );
+	}
 }
 
 static meItem_t *ME_NewItem( int kind ) {
@@ -1378,6 +1673,11 @@ static void ME_AddItem( int kind ) {
 	}
 	if ( !( it = ME_NewItem( kind ) ) )
 		return;
+	if ( kind == ME_ITEM_FOG ) {
+		VectorSet( it->size, 128, 128, 64 );
+		VectorSet( it->color, 0.6f, 0.62f, 0.66f );
+		it->fogDepth = 768.0f;
+	}
 	if ( kind == ME_ITEM_MODEL ) {
 		Q_strncpyz( it->model, me.pickModel, sizeof( it->model ) );
 		it->ang[YAW] = AngleNormalize360( ME_Round( ( me.camAng[YAW] + 180.0f ) / 15.0f ) * 15.0f );
@@ -1460,6 +1760,65 @@ static qboolean ME_ChooseProp( int tri ) {
 	me.candSeeds[0][1] = me.tris[tri].local;
 	if ( !ME_CollectSeeds( me.candSeeds, 1, qtrue, me.candMins, me.candMaxs ) )
 		return qfalse;
+	me.numCandSeeds = 1;
+	me.candTris = me.numCompTris;
+	me.grabbing = qfalse;
+	me.selKind = ME_SEL_PROP;
+	me.sel = 0;
+	me.tab = ME_TAB_MODELS;
+	return qtrue;
+}
+
+// the brush a triangle hit lies on: the one just behind where the ray met it, the smallest if
+// there are more; -1 none
+static int ME_BrushAt( int tri, const vec3_t org, const vec3_t dir, float dist ) {
+	vec3_t e1, e2, n, p;
+	float best = 0.0f;
+	int found = -1;
+
+	if ( tri < 0 || tri >= me.numTris || !me.numBrushes )
+		return -1;
+	VectorSubtract( me.bspVerts[me.tris[tri].v[1]], me.bspVerts[me.tris[tri].v[0]], e1 );
+	VectorSubtract( me.bspVerts[me.tris[tri].v[2]], me.bspVerts[me.tris[tri].v[0]], e2 );
+	CrossProduct( e1, e2, n );
+	if ( VectorNormalize( n ) <= 0.0f )
+		return -1;
+	// facing the camera, and a unit behind the face
+	if ( DotProduct( n, dir ) > 0.0f )
+		VectorNegate( n, n );
+	VectorMA( org, dist, dir, p );
+	VectorMA( p, -1.0f, n, p );
+	for ( int b = 0; b < me.numBrushes; b++ ) {
+		float size = 1.0f;
+
+		if ( !me.brushNum[b] || !ME_PointInBrush( p, b, 0.0f ) || !ME_TriOnBrush( tri, b ) )
+			continue;
+		for ( int a = 0; a < 3; a++ )
+			size *= Q_max( 1.0f, me.brushMaxs[b][a] - me.brushMins[b][a] );
+		if ( found < 0 || size < best ) {
+			best = size;
+			found = b;
+		}
+	}
+	return found;
+}
+
+static qboolean ME_CandIsBrush( void ) {
+	return (qboolean)( me.numCandSeeds == 1 && me.candSeeds[0][0] == -1 );
+}
+
+static qboolean ME_ItemIsBrush( const meItem_t *it ) {
+	return (qboolean)( it->kind == ME_ITEM_PROP && it->numSeeds >= 1 && it->seeds[0][0] == -1 );
+}
+
+// a click on the world found a brush of the map's: its faces, to lift like a prop
+static qboolean ME_ChooseBrush( int b ) {
+	const int seeds[1][2] = { { -1, b } };
+
+	if ( b < 0 || !ME_CollectSeeds( seeds, 1, qtrue, me.candMins, me.candMaxs ) )
+		return qfalse;
+	me.candSeeds[0][0] = -1;
+	me.candSeeds[0][1] = b;
 	me.numCandSeeds = 1;
 	me.candTris = me.numCompTris;
 	me.grabbing = qfalse;
@@ -1562,7 +1921,7 @@ static void ME_LiftProp( qboolean removed, qboolean grab ) {
 	me.tab = ME_TAB_MODELS;
 	me.propsDirty = qtrue;
 	ME_Changed();
-	ME_Message( removed ? "Removed from the map; Shown brings it back" : "Lifted out: it moves like a model now" );
+	ME_Message( removed ? "Hidden; Shown brings it back" : "Lifted out: drag its arrows, or G, to move it" );
 	if ( grab )
 		ME_Grab();
 }
@@ -1594,7 +1953,12 @@ static const char *ME_LayoutDir( void ) {
 	return va( ME_DIR "/%s", ME_MapBase() );
 }
 
+// the edits a map used to load by itself, mapedits/<map>.ent, now a layout like the others
+#define ME_OLD_LAYOUT		"old-saved-edits"
+
 static const char *ME_LayoutPath( const char *name ) {
+	if ( !Q_stricmp( name, ME_OLD_LAYOUT ) )
+		return ME_Path();
 	return va( ME_DIR "/%s/%s" ME_EXT, ME_MapBase(), name );
 }
 
@@ -1666,6 +2030,12 @@ static int ME_SaveTo( const char *path ) {
 			ME_Print( f, "origin", ME_Vec( it->org ) );
 			ME_Print( f, "noise", it->noise );
 			ME_Print( f, "spawnflags", va( "%i", ( it->off ? 2 : 1 ) | ( it->global ? 4 : 0 ) ) );
+		} else if ( it->kind == ME_ITEM_FOG ) {
+			ME_Print( f, "classname", "rpm_fogvolume" );
+			ME_Print( f, "origin", ME_Vec( it->org ) );
+			ME_Print( f, "size", ME_Vec( it->size ) );
+			ME_Print( f, "_color", va( "%g %g %g", it->color[0], it->color[1], it->color[2] ) );
+			ME_Print( f, "depth", va( "%i", ME_Round( it->fogDepth ) ) );
 		} else if ( it->kind == ME_ITEM_LIGHT ) {
 			ME_Print( f, "classname", "rpm_light" );
 			ME_Print( f, "origin", ME_Vec( it->org ) );
@@ -1680,6 +2050,12 @@ static int ME_SaveTo( const char *path ) {
 			ME_Print( f, "command", it->command );
 			if ( it->once )
 				ME_Print( f, "once", "1" );
+			if ( it->use )
+				ME_Print( f, "use", "1" );
+			if ( it->name[0] )
+				ME_Print( f, "targetname", it->name );
+			if ( it->display[0] )
+				ME_Print( f, "displayname", it->display );
 		}
 		FS_Printf( f, "}\n" );
 		count++;
@@ -1697,6 +2073,19 @@ static int ME_SaveTo( const char *path ) {
 		FS_Printf( f, "}\n" );
 		count++;
 	}
+	for ( int i = 1; i < ME_MAX_FOGS; i++ ) {
+		const meFog_t *fog = &me.fogs[i];
+
+		if ( !fog->override )
+			continue;
+		FS_Printf( f, "{\n" );
+		ME_Print( f, "classname", "rpm_fog" );
+		ME_Print( f, "fog", va( "%i", i ) );
+		ME_Print( f, "_color", va( "%g %g %g", fog->color[0], fog->color[1], fog->color[2] ) );
+		ME_Print( f, "depth", va( "%i", ME_Round( fog->depth ) ) );
+		FS_Printf( f, "}\n" );
+		count++;
+	}
 	for ( int i = 0; i < me.numEnts; i++ ) {
 		if ( !me.ents[i].hidden )
 			continue;
@@ -1710,15 +2099,21 @@ static int ME_SaveTo( const char *path ) {
 	return count;
 }
 
-// the map's own file, what comes back with it
-static qboolean ME_Save( void ) {
-	const int count = ME_SaveTo( ME_Path() );
+static qboolean ME_LayoutNameOk( const char *name );
+static void ME_SaveLayout( const char *name );
 
-	if ( count < 0 )
-		return qfalse;
-	me.dirty = qfalse;
-	ME_Message( va( S_COLOR_GREEN "Saved %i edits to %s", count, ME_Path() ) );
-	return qtrue;
+// edits are kept only as layouts, never by the map itself: the layout named, or the
+// Layouts panel to name one
+static qboolean ME_Save( void ) {
+	if ( ME_LayoutNameOk( me.layoutName ) ) {
+		ME_SaveLayout( me.layoutName );
+		me.dirty = qfalse;
+		return qtrue;
+	}
+	me.showLayouts = qtrue;
+	me.field = ME_FIELD_LAYOUT;
+	ME_Message( S_COLOR_YELLOW "Name a layout to keep the edits in" );
+	return qfalse;
 }
 
 typedef struct {
@@ -1798,6 +2193,9 @@ static void ME_LoadEntity( const meKv_t *kv, int num ) {
 			it->size[i] = Com_Clamp( 1.0f, 4096.0f, it->size[i] );
 		Q_strncpyz( it->command, ME_Value( kv, num, "command", "" ), sizeof( it->command ) );
 		it->once = (qboolean)( atoi( ME_Value( kv, num, "once", "0" ) ) != 0 );
+		it->use = (qboolean)( atoi( ME_Value( kv, num, "use", "0" ) ) != 0 );
+		Q_strncpyz( it->name, ME_Value( kv, num, "targetname", "" ), sizeof( it->name ) );
+		Q_strncpyz( it->display, ME_Value( kv, num, "displayname", "" ), sizeof( it->display ) );
 		me.numItems++;
 	} else if ( !Q_stricmp( classname, "rpm_lightstyle" ) ) {
 		const int style = atoi( ME_Value( kv, num, "style", "-1" ) );
@@ -1807,6 +2205,25 @@ static void ME_LoadEntity( const meKv_t *kv, int num ) {
 		me.styles[style].override = qtrue;
 		Q_strncpyz( me.styles[style].pattern, ME_Value( kv, num, "value", "z" ), sizeof( me.styles[style].pattern ) );
 		ME_ParseVector( ME_Value( kv, num, "_color", "1 1 1" ), me.styles[style].color );
+	} else if ( !Q_stricmp( classname, "rpm_fogvolume" ) ) {
+		if ( !( it = ME_NewItem( ME_ITEM_FOG ) ) )
+			return;
+		ME_ParseVector( ME_Value( kv, num, "origin", "0 0 0" ), it->org );
+		ME_ParseVector( ME_Value( kv, num, "size", "128 128 64" ), it->size );
+		for ( int i = 0; i < 3; i++ )
+			it->size[i] = Com_Clamp( 1.0f, 16384.0f, it->size[i] );
+		ME_ParseVector( ME_Value( kv, num, "_color", "0.6 0.6 0.6" ), it->color );
+		it->fogDepth = Com_Clamp( 16.0f, ME_FOG_NONE, atof( ME_Value( kv, num, "depth", "768" ) ) );
+		me.numItems++;
+	} else if ( !Q_stricmp( classname, "rpm_fog" ) ) {
+		const int fog = atoi( ME_Value( kv, num, "fog", "0" ) );
+
+		if ( fog <= 0 || fog >= ME_MAX_FOGS )
+			return;
+		me.fogs[fog].override = qtrue;
+		ME_ParseVector( ME_Value( kv, num, "_color", "0.5 0.5 0.5" ), me.fogs[fog].color );
+		me.fogs[fog].depth = Com_Clamp( 16.0f, ME_FOG_NONE, atof( ME_Value( kv, num, "depth", "1024" ) ) );
+		me.fogsDirty = qtrue;
 	} else if ( !Q_stricmp( classname, "rpm_hide" ) ) {
 		const char *model = ME_Value( kv, num, "model", "" );
 		const int bmodel = model[0] == '*' ? atoi( model + 1 ) : 0;
@@ -1857,8 +2274,11 @@ static qboolean ME_LoadFrom( const char *path ) {
 	return qtrue;
 }
 
+// no edits: a map always starts without any, until a layout is loaded or someone shares theirs
 static void ME_Load( void ) {
-	ME_LoadFrom( ME_Path() );
+	ME_Clear();
+	me.shared = qfalse;
+	ME_RebuildHidden();
 }
 
 /*
@@ -1883,6 +2303,8 @@ static void ME_ListLayouts( void ) {
 		if ( me.layouts[me.numLayouts][0] )
 			me.numLayouts++;
 	}
+	if ( FS_FileExists( ME_Path() ) && me.numLayouts < ME_MAX_LAYOUTS )
+		Q_strncpyz( me.layouts[me.numLayouts++], ME_OLD_LAYOUT, sizeof( me.layouts[0] ) );
 	if ( me.layoutSel >= me.numLayouts )
 		me.layoutSel = -1;
 }
@@ -1907,9 +2329,9 @@ static void ME_LoadLayout( const char *name ) {
 		ME_Load();
 		return;
 	}
-	// what's shown isn't what comes back with the map until it's saved
-	me.dirty = qtrue;
-	ME_Message( va( S_COLOR_GREEN "Loaded %s: Save keeps it as this map's edits", name ) );
+	me.dirty = qfalse;
+	Q_strncpyz( me.layoutName, name, sizeof( me.layoutName ) );
+	ME_Message( va( S_COLOR_GREEN "Loaded %s: Share shows it to everyone", name ) );
 }
 
 static void ME_DeleteLayout( const char *name ) {
@@ -1982,6 +2404,21 @@ static const char *ME_ShareItem( const meItem_t *it ) {
 	} else if ( it->kind == ME_ITEM_LIGHT ) {
 		Q_strcat( out, sizeof( out ), va( "l %s %i %g %g %g %i", ME_Vec( it->org ), ME_Round( it->radius ),
 			it->color[0], it->color[1], it->color[2], it->style ) );
+	} else if ( it->kind == ME_ITEM_TRIGGER && it->use ) {
+		char words[sizeof( it->name ) + sizeof( it->display ) + 2];
+
+		// the name and what it's shown as, ~ between, spaces as `: the edit's spaces are taken out
+		Com_sprintf( words, sizeof( words ), "%s~%s", it->name, it->display );
+		for ( char *c = words; *c; c++ ) {
+			if ( *c == ' ' )
+				*c = '`';
+		}
+		Q_strcat( out, sizeof( out ), va( "u %s", ME_Vec( it->org ) ) );
+		Q_strcat( out, sizeof( out ), va( " %s ", ME_Vec( it->size ) ) );
+		ME_AppendSplit( out, sizeof( out ), words );
+	} else if ( it->kind == ME_ITEM_FOG ) {
+		Q_strcat( out, sizeof( out ), va( "v %s", ME_Vec( it->org ) ) );
+		Q_strcat( out, sizeof( out ), va( " %s %g %g %g %i", ME_Vec( it->size ), it->color[0], it->color[1], it->color[2], ME_Round( it->fogDepth ) ) );
 	} else if ( it->kind == ME_ITEM_SPEAKER && it->noise[0] ) {
 		Q_strcat( out, sizeof( out ), va( "a %s %i ", ME_Vec( it->org ), ( it->off ? 2 : 1 ) | ( it->global ? 4 : 0 ) ) );
 		ME_AppendSplit( out, sizeof( out ), it->noise );
@@ -1992,8 +2429,9 @@ static const char *ME_ShareItem( const meItem_t *it ) {
 // everything shown, to everyone: begin, the edits a hook at a time, end
 static void ME_Share( void ) {
 	char part[ME_SHARE_LEN + 1] = "";
-	const char *edits[ME_MAX_ITEMS + MAX_LIGHT_STYLES + ME_MAX_HIDDEN];
+	const char *edits[ME_MAX_ITEMS + MAX_LIGHT_STYLES + ME_MAX_HIDDEN + ME_MAX_FOGS];
 	static char styleText[MAX_LIGHT_STYLES][MAX_QPATH * 2 + 32];
+	static char fogText[ME_MAX_FOGS][64];
 	static char itemText[ME_MAX_ITEMS][ME_SHARE_LEN];
 	static char hideText[ME_MAX_HIDDEN][16];
 	int numHide = 0;
@@ -2026,6 +2464,14 @@ static void ME_Share( void ) {
 		Com_sprintf( styleText[i], sizeof( styleText[i] ), "s %i %g %g %g ", i, s->color[0], s->color[1], s->color[2] );
 		ME_AppendSplit( styleText[i], sizeof( styleText[i] ), s->pattern[0] ? s->pattern : "z" );
 		edits[numEdits++] = styleText[i];
+	}
+	for ( int i = 1; i < ME_MAX_FOGS; i++ ) {
+		const meFog_t *fog = &me.fogs[i];
+
+		if ( !fog->override )
+			continue;
+		Com_sprintf( fogText[i], sizeof( fogText[i] ), "f %i %g %g %g %i", i, fog->color[0], fog->color[1], fog->color[2], ME_Round( fog->depth ) );
+		edits[numEdits++] = fogText[i];
 	}
 	for ( int i = 0; i < me.numEnts && numHide < ME_MAX_HIDDEN; i++ ) {
 		if ( me.ents[i].hidden && me.ents[i].bmodel ) {
@@ -2154,6 +2600,44 @@ static void ME_ApplyShared( const char *edit ) {
 		ME_KV( "_color", va( "%g %g %g", f[1], f[2], f[3] ) );
 		ME_KV( "value", rest );
 		break;
+	case 'u':
+		if ( sscanf( edit + 1, "%f %f %f %f %f %f %n", &f[0], &f[1], &f[2], &f[3], &f[4], &f[5], &used ) < 6 || !used )
+			return;
+		ME_Unsplit( edit + 1 + used, rest, sizeof( rest ) );
+		for ( char *c = rest; *c; c++ ) {
+			if ( *c == '`' )
+				*c = ' ';
+		}
+		{
+			char *bar = strchr( rest, '~' );
+
+			if ( bar )
+				*bar++ = '\0';
+			ME_KV( "classname", "rpm_trigger" );
+			ME_KV( "origin", va( "%g %g %g", f[0], f[1], f[2] ) );
+			ME_KV( "size", va( "%g %g %g", f[3], f[4], f[5] ) );
+			ME_KV( "use", "1" );
+			ME_KV( "targetname", rest );
+			ME_KV( "displayname", bar ? bar : "" );
+		}
+		break;
+	case 'v':
+		if ( sscanf( edit + 1, "%f %f %f %f %f %f %f %f %f %f", &f[0], &f[1], &f[2], &f[3], &f[4], &f[5], &f[6], &f[7], &f[8], &f[9] ) < 10 )
+			return;
+		ME_KV( "classname", "rpm_fogvolume" );
+		ME_KV( "origin", va( "%g %g %g", f[0], f[1], f[2] ) );
+		ME_KV( "size", va( "%g %g %g", f[3], f[4], f[5] ) );
+		ME_KV( "_color", va( "%g %g %g", f[6], f[7], f[8] ) );
+		ME_KV( "depth", va( "%g", f[9] ) );
+		break;
+	case 'f':
+		if ( sscanf( edit + 1, "%f %f %f %f %f", &f[0], &f[1], &f[2], &f[3], &f[4] ) < 5 )
+			return;
+		ME_KV( "classname", "rpm_fog" );
+		ME_KV( "fog", va( "%i", (int)f[0] ) );
+		ME_KV( "_color", va( "%g %g %g", f[1], f[2], f[3] ) );
+		ME_KV( "depth", va( "%g", f[4] ) );
+		break;
 	case 'h':
 		if ( sscanf( edit + 1, "%f", &f[0] ) < 1 )
 			return;
@@ -2173,9 +2657,11 @@ static void ME_ApplyBatch( void ) {
 	int before;
 
 	// ours aren't lost under theirs
-	if ( me.dirty && !me.shared ) {
-		ME_Save();
-		Com_Printf( "Map editor: your edits were saved before the shared ones came in\n" );
+	if ( me.dirty && !me.shared && me.numItems ) {
+		const char *name = ME_LayoutNameOk( me.layoutName ) ? me.layoutName : "before-shared";
+
+		ME_SaveLayout( name );
+		Com_Printf( "Map editor: your edits were kept as the layout %s before the shared ones came in\n", name );
 	}
 	ME_Clear();
 	for ( ; *p; p = end ) {
@@ -2379,6 +2865,7 @@ void CL_MapEditor_Close( void ) {
 	ME_CancelGrab();
 	me.open = qfalse;
 	me.field = ME_FIELD_NONE;
+	me.storyPick = -1;
 	ME_ReleaseKeys();
 	Key_SetCatcher( Key_GetCatcher() & ~KEYCATCH_MAPEDITOR );
 	if ( me.dirty )
@@ -2445,7 +2932,7 @@ static float ME_RayPoint( const vec3_t org, const vec3_t dir, const vec3_t p, fl
 }
 
 static void ME_ItemBounds( meItem_t *it, vec3_t mins, vec3_t maxs ) {
-	if ( it->kind == ME_ITEM_TRIGGER ) {
+	if ( it->kind == ME_ITEM_TRIGGER || it->kind == ME_ITEM_FOG ) {
 		VectorSubtract( it->org, it->size, mins );
 		VectorAdd( it->org, it->size, maxs );
 		return;
@@ -2560,9 +3047,73 @@ static void ME_ScrollToSelection( void ) {
 	}
 }
 
+// for the storyteller, the trigger of the kind it wants the ray meets: kind ME_SEL_ENT or
+// ME_SEL_ITEM; qfalse if none
+static qboolean ME_StoryPickAt( const vec3_t org, const vec3_t dir, int *kind, int *index ) {
+	float best;
+	trace_t tr;
+	vec3_t end;
+
+	*kind = ME_SEL_NONE;
+	*index = -1;
+	VectorMA( org, ME_TRACE_DIST, dir, end );
+	CM_BoxTrace( &tr, org, end, vec3_origin, vec3_origin, 0, CONTENTS_SOLID | CONTENTS_TERRAIN, qfalse );
+	best = tr.fraction * ME_TRACE_DIST + 8.0f;
+	if ( me.storyPick == 2 ) {
+		for ( int i = 0; i < me.numItems; i++ ) {
+			float t;
+
+			if ( me.items[i].kind != ME_ITEM_TRIGGER || !me.items[i].use )
+				continue;
+			t = ME_ItemRay( &me.items[i], org, dir );
+			if ( t >= 0.0f && t < best ) {
+				best = t;
+				*kind = ME_SEL_ITEM;
+				*index = i;
+			}
+		}
+	} else {
+		for ( int i = 0; i < me.numEnts; i++ ) {
+			const meEnt_t *e = &me.ents[i];
+			float t;
+
+			if ( !e->bmodel || e->kind != ( me.storyPick == 0 ? ME_ENT_TRIGGER : ME_ENT_BRUSH ) )
+				continue;
+			t = ME_RayBox( org, dir, e->mins, e->maxs );
+			// a door's box we're in is found by its walls; a trigger's we stand in counts
+			if ( t < 0.0f || ( t == 0.0f && me.storyPick == 1 ) || t >= best )
+				continue;
+			best = t;
+			*kind = ME_SEL_ENT;
+			*index = i;
+		}
+	}
+	return (qboolean)( *kind != ME_SEL_NONE );
+}
+
 static void ME_ClickWorld( float x, float y ) {
 	vec3_t dir;
 	int kind, index;
+
+	// for the storyteller: the trigger clicked goes in its step
+	if ( me.storyPick >= 0 ) {
+		ME_CursorRay( x, y, dir );
+		if ( !ME_StoryPickAt( me.camOrg, dir, &kind, &index ) ) {
+			ME_Message( S_COLOR_YELLOW "Nothing of that kind there" );
+			return;
+		}
+		if ( kind == ME_SEL_ITEM ) {
+			if ( !me.items[index].name[0] ) {
+				ME_Select( kind, index );
+				ME_Message( S_COLOR_YELLOW "Give it a name first, in the Triggers tab, then click it again" );
+				return;
+			}
+			CL_Storyteller_TriggerPicked( me.items[index].name );
+		} else {
+			CL_Storyteller_TriggerPicked( va( "*%i", me.ents[index].bmodel ) );
+		}
+		return;
+	}
 
 	if ( me.grabbing ) {
 		me.grabbing = qfalse;
@@ -2578,9 +3129,12 @@ static void ME_ClickWorld( float x, float y ) {
 	}
 	if ( !ME_Pick( me.camOrg, dir, &kind, &index ) || ( kind == ME_SEL_ENT && me.ents[index].kind == ME_ENT_TRIGGER ) ) {
 		float dist;
+		const int tri = ME_TriHit( me.camOrg, dir, &dist );
 
-		// a prop of the map's before a trigger it's standing in
-		if ( ME_ChooseProp( ME_TriHit( me.camOrg, dir, &dist ) ) )
+		// a prop of the map's before a trigger it's standing in; joined to the whole map, the
+		// brush clicked
+		me.candBrush = ME_BrushAt( tri, me.camOrg, dir, dist );
+		if ( ME_ChooseProp( tri ) || ME_ChooseBrush( me.candBrush ) )
 			return;
 		if ( kind == ME_SEL_NONE ) {
 			me.selKind = ME_SEL_NONE;
@@ -2594,6 +3148,79 @@ static void ME_ClickWorld( float x, float y ) {
 	else
 		me.tab = ME_TAB_MAP;
 	ME_ScrollToSelection();
+}
+
+/*
+===============================================================================
+
+The arrows: what's chosen dragged along X, Y or Z
+
+===============================================================================
+*/
+
+static qboolean ME_ProjectAny( const vec3_t point, float *x, float *y );
+
+// what they move: ours, not while carried, not a map prop that's hidden
+static meItem_t *ME_GizmoItem( void ) {
+	meItem_t *it = ME_SelectedItem();
+
+	if ( me.storyPick >= 0 )
+		return NULL;
+	if ( !it || me.grabbing || ( it->kind == ME_ITEM_PROP && it->removed ) )
+		return NULL;
+	return it;
+}
+
+// about as long on the screen however far it is
+static float ME_GizmoLen( const meItem_t *it ) {
+	return Com_Clamp( 12.0f, 512.0f, Distance( it->org, me.camOrg ) * 0.15f );
+}
+
+// the arrow under the cursor, -1 none
+static int ME_GizmoHover( void ) {
+	const meItem_t *it = ME_GizmoItem();
+	float ox, oy, best = ME_GIZMO_PX;
+	int found = -1;
+
+	if ( !it || me.flying || me.cursorX >= ME_PANEL_X || !ME_ProjectAny( it->org, &ox, &oy ) )
+		return -1;
+	for ( int a = 0; a < 3; a++ ) {
+		vec3_t tip;
+		float tx, ty, dx, dy, len2, u, d;
+
+		VectorMA( it->org, ME_GizmoLen( it ), meAxes[a], tip );
+		if ( !ME_ProjectAny( tip, &tx, &ty ) )
+			continue;
+		// the cursor to the arrow, on the screen
+		dx = tx - ox;
+		dy = ty - oy;
+		len2 = dx * dx + dy * dy;
+		u = len2 > 0.01f ? Com_Clamp( 0.0f, 1.0f, ( ( me.cursorX - ox ) * dx + ( me.cursorY - oy ) * dy ) / len2 ) : 0.0f;
+		d = sqrtf( Square( ox + u * dx - me.cursorX ) + Square( oy + u * dy - me.cursorY ) );
+		if ( d < best ) {
+			best = d;
+			found = a;
+		}
+	}
+	return found;
+}
+
+// how far along the arrow's line from from the cursor's ray passes nearest; qfalse when the
+// camera looks along it
+static qboolean ME_AxisParam( const vec3_t from, int axis, float *t ) {
+	vec3_t dir, w;
+	float b, d, e, denom;
+
+	ME_CursorRay( me.cursorX, me.cursorY, dir );
+	VectorSubtract( from, me.camOrg, w );
+	b = DotProduct( meAxes[axis], dir );
+	d = DotProduct( meAxes[axis], w );
+	e = DotProduct( dir, w );
+	denom = 1.0f - b * b;
+	if ( denom < 0.001f )
+		return qfalse;
+	*t = ( b * e - d ) / denom;
+	return qtrue;
 }
 
 // the camera in front of a spot, looking at it
@@ -2648,6 +3275,16 @@ static char *ME_FieldBuffer( int *size ) {
 			return NULL;
 		*size = sizeof( it->command );
 		return it->command;
+	case ME_FIELD_TRIGGERNAME:
+		if ( !it || it->kind != ME_ITEM_TRIGGER )
+			return NULL;
+		*size = sizeof( it->name );
+		return it->name;
+	case ME_FIELD_TRIGGERDISPLAY:
+		if ( !it || it->kind != ME_ITEM_TRIGGER )
+			return NULL;
+		*size = sizeof( it->display );
+		return it->display;
 	case ME_FIELD_PATTERN:
 		if ( me.selKind != ME_SEL_STYLE || me.sel < 0 || me.sel >= MAX_LIGHT_STYLES )
 			return NULL;
@@ -2675,6 +3312,8 @@ static void ME_FieldEdited( void ) {
 		me.searchScroll = 0;
 	else if ( me.field != ME_FIELD_LAYOUT && me.field != ME_FIELD_LOCKNAME )
 		ME_Changed();
+	if ( me.field == ME_FIELD_PATTERN && me.selKind == ME_SEL_STYLE && me.sel >= 0 && me.sel < MAX_LIGHT_STYLES )
+		me.styles[me.sel].override = qtrue;
 	// another sound: heard as typed, once it's one
 	if ( me.field == ME_FIELD_SOUND && ME_SelectedItem() ) {
 		ME_SelectedItem()->sfxRegistered = qfalse;
@@ -2691,6 +3330,10 @@ void CL_MapEditor_KeyEvent( int key, qboolean down ) {
 	if ( !down ) {
 		if ( key == A_MOUSE2 )
 			me.flying = qfalse;
+		if ( key == A_MOUSE1 && me.dragAxis >= 0 ) {
+			me.dragAxis = -1;
+			ME_Changed();
+		}
 		return;
 	}
 	if ( ME_IsToggleKey( key ) ) {
@@ -2709,6 +3352,13 @@ void CL_MapEditor_KeyEvent( int key, qboolean down ) {
 
 	switch ( key ) {
 	case A_MOUSE1:
+		// an arrow pointed at: dragged
+		if ( me.gizmoAxis >= 0 && ME_GizmoItem() && ME_AxisParam( ME_GizmoItem()->org, me.gizmoAxis, &me.dragT0 ) ) {
+			me.dragAxis = me.gizmoAxis;
+			VectorCopy( ME_GizmoItem()->org, me.dragFrom );
+			me.field = ME_FIELD_NONE;
+			return;
+		}
 		me.click = qtrue;
 		me.clickX = me.cursorX;
 		me.clickY = me.cursorY;
@@ -2716,6 +3366,7 @@ void CL_MapEditor_KeyEvent( int key, qboolean down ) {
 	case A_MOUSE2:
 		me.flying = qtrue;
 		me.field = ME_FIELD_NONE;
+		me.dragAxis = -1;
 		return;
 	case A_MWHEELUP:
 		if ( me.flying )
@@ -2804,6 +3455,10 @@ static qboolean ME_FieldChar( int field, int ch ) {
 	case ME_FIELD_COMMAND:
 		// an entity's value can't hold a quote
 		return (qboolean)( ch >= ' ' && ch < 127 && ch != '"' );
+	case ME_FIELD_TRIGGERNAME:
+	case ME_FIELD_TRIGGERDISPLAY:
+		// shared, they can't hold what splits the edits up
+		return (qboolean)( ch >= ( me.field == ME_FIELD_TRIGGERNAME ? '!' : ' ' ) && ch < 127 && !strchr( "\"|~`", ch ) );
 	case ME_FIELD_LOCKNAME:
 		// a word or more, nothing that would end the command
 		return (qboolean)( ch >= ' ' && ch < 127 && ch != '"' && ch != ';' );
@@ -2844,6 +3499,11 @@ void CL_MapEditor_MouseEvent( int dx, int dy ) {
 
 // escape backs out one level: the text box, carrying, the selection, then the editor
 void CL_MapEditor_Escape( void ) {
+	// picking for the storyteller: straight back to it
+	if ( me.storyPick >= 0 && !me.field && !me.experimentalBox ) {
+		CL_MapEditor_Close();
+		return;
+	}
 	if ( me.experimentalBox ) {
 		me.experimentalBox = qfalse;
 	} else if ( me.field ) {
@@ -2866,15 +3526,68 @@ Every frame
 ===============================================================================
 */
 
-// our triggers: walking into one runs its command
+// the use trigger the player looks at, within reach and not behind a wall; -1 none
+static int ME_UseAimed( void ) {
+	vec3_t eye, ang, dir, end, mins, maxs;
+	trace_t tr;
+	float best;
+	int found = -1;
+
+	VectorCopy( cl.snap.ps.origin, eye );
+	eye[2] += cl.snap.ps.viewheight;
+	for ( int i = 0; i < 3; i++ )
+		ang[i] = cl.viewangles[i] + SHORT2ANGLE( cl.snap.ps.delta_angles[i] );
+	AngleVectors( ang, dir, NULL, NULL );
+	VectorMA( eye, ME_USE_REACH, dir, end );
+	CM_BoxTrace( &tr, eye, end, vec3_origin, vec3_origin, 0, CONTENTS_SOLID | CONTENTS_TERRAIN, qfalse );
+	best = tr.fraction * ME_USE_REACH + 1.0f;
+	for ( int i = 0; i < me.numItems; i++ ) {
+		meItem_t *it = &me.items[i];
+		float t;
+
+		if ( it->kind != ME_ITEM_TRIGGER || !it->use )
+			continue;
+		ME_ItemBounds( it, mins, maxs );
+		t = ME_RayBox( eye, dir, mins, maxs );
+		if ( t >= 0.0f && t < best ) {
+			best = t;
+			found = i;
+		}
+	}
+	return found;
+}
+
+// the storyteller's: the name of the use trigger looked at, "" if it has none, NULL if none's looked at
+const char *CL_MapEditor_AimedUseTrigger( void ) {
+	if ( me.useAim < 0 || me.useAim >= me.numItems )
+		return NULL;
+	return me.items[me.useAim].name;
+}
+
+// a use trigger does nothing of its own: the player reaches out to it (RPMod's emote), and the
+// storytellers hear it was used; their stories decide what it does
+static void ME_UseTrigger( meItem_t *it ) {
+	if ( cls.state == CA_ACTIVE )
+		CL_AddReliableCommand( "emreach", qfalse );
+	CL_Storyteller_TriggerUsed( it->name );
+}
+
+// our triggers: walking into one runs its command, and pressing use looking at a use one
 static void ME_RunTriggers( void ) {
 	vec3_t mins, maxs;
+	qboolean useDown = (qboolean)( ( cl.cmds[cl.cmdNumber & CMD_MASK].buttons & BUTTON_USE ) != 0 );
 
 	if ( me.open || !ME_Shown() || cl.snap.ps.pm_type == PM_SPECTATOR || cl.snap.ps.stats[STAT_HEALTH] <= 0 ) {
 		for ( int i = 0; i < me.numItems; i++ )
 			me.items[i].inside = qfalse;
+		me.useAim = -1;
+		me.useDown = useDown;
 		return;
 	}
+	me.useAim = ME_UseAimed();
+	if ( useDown && !me.useDown && me.useAim >= 0 )
+		ME_UseTrigger( &me.items[me.useAim] );
+	me.useDown = useDown;
 	// the player's box
 	VectorSet( mins, cl.snap.ps.origin[0] - 15, cl.snap.ps.origin[1] - 15, cl.snap.ps.origin[2] - 24 );
 	VectorSet( maxs, cl.snap.ps.origin[0] + 15, cl.snap.ps.origin[1] + 15, cl.snap.ps.origin[2] + 40 );
@@ -2882,7 +3595,7 @@ static void ME_RunTriggers( void ) {
 		meItem_t *it = &me.items[i];
 		qboolean inside = qtrue;
 
-		if ( it->kind != ME_ITEM_TRIGGER )
+		if ( it->kind != ME_ITEM_TRIGGER || it->use )
 			continue;
 		for ( int j = 0; j < 3; j++ ) {
 			if ( maxs[j] < it->org[j] - it->size[j] || mins[j] > it->org[j] + it->size[j] )
@@ -2905,6 +3618,7 @@ static void ME_EditorFrame( void ) {
 		// something else cleared the catchers
 		ME_CancelGrab();
 		me.open = qfalse;
+		me.storyPick = -1;
 		me.field = ME_FIELD_NONE;
 		ME_ReleaseKeys();
 		return;
@@ -2940,7 +3654,27 @@ static void ME_EditorFrame( void ) {
 		VectorCopy( tr.endpos, me.aim );
 		VectorCopy( tr.plane.normal, me.aimNormal );
 	}
-	if ( !me.flying && me.cursorX < ME_PANEL_X && !me.grabbing )
+	// an arrow dragged moves what's chosen along it, in whole units (Shift 16, Ctrl a quarter)
+	if ( me.dragAxis >= 0 ) {
+		meItem_t *it = ME_GizmoItem();
+		float t;
+
+		if ( !it || !me.held[A_MOUSE1] ) {
+			me.dragAxis = -1;
+		} else if ( ME_AxisParam( me.dragFrom, me.dragAxis, &t ) ) {
+			const float snap = ME_ShiftDown() ? 16.0f : ME_CtrlDown() ? 0.25f : 1.0f;
+			const float move = floorf( ( t - me.dragT0 ) / snap + 0.5f ) * snap;
+
+			VectorCopy( me.dragFrom, it->org );
+			it->org[me.dragAxis] += move;
+		}
+		me.gizmoAxis = me.dragAxis;
+	} else {
+		me.gizmoAxis = ME_GizmoHover();
+	}
+	if ( !me.flying && me.cursorX < ME_PANEL_X && me.storyPick >= 0 )
+		ME_StoryPickAt( me.camOrg, dir, &me.hoverKind, &me.hover );
+	else if ( !me.flying && me.cursorX < ME_PANEL_X && !me.grabbing && me.gizmoAxis < 0 )
 		ME_Pick( me.camOrg, dir, &me.hoverKind, &me.hover );
 	else
 		me.hoverKind = ME_SEL_NONE;
@@ -2970,6 +3704,10 @@ void CL_MapEditor_Frame( void ) {
 	}
 	if ( me.propsDirty || me.propsShown != ME_Shown() )
 		ME_ApplyProps();
+	if ( !me.fogsRead )
+		ME_ReadFogs();
+	if ( me.fogsDirty || me.fogsShown != ME_Shown() || me.fogItemsSum != ME_FogItemsSum() )
+		ME_ApplyFogs();
 	ME_RunTriggers();
 	ME_RunShare();
 	ME_RunLocks();
@@ -2985,7 +3723,8 @@ The scene: our things always, the editor's lines while it's open
 ===============================================================================
 */
 
-static void ME_Line( const vec3_t a, const vec3_t b, const byte *color ) {
+// a line; fx RF_DEPTHHACK draws it over what's in front of it, thicker
+static void ME_LineFx( const vec3_t a, const vec3_t b, const byte *color, int fx ) {
 	refEntity_t ent;
 	vec3_t mid, toCam;
 
@@ -3000,11 +3739,15 @@ static void ME_Line( const vec3_t a, const vec3_t b, const byte *color ) {
 	ent.reType = RT_LINE;
 	VectorCopy( a, ent.origin );
 	VectorCopy( b, ent.oldorigin );
-	ent.radius = 0.3f + VectorLength( toCam ) * 0.0015f;
+	ent.radius = ( 0.3f + VectorLength( toCam ) * 0.0015f ) * ( ( fx & RF_DEPTHHACK ) ? 2.0f : 1.0f );
 	ent.customShader = cls.whiteShader;
 	memcpy( ent.shaderRGBA, color, sizeof( ent.shaderRGBA ) );
-	ent.renderfx = RF_NOSHADOW;
+	ent.renderfx = RF_NOSHADOW | fx;
 	re->AddRefEntityToScene( &ent );
+}
+
+static void ME_Line( const vec3_t a, const vec3_t b, const byte *color ) {
+	ME_LineFx( a, b, color, 0 );
 }
 
 static void ME_Cross( const vec3_t p, float size, const byte *color ) {
@@ -3158,9 +3901,15 @@ static void ME_AddEditorLines( void ) {
 		const qboolean sel = ME_IsSel( ME_SEL_ITEM, i ), hover = ME_IsHover( ME_SEL_ITEM, i );
 		vec3_t mins, maxs;
 
-		if ( it->kind == ME_ITEM_TRIGGER ) {
+		if ( it->kind == ME_ITEM_FOG ) {
+			byte color[4] = { (byte)Com_Clampi( 0, 255, ME_Round( it->color[0] * 255 ) ), (byte)Com_Clampi( 0, 255, ME_Round( it->color[1] * 255 ) ),
+				(byte)Com_Clampi( 0, 255, ME_Round( it->color[2] * 255 ) ), 255 };
+
 			ME_ItemBounds( it, mins, maxs );
-			ME_BoxLines( mins, maxs, sel || hover ? meSelColor : meOurTrigger );
+			ME_BoxLines( mins, maxs, sel || hover ? meSelColor : color );
+		} else if ( it->kind == ME_ITEM_TRIGGER ) {
+			ME_ItemBounds( it, mins, maxs );
+			ME_BoxLines( mins, maxs, sel || hover ? meSelColor : it->use ? meUseTrigger : meOurTrigger );
 		} else if ( it->kind == ME_ITEM_SPEAKER ) {
 			ME_Cross( it->org, sel || hover ? 10.0f : 6.0f, sel || hover ? meSelColor : it->off ? meHiddenColor : meSpeakerColor );
 			if ( sel && !it->global )
@@ -3200,6 +3949,30 @@ static void ME_AddEditorLines( void ) {
 	// a prop of the map's, chosen
 	if ( me.selKind == ME_SEL_PROP )
 		ME_BoxLines( me.candMins, me.candMaxs, meCandColor );
+	// a fog volume of the map's, chosen
+	if ( me.selKind == ME_SEL_FOG && me.sel >= 1 && me.sel < me.numFogs && me.sel != me.globalFog )
+		ME_BoxLines( me.fogs[me.sel].mins, me.fogs[me.sel].maxs, meCandColor );
+
+	// the arrows on what's chosen, over what's in front of them
+	if ( ME_GizmoItem() ) {
+		const meItem_t *it = ME_GizmoItem();
+		const float len = ME_GizmoLen( it );
+
+		for ( int a = 0; a < 3; a++ ) {
+			const byte *color = a == me.gizmoAxis ? meAxisLit : meAxisColors[a];
+			vec3_t tip, back, side;
+
+			VectorMA( it->org, len, meAxes[a], tip );
+			ME_LineFx( it->org, tip, color, RF_DEPTHHACK );
+			VectorMA( tip, -len * 0.2f, meAxes[a], back );
+			for ( int k = 1; k <= 2; k++ ) {
+				VectorMA( back, len * 0.08f, meAxes[( a + k ) % 3], side );
+				ME_LineFx( tip, side, color, RF_DEPTHHACK );
+				VectorMA( back, -len * 0.08f, meAxes[( a + k ) % 3], side );
+				ME_LineFx( tip, side, color, RF_DEPTHHACK );
+			}
+		}
+	}
 
 	// the map's, nearest first while there are lines to spare
 	for ( int i = 0; i < me.numEnts; i++ ) {
@@ -3731,16 +4504,21 @@ static meItem_t *ME_DrawItemList( float *py, float x, float w, int kind, const c
 		const char *text;
 
 		if ( row->kind == ME_ITEM_PROP )
-			text = va( "%i  map prop%s", r + me.itemScroll[tab] + 1, row->removed ? S_COLOR_GREY " (removed)" : "" );
+			text = va( "%i  map %s%s", r + me.itemScroll[tab] + 1, ME_ItemIsBrush( row ) ? "brush" : "prop", row->removed ? S_COLOR_GREY " (hidden)" : "" );
 		else if ( kind == ME_ITEM_MODEL )
 			text = va( "%i  %s", r + me.itemScroll[tab] + 1, COM_SkipPath( (char *)row->model ) );
 		else if ( kind == ME_ITEM_LIGHT )
 			text = va( "%i  reach %i%s", r + me.itemScroll[tab] + 1, ME_Round( row->radius ), row->style >= 0 ? va( ", style %i", row->style ) : "" );
+		else if ( kind == ME_ITEM_FOG )
+			text = va( "%i  fog volume" S_COLOR_GREY "  %i x %i x %i, opaque at %i", r + me.itemScroll[tab] + 1, ME_Round( row->size[0] * 2 ),
+				ME_Round( row->size[1] * 2 ), ME_Round( row->size[2] * 2 ), ME_Round( row->fogDepth ) );
 		else if ( kind == ME_ITEM_SPEAKER )
 			text = va( "%i  %s" S_COLOR_GREY "  %s%s", r + me.itemScroll[tab] + 1, row->noise[0] ? COM_SkipPath( (char *)row->noise ) : S_COLOR_YELLOW "no sound",
 				row->global ? "everywhere" : "here", row->off ? ", stopped" : "" );
 		else
-			text = va( "%i  %s", r + me.itemScroll[tab] + 1, row->command[0] ? row->command : S_COLOR_GREY "no command" );
+			text = row->use ? va( "%i  " S_COLOR_CYAN "use " S_COLOR_WHITE "%s" S_COLOR_GREY "  %s", r + me.itemScroll[tab] + 1,
+				row->name[0] ? row->name : S_COLOR_YELLOW "no name", row->display )
+				: va( "%i  %s%s", r + me.itemScroll[tab] + 1, row->name[0] ? va( "%s: ", row->name ) : "", row->command[0] ? row->command : S_COLOR_GREY "no command" );
 		ME_TextClipped( x + 4, ry, w - 8, text, meWhite );
 	}
 	if ( !numMatches )
@@ -3798,17 +4576,23 @@ static void ME_DrawPropChoice( float *py, float x, float w ) {
 	float y = *py;
 
 	VectorSubtract( me.candMaxs, me.candMins, size );
-	ME_Text( x, y, va( "Map prop" S_COLOR_GREY "   %i triangles, %i x %i x %i", me.candTris,
+	ME_Text( x, y, va( "%s" S_COLOR_GREY "   %i triangles, %i x %i x %i", ME_CandIsBrush() ? "Map brush" : "Map prop", me.candTris,
 		ME_Round( size[0] ), ME_Round( size[1] ), ME_Round( size[2] ) ), meWhite );
 	y += ME_ROW_H + 2;
 	if ( ME_Button( x, y, third, "Lift out (G)", qfalse, qtrue ) )
 		ME_LiftProp( qfalse, qfalse );
-	if ( ME_Button( x + third + 4, y, third, "Remove (Del)", qfalse, qtrue ) )
+	if ( ME_Button( x + third + 4, y, third, "Hide (Del)", qfalse, qtrue ) )
 		ME_LiftProp( qtrue, qfalse );
 	if ( ME_Button( x + ( third + 4 ) * 2, y, third, "Take more", qfalse, (qboolean)( me.numCandSeeds < ME_MAX_SEEDS ) ) )
 		ME_TakeTouching();
 	y += ME_CTRL_H + ME_GAP;
-	ME_Text( x, y, S_COLOR_GREY "Take more adds loose pieces inside it", meWhite );
+	// a prop made of brushes: just the one clicked
+	if ( !ME_CandIsBrush() && me.candBrush >= 0 ) {
+		if ( ME_Button( x, y, w, "Just the brush clicked", qfalse, qtrue ) )
+			ME_ChooseBrush( me.candBrush );
+		y += ME_CTRL_H + ME_GAP;
+	}
+	ME_Text( x, y, ME_CandIsBrush() ? S_COLOR_GREY "One brush of the map's: the faces on it" : S_COLOR_GREY "Take more adds loose pieces inside it", meWhite );
 	y += ME_ROW_H + 6;
 	*py = y;
 }
@@ -3826,7 +4610,7 @@ static void ME_DrawModelsTab( float x, float y, float w ) {
 	if ( it && it->kind == ME_ITEM_PROP ) {
 		const float half = ( w - 4 ) * 0.5f;
 
-		if ( ME_Button( x, y, half, it->removed ? "Removed" : "Shown", (qboolean)!it->removed, qtrue ) ) {
+		if ( ME_Button( x, y, half, it->removed ? "Hidden" : "Shown", (qboolean)!it->removed, qtrue ) ) {
 			it->removed = (qboolean)!it->removed;
 			ME_Changed();
 		}
@@ -3937,9 +4721,28 @@ static void ME_DrawTriggersTab( float x, float y, float w ) {
 	int steps;
 
 	if ( !it ) {
-		ME_Text( x, y + 4, S_COLOR_GREY "A box that runs a console command", meWhite );
-		ME_Text( x, y + 4 + ME_ROW_H, S_COLOR_GREY "when you walk into it, editor closed", meWhite );
+		ME_Text( x, y + 4, S_COLOR_GREY "A box that runs a console command when you", meWhite );
+		ME_Text( x, y + 4 + ME_ROW_H, S_COLOR_GREY "walk into it; or one the storyteller's stories", meWhite );
+		ME_Text( x, y + 4 + ME_ROW_H * 2, S_COLOR_GREY "act on, used with the use key looking at it", meWhite );
 		return;
+	}
+	// walked into, or used: the use key, looking at it, within reach
+	if ( ME_Button( x, y, half, "Walked into", (qboolean)!it->use, qtrue ) && it->use ) {
+		it->use = qfalse;
+		ME_Changed();
+	}
+	if ( ME_Button( x + half + 4, y, half, "Used (+use)", it->use, qtrue ) && !it->use ) {
+		it->use = qtrue;
+		ME_Changed();
+	}
+	y += ME_CTRL_H + ME_GAP;
+	ME_Text( x, y + 2, "Name", meDim );
+	ME_TextBox( x + 52, y, w - 52, ME_FIELD_TRIGGERNAME, it->name, "the storyteller's, optional" );
+	y += ME_CTRL_H + ME_GAP;
+	if ( it->use ) {
+		ME_Text( x, y + 2, "Shown as", meDim );
+		ME_TextBox( x + 52, y, w - 52, ME_FIELD_TRIGGERDISPLAY, it->display, "what players see: [key] ..." );
+		y += ME_CTRL_H + ME_GAP;
 	}
 	steps = ME_Stepper( x, y, w, "Width", va( "%i", ME_Round( it->size[0] * 2 ) ) );
 	ME_Adjust( &it->size[0], steps, 8.0f, 1.0f, 4096.0f );
@@ -3950,6 +4753,13 @@ static void ME_DrawTriggersTab( float x, float y, float w ) {
 	steps = ME_Stepper( x, y, w, "Tall", va( "%i", ME_Round( it->size[2] * 2 ) ) );
 	ME_Adjust( &it->size[2], steps, 8.0f, 1.0f, 4096.0f );
 	y += ME_CTRL_H + ME_GAP + 4;
+	// a use trigger's doing is the storyteller's
+	if ( it->use ) {
+		ME_Text( x, y, S_COLOR_GREY "What it does is up to the storyteller: a story's", meWhite );
+		ME_Text( x, y + ME_ROW_H, S_COLOR_GREY "\"When someone uses\" with its name. Using it", meWhite );
+		ME_Text( x, y + ME_ROW_H * 2, S_COLOR_GREY "plays the reach emote.", meWhite );
+		return;
+	}
 	ME_Text( x, y, "Runs", meDim );
 	y += ME_ROW_H;
 	ME_TextBox( x, y, w, ME_FIELD_COMMAND, it->command, "a console command, e.g. play sound/..." );
@@ -4068,8 +4878,219 @@ static void ME_DrawSoundsTab( float x, float y, float w ) {
 	ME_Text( x, y + ME_ROW_H, S_COLOR_GREY "Shared, everyone with this client hears it", meWhite );
 }
 
+// a pattern as bars, dark to full, the letter now marked
+static void ME_DrawPattern( float x, float y, float w, float h, const char *pattern ) {
+	const int len = strlen( pattern ), now = len ? ( Q_max( 0, cl.serverTime ) / 50 ) % len : 0;
+	const int shown = Q_min( len, (int)w );
+	const float bw = shown ? w / shown : w;
+	static vec4_t bar = { 0.75f, 0.75f, 0.4f, 0.9f }, lit = { 1.0f, 1.0f, 1.0f, 1.0f };
+
+	ME_Box( x, y, w, h, mePanelLight );
+	for ( int i = 0; i < shown; i++ ) {
+		const float v = Com_Clamp( 0.0f, 1.0f, ( pattern[i] - 'a' ) / (float)( 'z' - 'a' ) );
+
+		ME_Fill( x + i * bw, y + h - 1 - v * ( h - 2 ), Q_max( 1.0f, bw - 1.0f ), v * ( h - 2 ), i == now ? lit : bar );
+	}
+}
+
+static void ME_FogEdited( meFog_t *f ) {
+	f->override = qtrue;
+	me.fogsDirty = qtrue;
+	ME_Changed();
+}
+
+// a fog's thickness and colour; qtrue if either changed. Where the next row goes in *py
+static qboolean ME_DrawFogLook( float x, float *py, float w, vec3_t color, float *depth ) {
+	const float sw = ( w - 4.0f * ( ARRAY_LEN( meLightColors ) ) ) / ( ARRAY_LEN( meLightColors ) + 1 );
+	static const char *thick[] = { "Thick", "Misty", "Thin", "Haze" };
+	static const float thickDepth[] = { 256.0f, 1024.0f, 3072.0f, 8192.0f };
+	const float quarter = ( w - 12 ) / 4.0f;
+	qboolean changed = qfalse;
+	float y = *py;
+	int steps;
+
+	// how deep it takes to see nothing through it, in steps a tenth of it
+	steps = ME_Stepper( x, y, w, "Opaque at", *depth >= ME_FOG_NONE ? "none" : va( "%i", ME_Round( *depth ) ) );
+	if ( steps ) {
+		*depth = Com_Clamp( 16.0f, ME_FOG_NONE, *depth * powf( ME_ShiftDown() ? 1.5f : 1.1f, (float)steps ) );
+		changed = qtrue;
+	}
+	y += ME_CTRL_H + ME_GAP;
+	for ( int i = 0; i < 4; i++ ) {
+		if ( ME_Button( x + i * ( quarter + 4 ), y, quarter, thick[i], (qboolean)( ME_Round( *depth ) == ME_Round( thickDepth[i] ) ), qtrue ) ) {
+			*depth = thickDepth[i];
+			changed = qtrue;
+		}
+	}
+	y += ME_CTRL_H + ME_GAP + 4;
+	{
+		static const char *names[3] = { "Red", "Green", "Blue" };
+
+		for ( int c = 0; c < 3; c++ ) {
+			steps = ME_Stepper( x, y, w, names[c], va( "%i", ME_Round( color[c] * 255 ) ) );
+			if ( steps ) {
+				ME_Adjust( &color[c], steps, 0.05f, 0.0f, 1.0f );
+				changed = qtrue;
+			}
+			y += ME_CTRL_H + ME_GAP;
+		}
+	}
+	// the colours most fogs are, and black
+	for ( int i = 0; i <= (int)ARRAY_LEN( meLightColors ); i++ ) {
+		const float sx = x + i * ( sw + 4 );
+		vec4_t c = { 0.0f, 0.0f, 0.0f, 1.0f };
+
+		if ( i < (int)ARRAY_LEN( meLightColors ) )
+			VectorScale( meLightColors[i], 0.75f, c );
+		ME_Box( sx, y, sw, ME_CTRL_H, ME_InRect( sx, y, sw, ME_CTRL_H ) ? meHoverBox : mePanelLight );
+		ME_Fill( sx + 3, y + 3, sw - 6, ME_CTRL_H - 6, c );
+		if ( ME_Clicked( sx, y, sw, ME_CTRL_H ) ) {
+			VectorCopy( c, color );
+			changed = qtrue;
+		}
+	}
+	*py = y + ME_CTRL_H + ME_GAP + 4;
+	return changed;
+}
+
+// the map's own fogs: its list, and the one chosen
+static void ME_DrawMapFogs( float x, float y, float w ) {
+	const int rows = 6;
+	const float half = ( w - 4 ) * 0.5f;
+	int clicked, selRow = -1;
+	meFog_t *f;
+
+	if ( me.numFogs <= 1 ) {
+		ME_Text( x, y, S_COLOR_GREY "This map was built without fog; Added", meWhite );
+		ME_Text( x, y + ME_ROW_H, S_COLOR_GREY "volumes puts boxes of fog of our own", meWhite );
+		return;
+	}
+	if ( me.selKind == ME_SEL_FOG && me.sel >= 1 && me.sel < me.numFogs )
+		selRow = me.sel - 1;
+	clicked = ME_ListRows( x, y, w, rows, me.numFogs - 1, &me.fogScroll );
+	if ( selRow >= 0 )
+		ME_RowHighlight( x, y, w, selRow, me.fogScroll, rows );
+	for ( int r = 0; r < rows && me.fogScroll + r < me.numFogs - 1; r++ ) {
+		const int i = me.fogScroll + r + 1;
+		const meFog_t *row = &me.fogs[i];
+		const float ry = y + 1 + r * ME_ROW_H;
+		const qboolean none = (qboolean)( row->override && row->depth >= ME_FOG_NONE );
+		vec4_t c;
+		vec3_t size;
+
+		VectorCopy( row->override ? row->color : row->mapColor, c );
+		c[3] = 1.0f;
+		ME_Fill( x + 4, ry + 2, 8, ME_ROW_H - 4, c );
+		VectorSubtract( row->maxs, row->mins, size );
+		ME_TextClipped( x + 16, ry, w - 20, va( "%s%s" S_COLOR_GREY "  %s", row->override ? S_COLOR_YELLOW : "",
+			i == me.globalFog ? "The whole map" : va( "Fog volume %i", i ),
+			none ? "taken away" : i == me.globalFog ? va( "opaque at %i", ME_Round( row->override ? row->depth : row->mapDepth ) )
+			: va( "%i x %i x %i", ME_Round( size[0] ), ME_Round( size[1] ), ME_Round( size[2] ) ) ), meWhite );
+	}
+	if ( clicked >= 0 )
+		ME_Select( ME_SEL_FOG, clicked + 1 );
+	y += rows * ME_ROW_H + 8;
+
+	if ( me.selKind != ME_SEL_FOG || me.sel < 1 || me.sel >= me.numFogs ) {
+		ME_Text( x, y, S_COLOR_GREY "Pick one to change its colour and how thick", meWhite );
+		ME_Text( x, y + ME_ROW_H, S_COLOR_GREY "it is, or to take it away", meWhite );
+		return;
+	}
+	f = &me.fogs[me.sel];
+	ME_TextClipped( x, y, w, me.sel == me.globalFog ? "The fog over the whole map" : va( "Fog volume %i", me.sel ), meWhite );
+	y += ME_ROW_H + 2;
+	if ( ME_Button( x, y, half, f->override ? "Ours: back to the map's" : "The map's", f->override, f->override ) ) {
+		f->override = qfalse;
+		VectorCopy( f->mapColor, f->color );
+		f->depth = f->mapDepth;
+		me.fogsDirty = qtrue;
+		ME_Changed();
+	}
+	if ( ME_Button( x + half + 4, y, half, "No fog", (qboolean)( f->override && f->depth >= ME_FOG_NONE ), qtrue ) ) {
+		f->depth = ME_FOG_NONE;
+		ME_FogEdited( f );
+	}
+	y += ME_CTRL_H + ME_GAP;
+	if ( me.sel != me.globalFog ) {
+		if ( ME_Button( x, y, w, "Go to it", qfalse, qtrue ) ) {
+			vec3_t center, size;
+
+			VectorAdd( f->mins, f->maxs, center );
+			VectorScale( center, 0.5f, center );
+			VectorSubtract( f->maxs, f->mins, size );
+			ME_GoTo( center, VectorLength( size ) * 0.5f );
+		}
+		y += ME_CTRL_H + ME_GAP;
+	}
+	y += 4;
+	if ( ME_DrawFogLook( x, &y, w, f->color, &f->depth ) )
+		ME_FogEdited( f );
+	ME_Text( x, y, S_COLOR_GREY "Everyone with this client sees it once shared", meWhite );
+}
+
+// our own fog volumes: boxes of fog anywhere
+static void ME_DrawAddedFogs( float x, float y, float w ) {
+	meItem_t *it = ME_DrawItemList( &y, x, w, ME_ITEM_FOG, "Add" );
+
+	if ( !it ) {
+		ME_Text( x, y + 4, S_COLOR_GREY "Add puts a box of fog at the crosshair;", meWhite );
+		ME_Text( x, y + 4 + ME_ROW_H, S_COLOR_GREY "what's in it is fogged, models too", meWhite );
+		return;
+	}
+	y += 2;
+	if ( ME_DrawFogLook( x, &y, w, it->color, &it->fogDepth ) )
+		ME_Changed();
+	{
+		static const char *names[3] = { "Width", "Depth", "Tall" };
+
+		for ( int a = 0; a < 3; a++ ) {
+			const int steps = ME_Stepper( x, y, w, names[a], va( "%i", ME_Round( it->size[a] * 2 ) ) );
+
+			ME_Adjust( &it->size[a], steps, 16.0f, 4.0f, 16384.0f );
+			y += ME_CTRL_H + ME_GAP;
+		}
+	}
+}
+
+static void ME_DrawFogTab( float x, float y, float w ) {
+	const float half = ( w - 4 ) * 0.5f;
+	const meItem_t *sel = ME_SelectedItem();
+	int added = 0;
+
+	if ( !re->ext.GetFogs || !re->ext.SetFog ) {
+		ME_Text( x, y, S_COLOR_GREY "Fog can be changed with the vanilla renderer", meWhite );
+		return;
+	}
+	// what's chosen picks which
+	if ( sel && sel->kind == ME_ITEM_FOG )
+		me.fogAdded = qtrue;
+	else if ( me.selKind == ME_SEL_FOG )
+		me.fogAdded = qfalse;
+	for ( int i = 0; i < me.numItems; i++ ) {
+		if ( me.items[i].kind == ME_ITEM_FOG )
+			added++;
+	}
+	// the other page: what's chosen on this one is let go, its changes kept, or it would pull
+	// the tab straight back
+	if ( ME_Button( x, y, half, va( "The map's (%i)", Q_max( 0, me.numFogs - 1 ) ), (qboolean)!me.fogAdded, qtrue ) && me.fogAdded ) {
+		me.fogAdded = qfalse;
+		if ( sel && sel->kind == ME_ITEM_FOG )
+			ME_Select( ME_SEL_NONE, -1 );
+	}
+	if ( ME_Button( x + half + 4, y, half, va( "Added volumes (%i)", added ), me.fogAdded, qtrue ) && !me.fogAdded ) {
+		me.fogAdded = qtrue;
+		if ( me.selKind == ME_SEL_FOG )
+			ME_Select( ME_SEL_NONE, -1 );
+	}
+	y += ME_CTRL_H + ME_GAP + 4;
+	if ( me.fogAdded )
+		ME_DrawAddedFogs( x, y, w );
+	else
+		ME_DrawMapFogs( x, y, w );
+}
+
 static void ME_DrawStylesTab( float x, float y, float w ) {
-	const int rows = 10;
+	const int rows = 8;
 	const float half = ( w - 4 ) * 0.5f, quarter = ( w - 12 ) / 4.0f;
 	static int matches[MAX_LIGHT_STYLES];
 	int numMatches = 0, clicked, selRow = -1;
@@ -4078,8 +5099,9 @@ static void ME_DrawStylesTab( float x, float y, float w ) {
 	if ( ME_Button( x, y, w, me.allStyles ? "Showing all 64" : "Showing the map's", me.allStyles, qtrue ) )
 		me.allStyles = (qboolean)!me.allStyles;
 	y += ME_CTRL_H + ME_GAP;
-	for ( int i = 1; i < MAX_LIGHT_STYLES; i++ ) {
-		if ( me.allStyles || me.styles[i].surfaces || me.styles[i].override ) {
+	// 0, the whole map's light, first and always
+	for ( int i = 0; i < MAX_LIGHT_STYLES; i++ ) {
+		if ( !i || me.allStyles || me.styles[i].surfaces || me.styles[i].override ) {
 			if ( ME_IsSel( ME_SEL_STYLE, i ) )
 				selRow = numMatches;
 			matches[numMatches++] = i;
@@ -4093,30 +5115,28 @@ static void ME_DrawStylesTab( float x, float y, float w ) {
 		const meStyle_t *row = &me.styles[i];
 		const char *pattern = row->override ? row->pattern : ME_ServerPattern( i );
 
-		ME_TextClipped( x + 4, y + 1 + r * ME_ROW_H, w - 8, va( "%s%i  " S_COLOR_GREY "%i surfaces  %s%s",
-			row->override ? S_COLOR_YELLOW : S_COLOR_WHITE, i, row->surfaces, row->override ? S_COLOR_YELLOW : S_COLOR_WHITE,
+		ME_TextClipped( x + 4, y + 1 + r * ME_ROW_H, w - 8, va( "%s%i  " S_COLOR_GREY "%s  %s%s", row->override ? S_COLOR_YELLOW : S_COLOR_WHITE, i,
+			i ? va( "%i surfaces", row->surfaces ) : "the whole map", row->override ? S_COLOR_YELLOW : S_COLOR_WHITE,
 			pattern[0] ? pattern : "steady" ), meWhite );
 	}
-	if ( !numMatches )
-		ME_TextClipped( x + 4, y + 2, w - 8, S_COLOR_GREY "No switchable lights were built into this map", meWhite );
 	if ( clicked >= 0 )
 		ME_Select( ME_SEL_STYLE, matches[clicked] );
-	y += rows * ME_ROW_H + 8;
+	y += rows * ME_ROW_H + 6;
 
-	if ( me.selKind != ME_SEL_STYLE || me.sel < 1 || me.sel >= MAX_LIGHT_STYLES ) {
-		ME_Text( x, y, S_COLOR_GREY "A style changes the map's lights built with it,", meWhite );
-		ME_Text( x, y + ME_ROW_H, S_COLOR_GREY "and our lights set to follow it", meWhite );
+	if ( me.selKind != ME_SEL_STYLE || me.sel < 0 || me.sel >= MAX_LIGHT_STYLES ) {
+		ME_Text( x, y, S_COLOR_GREY "0 is the whole map's light; the others the", meWhite );
+		ME_Text( x, y + ME_ROW_H, S_COLOR_GREY "switchable lights it was built with, and", meWhite );
+		ME_Text( x, y + ME_ROW_H * 2, S_COLOR_GREY "our lights set to follow them", meWhite );
 		return;
 	}
 	s = &me.styles[me.sel];
-	ME_Text( x, y, va( "Style %i" S_COLOR_GREY "   the server's: %s", me.sel, ME_ServerPattern( me.sel )[0] ? ME_ServerPattern( me.sel ) : "steady" ), meWhite );
+	ME_TextClipped( x, y, w, va( "Style %i%s" S_COLOR_GREY "   the server's: %s", me.sel, me.sel ? "" : ", the whole map",
+		ME_ServerPattern( me.sel )[0] ? ME_ServerPattern( me.sel ) : "steady" ), meWhite );
 	y += ME_ROW_H + 2;
-	if ( ME_Button( x, y, half, s->override ? "Ours" : "The server's", s->override, qtrue ) ) {
-		s->override = (qboolean)!s->override;
-		if ( s->override && !s->pattern[0] ) {
-			Q_strncpyz( s->pattern, ME_ServerPattern( me.sel )[0] ? ME_ServerPattern( me.sel ) : "z", sizeof( s->pattern ) );
-			VectorSet( s->color, 1, 1, 1 );
-		}
+	// as the server has it, or ours: changing anything makes it ours
+	if ( ME_Button( x, y, half, s->override ? "Ours: back to server's" : "The server's", s->override, s->override ) ) {
+		s->override = qfalse;
+		ME_Select( ME_SEL_STYLE, me.sel );
 		ME_Changed();
 	}
 	if ( ME_Button( x + half + 4, y, half, "Blink it", (qboolean)( me.flashStyle == me.sel && cls.realtime < me.flashUntil ), qtrue ) ) {
@@ -4124,43 +5144,70 @@ static void ME_DrawStylesTab( float x, float y, float w ) {
 		me.flashUntil = cls.realtime + ME_FLASH_MS;
 	}
 	y += ME_CTRL_H + ME_GAP;
-	if ( ME_Button( x, y, w, "Go to its lights", qfalse, (qboolean)( s->surfaces > 0 ) ) ) {
-		vec3_t center, size;
+	if ( me.sel ) {
+		if ( ME_Button( x, y, w, "Go to its lights", qfalse, (qboolean)( s->surfaces > 0 ) ) ) {
+			vec3_t center, size;
 
-		VectorAdd( s->mins, s->maxs, center );
-		VectorScale( center, 0.5f, center );
-		VectorSubtract( s->maxs, s->mins, size );
-		ME_GoTo( center, VectorLength( size ) * 0.5f );
+			VectorAdd( s->mins, s->maxs, center );
+			VectorScale( center, 0.5f, center );
+			VectorSubtract( s->maxs, s->mins, size );
+			ME_GoTo( center, VectorLength( size ) * 0.5f );
+		}
+		y += ME_CTRL_H + ME_GAP;
 	}
-	y += ME_CTRL_H + ME_GAP + 4;
-	if ( !s->override )
-		return;
+	y += 2;
 
+	// its pattern, typed or picked, and how it goes
 	ME_TextBox( x, y, w, ME_FIELD_PATTERN, s->pattern, "letters a (dark) to z (full)" );
 	y += ME_CTRL_H + ME_GAP;
+	ME_DrawPattern( x, y, w, 14, s->pattern[0] ? s->pattern : "z" );
+	y += 14 + ME_GAP;
 	for ( int i = 0; i < (int)ARRAY_LEN( meStylePresets ); i++ ) {
 		const float bx = x + ( i % 4 ) * ( quarter + 4 ), by = y + ( i / 4 ) * ( ME_CTRL_H + ME_GAP );
 
 		if ( ME_Button( bx, by, quarter, meStylePresets[i].name, (qboolean)!strcmp( s->pattern, meStylePresets[i].pattern ), qtrue ) ) {
 			Q_strncpyz( s->pattern, meStylePresets[i].pattern, sizeof( s->pattern ) );
+			s->override = qtrue;
 			ME_Changed();
 		}
 	}
-	y += ( ME_CTRL_H + ME_GAP ) * 2;
-	{
-		int steps = ME_Stepper( x, y, w, "Red", va( "%i%%", ME_Round( s->color[0] * 100 ) ) );
+	y += ( ME_CTRL_H + ME_GAP ) * 2 + 2;
 
-		ME_Adjust( &s->color[0], steps, 0.1f, 0.0f, 1.0f );
-		y += ME_CTRL_H + ME_GAP;
-		steps = ME_Stepper( x, y, w, "Green", va( "%i%%", ME_Round( s->color[1] * 100 ) ) );
-		ME_Adjust( &s->color[1], steps, 0.1f, 0.0f, 1.0f );
-		y += ME_CTRL_H + ME_GAP;
-		steps = ME_Stepper( x, y, w, "Blue", va( "%i%%", ME_Round( s->color[2] * 100 ) ) );
-		ME_Adjust( &s->color[2], steps, 0.1f, 0.0f, 1.0f );
+	// a colour and pattern at once
+	ME_Text( x, y, "Looks", meDim );
+	y += ME_ROW_H;
+	for ( int i = 0; i < (int)ARRAY_LEN( meStyleLooks ); i++ ) {
+		const meStyleLook_t *l = &meStyleLooks[i];
+		const float bx = x + ( i % 4 ) * ( quarter + 4 ), by = y + ( i / 4 ) * ( ME_CTRL_H + ME_GAP );
+		const qboolean on = (qboolean)( s->override && VectorCompare( s->color, l->color ) && !strcmp( s->pattern, l->pattern ) );
+
+		if ( ME_Button( bx, by, quarter, l->name, on, qtrue ) ) {
+			VectorCopy( l->color, s->color );
+			Q_strncpyz( s->pattern, l->pattern, sizeof( s->pattern ) );
+			s->override = qtrue;
+			ME_Changed();
+		}
 	}
+	y += ( ME_CTRL_H + ME_GAP ) * 2 + 2;
+	{
+		static const char *names[3] = { "Red", "Green", "Blue" };
+
+		for ( int c = 0; c < 3; c++ ) {
+			const int steps = ME_Stepper( x, y, w, names[c], va( "%i%%", ME_Round( s->color[c] * 100 ) ) );
+
+			if ( steps ) {
+				ME_Adjust( &s->color[c], steps, 0.05f, 0.0f, 1.0f );
+				s->override = qtrue;
+			}
+			y += ME_CTRL_H + ME_GAP;
+		}
+	}
+	if ( !me.sel )
+		ME_TextClipped( x, y, w, S_COLOR_GREY "The world follows it with the vanilla renderer", meWhite );
 }
 
-static qboolean ME_Project( const vec3_t point, float *x, float *y ) {
+// where a point is on the screen, anywhere on it or off it; qfalse behind the camera
+static qboolean ME_ProjectAny( const vec3_t point, float *x, float *y ) {
 	vec3_t d;
 	float forward;
 
@@ -4172,6 +5219,13 @@ static qboolean ME_Project( const vec3_t point, float *x, float *y ) {
 		return qfalse;
 	*x = SCREEN_WIDTH * 0.5f * ( 1.0f - DotProduct( d, me.viewAxis[1] ) / forward / tanf( DEG2RAD( me.viewFovX * 0.5f ) ) );
 	*y = SCREEN_HEIGHT * 0.5f * ( 1.0f - DotProduct( d, me.viewAxis[2] ) / forward / tanf( DEG2RAD( me.viewFovY * 0.5f ) ) );
+	return qtrue;
+}
+
+// the same, qfalse off the world's part of the screen
+static qboolean ME_Project( const vec3_t point, float *x, float *y ) {
+	if ( !ME_ProjectAny( point, x, y ) )
+		return qfalse;
 	return (qboolean)( *x >= 0 && *x <= ME_PANEL_X && *y >= 0 && *y <= SCREEN_HEIGHT );
 }
 
@@ -4211,11 +5265,29 @@ static void ME_DrawLabels( void ) {
 		if ( it->kind == ME_ITEM_MODEL )
 			ME_Text( sx + 4, sy - 12, COM_SkipPath( (char *)it->model ), meWhite );
 		else if ( it->kind == ME_ITEM_PROP )
-			ME_Text( sx + 4, sy - 12, it->removed ? "map prop (removed)" : "map prop", meWhite );
+			ME_Text( sx + 4, sy - 12, va( "map %s%s", ME_ItemIsBrush( it ) ? "brush" : "prop", it->removed ? " (hidden)" : "" ), meWhite );
 		else if ( it->kind == ME_ITEM_LIGHT )
 			ME_Text( sx + 4, sy - 12, "light", meWhite );
+		else if ( it->kind == ME_ITEM_TRIGGER )
+			ME_Text( sx + 4, sy - 12, va( "%s%s%s", it->use ? "use trigger" : "trigger", it->name[0] ? va( " %s", it->name ) : "",
+				it->inside ? " (you're in it)" : "" ), meWhite );
+		else if ( it->kind == ME_ITEM_FOG )
+			ME_Text( sx + 4, sy - 12, "fog volume", meWhite );
 		else
-			ME_Text( sx + 4, sy - 12, it->inside ? "trigger (you're in it)" : "trigger", meWhite );
+			ME_Text( sx + 4, sy - 12, "speaker", meWhite );
+	}
+	// the arrows' letters
+	if ( ME_GizmoItem() ) {
+		static const char *letters[3] = { S_COLOR_RED "X", S_COLOR_GREEN "Y", S_COLOR_BLUE "Z" };
+		const meItem_t *it = ME_GizmoItem();
+
+		for ( int a = 0; a < 3; a++ ) {
+			vec3_t tip;
+
+			VectorMA( it->org, ME_GizmoLen( it ) * 1.12f, meAxes[a], tip );
+			if ( ME_Project( tip, &sx, &sy ) )
+				ME_Text( sx - 3, sy - 6, a == me.gizmoAxis ? va( S_COLOR_YELLOW "%s", letters[a] + 2 ) : letters[a], meWhite );
+		}
 	}
 }
 
@@ -4258,9 +5330,9 @@ static void ME_DrawLayouts( float x, float y, float w ) {
 		}
 	}
 	y += ME_CTRL_H + ME_GAP;
-	if ( ME_Button( x, y, w, "Back to this map's saved edits", qfalse, qtrue ) ) {
+	if ( ME_Button( x, y, w, "Clear: no edits", qfalse, qtrue ) ) {
 		ME_Load();
-		ME_Message( "Back to the saved edits" );
+		ME_Message( "No edits now; a layout loads them again" );
 	}
 	y += ME_CTRL_H + ME_GAP + 10;
 
@@ -4294,8 +5366,8 @@ static void ME_DrawLayouts( float x, float y, float w ) {
 		ME_TextClipped( x, y, w, S_COLOR_CYAN "Showing edits shared with you", meWhite );
 		y += ME_ROW_H + 2;
 	}
-	ME_Text( x, y, S_COLOR_GREY "Models, props, lights, styles and", meWhite );
-	ME_Text( x, y + ME_ROW_H, S_COLOR_GREY "hidden brushes go; triggers stay here.", meWhite );
+	ME_Text( x, y, S_COLOR_GREY "Models, props, lights, styles, fog, hidden", meWhite );
+	ME_Text( x, y + ME_ROW_H, S_COLOR_GREY "brushes and use triggers go (not commands).", meWhite );
 	ME_Text( x, y + ME_ROW_H * 2, S_COLOR_GREY "Only the look changes: no collision.", meWhite );
 	ME_Text( x, y + ME_ROW_H * 3, S_COLOR_GREY "Who joins later needs it shared again.", meWhite );
 }
@@ -4359,7 +5431,10 @@ static void ME_DrawEditor( void ) {
 
 	// top left: what this is, how it went
 	ME_Text( 8, 40, va( "Map editor" S_COLOR_GREY "   %s   fov %i", me.map, ME_Round( me.camFov ) ), meWhite );
-	if ( me.grabbing )
+	if ( me.storyPick >= 0 )
+		ME_Text( 8, 40 + ME_ROW_H, va( S_COLOR_CYAN "For the story: click the %s it waits on   " S_COLOR_GREY "Esc goes back",
+			me.storyPick == 0 ? "map trigger" : me.storyPick == 1 ? "door or button" : "use trigger" ), meWhite );
+	else if ( me.grabbing )
 		ME_Text( 8, 40 + ME_ROW_H, S_COLOR_CYAN "Carrying: it goes where you point; click or G puts it down, Esc puts it back", meWhite );
 	if ( me.message[0] && cls.realtime - me.messageTime < ME_MESSAGE_MS )
 		ME_TextClipped( 8, 40 + ME_ROW_H * 2, ME_PANEL_X - 16, me.message, meWhite );
@@ -4371,8 +5446,8 @@ static void ME_DrawEditor( void ) {
 		static const char *help[] = {
 			"Hold right mouse: look and fly   WASD  Space/C up/down",
 			"Shift fast  Ctrl slow  wheel zooms while flying",
-			"Click: pick, a map prop too   G: move it   Del: delete   Ctrl+D: copy",
-			"Ctrl+S: save   Esc: back"
+			"Click: pick, a map prop or brush too   G: carry it   Del: delete   Ctrl+D: copy",
+			"Drag an arrow: along X, Y or Z (Shift 16, Ctrl 1/4)   Ctrl+S: save   Esc: back"
 		};
 		for ( int i = 0; i < (int)ARRAY_LEN( help ); i++ )
 			ME_Text( 8, SCREEN_HEIGHT - 12 - ( ARRAY_LEN( help ) - 1 - i ) * ME_ROW_H, va( S_COLOR_GREY "%s", help[i] ), meWhite );
@@ -4413,6 +5488,7 @@ static void ME_DrawEditor( void ) {
 	case ME_TAB_TRIGGERS:	ME_DrawTriggersTab( x, y, w );	break;
 	case ME_TAB_SOUNDS:		ME_DrawSoundsTab( x, y, w );	break;
 	case ME_TAB_LOCKS:		ME_DrawLocksTab( x, y, w );		break;
+	case ME_TAB_FOG:		ME_DrawFogTab( x, y, w );		break;
 	default:				ME_DrawStylesTab( x, y, w );	break;
 	}
 
@@ -4437,8 +5513,24 @@ static void ME_DrawEditor( void ) {
 }
 
 void CL_MapEditor_Draw( void ) {
-	if ( me.open )
+	if ( me.open ) {
 		ME_DrawEditor();
+		return;
+	}
+	// a use trigger looked at: which key uses it
+	if ( me.useAim >= 0 && me.useAim < me.numItems && ME_Shown() && !Key_GetCatcher() ) {
+		const meItem_t *it = &me.items[me.useAim];
+		const int key = Key_GetKey( "+use" );
+		const char *text = va( S_COLOR_YELLOW "[%s]" S_COLOR_WHITE " %s", key >= 0 ? Key_KeynumToString( key ) : "use",
+			it->display[0] ? it->display : it->name[0] ? it->name : "Use" );
+
+		if ( !me.font ) {
+			me.font = re->RegisterFont( "arialnb" );
+			if ( !me.font )
+				me.font = cls.menuFont;
+		}
+		ME_Text( ( SCREEN_WIDTH - ME_TextWidth( text ) ) * 0.5f, SCREEN_HEIGHT * 0.5f + 20, text, meWhite );
+	}
 }
 
 /*
@@ -4449,7 +5541,7 @@ Commands
 ===============================================================================
 */
 
-// mapedit: the editor; mapedit save|reload: the edits; mapedit on|off: shown outside it
+// mapedit: the editor; mapedit save|load|clear: the edits; mapedit on|off: shown outside it
 void CL_MapEditor_f( void ) {
 	const char *arg = Cmd_Argv( 1 );
 
@@ -4478,9 +5570,9 @@ void CL_MapEditor_f( void ) {
 	} else if ( !Q_stricmp( arg, "load" ) && Cmd_Argv( 2 )[0] ) {
 		ME_LoadLayout( Cmd_Argv( 2 ) );
 		Com_Printf( "%s\n", me.message );
-	} else if ( !Q_stricmp( arg, "reload" ) ) {
+	} else if ( !Q_stricmp( arg, "clear" ) || !Q_stricmp( arg, "reload" ) ) {
 		ME_Load();
-		Com_Printf( "Map edits reloaded from %s\n", ME_Path() );
+		Com_Printf( "Map edits cleared: a layout loads them again\n" );
 	} else if ( !Q_stricmp( arg, "layouts" ) ) {
 		ME_ListLayouts();
 		Com_Printf( "Layouts for %s, in %s:\n", me.map, ME_LayoutDir() );
@@ -4496,13 +5588,13 @@ void CL_MapEditor_f( void ) {
 		Com_Printf( "%s\n", me.message );
 	} else {
 		Com_Printf( "mapedit : open or close the map editor\n"
-			"mapedit save [name] : keep the edits, in %s, or as a layout of that name\n"
+			"mapedit save [name] : keep the edits as a layout: the one loaded, or of that name\n"
 			"mapedit load <name> : a layout in place of the edits shown\n"
-			"mapedit layouts : the layouts kept for this map\n"
-			"mapedit reload : back to the saved edits\n"
+			"mapedit layouts : the layouts kept for this map, in %s\n"
+			"mapedit clear : no edits; a map always starts without any\n"
 			"mapedit share : the edits to everyone on the map with this client (experimental)\n"
 			"mapedit unshare : everyone back to their own\n"
-			"mapedit on|off : show them outside the editor too, or not\n", ME_Path() );
+			"mapedit on|off : show them outside the editor too, or not\n", ME_LayoutDir() );
 	}
 }
 
@@ -4519,6 +5611,10 @@ void CL_MapEditor_Init( void ) {
 	rpc_mapEdits = Cvar_Get( "rpc_mapEdits", "1", CVAR_ARCHIVE_ND, "Show the map edits made with /mapedit outside the editor too" );
 	rpc_mapShare = Cvar_Get( "rpc_mapShare", "1", CVAR_ARCHIVE_ND, "Show the map edits an admin shares with everyone" );
 	me.layoutSel = -1;
+	me.candBrush = -1;
+	me.gizmoAxis = me.dragAxis = -1;
+	me.useAim = -1;
+	me.storyPick = -1;
 	memset( &ml, 0, sizeof( ml ) );
 	ml.showDoors = ml.showTriggers = qtrue;
 }

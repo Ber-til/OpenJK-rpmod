@@ -571,6 +571,10 @@ typedef struct trRefdef_s {
 	// pixels on a 480 high screen away from it; dofBlur 0 is none
 	float		dofFocus, dofRange, dofBlur;
 
+	// the cinematic camera's filter, over the view after its depth of field
+	qboolean		filterOn;
+	screenFilter_t	filter;
+
 	// the sky look: the sky shader tinted by skyTint, and drawn with its axes along skyAxis
 	// when skyTurned; a 3D skybox's view is turned itself, so its sky isn't
 	qboolean	skyTinted, skyTurned;
@@ -598,6 +602,10 @@ typedef struct fog_s {
 	// for clipping distance in fog when outside
 	qboolean	hasSurface;
 	float		surface[4];
+
+	// as the map has it, kept when the client changes it; overridden while it's the client's
+	qboolean	changed, overridden;
+	fogParms_t	original;
 } fog_t;
 
 typedef struct viewParms_s {
@@ -774,6 +782,7 @@ typedef struct msurface_s {
 	int					viewCount;		// if == tr.viewCount, already added
 	struct shader_s		*shader;
 	int					fogIndex;
+	int					mapFogIndex;	// the map's, while the client adds fogs of its own
 
 	surfaceType_t		*data;			// any of srf*_t
 } msurface_t;
@@ -817,6 +826,8 @@ typedef struct
 } mgrid_t;
 
 
+#define MAX_ADDED_FOGS 16		// fog volumes the client adds
+
 typedef struct world_s {
 	char		name[MAX_QPATH];		// ie: maps/tim_dm2.bsp
 	char		baseName[MAX_QPATH];	// ie: tim_dm2
@@ -844,6 +855,9 @@ typedef struct world_s {
 	int			numfogs;
 	fog_t		*fogs;
 	int			globalFog;
+	// the client's fogs go after the map's, up to maxFogs; fogsSaved once the map's are kept
+	int			maxFogs, numMapFogs;
+	qboolean	fogsSaved;
 
 
 	vec3_t		lightGridOrigin;
@@ -1043,9 +1057,24 @@ typedef struct trGlobals_s {
 	GLuint					dofPxShader;
 	float					dofNext[3];		// focus, range and blur the next world scene takes
 
+	// the cinematic camera's filter: its program (0 if it didn't compile), the ramp its brightness
+	// is coloured along and the grain's noise, and the filter the next world scene takes
+	GLuint					filterPxShader;
+	image_t					*filterRampImage;
+	image_t					*filterNoiseImage;
+	byte					filterRamp[5][3];	// the colours the ramp image has now
+	qboolean				filterNextOn;
+	screenFilter_t			filterNext;
+
 	// the sky look the client asked for, for every world scene until changed
 	qboolean				skyLookOn;
 	vec3_t					skyLookTint, skyLookAngles, skyLookShift;
+
+	// the client's sky portal: the map seen from portalSkyOrg in place of the sky
+	qboolean				portalSkyOn;
+	vec3_t					portalSkyOrg;
+	qboolean				portalSkyDrawn;		// a sky portal scene came since the last world scene
+	qboolean				inPortalSky;		// rendering the client's one
 
 	shader_t				*defaultShader;
 	shader_t				*shadowShader;
@@ -1160,6 +1189,8 @@ extern cvar_t	*r_texturebitslm;		// number of desired lightmap texture bits
 extern cvar_t	*r_measureOverdraw;		// enables stencil buffer overdraw measurement
 
 extern cvar_t	*r_lodbias;				// push/pull LOD transitions
+extern cvar_t	*r_safeModels;			// too big a model shows as a missing one instead of dropping the client
+extern cvar_t	*r_safePlayerModels;	// too big a player model shows as Kyle instead
 extern cvar_t	*r_lodscale;
 extern cvar_t	*r_autolodscalevalue;
 
@@ -1411,7 +1442,13 @@ model_t		*R_AllocModel( void );
 extern int	tr_worldLoads;
 void		RE_HideWorldTriangles( const int *surfaces, const int *triangles, int count );
 void		RE_SetDepthOfField( float focus, float range, float blur );
+void		RE_SetScreenFilter( const screenFilter_t *filter );
+int			RE_GetFogs( vec3_t *colors, float *depths, vec3_t *mins, vec3_t *maxs, int *global, int max );
+void		RE_SetFog( int fog, const float *color, float depth );
+int			RE_AddFog( const vec3_t mins, const vec3_t maxs, const float *color, float depth );
+void		RE_ClearAddedFogs( void );
 void		RE_SetSkyLook( const float *tint, const vec3_t angles, const vec3_t shift );
+void		RE_SetSkyPortal( const vec3_t origin );
 qhandle_t	RE_WorldPieceModel( const int *surfaces, const int *triangles, int count, const vec3_t origin );
 
 void    	R_Init( void );

@@ -400,6 +400,139 @@ void RE_SetDepthOfField( float focus, float range, float blur ) {
 	tr.dofNext[2] = blur > 0.0f ? blur : 0.0f;
 }
 
+void RE_SetScreenFilter( const screenFilter_t *filter ) {
+	tr.filterNextOn = (qboolean)( filter && filter->strength > 0.0f );
+	if ( tr.filterNextOn )
+		tr.filterNext = *filter;
+}
+
+int RE_GetFogs( vec3_t *colors, float *depths, vec3_t *mins, vec3_t *maxs, int *global, int max ) {
+	int count;
+
+	*global = -1;
+	if ( !tr.world || !tr.world->fogs )
+		return 0;
+	count = tr.world->fogsSaved ? tr.world->numMapFogs : tr.world->numfogs;
+	count = count < max ? count : max;
+	for ( int i = 1; i < count; i++ ) {
+		const fog_t *fog = &tr.world->fogs[i];
+		const fogParms_t *parms = fog->changed ? &fog->original : &fog->parms;
+
+		VectorCopy( parms->color, colors[i] );
+		depths[i] = parms->depthForOpaque;
+		VectorCopy( fog->bounds[0], mins[i] );
+		VectorCopy( fog->bounds[1], maxs[i] );
+	}
+	if ( tr.world->globalFog > 0 && tr.world->globalFog < count )
+		*global = tr.world->globalFog;
+	return count;
+}
+
+void RE_SetFog( int fog, const float *color, float depth ) {
+	fog_t *f;
+	float d;
+
+	if ( !tr.world || !tr.world->fogs || fog <= 0 || fog >= tr.world->numfogs )
+		return;
+	f = &tr.world->fogs[fog];
+	if ( !f->changed ) {
+		f->original = f->parms;
+		f->changed = qtrue;
+	}
+	f->overridden = (qboolean)( color != NULL );
+	if ( color ) {
+		VectorCopy( color, f->parms.color );
+		f->parms.depthForOpaque = depth > 1.0f ? depth : 1.0f;
+	} else {
+		f->parms = f->original;
+	}
+	f->colorInt = ColorBytes4( f->parms.color[0] * tr.identityLight, f->parms.color[1] * tr.identityLight,
+		f->parms.color[2] * tr.identityLight, 1.0f );
+	d = f->parms.depthForOpaque < 1 ? 1 : f->parms.depthForOpaque;
+	f->tcScale = 1.0f / ( d * 8 );
+}
+
+// a world surface's box; qfalse for a kind that has none
+static qboolean R_SurfaceBounds( const msurface_t *surf, vec3_t mins, vec3_t maxs ) {
+	ClearBounds( mins, maxs );
+	switch ( *surf->data ) {
+	case SF_FACE: {
+		const srfSurfaceFace_t *face = (const srfSurfaceFace_t *)surf->data;
+
+		for ( int i = 0; i < face->numPoints; i++ )
+			AddPointToBounds( face->points[i], mins, maxs );
+		return (qboolean)( face->numPoints > 0 );
+	}
+	case SF_GRID:
+		VectorCopy( ( (const srfGridMesh_t *)surf->data )->meshBounds[0], mins );
+		VectorCopy( ( (const srfGridMesh_t *)surf->data )->meshBounds[1], maxs );
+		return qtrue;
+	case SF_TRIANGLES:
+		VectorCopy( ( (const srfTriangles_t *)surf->data )->bounds[0], mins );
+		VectorCopy( ( (const srfTriangles_t *)surf->data )->bounds[1], maxs );
+		return qtrue;
+	default:
+		return qfalse;
+	}
+}
+
+int RE_AddFog( const vec3_t mins, const vec3_t maxs, const float *color, float depth ) {
+	world_t *w = tr.world;
+	fog_t *f;
+	int index;
+	float d;
+
+	if ( !w || !w->fogs || w->numfogs >= w->maxFogs - 1 )
+		return 0;
+	// the map's own kept, to go back to
+	if ( !w->fogsSaved ) {
+		w->numMapFogs = w->numfogs;
+		for ( int i = 0; i < w->numsurfaces; i++ )
+			w->surfaces[i].mapFogIndex = w->surfaces[i].fogIndex;
+		w->fogsSaved = qtrue;
+	}
+	index = w->numfogs++;
+	f = &w->fogs[index];
+	memset( f, 0, sizeof( *f ) );
+	f->originalBrushNumber = -2;
+	VectorCopy( mins, f->bounds[0] );
+	VectorCopy( maxs, f->bounds[1] );
+	VectorCopy( color, f->parms.color );
+	f->parms.depthForOpaque = depth > 1.0f ? depth : 1.0f;
+	f->colorInt = ColorBytes4( color[0] * tr.identityLight, color[1] * tr.identityLight, color[2] * tr.identityLight, 1.0f );
+	d = f->parms.depthForOpaque < 1 ? 1 : f->parms.depthForOpaque;
+	f->tcScale = 1.0f / ( d * 8 );
+	// its top is what it's seen through from outside
+	f->hasSurface = qtrue;
+	VectorSet( f->surface, 0.0f, 0.0f, -1.0f );
+	f->surface[3] = -maxs[2];
+
+	// the surfaces in it, but not in one of the map's volumes or one added before
+	for ( int i = 0; i < w->numsurfaces; i++ ) {
+		msurface_t *surf = &w->surfaces[i];
+		vec3_t smins, smaxs;
+
+		if ( ( surf->mapFogIndex && surf->mapFogIndex != w->globalFog ) || surf->fogIndex != surf->mapFogIndex )
+			continue;
+		if ( !R_SurfaceBounds( surf, smins, smaxs ) )
+			continue;
+		if ( smins[0] > maxs[0] || smaxs[0] < mins[0] || smins[1] > maxs[1] || smaxs[1] < mins[1] || smins[2] > maxs[2] || smaxs[2] < mins[2] )
+			continue;
+		surf->fogIndex = index;
+	}
+	return index;
+}
+
+void RE_ClearAddedFogs( void ) {
+	world_t *w = tr.world;
+
+	if ( !w || !w->fogsSaved )
+		return;
+	w->numfogs = w->numMapFogs;
+	for ( int i = 0; i < w->numsurfaces; i++ )
+		w->surfaces[i].fogIndex = w->surfaces[i].mapFogIndex;
+}
+
 void RE_SetSkyLook( const float *tint, const vec3_t angles, const vec3_t shift ) {
 	tr.skyLookOn = (qboolean)( tint != NULL );
 	if ( !tint )
@@ -436,6 +569,43 @@ static void R_SkyLook( const refdef_t *fd ) {
 	}
 }
 
+void RE_SetSkyPortal( const vec3_t origin ) {
+	if ( !origin ) {
+		// the world's sky surfaces were left out for the portal's view: drawn again. A map's own
+		// 3D skybox turns this back on with its next view
+		if ( tr.portalSkyOn )
+			skyboxportal = 0;
+		tr.portalSkyOn = qfalse;
+		return;
+	}
+	tr.portalSkyOn = qtrue;
+	VectorCopy( origin, tr.portalSkyOrg );
+}
+
+// the client's sky portal before a world scene: the same view from its spot, as a 3D skybox's,
+// without the scene's entities, lights and polys, which are left for the world scene after it
+static void R_RenderPortalSky( const refdef_t *fd ) {
+	const int numEntities = r_numentities, numMini = r_numminientities, numDlights = r_numdlights, numPolys = r_numpolys;
+	refdef_t sky = *fd;
+
+	VectorCopy( tr.portalSkyOrg, sky.vieworg );
+	sky.rdflags |= RDF_SKYBOXPORTAL | RDF_DRAWSKYBOX;
+	sky.rdflags &= ~RDF_AUTOMAP;
+	// the snapshot's areas are the player's; from the spot, every area may be seen
+	memset( sky.areamask, 0, sizeof( sky.areamask ) );
+	r_numentities = r_firstSceneEntity;
+	r_numminientities = r_firstSceneMiniEntity;
+	r_numdlights = r_firstSceneDlight;
+	r_numpolys = r_firstScenePoly;
+	tr.inPortalSky = qtrue;
+	RE_RenderScene( &sky );
+	tr.inPortalSky = qfalse;
+	r_numentities = numEntities;
+	r_numminientities = numMini;
+	r_numdlights = numDlights;
+	r_numpolys = numPolys;
+}
+
 void RE_RenderScene( const refdef_t *fd ) {
 	viewParms_t		parms;
 	int				startTime;
@@ -454,6 +624,27 @@ void RE_RenderScene( const refdef_t *fd ) {
 
 	if (!tr.world && !( fd->rdflags & RDF_NOWORLDMODEL ) ) {
 		Com_Error (ERR_DROP, "R_RenderScene: NULL worldmodel");
+	}
+
+	// the client's sky portal: a map's own 3D skybox moved to its spot, else one drawn before each world scene
+	if ( !( fd->rdflags & RDF_NOWORLDMODEL ) && !tr.inPortalSky ) {
+		if ( fd->rdflags & RDF_SKYBOXPORTAL ) {
+			tr.portalSkyDrawn = qtrue;
+			if ( tr.portalSkyOn ) {
+				refdef_t sky = *fd;
+
+				VectorCopy( tr.portalSkyOrg, sky.vieworg );
+				memset( sky.areamask, 0, sizeof( sky.areamask ) );
+				tr.inPortalSky = qtrue;
+				RE_RenderScene( &sky );
+				tr.inPortalSky = qfalse;
+				return;
+			}
+		} else {
+			if ( tr.portalSkyOn && !tr.portalSkyDrawn )
+				R_RenderPortalSky( fd );
+			tr.portalSkyDrawn = qfalse;
+		}
 	}
 
 	memcpy( tr.refdef.text, fd->text, sizeof( tr.refdef.text ) );
@@ -508,8 +699,12 @@ void RE_RenderScene( const refdef_t *fd ) {
 		tr.refdef.dofFocus = tr.dofNext[0];
 		tr.refdef.dofRange = tr.dofNext[1];
 		tr.refdef.dofBlur = tr.dofNext[2];
+		tr.refdef.filterOn = tr.filterNextOn;
+		if ( tr.filterNextOn )
+			tr.refdef.filter = tr.filterNext;
 	} else {
 		tr.refdef.dofBlur = 0.0f;
+		tr.refdef.filterOn = qfalse;
 	}
 	R_SkyLook( fd );
 
@@ -550,7 +745,7 @@ void RE_RenderScene( const refdef_t *fd ) {
 
 	// Add the decals here because decals add polys and we need to ensure
 	// that the polys are added before the the renderer is prepared
-	if ( !(tr.refdef.rdflags & RDF_NOWORLDMODEL) )
+	if ( !(tr.refdef.rdflags & RDF_NOWORLDMODEL) && !tr.inPortalSky )
 	{
 		R_AddDecals ( );
 	}

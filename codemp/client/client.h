@@ -738,6 +738,14 @@ qboolean CL_NpcManager_FilterEntity( const refEntity_t *ent );
 void CL_NpcManager_Draw( void );
 
 //
+// cl_favorites.cpp: the managers' favorites, by list ("models", "effects", "shaders")
+//
+qboolean CL_Fav_Has( const char *list, const char *name );
+qboolean CL_Fav_Toggle( const char *list, const char *name );
+int CL_Fav_Count( const char *list );
+const char *CL_Fav_Star( qboolean on );
+
+//
 // cl_shadermanager.cpp
 //
 void CL_ShaderManager_Init( void );
@@ -764,6 +772,13 @@ void CL_ShaderManager_Draw( void );
 const char *CL_ShaderManager_SkinName( qhandle_t h );
 qboolean CL_ShaderManager_Camera( vec3_t origin, vec3_t angles );
 void CL_ShaderManager_AddEffect( qhandle_t shader, const vec3_t mins, const vec3_t maxs, float radius );
+// the Mine tab's player shaders, this player's and those others shared, each on their own
+// effects, sabers and shells only
+int CL_ShaderManager_Owner( const vec3_t org, int entNum );
+qhandle_t CL_ShaderManager_OwnerShader( int owner, qhandle_t shader );
+qhandle_t CL_ShaderManager_MineFor( qhandle_t shader, const vec3_t org, int entNum );
+const refEntity_t *CL_ShaderManager_MineEntity( const refEntity_t *ent, refEntity_t *copy );
+void CL_ShaderManager_MineHook( char **argv, int argc, const char *message );
 
 //
 // cl_effectmanager.cpp
@@ -797,7 +812,13 @@ void CL_MapEditor_Open( void );
 void CL_MapEditor_Close( void );
 qboolean CL_MapEditor_Active( void );
 void CL_MapEditor_OpenForStory( void );
-void CL_Storyteller_ChatLine( void );
+qboolean CL_Storyteller_ChatLine( void );
+qboolean CL_Storyteller_ServerPrint( const char *text );
+void CL_Storyteller_Hook( char **argv, int argc, const char *message );
+void CL_Storyteller_TriggerUsed( const char *name );
+const char *CL_MapEditor_AimedUseTrigger( void );
+void CL_MapEditor_PickForStory( int kind );
+void CL_Storyteller_TriggerPicked( const char *value );
 void CL_RpCinematic_AnimHook( char **argv, int argc );
 void CL_RpCinematic_SnapEntity( entityState_t *es );
 void CL_RpCinematic_SnapPlayer( playerState_t *ps );
@@ -827,7 +848,7 @@ void CL_RpHooks_Draw( void );
 void CL_RpHooks_DrawSubtitles( void );
 void CL_RpHooks_ChatSubtitle( void );
 // the features sent as cmd: hooks, which only players with this client see: off until turned on
-// in a tool's TOGGLE EXPERIMENTAL, for the session
+// in a tool's TOGGLE EXPERIMENTAL, for the session, or with rpexperimental, for good
 #define RP_EXPERIMENTAL_LABEL	"TOGGLE EXPERIMENTAL"
 #define RP_EXPERIMENTAL_WARNING	"These features are a work in progress. They should not be used on Temple, and can only be viewed by the people currently in-game with OpenJK-rpmod installed and up to date."
 #define RP_EXPERIMENTAL_OFF		"Experimental: turn it on with " RP_EXPERIMENTAL_LABEL

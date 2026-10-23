@@ -42,7 +42,18 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 // The Overlays tab sends RPMod's "rpshader overlay add/remove/list": a shader drawn
 // over everyone's screen. The Sky tab tints and turns the map's sky, and spins it
 // round, on this screen as it's changed; a 3D skybox's view is turned and moved
-// instead. Shared, it goes to everyone with this client in an rpnotify, cmd:sky.
+// instead. Shared, it goes to everyone with this client in an rpnotify, cmd:sky. A sky
+// portal shows the map seen from a spot in place of the sky: the map's own 3D skybox,
+// or a spot picked with the camera, kept per map in shadermanager/skyportals/<map>.txt.
+//
+// The Mine tab changes player shaders (force powers, sabers, shells) on this player's
+// own only, on this screen, with no command sent: someone else's force lightning stays
+// standard here, and everyone else sees this player's standard unless they change it too.
+// Whose an effect is: bolted to this player, or started nearer them than anyone else,
+// as force powers come out of the caster's hand; the same for sabers, shells and trails
+// cgame draws itself. They are kept in shadermanager/mine.txt and put back on every map.
+// Shared (cl_shaderShareMine), they go to everyone with this client through rpnotify,
+// cmd:mine, who draw them on this player's own the same way; see SHARED PLAYER SHADERS.
 
 #include <algorithm>
 #include <map>
@@ -83,6 +94,18 @@ extern IHeapAllocator *G2VertSpaceClient;
 
 #define SM_OVERLAY_ROWS		8
 #define SM_PORTAL_MS		1000	// a 3D skybox's view rendered this lately: the map has one
+#define SM_MINE_FILE		"shadermanager/mine.txt"
+#define SM_PORTAL_DIR		"shadermanager/skyportals"
+#define SM_PORTAL_ROWS		3
+#define SM_MINE_ROWS		7
+#define SM_MINE_REACH		96.0f	// what starts this close to the player, and nearer them than anyone else, is theirs
+#define SM_MINE_SELF		32.0f	// a player model this close to where the player is taken to be is them
+#define SM_SHARE_LEN		700		// a hook's player shaders, well inside what RPMod passes on
+#define SM_SHARE_WORD		32		// longer words go in pieces
+#define SM_SHARE_GAP_MS		400		// between hooks, for the server's flood protection
+#define SM_SHARE_START_MS	5000	// shared this long into a map
+#define SM_SHARE_JOIN_MS	4000	// and this long after someone joins
+#define SM_MAX_SHARED		64		// player shaders taken from one player
 
 typedef enum {
 	SM_HIT_NONE,
@@ -116,15 +139,30 @@ typedef enum {
 	SM_TAB_REMAPS,
 	SM_TAB_OVERLAYS,
 	SM_TAB_SKY,
+	SM_TAB_MINE,		// last: the storyteller opens the others by number
 	SM_NUM_TABS
 } smTab_t;
+
+// the Mine tab's groups of player shaders
+typedef enum {
+	SM_MINE_ALL,
+	SM_MINE_FORCE,
+	SM_MINE_SABERS,
+	SM_MINE_SHELLS,
+	SM_MINE_CHANGED,
+	SM_MINE_NUM_GROUPS
+} smMineGroup_t;
 
 typedef enum {
 	SM_FILTER_ALL,
 	SM_FILTER_TEXTURES,
 	SM_FILTER_MODELS,
-	SM_FILTER_GFX
+	SM_FILTER_GFX,
+	SM_FILTER_FAVES		// the starred ones
 } smFilter_t;
+
+#define SM_FAV_LIST			"shaders"
+#define SM_STAR_W			11.0f	// the favorite star a shader row starts with
 
 typedef enum {
 	SM_F_NONE,			// typing goes to the search box
@@ -212,7 +250,21 @@ typedef struct smSky_s {
 	float		spin;			// degrees a second, round the up axis
 	vec3_t		angles;			// turned this far: pitch, yaw, roll
 	vec3_t		shift;			// a 3D skybox's view moved this far
+	qboolean	portalOn;		// the map seen from portalOrg in place of the sky
+	vec3_t		portalOrg;
 } smSky_t;
+
+// a spot a sky portal can show the map from
+typedef struct smPortal_s {
+	vec3_t		org;
+	qboolean	map;			// the map's own 3D skybox, else a spot kept for it
+} smPortal_t;
+
+// a shader the player's own things draw with, for the Mine tab
+typedef struct smPlayerShader_s {
+	std::string	name;			// lowercase, no extension
+	int			group;			// smMineGroup_t
+} smPlayerShader_t;
 
 static struct {
 	qboolean	initialized;
@@ -280,7 +332,8 @@ static struct {
 	smHitKind_t	selKind;
 	char		selWhat[MAX_QPATH * 2];
 	std::vector<std::string> selShaders;
-	smList_t	selList;
+	smList_t	selList;				// its rows: selShaders, or with selFaves only the starred ones
+	qboolean	selFaves;
 	int			selSurf;			// map surface to outline, -1 for none
 	char		selBModel[MAX_QPATH];	// "*n" when that surface belongs to a brush entity
 	qboolean	selFx;					// an effect, in this box when it was picked
@@ -317,6 +370,35 @@ static struct {
 	qboolean	skySet;							// the renderer has a sky look to put back
 	int			portalTime;						// a 3D skybox's view last rendered
 	float		*drag;							// the slider the mouse holds
+	char		portalMap[MAX_QPATH];			// the map the portals were read for
+	std::vector<smPortal_t> portals;
+	smList_t	portalList;						// row 0 is none
+
+	// mine tab: player shaders changed on this screen only
+	qboolean	playerIndexed;
+	std::vector<smPlayerShader_t> playerShaders;
+	std::vector<int> mineView;
+	smList_t	mineList;
+	int			mineGroup;						// smMineGroup_t
+	qboolean	mineLoaded;						// the file was read
+	qboolean	mineApplied;					// on this cgame's shaders
+	std::vector<std::string> mineFrom, mineTo;	// by lowercase name
+	std::map<qhandle_t, qhandle_t> mineHandles;	// the same as the renderer's shaders
+	qhandle_t	liveMineFrom, liveMineTo;		// the Mine tab's live preview, on this player's own too
+	char		liveMineName[2][MAX_QPATH];
+	vec3_t		myOrg;							// where this player's model was last drawn
+	int			myOrgFrame;
+	std::set<qhandle_t> mapped;					// every shader someone's player shaders replace
+	// the player shaders others with this client shared, by client number
+	std::vector<std::string> otherFrom[MAX_CLIENTS], otherTo[MAX_CLIENTS];
+	std::map<qhandle_t, qhandle_t> otherHandles[MAX_CLIENTS];
+	// this player's, shared
+	std::vector<std::string> shareQueue;
+	int			shareAt;						// due then, 0 not
+	int			shareNextTime;
+	int			sharePlayers;					// players on the server, to see someone join
+	qboolean	shareWarned;
+	qboolean	experimentalBox;				// Shared clicked with experimental features off: the warning is up
 
 	// what was sent, for undo: the shader and what it was remapped to before
 	std::vector<std::string> undoShader, undoPrevious;
@@ -329,6 +411,7 @@ static struct {
 } sm;
 
 static cvar_t *cl_shaderCrosshair;
+static cvar_t *cl_shaderShareMine;
 
 static vec4_t smWhite	= { 1.0f, 1.0f, 1.0f, 1.0f };
 static vec4_t smPanel	= { 0.0f, 0.0f, 0.0f, 0.55f };
@@ -381,6 +464,393 @@ static void SM_NoteRemap( const char *oldShader, const char *newShader ) {
 		sm.remapFrom.push_back( from );
 		sm.remapTo.push_back( to );
 	}
+}
+
+// the player shaders changed on this screen only
+static int SM_MineIndex( const char *shader ) {
+	char key[MAX_QPATH];
+
+	if ( !shader || !shader[0] )
+		return -1;
+	SM_ShaderKey( shader, key, sizeof( key ) );
+	for ( size_t i = 0; i < sm.mineFrom.size(); i++ ) {
+		if ( sm.mineFrom[i] == key )
+			return (int)i;
+	}
+	return -1;
+}
+
+static const char *SM_MineTo( const char *shader ) {
+	const int i = SM_MineIndex( shader );
+
+	return i >= 0 ? sm.mineTo[i].c_str() : NULL;
+}
+
+static void SM_LoadMine( void ) {
+	char *buf, from[MAX_QPATH], to[MAX_QPATH];
+	const char *p, *token;
+
+	sm.mineLoaded = qtrue;
+	sm.mineFrom.clear();
+	sm.mineTo.clear();
+	if ( FS_ReadFile( SM_MINE_FILE, (void **)&buf ) <= 0 || !buf )
+		return;
+	p = buf;
+	COM_BeginParseSession( SM_MINE_FILE );
+	while ( 1 ) {
+		token = COM_ParseExt( &p, qtrue );
+		if ( !token[0] )
+			break;
+		SM_ShaderKey( token, from, sizeof( from ) );
+		token = COM_ParseExt( &p, qfalse );
+		if ( !token[0] )
+			continue;
+		SM_ShaderKey( token, to, sizeof( to ) );
+		if ( strcmp( from, to ) && SM_MineIndex( from ) < 0 ) {
+			sm.mineFrom.push_back( from );
+			sm.mineTo.push_back( to );
+		}
+	}
+	FS_FreeFile( buf );
+}
+
+static void SM_SaveMine( void ) {
+	std::string out = "// the shader manager's player shaders, changed on this screen only: original replacement\n";
+
+	for ( size_t i = 0; i < sm.mineFrom.size(); i++ )
+		out += sm.mineFrom[i] + " " + sm.mineTo[i] + "\n";
+	FS_WriteFile( SM_MINE_FILE, out.c_str(), (int)out.size() );
+}
+
+// player shaders as the renderer's handles: what cgame and the effects draw with
+static void SM_BuildHandles( const std::vector<std::string> &from, const std::vector<std::string> &to, std::map<qhandle_t, qhandle_t> &out ) {
+	out.clear();
+	for ( size_t i = 0; i < from.size(); i++ ) {
+		const qhandle_t f = re->RegisterShader( from[i].c_str() ), t = re->RegisterShader( to[i].c_str() );
+
+		if ( f > 0 && t > 0 && f != t )
+			out[f] = t;
+	}
+}
+
+// every shader someone's player shaders replace, to pass the rest by quickly
+static void SM_RebuildMapped( void ) {
+	std::map<qhandle_t, qhandle_t>::const_iterator it;
+
+	sm.mapped.clear();
+	for ( it = sm.mineHandles.begin(); it != sm.mineHandles.end(); ++it )
+		sm.mapped.insert( it->first );
+	for ( int c = 0; c < MAX_CLIENTS; c++ ) {
+		for ( it = sm.otherHandles[c].begin(); it != sm.otherHandles[c].end(); ++it )
+			sm.mapped.insert( it->first );
+	}
+	if ( sm.liveMineFrom )
+		sm.mapped.insert( sm.liveMineFrom );
+}
+
+static void SM_BuildMineHandles( void ) {
+	SM_BuildHandles( sm.mineFrom, sm.mineTo, sm.mineHandles );
+	SM_RebuildMapped();
+}
+
+// once cgame has registered its shaders: each map, and after a vid_restart
+static void SM_ApplyMine( void ) {
+	if ( !sm.mineLoaded )
+		SM_LoadMine();
+	sm.mineApplied = qtrue;
+	SM_BuildHandles( sm.mineFrom, sm.mineTo, sm.mineHandles );
+	for ( int c = 0; c < MAX_CLIENTS; c++ )
+		SM_BuildHandles( sm.otherFrom[c], sm.otherTo[c], sm.otherHandles[c] );
+	SM_RebuildMapped();
+	// the others with this client get them once the map is under way
+	if ( !sm.mineFrom.empty() )
+		sm.shareAt = cls.realtime + SM_SHARE_START_MS;
+}
+
+// the Mine tab's live preview: from drawn as to on this player's own; NULL for none
+static void SM_SetLiveMine( const char *from, const char *to ) {
+	if ( !from || !to ) {
+		if ( sm.liveMineFrom ) {
+			sm.liveMineFrom = sm.liveMineTo = 0;
+			SM_RebuildMapped();
+		}
+		sm.liveMineName[0][0] = sm.liveMineName[1][0] = '\0';
+		return;
+	}
+	if ( !Q_stricmp( from, sm.liveMineName[0] ) && !Q_stricmp( to, sm.liveMineName[1] ) )
+		return;
+	Q_strncpyz( sm.liveMineName[0], from, sizeof( sm.liveMineName[0] ) );
+	Q_strncpyz( sm.liveMineName[1], to, sizeof( sm.liveMineName[1] ) );
+	sm.liveMineFrom = re->RegisterShader( from );
+	sm.liveMineTo = re->RegisterShader( to );
+	if ( sm.liveMineFrom <= 0 || sm.liveMineTo <= 0 )
+		sm.liveMineFrom = sm.liveMineTo = 0;
+	SM_RebuildMapped();
+}
+
+// where this player is: their model as last drawn, else the snapshot carried ahead as cgame predicts
+static void SM_MyOrigin( vec3_t out ) {
+	float dt;
+
+	if ( sm.myOrgFrame >= cls.framecount - 1 ) {
+		VectorCopy( sm.myOrg, out );
+		return;
+	}
+	dt = Com_Clamp( 0.0f, 0.25f, ( cl.serverTime - cl.snap.serverTime + cl.snap.ping ) * 0.001f );
+	VectorMA( cl.snap.ps.origin, dt, cl.snap.ps.velocity, out );
+}
+
+// the player whose own what is at org, or bolted to entity entNum, is: the player entity, else
+// the player it started within reach of and nearer than any other player or NPC; -1 for none
+int CL_ShaderManager_Owner( const vec3_t org, int entNum ) {
+	vec3_t me;
+	float best = SM_MINE_REACH, dist;
+	int owner = -1;
+
+	if ( sm.mapped.empty() || !cl.snap.valid )
+		return -1;
+	if ( entNum >= 0 && entNum < ENTITYNUM_WORLD )
+		return entNum < MAX_CLIENTS ? entNum : -1;
+	if ( !org )
+		return -1;
+	// the player the view is of: this one where cgame predicts them, or the one followed
+	if ( cl.snap.ps.pm_type != PM_SPECTATOR ) {
+		if ( cl.snap.ps.clientNum == clc.clientNum )
+			SM_MyOrigin( me );
+		else
+			VectorCopy( cl.snap.ps.origin, me );
+		dist = Distance( org, me );
+		if ( dist < best ) {
+			best = dist;
+			owner = cl.snap.ps.clientNum;
+		}
+	}
+	for ( int i = 0; i < cl.snap.numEntities; i++ ) {
+		const entityState_t *es = &cl.parseEntities[( cl.snap.parseEntitiesNum + i ) & ( MAX_PARSE_ENTITIES - 1 )];
+		const qboolean player = (qboolean)( es->eType == ET_PLAYER && es->number < MAX_CLIENTS );
+
+		if ( es->number == cl.snap.ps.clientNum || ( !player && es->eType != ET_NPC ) )
+			continue;
+		dist = Distance( org, es->pos.trBase );
+		if ( dist < best ) {
+			best = dist;
+			owner = player ? es->number : -1;	// an NPC's is nobody's
+		}
+	}
+	return owner;
+}
+
+// a shader of a player's own: their player shader in its place, this player's own or one they shared
+qhandle_t CL_ShaderManager_OwnerShader( int owner, qhandle_t shader ) {
+	const std::map<qhandle_t, qhandle_t> *handles;
+	std::map<qhandle_t, qhandle_t>::const_iterator it;
+
+	if ( owner < 0 || owner >= MAX_CLIENTS || shader <= 0 )
+		return shader;
+	if ( owner == clc.clientNum ) {
+		if ( shader == sm.liveMineFrom )
+			return sm.liveMineTo;
+		handles = &sm.mineHandles;
+	} else {
+		handles = &sm.otherHandles[owner];
+	}
+	if ( handles->empty() )
+		return shader;
+	it = handles->find( shader );
+	return it == handles->end() ? shader : it->second;
+}
+
+// a shader cgame draws something at org with: the player shader of the player whose own it is
+qhandle_t CL_ShaderManager_MineFor( qhandle_t shader, const vec3_t org, int entNum ) {
+	if ( shader <= 0 || sm.mapped.find( shader ) == sm.mapped.end() )
+		return shader;
+	return CL_ShaderManager_OwnerShader( CL_ShaderManager_Owner( org, entNum ), shader );
+}
+
+// an entity cgame draws: each player's own sabers and shells with their player shaders.
+// This player's model, drawn where cgame predicts them, says where they are
+const refEntity_t *CL_ShaderManager_MineEntity( const refEntity_t *ent, refEntity_t *copy ) {
+	qhandle_t shader;
+
+	if ( sm.mapped.empty() )
+		return ent;
+	if ( ent->reType == RT_MODEL && ent->ghoul2 && cl.snap.valid && cl.snap.ps.clientNum == clc.clientNum ) {
+		vec3_t me;
+
+		SM_MyOrigin( me );
+		if ( ( ent->renderfx & RF_THIRD_PERSON ) || Distance( ent->origin, me ) < SM_MINE_SELF ) {
+			VectorCopy( ent->origin, sm.myOrg );
+			sm.myOrgFrame = cls.framecount;
+		}
+	}
+	shader = CL_ShaderManager_MineFor( ent->customShader, ent->origin, -1 );
+	if ( shader == ent->customShader )
+		return ent;
+	if ( copy != ent )
+		*copy = *ent;
+	copy->customShader = shader;
+	return copy;
+}
+
+/*
+===============================================================================
+
+SHARED PLAYER SHADERS
+
+Through RPMod's rpnotify, to everyone with this client: cmd:mine/<client>/<part>/<parts>:
+<shader>><shader>|..., the words split for the server and joined again; cmd:mine/<client>/clear.
+
+===============================================================================
+*/
+
+// a word, a space put in after each / and every SM_SHARE_WORD characters: RPMod chokes on long ones
+static void SM_AppendSplit( std::string &out, const char *word ) {
+	int run = 0;
+
+	for ( ; *word; word++ ) {
+		out += *word;
+		run++;
+		if ( word[1] && ( *word == '/' || run >= SM_SHARE_WORD ) ) {
+			out += ' ';
+			run = 0;
+		}
+	}
+}
+
+static void SM_QueueShare( const char *text ) {
+	sm.shareQueue.push_back( va( "rpnotify -1 1 %s", text ) );
+}
+
+// this player's player shaders, in as few hooks as fit
+static void SM_ShareMine( void ) {
+	std::vector<std::string> parts;
+	std::string part, piece;
+
+	if ( sm.mineFrom.empty() ) {
+		SM_QueueShare( va( "cmd:mine/%i/clear", clc.clientNum ) );
+		return;
+	}
+	for ( size_t i = 0; i < sm.mineFrom.size(); i++ ) {
+		piece.clear();
+		SM_AppendSplit( piece, ( sm.mineFrom[i] + ">" + sm.mineTo[i] ).c_str() );
+		if ( !part.empty() && part.size() + piece.size() + 3 > SM_SHARE_LEN ) {
+			parts.push_back( part );
+			part.clear();
+		}
+		if ( !part.empty() )
+			part += " | ";
+		part += piece;
+	}
+	parts.push_back( part );
+	for ( size_t i = 0; i < parts.size(); i++ )
+		SM_QueueShare( va( "cmd:mine/%i/%i/%i: %s", clc.clientNum, (int)i + 1, (int)parts.size(), parts[i].c_str() ) );
+}
+
+static qboolean SM_ShareOn( void ) {
+	return (qboolean)( cl_shaderShareMine && cl_shaderShareMine->integer );
+}
+
+// once a frame: shared when due, a hook at a time so the server's flood protection lets them by;
+// someone joining gets them a little later, and a player gone takes theirs with them
+static void SM_MineFrame( void ) {
+	int players = 0;
+
+	if ( cls.state != CA_ACTIVE )
+		return;
+	for ( int c = 0; c < MAX_CLIENTS; c++ ) {
+		const char *info = cl.gameState.stringData + cl.gameState.stringOffsets[CS_PLAYERS + c];
+
+		if ( info[0] ) {
+			players++;
+		} else if ( !sm.otherFrom[c].empty() ) {
+			sm.otherFrom[c].clear();
+			sm.otherTo[c].clear();
+			sm.otherHandles[c].clear();
+			SM_RebuildMapped();
+		}
+	}
+	if ( players > sm.sharePlayers && sm.sharePlayers && !sm.mineFrom.empty() )
+		sm.shareAt = cls.realtime + SM_SHARE_JOIN_MS;
+	sm.sharePlayers = players;
+
+	if ( sm.shareAt && cls.realtime >= sm.shareAt ) {
+		sm.shareAt = 0;
+		if ( !SM_ShareOn() )
+			Com_DPrintf( "Shader manager: player shaders not shared: Shared is off in the Mine tab\n" );
+		if ( SM_ShareOn() ) {
+			if ( CL_RpHooks_Experimental() )
+				SM_ShareMine();
+			else if ( !sm.shareWarned ) {
+				sm.shareWarned = qtrue;
+				Com_Printf( S_COLOR_YELLOW "Shader manager: your player shaders aren't shared: TOGGLE EXPERIMENTAL in the npcmanager first\n" );
+			}
+		}
+	}
+	if ( !sm.shareQueue.empty() && cls.realtime >= sm.shareNextTime ) {
+		Com_Printf( S_COLOR_GREEN "Shader manager: " S_COLOR_WHITE "sharing your player shaders: %s\n", sm.shareQueue.front().c_str() );
+		CL_AddReliableCommand( sm.shareQueue.front().c_str(), qfalse );
+		sm.shareQueue.erase( sm.shareQueue.begin() );
+		sm.shareNextTime = cls.realtime + SM_SHARE_GAP_MS;
+	}
+}
+
+// a shader name as a player sent it: a path, nothing that could be read another way
+static qboolean SM_SharedName( const char *name ) {
+	if ( !name[0] || strlen( name ) >= MAX_QPATH )
+		return qfalse;
+	for ( ; *name; name++ ) {
+		if ( !isalnum( (unsigned char)*name ) && !strchr( "_-./", *name ) )
+			return qfalse;
+	}
+	return qtrue;
+}
+
+// cmd:mine/<client>/<part>/<parts>: <shader>><shader>|...; cmd:mine/<client>/clear
+void CL_ShaderManager_MineHook( char **argv, int argc, const char *message ) {
+	char buf[MAX_STRING_CHARS], *pair, *next, *to, key[MAX_QPATH];
+	int client, len = 0;
+
+	if ( argc < 2 )
+		return;
+	client = atoi( argv[0] );
+	if ( client < 0 || client >= MAX_CLIENTS || client == clc.clientNum )
+		return;
+	if ( !Q_stricmp( argv[1], "clear" ) || atoi( argv[1] ) <= 1 ) {
+		sm.otherFrom[client].clear();
+		sm.otherTo[client].clear();
+	}
+	if ( Q_stricmp( argv[1], "clear" ) ) {
+		// the words came split for the server: the spaces go again
+		for ( const char *c = message; *c && len < (int)sizeof( buf ) - 1; c++ ) {
+			if ( *c != ' ' )
+				buf[len++] = *c;
+		}
+		buf[len] = '\0';
+		for ( pair = buf; pair && *pair; pair = next ) {
+			next = strchr( pair, '|' );
+			if ( next )
+				*next++ = '\0';
+			to = strchr( pair, '>' );
+			if ( !to )
+				continue;
+			*to++ = '\0';
+			if ( !SM_SharedName( pair ) || !SM_SharedName( to ) || sm.otherFrom[client].size() >= SM_MAX_SHARED )
+				continue;
+			SM_ShaderKey( pair, key, sizeof( key ) );
+			sm.otherFrom[client].push_back( key );
+			SM_ShaderKey( to, key, sizeof( key ) );
+			sm.otherTo[client].push_back( key );
+		}
+	}
+	Com_Printf( S_COLOR_GREEN "Shader manager: " S_COLOR_WHITE "%s shared %i player shader%s\n",
+		Info_ValueForKey( cl.gameState.stringData + cl.gameState.stringOffsets[CS_PLAYERS + client], "n" ),
+		(int)sm.otherFrom[client].size(), sm.otherFrom[client].size() == 1 ? "" : "s" );
+	// the renderer's handles now if cgame is up, else once it is
+	if ( sm.mineApplied )
+		SM_BuildHandles( sm.otherFrom[client], sm.otherTo[client], sm.otherHandles[client] );
+	else
+		sm.otherHandles[client].clear();
+	SM_RebuildMapped();
 }
 
 qhandle_t CL_ShaderManager_RegisterModel( const char *name ) {
@@ -1427,13 +1897,13 @@ static qboolean SM_RemapAllowed( const char *from, const char *to ) {
 static const char *SM_SelectedOriginal( void );
 
 static void SM_RebuildShaderView( void ) {
-	static const char *prefixes[] = { "", "textures/", "models/", "gfx/" };
+	static const char *prefixes[] = { "", "textures/", "models/", "gfx/", "" };
 	const char *search = sm.fields[SM_F_SEARCH], *prefix = prefixes[sm.filter];
 	int prefixLen = strlen( prefix ), oldSel = -1;
 
 	if ( sm.shaderList.sel >= 0 && sm.shaderList.sel < (int)sm.shaderView.size() )
 		oldSel = sm.shaderView[sm.shaderList.sel];
-	sm.viewSky = SM_IsSky( SM_SelectedOriginal() );
+	sm.viewSky = (qboolean)( sm.tab != SM_TAB_MINE && SM_IsSky( SM_SelectedOriginal() ) );
 	sm.shaderView.clear();
 	for ( size_t i = 0; i < sm.shaderNames.size(); i++ ) {
 		const char *name = sm.shaderNames[i].c_str();
@@ -1441,6 +1911,8 @@ static void SM_RebuildShaderView( void ) {
 		if ( prefixLen && Q_stricmpn( name, prefix, prefixLen ) )
 			continue;
 		if ( sm.viewSky && !SM_IsSky( name ) )
+			continue;
+		if ( sm.filter == SM_FILTER_FAVES && !CL_Fav_Has( SM_FAV_LIST, name ) )
 			continue;
 		if ( SM_ContainsNoCase( name, search ) )
 			sm.shaderView.push_back( (int)i );
@@ -1510,10 +1982,36 @@ static smField_t SM_TypingField( void ) {
 	return sm.typingPath && sm.tab == SM_TAB_OBJECT ? SM_F_PATH : SM_F_SEARCH;
 }
 
-static const char *SM_SelectedOriginal( void ) {
-	if ( !sm.haveSel || sm.selList.sel < 0 || sm.selList.sel >= (int)sm.selShaders.size() )
+// the shaders on what was clicked as listed: all, or with selFaves only the starred ones
+static int SM_SelCount( void ) {
+	int count = 0;
+
+	if ( !sm.selFaves )
+		return (int)sm.selShaders.size();
+	for ( size_t i = 0; i < sm.selShaders.size(); i++ ) {
+		if ( CL_Fav_Has( SM_FAV_LIST, sm.selShaders[i].c_str() ) )
+			count++;
+	}
+	return count;
+}
+
+// the shader on a row of that list, NULL past its end
+static const char *SM_SelShader( int row ) {
+	if ( row < 0 )
 		return NULL;
-	return sm.selShaders[sm.selList.sel].c_str();
+	for ( size_t i = 0; i < sm.selShaders.size(); i++ ) {
+		if ( sm.selFaves && !CL_Fav_Has( SM_FAV_LIST, sm.selShaders[i].c_str() ) )
+			continue;
+		if ( !row-- )
+			return sm.selShaders[i].c_str();
+	}
+	return NULL;
+}
+
+static const char *SM_SelectedOriginal( void ) {
+	if ( !sm.haveSel )
+		return NULL;
+	return SM_SelShader( sm.selList.sel );
 }
 
 // a 2D handle to preview a shader by, registered the first time it is shown
@@ -1664,6 +2162,7 @@ static void SM_SelectShader( const char *shader ) {
 	sm.selShaders.clear();
 	sm.selShaders.push_back( shader );
 	sm.selList.sel = sm.selList.scroll = 0;
+	sm.selFaves = qfalse;	// the one asked for shows, starred or not
 	sm.selSurf = -1;
 	sm.selBModel[0] = '\0';
 	sm.selFx = qfalse;
@@ -1691,9 +2190,16 @@ static void SM_EnterCamera( void ) {
 	SM_ReleaseKeys();
 }
 
+static void SM_BuildPlayerShaders( void );
+static void SM_RebuildMineView( void );
+
 static void SM_EnterEdit( smTab_t tab ) {
 	if ( !sm.indexed )
 		SM_BuildIndex();
+	if ( !sm.playerIndexed ) {
+		SM_BuildPlayerShaders();
+		SM_RebuildMineView();
+	}
 	sm.state = SM_EDIT;
 	sm.tab = tab;
 	sm.focus = SM_F_NONE;
@@ -1745,6 +2251,7 @@ void CL_ShaderManager_Close( void ) {
 	if ( sm.state == SM_OFF )
 		return;
 	SM_ClearLive();
+	SM_SetLiveMine( NULL, NULL );
 	sm.state = SM_OFF;
 	SM_ReleaseKeys();
 	Key_SetCatcher( Key_GetCatcher() & ~KEYCATCH_SHADERMANAGER );
@@ -1797,6 +2304,7 @@ static int SM_ShaderRows( void ) {
 }
 
 static void SM_AddOverlay( void );
+static void SM_MineEnter( void );
 
 static void SM_EditKey( int key ) {
 	smList_t *list;
@@ -1828,6 +2336,8 @@ static void SM_EditKey( int key ) {
 			SM_SendRemap( SM_SelectedOriginal(), SM_HighlightedShader(), qtrue );
 		else if ( sm.tab == SM_TAB_OVERLAYS )
 			SM_AddOverlay();
+		else if ( sm.tab == SM_TAB_MINE )
+			SM_MineEnter();
 		return;
 	case A_BACKSPACE:
 		len = strlen( sm.fields[f] );
@@ -1854,10 +2364,10 @@ static void SM_EditKey( int key ) {
 		break;
 	}
 
-	if ( sm.tab == SM_TAB_OBJECT ) {
+	if ( sm.tab == SM_TAB_OBJECT || sm.tab == SM_TAB_MINE ) {
 		list = &sm.shaderList;
 		count = (int)sm.shaderView.size();
-		visible = SM_ShaderRows();
+		visible = sm.tab == SM_TAB_MINE ? ( sm.showPreview ? 8 : 14 ) : SM_ShaderRows();
 	} else if ( sm.tab == SM_TAB_REMAPS ) {
 		list = &sm.remapList;
 		count = (int)sm.remapFrom.size();
@@ -1990,6 +2500,7 @@ void CL_ShaderManager_Frame( void ) {
 	if ( !( Key_GetCatcher() & KEYCATCH_SHADERMANAGER ) ) {
 		// something else cleared the catchers
 		SM_ClearLive();
+		SM_SetLiveMine( NULL, NULL );
 		sm.state = SM_OFF;
 		SM_ReleaseKeys();
 		return;
@@ -2545,17 +3056,45 @@ static int SM_List( smList_t *list, int count, float x, float y, float w, int ro
 	return clicked;
 }
 
-static void SM_DrawSelRow( int row, float x, float y, float w ) {
-	const char *shader = sm.selShaders[row].c_str(), *remap = SM_RemappedTo( shader );
+// the star a shader row starts with: click it for a favorite
+static void SM_DrawStar( float x, float y, const char *shader ) {
+	SM_Text( x, y, CL_Fav_Star( CL_Fav_Has( SM_FAV_LIST, shader ) ), smWhite );
+}
 
+static void SM_DrawSelRow( int row, float x, float y, float w ) {
+	const char *shader = SM_SelShader( row ), *remap;
+
+	if ( !shader )
+		return;
+	remap = SM_RemappedTo( shader );
+	SM_DrawStar( x, y, shader );
 	if ( remap )
-		SM_TextClipped( x, y, w, va( "%s " S_COLOR_CYAN "-> %s", shader, remap ), smWhite );
+		SM_TextClipped( x + SM_STAR_W, y, w - SM_STAR_W, va( "%s " S_COLOR_CYAN "-> %s", shader, remap ), smWhite );
 	else
-		SM_TextClipped( x, y, w, shader, smWhite );
+		SM_TextClipped( x + SM_STAR_W, y, w - SM_STAR_W, shader, smWhite );
 }
 
 static void SM_DrawShaderRow( int row, float x, float y, float w ) {
-	SM_TextClipped( x, y, w, sm.shaderNames[sm.shaderView[row]].c_str(), smWhite );
+	const char *shader = sm.shaderNames[sm.shaderView[row]].c_str();
+
+	SM_DrawStar( x, y, shader );
+	SM_TextClipped( x + SM_STAR_W, y, w - SM_STAR_W, shader, smWhite );
+}
+
+// a row's star clicked: that shader a favorite, or not any more. The lists showing only the
+// starred ones are made again; returns whether it was the star
+static qboolean SM_StarClicked( int clicked, float x, const char *shader ) {
+	qboolean on;
+
+	if ( clicked < 0 || !shader || sm.clickX >= x + 4 + SM_STAR_W )
+		return qfalse;
+	on = CL_Fav_Toggle( SM_FAV_LIST, shader );
+	SM_SetStatus( va( on ? "Favorite: %s" : "No longer a favorite: %s", shader ) );
+	if ( sm.filter == SM_FILTER_FAVES )
+		SM_RebuildShaderView();
+	if ( sm.selFaves )
+		sm.selList.sel = Com_Clampi( 0, Q_max( SM_SelCount() - 1, 0 ), sm.selList.sel );
+	return qtrue;
 }
 
 static void SM_DrawRemapRow( int row, float x, float y, float w ) {
@@ -2705,6 +3244,9 @@ static void SM_DrawEffects( void ) {
 		SM_DrawFxBox( sm.selFxMins, sm.selFxMaxs, selColor, 1.5f );
 }
 
+static qboolean SM_IsPlayerShader( const char *name );
+static void SM_MineSelect( const char *shader );
+
 static void SM_DrawObjectTab( float x, float y, float w ) {
 	const char *original, *remap, *replacement;
 	int rows = SM_ShaderRows(), clicked;
@@ -2712,9 +3254,22 @@ static void SM_DrawObjectTab( float x, float y, float w ) {
 	SM_TextClipped( x, y, w, va( S_COLOR_GREY "%s", sm.haveSel ? sm.selWhat : "Nothing selected: click something in the view" ), smWhite );
 	y += 14;
 	SM_Text( x, y, "Shaders on it", smDim );
-	y += 12;
+	// only the starred ones, or all
+	if ( SM_Button( x + w - 52, y - 3, 52, "Faves", sm.selFaves, qtrue ) ) {
+		sm.selFaves = (qboolean)!sm.selFaves;
+		sm.selList.sel = sm.selList.scroll = 0;
+		SM_RebuildShaderView();
+	}
+	y += 14;
 	if ( sm.haveSel ) {
-		SM_List( &sm.selList, (int)sm.selShaders.size(), x, y, w, 5, SM_DrawSelRow );
+		const int selRows = SM_SelCount();
+		const int before = sm.selList.sel;
+		const int clickedSel = SM_List( &sm.selList, selRows, x, y, w, 5, SM_DrawSelRow );
+
+		if ( clickedSel >= 0 && SM_StarClicked( clickedSel, x, SM_SelShader( clickedSel ) ) )
+			sm.selList.sel = Com_Clampi( 0, Q_max( SM_SelCount() - 1, 0 ), before );
+		if ( !selRows )
+			SM_Text( x + 4, y + 1, sm.selFaves ? "No favorites on it: Faves shows all again" : "None", smDim );
 	} else {
 		SM_Box( x, y, w, 5 * SM_ROW_H, smPanelLight );
 	}
@@ -2726,6 +3281,11 @@ static void SM_DrawObjectTab( float x, float y, float w ) {
 		SM_TextClipped( x, y, w - 84, remap ? va( S_COLOR_CYAN "Now remapped to %s", remap ) : S_COLOR_GREY "Not remapped", smWhite );
 		if ( SM_Button( x + w - 80, y - 2, 80, "Sky look...", qfalse, qtrue ) )
 			sm.tab = SM_TAB_SKY;
+	} else if ( SM_IsPlayerShader( original ) ) {
+		// a player shader: on this screen only, in the Mine tab
+		SM_TextClipped( x, y, w - 84, remap ? va( S_COLOR_CYAN "Now remapped to %s", remap ) : S_COLOR_GREY "Not remapped", smWhite );
+		if ( SM_Button( x + w - 80, y - 2, 80, "Only mine...", qfalse, qtrue ) )
+			SM_MineSelect( original );
 	} else {
 		SM_TextClipped( x, y, w, remap ? va( S_COLOR_CYAN "Now remapped to %s", remap ) : original ? S_COLOR_GREY "Not remapped" : "", smWhite );
 	}
@@ -2734,15 +3294,15 @@ static void SM_DrawObjectTab( float x, float y, float w ) {
 	SM_Text( x, y + 2, "With", smDim );
 	{
 		// the list, filtered by where the shaders are, or a path typed in; as wide as their labels, from the right
-		static const char *labels[] = { "All", "textures", "models", "gfx", "Path..." };
-		float widths[5], bx = x + w + 2;
+		static const char *labels[] = { "All", "textures", "models", "gfx", "Faves", "Path..." };
+		float widths[6], bx = x + w + 2;
 
-		for ( int i = 4; i >= 0; i-- ) {
+		for ( int i = 5; i >= 0; i-- ) {
 			widths[i] = SM_TextWidth( labels[i] ) + 8;
 			bx -= widths[i] + 2;
 		}
-		for ( int i = 0; i < 5; bx += widths[i] + 2, i++ ) {
-			const qboolean path = (qboolean)( i == 4 );
+		for ( int i = 0; i < 6; bx += widths[i] + 2, i++ ) {
+			const qboolean path = (qboolean)( i == 5 );
 
 			if ( !SM_Button( bx, y, widths[i], labels[i], path ? sm.typingPath : (qboolean)( !sm.typingPath && sm.filter == i ), qtrue ) )
 				continue;
@@ -2786,9 +3346,11 @@ static void SM_DrawObjectTab( float x, float y, float w ) {
 			SM_Field( SM_F_SEARCH, x, y, w, va( "Type to search %i shaders", (int)sm.shaderNames.size() ) );
 		y += 18;
 		clicked = SM_List( &sm.shaderList, (int)sm.shaderView.size(), x, y, w, rows, SM_DrawShaderRow );
+		if ( clicked >= 0 && clicked < (int)sm.shaderView.size() )
+			SM_StarClicked( clicked, x, sm.shaderNames[sm.shaderView[clicked]].c_str() );
 		if ( sm.shaderView.empty() )
-			SM_Text( x + 4, y + 1, sm.viewSky ? "No sky shaders match" : "No shaders match", smDim );
-		(void)clicked;
+			SM_Text( x + 4, y + 1, sm.filter == SM_FILTER_FAVES ? ( sm.viewSky ? "No favorite skies: click the * by one" : "No favorites: click the * by a shader" )
+				: sm.viewSky ? "No sky shaders match" : "No shaders match", smDim );
 	}
 	y += rows * SM_ROW_H + 4;
 	replacement = SM_HighlightedShader();
@@ -3007,7 +3569,15 @@ static qboolean SM_SkyAltered( const smSky_t *sky ) {
 void CL_ShaderManager_SkyLook( void ) {
 	vec3_t tint, angles;
 
-	if ( !re || !re->ext.SetSkyLook )
+	if ( !re )
+		return;
+	// the player shaders, once cgame has registered its shaders, and shared as they're due
+	if ( !sm.mineApplied && cls.cgameStarted )
+		SM_ApplyMine();
+	SM_MineFrame();
+	if ( re->ext.SetSkyPortal )
+		re->ext.SetSkyPortal( sm.sky.portalOn ? sm.sky.portalOrg : NULL );
+	if ( !re->ext.SetSkyLook )
 		return;
 	if ( !SM_SkyAltered( &sm.sky ) ) {
 		if ( sm.skySet )
@@ -3022,7 +3592,7 @@ void CL_ShaderManager_SkyLook( void ) {
 	sm.skySet = qtrue;
 }
 
-// cmd:sky/<r g b>/<spin>/<pitch yaw roll>/<x y z>: the sky look an admin shared; cmd:sky/off
+// cmd:sky/<r g b>/<spin>/<pitch yaw roll>/<x y z>[/<portal x y z>]: the sky look an admin shared; cmd:sky/off
 void CL_ShaderManager_SkyHook( char **argv, int argc ) {
 	smSky_t sky;
 
@@ -3035,6 +3605,8 @@ void CL_ShaderManager_SkyHook( char **argv, int argc ) {
 			sscanf( argv[2], "%f %f %f", &sky.angles[0], &sky.angles[1], &sky.angles[2] );
 		if ( argc >= 4 )
 			sscanf( argv[3], "%f %f %f", &sky.shift[0], &sky.shift[1], &sky.shift[2] );
+		if ( argc >= 5 && sscanf( argv[4], "%f %f %f", &sky.portalOrg[0], &sky.portalOrg[1], &sky.portalOrg[2] ) == 3 )
+			sky.portalOn = qtrue;
 		for ( int i = 0; i < 3; i++ )
 			sky.tint[i] = Com_Clamp( 0.0f, 255.0f, sky.tint[i] );
 	}
@@ -3077,8 +3649,10 @@ static const char *SM_MapSky( void ) {
 	return NULL;
 }
 
+static float SM_DrawPortals( float x, float y, float w, qboolean mapPortal );
+
 static void SM_DrawSkyTab( float x, float y, float w ) {
-	const qboolean portal = (qboolean)( sm.portalTime && cls.realtime - sm.portalTime < SM_PORTAL_MS );
+	qboolean portal = (qboolean)( sm.portalTime && cls.realtime - sm.portalTime < SM_PORTAL_MS );
 	const qboolean renderer = (qboolean)( re->ext.SetSkyLook != NULL );
 	const char *sky = SM_MapSky(), *remap = sky ? SM_RemappedTo( sky ) : NULL;
 	vec4_t swatch;
@@ -3087,7 +3661,8 @@ static void SM_DrawSkyTab( float x, float y, float w ) {
 	SM_TextClipped( x, y, w, sky ? va( S_COLOR_GREY "Sky: " S_COLOR_WHITE "%s%s%s", sky, remap ? S_COLOR_CYAN " -> " : "", remap ? remap : "" )
 		: S_COLOR_GREY "No sky shader found in this map", smWhite );
 	y += 12;
-	SM_TextClipped( x, y, w, portal ? S_COLOR_GREY "A 3D skybox: its whole view is turned and moved"
+	SM_TextClipped( x, y, w, sm.sky.portalOn ? S_COLOR_GREY "A sky portal: its whole view is turned and moved"
+		: portal ? S_COLOR_GREY "A 3D skybox: its whole view is turned and moved"
 		: S_COLOR_GREY "Shown on your screen as you change it", smWhite );
 	y += 18;
 	if ( !renderer ) {
@@ -3117,7 +3692,10 @@ static void SM_DrawSkyTab( float x, float y, float w ) {
 	SM_Slider( x, y + 34, w, "Roll", &sm.sky.angles[ROLL], -180, 180, 1, "%.0f", qtrue );
 	y += 56;
 
-	SM_Text( x, y, portal ? "Move the 3D skybox" : S_COLOR_GREY "Move: only a map with a 3D skybox", smWhite );
+	y = SM_DrawPortals( x, y, w, portal );
+
+	portal = (qboolean)( portal || sm.sky.portalOn );
+	SM_Text( x, y, portal ? ( sm.sky.portalOn ? "Move the sky portal" : "Move the 3D skybox" ) : S_COLOR_GREY "Move: only a 3D skybox or sky portal", smWhite );
 	y += 13;
 	SM_Slider( x, y, w, "X", &sm.sky.shift[0], -2048, 2048, 8, "%.0f", portal );
 	SM_Slider( x, y + 17, w, "Y", &sm.sky.shift[1], -2048, 2048, 8, "%.0f", portal );
@@ -3132,8 +3710,9 @@ static void SM_DrawSkyTab( float x, float y, float w ) {
 		else if ( !SM_SkyAltered( &sm.sky ) )
 			SM_Send( "rpnotify -1 1 cmd:sky/off" );
 		else
-			SM_Send( va( "rpnotify -1 1 cmd:sky/%g %g %g/%g/%g %g %g/%g %g %g", sm.sky.tint[0], sm.sky.tint[1], sm.sky.tint[2], sm.sky.spin,
-				sm.sky.angles[0], sm.sky.angles[1], sm.sky.angles[2], sm.sky.shift[0], sm.sky.shift[1], sm.sky.shift[2] ) );
+			SM_Send( va( "rpnotify -1 1 cmd:sky/%g %g %g/%g/%g %g %g/%g %g %g%s", sm.sky.tint[0], sm.sky.tint[1], sm.sky.tint[2], sm.sky.spin,
+				sm.sky.angles[0], sm.sky.angles[1], sm.sky.angles[2], sm.sky.shift[0], sm.sky.shift[1], sm.sky.shift[2],
+				sm.sky.portalOn ? va( "/%g %g %g", sm.sky.portalOrg[0], sm.sky.portalOrg[1], sm.sky.portalOrg[2] ) : "" ) );
 	}
 	if ( SM_Button( x + 164, y, w - 164, "Reset for all", qfalse, qtrue ) ) {
 		if ( !CL_RpHooks_Experimental() ) {
@@ -3144,19 +3723,538 @@ static void SM_DrawSkyTab( float x, float y, float w ) {
 		}
 	}
 	y += 22;
-	SM_TextClipped( x, y, w, S_COLOR_GREY "Drag a bar, or turn the wheel over it. Shared, it", smWhite );
-	SM_TextClipped( x, y + 12, w, S_COLOR_GREY "shows for everyone with this client, until the map", smWhite );
-	SM_TextClipped( x, y + 24, w, S_COLOR_GREY "changes; those who join later don't get it.", smWhite );
+	SM_TextClipped( x, y, w, S_COLOR_GREY "Shared, it shows for everyone with this client until", smWhite );
+	SM_TextClipped( x, y + 12, w, S_COLOR_GREY "the map changes; those who join later don't get it.", smWhite );
+}
+
+/*
+===============================================================================
+
+SKY PORTALS
+
+===============================================================================
+*/
+
+// "maps/ffa3.bsp" as "ffa3"
+static void SM_MapBase( char *out, int size ) {
+	COM_StripExtension( COM_SkipPath( cl.mapname ), out, size );
+}
+
+static const char *SM_PortalFile( void ) {
+	char base[MAX_QPATH];
+
+	SM_MapBase( base, sizeof( base ) );
+	return va( SM_PORTAL_DIR "/%s.txt", base );
+}
+
+// the map's own 3D skyboxes, from its entities, and the spots kept for it
+static void SM_LoadPortals( void ) {
+	char base[MAX_QPATH], key[MAX_TOKEN_CHARS], classname[MAX_QPATH], origin[MAX_QPATH], *buf;
+	const char *p, *token;
+	smPortal_t portal;
+
+	SM_MapBase( base, sizeof( base ) );
+	if ( !Q_stricmp( base, sm.portalMap ) )
+		return;
+	Q_strncpyz( sm.portalMap, base, sizeof( sm.portalMap ) );
+	sm.portals.clear();
+	sm.portalList.sel = sm.portalList.scroll = 0;
+
+	p = CM_EntityString();
+	COM_BeginParseSession( "skyportals" );
+	while ( p ) {
+		token = COM_ParseExt( &p, qtrue );
+		if ( !token[0] )
+			break;
+		if ( strcmp( token, "{" ) )
+			continue;
+		classname[0] = origin[0] = '\0';
+		while ( 1 ) {
+			token = COM_ParseExt( &p, qtrue );
+			if ( !token[0] || !strcmp( token, "}" ) )
+				break;
+			Q_strncpyz( key, token, sizeof( key ) );
+			token = COM_ParseExt( &p, qtrue );
+			if ( !Q_stricmp( key, "classname" ) )
+				Q_strncpyz( classname, token, sizeof( classname ) );
+			else if ( !Q_stricmp( key, "origin" ) )
+				Q_strncpyz( origin, token, sizeof( origin ) );
+		}
+		if ( !Q_stricmp( classname, "misc_skyportal" ) && sscanf( origin, "%f %f %f", &portal.org[0], &portal.org[1], &portal.org[2] ) == 3 ) {
+			portal.map = qtrue;
+			sm.portals.push_back( portal );
+		}
+	}
+
+	if ( FS_ReadFile( SM_PortalFile(), (void **)&buf ) <= 0 || !buf )
+		return;
+	p = buf;
+	COM_BeginParseSession( SM_PortalFile() );
+	while ( 1 ) {
+		int i;
+
+		for ( i = 0; i < 3; i++ ) {
+			token = COM_ParseExt( &p, qtrue );
+			if ( !token[0] )
+				break;
+			portal.org[i] = (float)atof( token );
+		}
+		if ( i < 3 )
+			break;
+		portal.map = qfalse;
+		sm.portals.push_back( portal );
+	}
+	FS_FreeFile( buf );
+}
+
+static void SM_SavePortals( void ) {
+	std::string out = "// the shader manager's sky portal spots for this map: x y z\n";
+
+	for ( size_t i = 0; i < sm.portals.size(); i++ ) {
+		if ( !sm.portals[i].map )
+			out += va( "%g %g %g\n", sm.portals[i].org[0], sm.portals[i].org[1], sm.portals[i].org[2] );
+	}
+	FS_WriteFile( SM_PortalFile(), out.c_str(), (int)out.size() );
+}
+
+static qboolean SM_PortalShown( int i ) {
+	return (qboolean)( sm.sky.portalOn && VectorCompare( sm.portals[i].org, sm.sky.portalOrg ) );
+}
+
+static void SM_DrawPortalRow( int row, float x, float y, float w ) {
+	const smPortal_t *portal;
+	int spot = 0;
+
+	if ( !row ) {
+		SM_TextClipped( x, y, w, va( "%sNone: the sky as the map has it", sm.sky.portalOn ? "" : S_COLOR_GREEN "> " S_COLOR_WHITE ), smWhite );
+		return;
+	}
+	portal = &sm.portals[row - 1];
+	for ( int i = 0; i < row - 1; i++ ) {
+		if ( !sm.portals[i].map )
+			spot++;
+	}
+	SM_TextClipped( x, y, w, va( "%s%s " S_COLOR_GREY "(%.0f %.0f %.0f)", SM_PortalShown( row - 1 ) ? S_COLOR_GREEN "> " S_COLOR_WHITE : "",
+		portal->map ? "The map's 3D skybox" : va( "Spot %i", spot + 1 ), portal->org[0], portal->org[1], portal->org[2] ), smWhite );
+}
+
+// the sky portal section of the sky tab; returns where the next one goes
+static float SM_DrawPortals( float x, float y, float w, qboolean mapPortal ) {
+	const int count = (int)sm.portals.size() + 1;
+	int clicked, sel;
+
+	SM_LoadPortals();
+	SM_Text( x, y, "Sky portal", smWhite );
+	SM_TextClipped( x + 58, y, w - 58, S_COLOR_GREY "the map seen from a spot, as the sky", smWhite );
+	y += 13;
+	clicked = SM_List( &sm.portalList, count, x, y, w, SM_PORTAL_ROWS, SM_DrawPortalRow );
+	if ( clicked == 0 ) {
+		sm.sky.portalOn = qfalse;
+	} else if ( clicked > 0 ) {
+		sm.sky.portalOn = qtrue;
+		VectorCopy( sm.portals[clicked - 1].org, sm.sky.portalOrg );
+	}
+	y += SM_PORTAL_ROWS * SM_ROW_H + 3;
+	sel = sm.portalList.sel - 1;
+	if ( sel >= (int)sm.portals.size() )
+		sel = -1;
+
+	// the camera's spot, kept for this map and shown
+	if ( SM_Button( x, y, 100, "Add camera spot", qfalse, qtrue ) ) {
+		smPortal_t portal;
+
+		VectorCopy( sm.camOrg, portal.org );
+		portal.map = qfalse;
+		sm.portals.push_back( portal );
+		SM_SavePortals();
+		sm.portalList.sel = (int)sm.portals.size();
+		SM_ListMove( &sm.portalList, count + 1, SM_PORTAL_ROWS, 0 );
+		sm.sky.portalOn = qtrue;
+		VectorCopy( portal.org, sm.sky.portalOrg );
+		SM_SetStatus( mapPortal ? "Sky portal: the map's 3D skybox now shows from the camera's spot"
+			: "Sky portal: the sky now shows the map from the camera's spot" );
+	}
+	// the camera to the spot, to look around it
+	if ( SM_Button( x + 104, y, 64, "Go there", qfalse, (qboolean)( sel >= 0 ) ) )
+		VectorCopy( sm.portals[sel].org, sm.camOrg );
+	if ( SM_Button( x + 172, y, w - 172, "Remove", qfalse, (qboolean)( sel >= 0 && !sm.portals[sel].map ) ) ) {
+		if ( SM_PortalShown( sel ) )
+			sm.sky.portalOn = qfalse;
+		sm.portals.erase( sm.portals.begin() + sel );
+		SM_SavePortals();
+	}
+	return y + 20;
+}
+
+/*
+===============================================================================
+
+MINE
+
+===============================================================================
+*/
+
+static void SM_AddPlayerShader( const char *name, int group ) {
+	char key[MAX_QPATH];
+	smPlayerShader_t ps;
+
+	if ( !name || !name[0] || name[0] == '{' || name[0] == '}' || name[0] == '[' || name[0] == ']' )
+		return;
+	SM_ShaderKey( name, key, sizeof( key ) );
+	for ( size_t i = 0; i < sm.playerShaders.size(); i++ ) {
+		if ( sm.playerShaders[i].name == key )
+			return;
+	}
+	ps.name = key;
+	ps.group = group;
+	sm.playerShaders.push_back( ps );
+}
+
+// the shaders an effects file draws with: one after "shader", a [ ] list after "shaders"
+static void SM_ParseEfxShaders( const char *path, int group ) {
+	char *buf;
+	const char *p, *token;
+
+	if ( FS_ReadFile( path, (void **)&buf ) <= 0 || !buf )
+		return;
+	p = buf;
+	COM_BeginParseSession( path );
+	while ( 1 ) {
+		token = COM_ParseExt( &p, qtrue );
+		if ( !token[0] )
+			break;
+		if ( Q_stricmp( token, "shader" ) && Q_stricmp( token, "shaders" ) )
+			continue;
+		token = COM_ParseExt( &p, qtrue );
+		if ( Q_stricmp( token, "[" ) ) {
+			SM_AddPlayerShader( token, group );
+			continue;
+		}
+		while ( 1 ) {
+			token = COM_ParseExt( &p, qtrue );
+			if ( !token[0] || !Q_stricmp( token, "]" ) )
+				break;
+			SM_AddPlayerShader( token, group );
+		}
+	}
+	FS_FreeFile( buf );
+}
+
+static void SM_ParseEfxDir( const char *dir, const char *prefix, int group ) {
+	char **files;
+	int numFiles;
+
+	files = FS_ListFiles( dir, ".efx", &numFiles );
+	for ( int i = 0; i < numFiles; i++ ) {
+		if ( !prefix || !Q_stricmpn( files[i], prefix, strlen( prefix ) ) )
+			SM_ParseEfxShaders( va( "%s/%s", dir, files[i] ), group );
+	}
+	FS_FreeFileList( files );
+}
+
+static bool SM_PlayerShaderLess( const smPlayerShader_t &a, const smPlayerShader_t &b ) {
+	if ( a.group != b.group )
+		return a.group < b.group;
+	return a.name < b.name;
+}
+
+// what the player's own things draw with: force powers and their effects, sabers, shells
+static void SM_BuildPlayerShaders( void ) {
+	static const char *shells[] = { "gfx/misc/personalshield", "gfx/misc/forceprotect", "gfx/misc/sightbubble" };
+
+	sm.playerShaders.clear();
+	for ( size_t i = 0; i < ARRAY_LEN( shells ); i++ )
+		SM_AddPlayerShader( shells[i], SM_MINE_SHELLS );
+	for ( size_t i = 0; i < sm.shaderNames.size(); i++ ) {
+		const char *name = sm.shaderNames[i].c_str();
+
+		if ( !Q_stricmpn( name, "powerups/", 9 ) && SM_ContainsNoCase( name, "shell" ) )
+			SM_AddPlayerShader( name, SM_MINE_SHELLS );
+		else if ( !Q_stricmpn( name, "gfx/effects/sabers/", 19 ) )
+			SM_AddPlayerShader( name, SM_MINE_SABERS );
+		else if ( !Q_stricmpn( name, "gfx/effects/force", 17 ) || !Q_stricmpn( name, "gfx/misc/force", 14 ) )
+			SM_AddPlayerShader( name, SM_MINE_FORCE );
+	}
+	SM_ParseEfxDir( "effects/force", NULL, SM_MINE_FORCE );
+	SM_ParseEfxDir( "effects/mp", "drain", SM_MINE_FORCE );
+	SM_ParseEfxDir( "effects/saber", NULL, SM_MINE_SABERS );
+	// and whatever was changed before, should it no longer be found
+	for ( size_t i = 0; i < sm.mineFrom.size(); i++ )
+		SM_AddPlayerShader( sm.mineFrom[i].c_str(), SM_MINE_ALL );
+	std::sort( sm.playerShaders.begin(), sm.playerShaders.end(), SM_PlayerShaderLess );
+	sm.playerIndexed = qtrue;
+}
+
+static qboolean SM_IsPlayerShader( const char *name ) {
+	char key[MAX_QPATH];
+
+	if ( !name || !name[0] )
+		return qfalse;
+	SM_ShaderKey( name, key, sizeof( key ) );
+	for ( size_t i = 0; i < sm.playerShaders.size(); i++ ) {
+		if ( sm.playerShaders[i].name == key )
+			return qtrue;
+	}
+	return qfalse;
+}
+
+static void SM_RebuildMineView( void ) {
+	sm.mineView.clear();
+	for ( size_t i = 0; i < sm.playerShaders.size(); i++ ) {
+		const smPlayerShader_t *ps = &sm.playerShaders[i];
+
+		if ( sm.mineGroup == SM_MINE_CHANGED ? SM_MineIndex( ps->name.c_str() ) >= 0
+			: ( sm.mineGroup == SM_MINE_ALL || ps->group == sm.mineGroup ) )
+			sm.mineView.push_back( (int)i );
+	}
+	sm.mineList.sel = Com_Clampi( 0, Q_max( (int)sm.mineView.size() - 1, 0 ), sm.mineList.sel );
+}
+
+static const char *SM_MineSelected( void ) {
+	if ( sm.mineList.sel < 0 || sm.mineList.sel >= (int)sm.mineView.size() )
+		return NULL;
+	return sm.playerShaders[sm.mineView[sm.mineList.sel]].name.c_str();
+}
+
+// the replacement highlighted in the list; the Mine tab has no typed path
+static const char *SM_MineReplacement( void ) {
+	if ( sm.shaderList.sel < 0 || sm.shaderList.sel >= (int)sm.shaderView.size() )
+		return NULL;
+	return sm.shaderNames[sm.shaderView[sm.shaderList.sel]].c_str();
+}
+
+// a player shader on this player's own: to another, or back to the standard (NULL)
+static void SM_MineSet( const char *shader, const char *to ) {
+	char from[MAX_QPATH], key[MAX_QPATH];
+	const int i = SM_MineIndex( shader );
+
+	SM_ShaderKey( shader, from, sizeof( from ) );
+	if ( i >= 0 ) {
+		sm.mineFrom.erase( sm.mineFrom.begin() + i );
+		sm.mineTo.erase( sm.mineTo.begin() + i );
+	}
+	if ( to ) {
+		SM_ShaderKey( to, key, sizeof( key ) );
+		if ( !strcmp( key, from ) )
+			to = NULL;
+	}
+	if ( to ) {
+		sm.mineFrom.push_back( from );
+		sm.mineTo.push_back( key );
+		SM_SetStatus( va( "Yours only: %s -> %s", from, key ) );
+	} else {
+		SM_SetStatus( va( "Back to the standard: %s", from ) );
+	}
+	SM_BuildMineHandles();
+	SM_SaveMine();
+	if ( SM_ShareOn() )
+		sm.shareAt = cls.realtime;
+	if ( sm.mineGroup == SM_MINE_CHANGED )
+		SM_RebuildMineView();
+}
+
+static void SM_MineClearAll( void ) {
+	sm.mineFrom.clear();
+	sm.mineTo.clear();
+	sm.mineHandles.clear();
+	SM_RebuildMapped();
+	SM_SaveMine();
+	if ( SM_ShareOn() )
+		sm.shareAt = cls.realtime;
+	SM_RebuildMineView();
+	SM_SetStatus( "Every player shader back to the standard" );
+}
+
+static void SM_MineEnter( void ) {
+	const char *shader = SM_MineSelected(), *to = SM_MineReplacement();
+
+	if ( shader && to )
+		SM_MineSet( shader, to );
+}
+
+// from the object tab: that shader in the Mine tab
+static void SM_MineSelect( const char *shader ) {
+	char key[MAX_QPATH];
+
+	SM_ShaderKey( shader, key, sizeof( key ) );
+	sm.mineGroup = SM_MINE_ALL;
+	SM_RebuildMineView();
+	for ( size_t i = 0; i < sm.mineView.size(); i++ ) {
+		if ( sm.playerShaders[sm.mineView[i]].name == key ) {
+			sm.mineList.sel = (int)i;
+			sm.mineList.scroll = Q_max( 0, (int)i - SM_MINE_ROWS / 2 );
+			break;
+		}
+	}
+	SM_ClearLive();
+	sm.tab = SM_TAB_MINE;
+	sm.focus = SM_F_NONE;
+	SM_RebuildShaderView();
+}
+
+static void SM_DrawMineRow( int row, float x, float y, float w ) {
+	const char *name = sm.playerShaders[sm.mineView[row]].name.c_str(), *mine = SM_MineTo( name );
+
+	if ( mine )
+		SM_TextClipped( x, y, w, va( "%s " S_COLOR_CYAN "-> %s", name, mine ), smWhite );
+	else
+		SM_TextClipped( x, y, w, name, smWhite );
+}
+
+static void SM_StartSharing( void ) {
+	Cvar_Set( "cl_shaderShareMine", "1" );
+	sm.shareAt = cls.realtime;
+	sm.shareWarned = qfalse;
+	SM_SetStatus( "Shared: everyone with this client sees yours on you" );
+}
+
+// the warning, over the view: OK turns experimental features on for the session and shares
+static void SM_DrawExperimentalBox( void ) {
+	const float w = 320, h = 132, x = ( SM_PANEL_X - w ) * 0.5f, y = 150;
+	char text[MAX_STRING_CHARS], *line = text;
+	float ly = y + 24;
+
+	SM_Box( x, y, w, h, smPanelDark );
+	SM_Box( x, y, w, h, smPanelDark );
+	SM_Text( x + 8, y + 6, S_COLOR_YELLOW "Experimental features", smWhite );
+	// wrapped by words
+	Q_strncpyz( text, RP_EXPERIMENTAL_WARNING, sizeof( text ) );
+	while ( *line && ly < y + h - 46 ) {
+		char *end = line, *lastSpace = NULL, keep;
+
+		while ( *end ) {
+			if ( *end == ' ' ) {
+				*end = '\0';
+				const qboolean fits = (qboolean)( SM_TextWidth( line ) <= w - 16 );
+				*end = ' ';
+				if ( !fits )
+					break;
+				lastSpace = end;
+			}
+			end++;
+		}
+		if ( *end && lastSpace )
+			end = lastSpace;
+		keep = *end;
+		*end = '\0';
+		SM_Text( x + 8, ly, line, smWhite );
+		*end = keep;
+		line = *end ? end + 1 : end;
+		ly += SM_ROW_H;
+	}
+	SM_TextClipped( x + 8, y + h - 40, w - 16, S_COLOR_GREY "Sharing your player shaders needs them. rpexperimental keeps them on.", smWhite );
+	if ( SM_Button( x + 8, y + h - 22, 80, "OK", qfalse, qtrue ) ) {
+		CL_RpHooks_SetExperimental( qtrue );
+		sm.experimentalBox = qfalse;
+		SM_StartSharing();
+	} else if ( SM_Button( x + w - 88, y + h - 22, 80, "Cancel", qfalse, qtrue ) ) {
+		sm.experimentalBox = qfalse;
+		SM_SetStatus( "Not shared" );
+	}
+	// a click elsewhere on it isn't a pick in the view
+	if ( SM_Clicked( x, y, w, h ) )
+		return;
+}
+
+static void SM_DrawMineTab( float x, float y, float w ) {
+	static const char *groups[SM_MINE_NUM_GROUPS] = { "All", "Force", "Sabers", "Shells", "Changed" };
+	const int rows = sm.showPreview ? 8 : 14;
+	const char *original, *mine, *replacement;
+	float bx = x;
+
+	if ( !sm.playerIndexed ) {
+		SM_BuildPlayerShaders();
+		SM_RebuildMineView();
+	}
+	if ( sm.viewSky )
+		SM_RebuildShaderView();
+
+	SM_TextClipped( x, y, w, S_COLOR_GREY "On your own only. Shared, others with this client see them", smWhite );
+	y += 14;
+	for ( int i = 0; i < SM_MINE_NUM_GROUPS; i++ ) {
+		const float bw = SM_TextWidth( groups[i] ) + 10;
+
+		if ( SM_Button( bx, y, bw, groups[i], (qboolean)( sm.mineGroup == i ), qtrue ) ) {
+			sm.mineGroup = i;
+			sm.mineList.sel = sm.mineList.scroll = 0;
+			SM_RebuildMineView();
+		}
+		bx += bw + 2;
+	}
+	y += 18;
+	SM_List( &sm.mineList, (int)sm.mineView.size(), x, y, w, SM_MINE_ROWS, SM_DrawMineRow );
+	if ( sm.mineView.empty() )
+		SM_Text( x + 4, y + 1, sm.mineGroup == SM_MINE_CHANGED ? "None changed yet" : "None found", smDim );
+	y += SM_MINE_ROWS * SM_ROW_H + 4;
+
+	original = SM_MineSelected();
+	mine = SM_MineTo( original );
+	SM_TextClipped( x, y, w, mine ? va( S_COLOR_CYAN "Yours: %s", mine ) : original ? S_COLOR_GREY "The standard one" : "", smWhite );
+	y += 14;
+	SM_Field( SM_F_SEARCH, x, y, w, va( "With: type to search %i shaders", (int)sm.shaderNames.size() ) );
+	y += 18;
+	{
+		const int clickedWith = SM_List( &sm.shaderList, (int)sm.shaderView.size(), x, y, w, rows, SM_DrawShaderRow );
+
+		if ( clickedWith >= 0 && clickedWith < (int)sm.shaderView.size() )
+			SM_StarClicked( clickedWith, x, sm.shaderNames[sm.shaderView[clickedWith]].c_str() );
+	}
+	if ( sm.shaderView.empty() )
+		SM_Text( x + 4, y + 1, "No shaders match", smDim );
+	y += rows * SM_ROW_H + 4;
+	replacement = SM_MineReplacement();
+
+	if ( sm.showPreview ) {
+		SM_DrawSwatch( x, y, 72, "Current", original ? ( mine ? mine : original ) : NULL );
+		SM_DrawSwatch( x + 84, y, 72, "New", replacement );
+		SM_TextClipped( x + 168, y + 12, w - 168, S_COLOR_GREY "Flat preview;", smWhite );
+		SM_TextClipped( x + 168, y + 24, w - 168, S_COLOR_GREY "Live shows it", smWhite );
+		SM_TextClipped( x + 168, y + 36, w - 168, S_COLOR_GREY "on yours, in", smWhite );
+		SM_TextClipped( x + 168, y + 48, w - 168, S_COLOR_GREY "the game.", smWhite );
+		y += 90;
+	}
+
+	if ( SM_Button( x, y, 74, sm.livePreview ? "Live: on" : "Live: off", sm.livePreview, qtrue ) )
+		sm.livePreview = (qboolean)!sm.livePreview;
+	// to the others with this client, who see them on this player's own
+	if ( SM_Button( x + 78, y, 84, SM_ShareOn() ? "Shared: on" : "Shared: off", SM_ShareOn(), qtrue ) ) {
+		if ( SM_ShareOn() ) {
+			Cvar_Set( "cl_shaderShareMine", "0" );
+			SM_QueueShare( va( "cmd:mine/%i/clear", clc.clientNum ) );
+			SM_SetStatus( "Not shared: the others see your standard ones again" );
+		} else if ( !CL_RpHooks_Experimental() ) {
+			// the warning first; its OK turns them on and shares
+			sm.experimentalBox = qtrue;
+		} else {
+			SM_StartSharing();
+		}
+	}
+	if ( SM_Button( x + 166, y, w - 166, sm.showPreview ? "Hide preview" : "Show preview", qfalse, qtrue ) )
+		sm.showPreview = (qboolean)!sm.showPreview;
+	y += 19;
+
+	if ( SM_Button( x, y, 96, "Use it  (Enter)", qfalse, (qboolean)( original && replacement ) ) )
+		SM_MineSet( original, replacement );
+	if ( SM_Button( x + 100, y, 70, "Standard", qfalse, (qboolean)( mine != NULL ) ) )
+		SM_MineSet( original, NULL );
+	if ( SM_Button( x + 174, y, w - 174, "All standard", qfalse, (qboolean)!sm.mineFrom.empty() ) )
+		SM_MineClearAll();
+
+	// shown on this player's own while it is being picked
+	SM_ClearLive();
+	if ( sm.livePreview && original && replacement )
+		SM_SetLiveMine( original, replacement );
+	else
+		SM_SetLiveMine( NULL, NULL );
 }
 
 static void SM_DrawPanel( void ) {
-	static const char *tabs[SM_NUM_TABS] = { "Object", "Remaps", "Overlays", "Sky" };
+	static const char *tabs[SM_NUM_TABS] = { "Object", "Remaps", "Overlays", "Sky", "Mine" };
 	const float px = SM_PANEL_X, pw = SM_PANEL_W, x = px + 8, w = pw - 16;
 	qboolean click;
 	float bx = x + w;
 
 	SM_Box( px, 8, pw, SCREEN_HEIGHT - 16, smPanelDark );
-	SM_Text( x, 14, "Shader Manager", smWhite );
 	// the tabs from the right, as wide as their names
 	for ( int i = SM_NUM_TABS - 1; i >= 0; i-- ) {
 		const float bw = SM_TextWidth( tabs[i] ) + 10;
@@ -3168,6 +4266,13 @@ static void SM_DrawPanel( void ) {
 		}
 		bx -= 2;
 	}
+	if ( sm.tab != SM_TAB_MINE )
+		SM_SetLiveMine( NULL, NULL );
+	// the title where the tabs leave room for it
+	if ( SM_TextWidth( "Shader Manager" ) + 4 < bx - x )
+		SM_Text( x, 14, "Shader Manager", smWhite );
+	else if ( SM_TextWidth( "Shaders" ) + 4 < bx - x )
+		SM_Text( x, 14, "Shaders", smWhite );
 
 	if ( sm.tab == SM_TAB_OBJECT )
 		SM_DrawObjectTab( x, 34, w );
@@ -3175,6 +4280,8 @@ static void SM_DrawPanel( void ) {
 		SM_DrawRemapsTab( x, 34, w );
 	else if ( sm.tab == SM_TAB_OVERLAYS )
 		SM_DrawOverlaysTab( x, 34, w );
+	else if ( sm.tab == SM_TAB_MINE )
+		SM_DrawMineTab( x, 34, w );
 	else
 		SM_DrawSkyTab( x, 34, w );
 
@@ -3183,6 +4290,13 @@ static void SM_DrawPanel( void ) {
 		SM_TextClipped( x, SCREEN_HEIGHT - 24, w, va( S_COLOR_YELLOW "Server: " S_COLOR_WHITE "%s", sm.reply ), smWhite );
 	else if ( sm.status[0] )
 		SM_TextClipped( x, SCREEN_HEIGHT - 24, w, va( "%s%s", cls.realtime - sm.sentTime < 1500 ? S_COLOR_GREEN : S_COLOR_GREY, sm.status ), smWhite );
+
+	if ( sm.experimentalBox ) {
+		if ( sm.tab == SM_TAB_MINE )
+			SM_DrawExperimentalBox();
+		else
+			sm.experimentalBox = qfalse;
+	}
 
 	// a click in the view picks what is under it
 	click = sm.click;
@@ -3237,7 +4351,8 @@ void CL_ShaderManager_Draw( void ) {
 	if ( SM_Button( 16, SCREEN_HEIGHT - 48, 110, sm.hideEffects ? "Effect boxes: off" : "Effect boxes: on", (qboolean)!sm.hideEffects, qtrue ) )
 		sm.hideEffects = (qboolean)!sm.hideEffects;
 	SM_DrawPanel();
-	if ( sm.hitValid )
+	// not over the experimental features warning
+	if ( sm.hitValid && !sm.experimentalBox )
 		SM_DrawReadout( sm.cursorX, sm.cursorY + 20.0f );
 	SM_Text( 16, SCREEN_HEIGHT - 28, S_COLOR_GREY "Hold right mouse: look and fly (WASD)", smWhite );
 	SM_Text( 16, SCREEN_HEIGHT - 16, S_COLOR_GREY "Click in the view: pick   Tab: tabs   Esc: back", smWhite );
@@ -3275,15 +4390,45 @@ void CL_ShaderManager_f( void ) {
 			Com_Printf( "No shaders are remapped\n" );
 		for ( size_t i = 0; i < sm.remapFrom.size(); i++ )
 			Com_Printf( "%s -> %s\n", sm.remapFrom[i].c_str(), sm.remapTo[i].c_str() );
+	} else if ( !Q_stricmp( arg, "mine" ) ) {
+		if ( !sm.mineLoaded )
+			SM_LoadMine();
+		if ( !Q_stricmp( Cmd_Argv( 2 ), "reset" ) ) {
+			SM_MineClearAll();
+			Com_Printf( "Every player shader is back to the standard\n" );
+		} else if ( !Q_stricmp( Cmd_Argv( 2 ), "others" ) ) {
+			int shown = 0;
+
+			for ( int c = 0; c < MAX_CLIENTS; c++ ) {
+				for ( size_t i = 0; i < sm.otherFrom[c].size(); i++, shown++ )
+					Com_Printf( "%i %s: %s -> %s\n", c, Info_ValueForKey( cl.gameState.stringData + cl.gameState.stringOffsets[CS_PLAYERS + c], "n" ),
+						sm.otherFrom[c][i].c_str(), sm.otherTo[c][i].c_str() );
+			}
+			if ( !shown )
+				Com_Printf( "Nobody shared their player shaders\n" );
+		} else if ( !Q_stricmp( Cmd_Argv( 2 ), "share" ) ) {
+			sm.shareAt = cls.realtime;
+			sm.shareWarned = qfalse;
+		} else {
+			if ( sm.mineFrom.empty() )
+				Com_Printf( "No player shaders changed on this screen\n" );
+			for ( size_t i = 0; i < sm.mineFrom.size(); i++ )
+				Com_Printf( "%s -> %s\n", sm.mineFrom[i].c_str(), sm.mineTo[i].c_str() );
+		}
 	} else if ( !Q_stricmp( arg, "reindex" ) ) {
 		SM_BuildIndex();
 		SM_RebuildShaderView();
+		SM_BuildPlayerShaders();
+		SM_RebuildMineView();
 	} else if ( !Q_stricmp( arg, "close" ) ) {
 		CL_ShaderManager_Close();
 	} else {
 		Com_Printf( "usage: " SM_TOGGLE_CMD "              toggle the shader manager (bind a key to it)\n" );
 		Com_Printf( "       " SM_TOGGLE_CMD " crosshair    show/hide the shader under the crosshair\n" );
 		Com_Printf( "       " SM_TOGGLE_CMD " remaps       list the shaders remapped in this map\n" );
+		Com_Printf( "       " SM_TOGGLE_CMD " mine [reset] list your player shaders, or put them back\n" );
+		Com_Printf( "       " SM_TOGGLE_CMD " mine others  the player shaders others shared\n" );
+		Com_Printf( "       " SM_TOGGLE_CMD " mine share   send yours again (with Shared on in the Mine tab)\n" );
 		Com_Printf( "       " SM_TOGGLE_CMD " reindex      rescan the filesystem for shaders\n" );
 		Com_Printf( "       " SM_TOGGLE_CMD " close        close the shader manager\n" );
 	}
@@ -3291,6 +4436,7 @@ void CL_ShaderManager_f( void ) {
 
 void CL_ShaderManager_Init( void ) {
 	cl_shaderCrosshair = Cvar_Get( "cl_shaderCrosshair", "0", CVAR_ARCHIVE, "Show the shader under the crosshair" );
+	cl_shaderShareMine = Cvar_Get( "cl_shaderShareMine", "0", CVAR_ARCHIVE, "Share your Mine player shaders with others who have this client" );
 	sm.initialized = qtrue;
 	sm.showPreview = qtrue;
 	sm.livePreview = qtrue;
@@ -3325,6 +4471,27 @@ void CL_ShaderManager_Shutdown( void ) {
 	sm.overlays.clear();
 	sm.overlayView.clear();
 	sm.portalTime = 0;
+	sm.portalMap[0] = '\0';
+	sm.portals.clear();
+	// the renderer's shaders go: the player shaders' handles are found again with the next cgame's
+	sm.mineApplied = qfalse;
+	sm.mineHandles.clear();
+	// the others' come again as the next map starts; the client numbers may change
+	for ( int c = 0; c < MAX_CLIENTS; c++ ) {
+		sm.otherFrom[c].clear();
+		sm.otherTo[c].clear();
+		sm.otherHandles[c].clear();
+	}
+	sm.mapped.clear();
+	sm.shareQueue.clear();
+	sm.shareAt = 0;
+	sm.sharePlayers = 0;
+	SM_SetLiveMine( NULL, NULL );
+	sm.myOrgFrame = 0;
+	sm.playerIndexed = qfalse;
+	sm.playerShaders.clear();
+	sm.mineView.clear();
+	sm.liveFrom[0] = sm.liveTo[0] = '\0';
 	sm.numPending = sm.numEntities = 0;
 	sm.font = 0;
 	// the pure pk3 list can change with the next map or server, and the renderer drops its shaders

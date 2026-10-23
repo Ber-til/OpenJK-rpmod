@@ -568,6 +568,7 @@ private:
 		short	mEntNum;		// used to determine which entity this ghoul model is attached to.
 		bool	mPortalEffect;	// rww - render this before skyportals, and not in the normal world view.
 		bool	mIsRelative;	// bolt this puppy on keep it updated
+		short	mOwner;			// the player whose own it is, -1 none: drawn with their player shaders
 		CGhoul2Info_v *ghoul2;
 		vec3_t	mOrigin;
 		matrix3_t	mAxis;
@@ -640,7 +641,13 @@ private:
 	void	CreateEffect( CPrimitiveTemplate *fx, const vec3_t origin, matrix3_t axis, int lateTime, int fxParm = -1,  CGhoul2Info_v *ghoul2 = NULL, int entNum = -1, int modelNum = -1, int boltNum = -1);
 	void	CreateEffect( CPrimitiveTemplate *fx, SScheduledEffect *schedFx );
 
+	qhandle_t	MineMedia( qhandle_t shader ) const;
+
 public:
+
+	// the player whose own the effect being played or created is, -1 none: its pieces take
+	// that player's shader manager player shaders in place of the standard ones
+	int		mOwner;
 
 	CFxScheduler();
 

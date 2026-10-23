@@ -1675,9 +1675,10 @@ static	void R_LoadFogs( lump_t *l, lump_t *brushesLump, lump_t *sidesLump, world
 	}
 	count = l->filelen / sizeof(*fogs);
 
-	// create fog strucutres for them
+	// create fog strucutres for them, with room after them for one more and the client's own
 	worldData.numfogs = count + 1;
-	worldData.fogs = (fog_t *)Hunk_Alloc ( worldData.numfogs*sizeof(*out), h_low);
+	worldData.maxFogs = count + 2 + MAX_ADDED_FOGS;
+	worldData.fogs = (fog_t *)Hunk_Alloc ( worldData.maxFogs*sizeof(*out), h_low);
 	worldData.globalFog = -1;
 	out = worldData.fogs + 1;
 

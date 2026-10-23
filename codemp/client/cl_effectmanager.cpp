@@ -94,6 +94,8 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 
 // layout, in 640x480
 #define EM_ROW_H			13.0f
+#define EM_STAR_W			11.0f	// the favorite star an effect row starts with
+#define EM_FAV_LIST			"effects"
 #define EM_CTRL_H			15.0f
 #define EM_TEXT_SCALE		0.8f
 #define EM_SEARCH_Y			46.0f
@@ -207,6 +209,7 @@ typedef struct emEffect_s {
 // folders, then Custom with a row for each pk3 and that pk3's folders under it
 typedef enum {
 	EM_ROW_SAVED,
+	EM_ROW_FAVES,		// the starred effects
 	EM_ROW_CATEGORY,	// Base or Custom
 	EM_ROW_SOURCE,		// a custom pk3
 	EM_ROW_FOLDER
@@ -850,6 +853,11 @@ static void EM_BuildRows( void ) {
 	em.numRows = 0;
 	EM_AddRow( EM_ROW_SAVED, "Saved constructs", 0, qfalse );
 	em.rows[0].count = em.numConstructs;
+	EM_AddRow( EM_ROW_FAVES, "Favorites", 0, qfalse );
+	for ( int i = 0; i < em.numEffects; i++ ) {
+		if ( EM_PassesFilter( &em.effects[i] ) && CL_Fav_Has( EM_FAV_LIST, em.effects[i].path ) )
+			em.rows[1].count++;
+	}
 	for ( int i = 0; i < em.numEffects; i++ ) {
 		const emEffect_t *e = &em.effects[i];
 		const int len = EM_FolderLen( e );
@@ -910,6 +918,11 @@ static void EM_RebuildEffectView( void ) {
 	if ( search[0] ) {
 		for ( int i = 0; i < em.numEffects; i++ ) {
 			if ( EM_PassesFilter( &em.effects[i] ) && EM_ContainsNoCase( em.effects[i].path, search ) )
+				em.view[em.numView++] = i;
+		}
+	} else if ( em.row > 0 && em.row < em.numRows && em.rows[em.row].type == EM_ROW_FAVES ) {
+		for ( int i = 0; i < em.numEffects && em.numView < EM_MAX_EFFECTS; i++ ) {
+			if ( EM_PassesFilter( &em.effects[i] ) && CL_Fav_Has( EM_FAV_LIST, em.effects[i].path ) )
 				em.view[em.numView++] = i;
 		}
 	} else if ( em.row > 0 && em.row < em.numRows ) {
@@ -974,19 +987,33 @@ static void EM_StepFolder( int delta ) {
 
 static void EM_SetFilter( emFilter_t filter ) {
 	const qboolean onSaved = (qboolean)( em.row == 0 );
+	const qboolean onFaves = (qboolean)( em.row < em.numRows && em.rows[em.row].type == EM_ROW_FAVES );
 
 	if ( filter == em.filter )
 		return;
 	em.filter = filter;
 	EM_BuildRows();
-	// the rows moved; a search stays
+	// the rows moved, but the saved constructs and the favorites stay first; a search stays
 	if ( em.fields[EM_F_SEARCH][0] ) {
-		em.row = onSaved ? 0 : EM_FirstFolderRow();
+		em.row = onSaved ? 0 : onFaves ? 1 : EM_FirstFolderRow();
 		em.effectList.sel = em.effectList.scroll = 0;
 		EM_RebuildEffectView();
 	} else {
-		EM_SetRow( onSaved ? 0 : EM_FirstFolderRow() );
+		EM_SetRow( onSaved ? 0 : onFaves ? 1 : EM_FirstFolderRow() );
 	}
+}
+
+// an effect starred or not any more: the Favorites row counts it, and lists it if it's the one shown
+static void EM_ToggleFavorite( int index ) {
+	const emEffect_t *e = &em.effects[index];
+	const qboolean on = CL_Fav_Toggle( EM_FAV_LIST, e->path );
+
+	for ( int i = 0; i < em.numRows; i++ ) {
+		if ( em.rows[i].type == EM_ROW_FAVES )
+			em.rows[i].count += on ? 1 : -1;
+	}
+	if ( !em.fields[EM_F_SEARCH][0] && em.row < em.numRows && em.rows[em.row].type == EM_ROW_FAVES )
+		EM_RebuildEffectView();
 }
 
 static void EM_SelectEffect( int index ) {
@@ -4585,6 +4612,9 @@ static void EM_DrawFolderRow( int row, float x, float y, float w ) {
 	case EM_ROW_SAVED:
 		EM_TextClipped( x, y, w, va( S_COLOR_CYAN "%s " S_COLOR_GREY "(%i)", r->name, r->count ), color );
 		return;
+	case EM_ROW_FAVES:
+		EM_TextClipped( x, y, w, va( S_COLOR_YELLOW "* " S_COLOR_WHITE "%s " S_COLOR_GREY "(%i)", r->name, r->count ), color );
+		return;
 	case EM_ROW_CATEGORY:
 		EM_TextClipped( x, y, w, va( S_COLOR_YELLOW "%s " S_COLOR_GREY "(%i)", r->name, r->count ), color );
 		return;
@@ -4611,9 +4641,10 @@ static void EM_DrawEffectRow( int row, float x, float y, float w ) {
 		EM_TextClipped( x, y, w, va( S_COLOR_CYAN "%s " S_COLOR_GREY "(%i)", em.constructs[em.view[row]], em.constructCounts[em.view[row]] ), emWhite );
 		return;
 	}
-	// a folder lists names, anything wider lists where they are
+	// a folder lists names, anything wider lists where they are; the star first, click it for a favorite
 	e = &em.effects[em.view[row]];
-	EM_TextClipped( x, y, w, em.fields[EM_F_SEARCH][0] || em.rows[em.row].type != EM_ROW_FOLDER ? e->path : e->base,
+	EM_Text( x, y, CL_Fav_Star( CL_Fav_Has( EM_FAV_LIST, e->path ) ), emWhite );
+	EM_TextClipped( x + EM_STAR_W, y, w - EM_STAR_W, em.fields[EM_F_SEARCH][0] || em.rows[em.row].type != EM_ROW_FOLDER ? e->path : e->base,
 		e->failed ? emRed : e->custom ? emCustom : emWhite );
 }
 
@@ -4890,10 +4921,18 @@ static void EM_DrawEffects( void ) {
 		EM_SelectRow( 0 );
 	}
 	picked = EM_List( &em.effectList, em.numView, EM_EFFECT_X, EM_LIST_Y, EM_EFFECT_W, EM_LIST_H, EM_DrawEffectRow, &clicked );
+	// the star: a favorite, or not any more
+	if ( clicked >= 0 && clicked < em.numView && !EM_ConstructShown() && em.clickX < EM_EFFECT_X + 4 + EM_STAR_W ) {
+		EM_ToggleFavorite( em.view[clicked] );
+		clicked = -1;
+		picked = -1;
+	}
 	if ( clicked >= 0 && clicked < em.numView )
 		EM_SelectRow( clicked );
 	if ( !em.numView ) {
-		EM_Text( EM_EFFECT_X + 4, EM_LIST_Y + 1, EM_ConstructShown() ? "None yet: see the right" : em.numEffects ? "No effects match" : "No effects found", emDim );
+		EM_Text( EM_EFFECT_X + 4, EM_LIST_Y + 1, EM_ConstructShown() ? "None yet: see the right"
+			: !em.fields[EM_F_SEARCH][0] && em.row < em.numRows && em.rows[em.row].type == EM_ROW_FAVES ? "None yet: click the * by an effect"
+			: em.numEffects ? "No effects match" : "No effects found", emDim );
 	}
 	if ( EM_ConstructShown() ) {
 		EM_DrawConstructPanel( picked );

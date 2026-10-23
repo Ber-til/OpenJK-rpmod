@@ -32,8 +32,11 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 // "When someone comes" waits for a player or NPC to come into a map trigger, or near a
 // spot or an effect, or for a door or button to move. A story starting with it can be
 // armed: a copy of it waits in the background and plays when that happens, once or
-// every time, several at once. Only who the server sends this client can be seen, so
-// the storyteller has to be near enough; the server could do it everywhere one day.
+// every time, several at once. The server only sends this client who is near it, so the
+// rest of the map is watched two more ways (see FAR AWAY): players with this client are
+// told where the stories wait and say when they come or go, and the others' positions are
+// asked of the server with rporigin, one a command. NPCs out of sight still can't be seen.
+// It can also wait for someone to use one of the map editor's use triggers, by its name.
 //
 // Several stories can be open at once, each in a numbered tab, and steps copied between
 // them: Ctrl+click and Shift+click pick several, Ctrl+C, Ctrl+X, Ctrl+V and Del act on
@@ -146,8 +149,8 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ "Seconds", ST_K_NUMBER, "2", NULL } } },
 	{ "pause", "Wait for me", "Flow", "Stops until you press Continue, or run /storyteller continue (bind it to a key). The note shows while it waits.", -1, -1, 1, {
 		{ "Note", ST_K_TEXT, "", NULL } } },
-	{ "trigger", "When someone comes", "Flow", "Waits until someone comes into a map trigger or near a spot or an effect, a door moves, or someone says one of the words (| between them). With For, they have to stay in that many seconds. A story starting with it can be armed. Only people near you are seen.", 5, -1, 9, {
-		{ "Where", ST_K_CHOICE, "map trigger", "map trigger|near a spot|near an effect|door or button|someone says" },
+	{ "trigger", "When someone comes", "Flow", "Waits until someone comes into a map trigger or near a spot or an effect, a door moves, someone says one of the words (| between them), or someone uses one of the map editor's use triggers (by its name). With For, they have to stay in that many seconds. A story starting with it can be armed. Players out of sight are found too: those with this client say where they are (with experimental on), the others are asked for with rporigin.", 5, -1, 9, {
+		{ "Where", ST_K_CHOICE, "map trigger", "map trigger|near a spot|near an effect|door or button|someone says|someone uses" },
 		{ "Which", ST_K_TEXT, "", NULL },
 		{ "Who", ST_K_CHOICE, "any player", "any player|any NPC|anyone|me|named" },
 		{ "Name", ST_K_TEXT, "", NULL },
@@ -156,8 +159,8 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ "Y", ST_K_NUMBER, "", NULL },
 		{ "Z", ST_K_NUMBER, "", NULL },
 		{ "For (s)", ST_K_NUMBER, "0", NULL } } },
-	{ "if", "If", "Flow", "Looks once, there and then: how many are in a map trigger or near a spot or an effect, or whether someone has said one of the words (| between them) since the story began. True, the steps after it play; false, the ones after its Else, or after its End if.", 5, -1, 10, {
-		{ "Where", ST_K_CHOICE, "map trigger", "map trigger|near a spot|near an effect|someone says" },
+	{ "if", "If", "Flow", "Looks once, there and then: how many are in a map trigger or near a spot or an effect, or whether someone has said one of the words (| between them), or used the use trigger by that name, since the story began. True, the steps after it play; false, the ones after its Else, or after its End if.", 5, -1, 10, {
+		{ "Where", ST_K_CHOICE, "map trigger", "map trigger|near a spot|near an effect|someone says|someone uses" },
 		{ "Which", ST_K_TEXT, "", NULL },
 		{ "Who", ST_K_CHOICE, "any player", "any player|any NPC|anyone|me|named" },
 		{ "Name", ST_K_TEXT, "", NULL },
@@ -357,7 +360,8 @@ typedef enum {
 	ST_PICK_NPC_MANAGE,
 	ST_PICK_SOUND,
 	ST_PICK_MUSIC,
-	ST_PICK_LOCK
+	ST_PICK_LOCK,
+	ST_PICK_TRIGGER		// a map trigger, a door or a use trigger, clicked in the map editor
 } stPick_t;
 
 #define ST_MAX_PICKED	64
@@ -421,6 +425,7 @@ static struct {
 	int			pickStep;		// the step it was opened from
 	char		picked[ST_MAX_PICKED][MAX_STRING_CHARS];
 	int			numPicked;
+	char		pickedTrigger[ST_VALUE_LEN];	// what the map editor's click gave
 
 	char		message[MAX_STRING_CHARS];
 	int			messageTime;
@@ -611,6 +616,16 @@ static qboolean ST_TriggerChat( const stStep_t *s ) {
 	return (qboolean)!Q_stricmp( s->values[0], "someone says" );
 }
 
+// one of the map editor's use triggers used, by its name
+static qboolean ST_TriggerUse( const stStep_t *s ) {
+	return (qboolean)!Q_stricmp( s->values[0], "someone uses" );
+}
+
+// an area people are in, not words, a use or a door
+static qboolean ST_TriggerArea( const stStep_t *s ) {
+	return (qboolean)( !ST_TriggerChat( s ) && !ST_TriggerUse( s ) && !ST_TriggerDoor( s ) );
+}
+
 // a "when someone comes" or an If: an area, or what's said
 static qboolean ST_Watches( const stStep_t *s ) {
 	return (qboolean)( s->action == ST_A_TRIGGER || s->action == ST_A_IF );
@@ -620,10 +635,14 @@ static qboolean ST_Watches( const stStep_t *s ) {
 static const char *ST_FieldLabel( const stStep_t *s, int field, const char *label ) {
 	if ( field == 1 && ST_Watches( s ) && ST_TriggerChat( s ) )
 		return "Words";
+	if ( field == 1 && ST_Watches( s ) && ST_TriggerUse( s ) )
+		return "Trigger";
 	return label;
 }
 
 static qboolean ST_ChatSaid( const stStep_t *s, int since, char *by, int bySize );
+static qboolean ST_UsedSince( const stStep_t *s, int since, char *by, int bySize );
+static void ST_AddFar( struct stPerson_s *out, int *n, int max, const qboolean *seen );
 
 // "*12" as the map's inline model 12, 0 if it isn't one
 static int ST_ModelNum( const char *which ) {
@@ -655,7 +674,7 @@ static qboolean ST_FieldShown( const stStep_t *s, int field ) {
 		return qtrue;
 	if ( !ST_Watches( s ) )
 		return qtrue;
-	if ( ST_TriggerChat( s ) )
+	if ( ST_TriggerChat( s ) || ST_TriggerUse( s ) )
 		return (qboolean)( field <= 2 || ( field == 3 && !Q_stricmp( s->values[2], "named" ) ) );
 	switch ( field ) {
 	case 1:		return (qboolean)( !ST_TriggerNear( s ) || ST_TriggerEffect( s ) );
@@ -883,6 +902,11 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 		if ( ST_TriggerChat( s ) ) {
 			if ( !v[1][0] ) {
 				*error = "Type the words to listen for, | between them";
+				return NULL;
+			}
+		} else if ( ST_TriggerUse( s ) ) {
+			if ( !v[1][0] ) {
+				*error = "Type the name of the use trigger, as the map editor's Triggers tab has it";
 				return NULL;
 			}
 		} else if ( !ST_TriggerNear( s ) && !ST_ModelNum( v[1] ) ) {
@@ -1284,8 +1308,8 @@ typedef struct {
 static stArmed_t	stArmed[ST_MAX_ARMED];
 static int			stNumArmed;
 
-// a player or an NPC the snapshot has
-typedef struct {
+// a player or an NPC the snapshot has, or a player out of sight we know of
+typedef struct stPerson_s {
 	int			num;
 	qboolean	npc;
 	vec3_t		org;
@@ -1385,6 +1409,8 @@ static const char *ST_AreaText( const stStep_t *s ) {
 static const char *ST_IfSummary( const stStep_t *s ) {
 	if ( ST_TriggerChat( s ) )
 		return va( "If %s said \"%s\"", ST_WhoText( s ), s->values[1] );
+	if ( ST_TriggerUse( s ) )
+		return va( "If %s used %s", ST_WhoText( s ), s->values[1][0] ? s->values[1] : "a use trigger" );
 	return va( "If %s %i %s %s", s->values[8], (int)ST_Number( s, 9 ), ST_WhoPlural( s ), ST_AreaText( s ) );
 }
 
@@ -1395,6 +1421,8 @@ static const char *ST_TriggerSummary( const stStep_t *s ) {
 		return va( "When %s moves", ST_EntLabel( s->values[1] ) );
 	if ( ST_TriggerChat( s ) )
 		return va( "When %s says \"%s\"", ST_WhoText( s ), s->values[1] );
+	if ( ST_TriggerUse( s ) )
+		return va( "When %s uses %s", ST_WhoText( s ), s->values[1][0] ? s->values[1] : "a use trigger" );
 	if ( stay > 0 )
 		return va( "When %s stays %s for %g s", ST_WhoText( s ), ST_AreaText( s ), stay );
 	if ( ST_TriggerEffect( s ) )
@@ -1477,12 +1505,15 @@ static int ST_AimedMover( void ) {
 	return model;
 }
 
-// the players and NPCs this client can see, the player first
+// the players and NPCs this client can see, the player first, then the players out of sight
+// whose place we've been told or asked for
 static int ST_People( stPerson_t *out, int max ) {
+	qboolean seen[MAX_CLIENTS] = { qfalse };
 	int n = 0;
 
 	if ( !cl.snap.valid )
 		return 0;
+	seen[cl.snap.ps.clientNum] = qtrue;
 	if ( cl.snap.ps.pm_type != PM_SPECTATOR ) {
 		out[n].num = cl.snap.ps.clientNum;
 		out[n].npc = qfalse;
@@ -1494,16 +1525,19 @@ static int ST_People( stPerson_t *out, int max ) {
 
 		if ( es->number == cl.snap.ps.clientNum )
 			continue;
-		if ( es->eType == ET_PLAYER && es->number < MAX_CLIENTS )
+		if ( es->eType == ET_PLAYER && es->number < MAX_CLIENTS ) {
 			out[n].npc = qfalse;
-		else if ( es->eType == ET_NPC )
+			seen[es->number] = qtrue;
+		} else if ( es->eType == ET_NPC ) {
 			out[n].npc = qtrue;
-		else
+		} else {
 			continue;
+		}
 		out[n].num = es->number;
 		VectorCopy( es->pos.trBase, out[n].org );
 		n++;
 	}
+	ST_AddFar( out, &n, max, seen );
 	return n;
 }
 
@@ -1597,6 +1631,15 @@ static qboolean ST_TriggerFired( stRun_t *r, const stStep_t *s ) {
 		}
 		return ST_ChatSaid( s, r->chatFrom, r->by, sizeof( r->by ) );
 	}
+	// a use, from when it began listening
+	if ( ST_TriggerUse( s ) ) {
+		if ( !r->watching ) {
+			r->watching = qtrue;
+			r->chatFrom = cls.realtime;
+			return qfalse;
+		}
+		return ST_UsedSince( s, r->chatFrom, r->by, sizeof( r->by ) );
+	}
 
 	if ( ST_TriggerDoor( s ) ) {
 		const entityState_t *es = ST_FindMover( ST_ModelNum( s->values[1] ) );
@@ -1660,6 +1703,8 @@ static qboolean ST_IfTrue( const stRun_t *r, const stStep_t *s ) {
 
 	if ( ST_TriggerChat( s ) )
 		return ST_ChatSaid( s, r->started, NULL, 0 );
+	if ( ST_TriggerUse( s ) )
+		return ST_UsedSince( s, r->started, NULL, 0 );
 	n = ST_People( people, ST_MAX_PEOPLE );
 	for ( int i = 0; i < n; i++ ) {
 		if ( ST_Counts( s, &people[i] ) && ST_Inside( s, people[i].org ) )
@@ -2738,9 +2783,12 @@ static struct {
 } stChat[ST_MAX_CHAT];
 static int stChatNext;
 
+static qboolean ST_FarMessage( const char *text );
+
 // a chat command from the server, before a language turns it into gibberish: kept a while.
-// "chat" "name\x19: message", "lchat" "name" "location" "colour" "message"
-void CL_Storyteller_ChatLine( void ) {
+// "chat" "name\x19: message", "lchat" "name" "location" "colour" "message". qtrue for one of
+// the hidden ones between storyteller and players, which never shows
+qboolean CL_Storyteller_ChatLine( void ) {
 	const char *cmd = Cmd_Argv( 0 );
 	char name[MAX_STRING_CHARS], text[MAX_STRING_CHARS];
 
@@ -2758,14 +2806,17 @@ void CL_Storyteller_ChatLine( void ) {
 		Q_strncpyz( name, Cmd_Argv( 1 ), sizeof( name ) );
 		Q_strncpyz( text, Cmd_Argv( 4 ), sizeof( text ) );
 	} else {
-		return;
+		return qfalse;
 	}
 	Q_StripColor( name );
 	Q_StripColor( text );
+	if ( ST_FarMessage( text ) )
+		return qtrue;
 	stChat[stChatNext].time = cls.realtime;
 	Q_strncpyz( stChat[stChatNext].name, name, sizeof( stChat[0].name ) );
 	Q_strncpyz( stChat[stChatNext].text, text, sizeof( stChat[0].text ) );
 	stChatNext = ( stChatNext + 1 ) % ST_MAX_CHAT;
+	return qfalse;
 }
 
 // whether one of the words, | between them, is in the text
@@ -2822,6 +2873,496 @@ static qboolean ST_ChatSaid( const stStep_t *s, int since, char *by, int bySize 
 /*
 ===============================================================================
 
+FAR AWAY: who's out of sight, and the use triggers used
+
+The server sends this client only who is near it. A storyteller whose stories wait on
+areas or use triggers (armed, or the one playing) tells everyone with this client where and
+which, in a hidden rpnotify, again every while for who joins later:
+	cmd:story/watch/<its client number>: <map> | m <inline model> | s <x y z> <radius> | u <name> | ...
+	cmd:story/unwatch/<its client number>
+Their client says, in a tell hidden from both of them, where its player is each time they go
+in or out of one, and every while they're in one; and that they used a named use trigger:
+	tell <storyteller> ~st <client number> pos <x y z> | gone | use <name>
+The players whose client doesn't say are asked of the server with rporigin, one a command,
+when the storyteller's an admin that can. NPCs out of sight can't be found either way.
+
+===============================================================================
+*/
+
+#define ST_FAR_MARKER		"~st "
+#define ST_FAR_MS			90000	// someone out of sight is known this long after we're told
+#define ST_WATCH_RESEND		30000	// the areas go out again this often
+#define ST_WATCH_MS			75000	// a storyteller's areas last this long after they last came
+#define ST_HEARTBEAT_MS		8000	// in an area, a player says so again this often
+#define ST_POLL_REPLY_MS	3000
+#define ST_MAX_AREAS		24
+#define ST_MAX_WATCHERS		4
+#define ST_MAX_USES			32
+
+typedef struct {
+	qboolean	sphere;				// near a spot; else a map trigger
+	int			model;
+	vec3_t		pos;
+	float		radius;
+} stArea_t;
+
+// as a storyteller: the players out of sight, the areas sent, the server asked
+static struct {
+	vec3_t		org[MAX_CLIENTS];
+	int			time[MAX_CLIENTS];		// 0 not known
+	qboolean	reports[MAX_CLIENTS];	// their client says itself
+	unsigned	sentSum;
+	int			sentTime;
+	qboolean	watchSent;
+	int			pollNext, pollAsked, pollTime;
+	qboolean	noPoll;					// rporigin isn't ours to use
+} stFar = { { { 0 } }, { 0 }, { qfalse }, 0, 0, qfalse, 0, -1 };
+
+// as a player: the storytellers watching, and their areas
+static struct {
+	qboolean	on;
+	int			num;
+	char		map[MAX_QPATH];
+	stArea_t	areas[ST_MAX_AREAS];
+	int			numAreas;
+	int			time;					// when they last came
+	unsigned	inMask;
+	qboolean	told;					// it's been told where we are since they came
+	int			lastSend;
+} stWatchers[ST_MAX_WATCHERS];
+
+// use triggers used, here or told
+static struct {
+	int		time;
+	char	name[48];
+	char	by[MAX_QPATH];
+} stUses[ST_MAX_USES];
+static int stUseNext;
+
+static qboolean ST_Connected( int c ) {
+	return (qboolean)( c >= 0 && c < MAX_CLIENTS && cl.gameState.stringOffsets[CS_PLAYERS + c]
+		&& cl.gameState.stringData[cl.gameState.stringOffsets[CS_PLAYERS + c]] );
+}
+
+static qboolean ST_Spectating( int c ) {
+	return (qboolean)( atoi( Info_ValueForKey( cl.gameState.stringData + cl.gameState.stringOffsets[CS_PLAYERS + c], "t" ) ) == TEAM_SPECTATOR );
+}
+
+// the players out of sight we know of, after the ones seen
+static void ST_AddFar( stPerson_t *out, int *n, int max, const qboolean *seen ) {
+	for ( int c = 0; c < MAX_CLIENTS && *n < max; c++ ) {
+		if ( seen[c] || !stFar.time[c] || cls.realtime - stFar.time[c] > ST_FAR_MS || !ST_Connected( c ) || ST_Spectating( c ) )
+			continue;
+		out[*n].num = c;
+		out[*n].npc = qfalse;
+		VectorCopy( stFar.org[c], out[*n].org );
+		( *n )++;
+	}
+}
+
+// the areas a story's steps wait on
+static void ST_StepAreas( const stStep_t *steps, int numSteps, stArea_t *out, int *n ) {
+	for ( int i = 0; i < numSteps && *n < ST_MAX_AREAS; i++ ) {
+		const stStep_t *s = &steps[i];
+		stArea_t a;
+		qboolean dup = qfalse;
+
+		if ( !s->enabled || ( s->action != ST_A_TRIGGER && s->action != ST_A_IF ) || !ST_TriggerArea( s ) )
+			continue;
+		memset( &a, 0, sizeof( a ) );
+		if ( ST_TriggerNear( s ) ) {
+			if ( !ST_HavePos( s ) )
+				continue;
+			a.sphere = qtrue;
+			ST_GetPos( s, a.pos );
+			a.radius = ST_Number( s, 4 ) > 0 ? ST_Number( s, 4 ) : 96.0f;
+		} else {
+			a.model = ST_ModelNum( s->values[1] );
+			if ( !a.model )
+				continue;
+		}
+		for ( int k = 0; k < *n; k++ ) {
+			if ( out[k].sphere == a.sphere && out[k].model == a.model && VectorCompare( out[k].pos, a.pos ) && out[k].radius == a.radius )
+				dup = qtrue;
+		}
+		if ( !dup )
+			out[( *n )++] = a;
+	}
+}
+
+// the use triggers a story's steps wait on, by name
+static void ST_StepUses( const stStep_t *steps, int numSteps, char ( *out )[48], int *n ) {
+	for ( int i = 0; i < numSteps && *n < ST_MAX_AREAS; i++ ) {
+		const stStep_t *s = &steps[i];
+		qboolean dup = qfalse;
+
+		if ( !s->enabled || ( s->action != ST_A_TRIGGER && s->action != ST_A_IF ) || !ST_TriggerUse( s ) || !s->values[1][0] )
+			continue;
+		for ( int k = 0; k < *n; k++ ) {
+			if ( !Q_stricmp( out[k], s->values[1] ) )
+				dup = qtrue;
+		}
+		if ( !dup )
+			Q_strncpyz( out[( *n )++], s->values[1], sizeof( out[0] ) );
+	}
+}
+
+static int ST_WatchedUses( char ( *out )[48] ) {
+	int n = 0, runNum;
+
+	for ( int i = 0; i < stNumArmed; i++ ) {
+		if ( !Q_stricmp( stArmed[i].map, cl.mapname ) )
+			ST_StepUses( stArmed[i].steps, stArmed[i].numSteps, out, &n );
+	}
+	if ( st.run.running )
+		ST_StepUses( ST_RunSteps( &runNum ), runNum, out, &n );
+	return n;
+}
+
+// every area waited on now: the stories armed for this map, and the one playing
+static int ST_WatchedAreas( stArea_t *out ) {
+	int n = 0, runNum;
+	stStep_t *runSteps;
+
+	for ( int i = 0; i < stNumArmed; i++ ) {
+		if ( !Q_stricmp( stArmed[i].map, cl.mapname ) )
+			ST_StepAreas( stArmed[i].steps, stArmed[i].numSteps, out, &n );
+	}
+	if ( st.run.running ) {
+		runSteps = ST_RunSteps( &runNum );
+		ST_StepAreas( runSteps, runNum, out, &n );
+	}
+	return n;
+}
+
+static unsigned ST_AreasSum( const stArea_t *areas, int n ) {
+	unsigned sum = (unsigned)n;
+
+	for ( int i = 0; i < n; i++ ) {
+		sum = sum * 31 + ( areas[i].sphere ? 1 : 2 ) + areas[i].model * 7;
+		for ( int k = 0; k < 3; k++ )
+			sum = sum * 31 + (unsigned)ST_Round( areas[i].pos[k] );
+		sum = sum * 31 + (unsigned)ST_Round( areas[i].radius );
+	}
+	return sum;
+}
+
+// as a storyteller, each frame: the areas out to everyone, the server asked about the rest
+static void ST_FarFrame( void ) {
+	stArea_t areas[ST_MAX_AREAS];
+	char uses[ST_MAX_AREAS][48];
+	const int n = cls.state == CA_ACTIVE ? ST_WatchedAreas( areas ) : 0;
+	const int nu = cls.state == CA_ACTIVE ? ST_WatchedUses( uses ) : 0;
+	unsigned sum = ST_AreasSum( areas, n );
+
+	for ( int i = 0; i < nu; i++ ) {
+		for ( const char *c = uses[i]; *c; c++ )
+			sum = sum * 31 + (unsigned)tolower( *c );
+		sum = sum * 31 + 1;
+	}
+
+	if ( cls.state != CA_ACTIVE || cls.realtime < st.nextSend )
+		return;
+
+	// where to watch, to everyone with this client
+	if ( CL_RpHooks_Experimental() ) {
+		if ( ( n || nu ) && ( !stFar.watchSent || sum != stFar.sentSum || cls.realtime - stFar.sentTime > ST_WATCH_RESEND ) ) {
+			char text[MAX_STRING_CHARS];
+
+			Com_sprintf( text, sizeof( text ), "rpnotify -1 1 cmd:story/watch/%i: %s", clc.clientNum, cl.mapname );
+			for ( int i = 0; i < n; i++ ) {
+				if ( areas[i].sphere )
+					Q_strcat( text, sizeof( text ), va( " | s %i %i %i %i", ST_Round( areas[i].pos[0] ), ST_Round( areas[i].pos[1] ),
+						ST_Round( areas[i].pos[2] ), ST_Round( areas[i].radius ) ) );
+				else
+					Q_strcat( text, sizeof( text ), va( " | m %i", areas[i].model ) );
+			}
+			for ( int i = 0; i < nu; i++ )
+				Q_strcat( text, sizeof( text ), va( " | u %s", uses[i] ) );
+			CL_AddReliableCommand( text, qfalse );
+			stFar.watchSent = qtrue;
+			stFar.sentSum = sum;
+			stFar.sentTime = cls.realtime;
+			st.nextSend = cls.realtime + ST_CommandGap();
+			return;
+		}
+		if ( !n && !nu && stFar.watchSent ) {
+			CL_AddReliableCommand( va( "rpnotify -1 1 cmd:story/unwatch/%i", clc.clientNum ), qfalse );
+			stFar.watchSent = qfalse;
+			st.nextSend = cls.realtime + ST_CommandGap();
+			return;
+		}
+	}
+
+	// the players out of sight that don't say where they are, one at a time
+	if ( !n || stFar.noPoll || ( stFar.pollAsked >= 0 && cls.realtime - stFar.pollTime < ST_POLL_REPLY_MS ) )
+		return;
+	stFar.pollAsked = -1;
+	for ( int k = 0; k < MAX_CLIENTS; k++ ) {
+		const int c = ( stFar.pollNext + k ) % MAX_CLIENTS;
+		qboolean inSight = qfalse;
+
+		if ( c == clc.clientNum || !ST_Connected( c ) || ST_Spectating( c ) || stFar.reports[c] )
+			continue;
+		for ( int i = 0; i < cl.snap.numEntities; i++ ) {
+			if ( ST_SnapEntity( i )->number == c )
+				inSight = qtrue;
+		}
+		if ( inSight )
+			continue;
+		CL_AddReliableCommand( va( "rporigin %i", c ), qfalse );
+		stFar.pollAsked = c;
+		stFar.pollTime = cls.realtime;
+		stFar.pollNext = c + 1;
+		st.nextSend = cls.realtime + ST_CommandGap();
+		return;
+	}
+}
+
+// rporigin's answer, "Name: (x y z, yaw)", for the player asked about: kept, and out of sight
+qboolean CL_Storyteller_ServerPrint( const char *text ) {
+	char name[MAX_STRING_CHARS], line[MAX_STRING_CHARS];
+	const char *paren;
+	float x, y, z, yaw;
+	const int c = stFar.pollAsked;
+
+	if ( c < 0 || cls.realtime - stFar.pollTime > ST_POLL_REPLY_MS )
+		return qfalse;
+	Q_strncpyz( line, text, sizeof( line ) );
+	Q_StripColor( line );
+	// no right to: no more asking this map
+	if ( Q_stristr( line, "permission" ) || Q_stristr( line, "not allowed" ) || Q_stristr( line, "unknown command" ) ) {
+		stFar.noPoll = qtrue;
+		stFar.pollAsked = -1;
+		Com_Printf( S_COLOR_YELLOW "Storyteller: players out of sight can't be asked for (rporigin isn't allowed)\n" );
+		return qtrue;
+	}
+	paren = strrchr( line, '(' );
+	if ( !paren || sscanf( paren, "(%f %f %f, %f)", &x, &y, &z, &yaw ) != 4 )
+		return qfalse;
+	Q_strncpyz( name, Info_ValueForKey( cl.gameState.stringData + cl.gameState.stringOffsets[CS_PLAYERS + c], "n" ), sizeof( name ) );
+	Q_StripColor( name );
+	if ( Q_stricmpn( line, name, strlen( name ) ) )
+		return qfalse;
+	VectorSet( stFar.org[c], x, y, z );
+	stFar.time[c] = cls.realtime;
+	stFar.pollAsked = -1;
+	return qtrue;
+}
+
+// a use trigger used, here or told
+static void ST_LogUse( const char *name, const char *by ) {
+	stUses[stUseNext].time = cls.realtime;
+	Q_strncpyz( stUses[stUseNext].name, name, sizeof( stUses[0].name ) );
+	Q_strncpyz( stUses[stUseNext].by, by, sizeof( stUses[0].by ) );
+	stUseNext = ( stUseNext + 1 ) % ST_MAX_USES;
+}
+
+static const char *ST_ClientName( int c ) {
+	static char name[MAX_QPATH];
+
+	Q_strncpyz( name, Info_ValueForKey( cl.gameState.stringData + cl.gameState.stringOffsets[CS_PLAYERS + c], "n" ), sizeof( name ) );
+	Q_StripColor( name );
+	return name;
+}
+
+// someone the step counts used its trigger since then
+static qboolean ST_UsedSince( const stStep_t *s, int since, char *by, int bySize ) {
+	const char *who = s->values[2];
+
+	for ( int n = 0; n < ST_MAX_USES; n++ ) {
+		const int i = ( stUseNext + n ) % ST_MAX_USES;
+
+		if ( !stUses[i].time || stUses[i].time < since || Q_stricmp( stUses[i].name, s->values[1] ) )
+			continue;
+		if ( !Q_stricmp( who, "any NPC" ) )
+			continue;
+		if ( !Q_stricmp( who, "me" ) && Q_stricmp( stUses[i].by, ST_ClientName( clc.clientNum ) ) )
+			continue;
+		if ( !Q_stricmp( who, "named" ) ) {
+			char typed[MAX_QPATH];
+
+			Q_strncpyz( typed, s->values[3], sizeof( typed ) );
+			Q_StripColor( typed );
+			if ( !typed[0] || ( Q_stricmp( stUses[i].by, typed ) && ( strlen( typed ) < 3 || !Q_stristr( stUses[i].by, typed ) ) ) )
+				continue;
+		}
+		if ( by )
+			Q_strncpyz( by, stUses[i].by, bySize );
+		return qtrue;
+	}
+	return qfalse;
+}
+
+// a hidden message, without its colours: "~st <client> pos x y z | gone | use <name>"; qtrue if
+// it was one, which never shows (the sender gets it back too)
+static qboolean ST_FarMessage( const char *text ) {
+	const char *p = text;
+	char word[16];
+	int c, used = 0;
+
+	while ( *p == ' ' )
+		p++;
+	if ( Q_stricmpn( p, ST_FAR_MARKER, strlen( ST_FAR_MARKER ) ) )
+		return qfalse;
+	p += strlen( ST_FAR_MARKER );
+	if ( sscanf( p, "%i %15s %n", &c, word, &used ) < 2 || c < 0 || c >= MAX_CLIENTS || c == clc.clientNum )
+		return qtrue;
+	p += used;
+	if ( !Q_stricmp( word, "pos" ) ) {
+		vec3_t org;
+
+		if ( sscanf( p, "%f %f %f", &org[0], &org[1], &org[2] ) == 3 ) {
+			VectorCopy( org, stFar.org[c] );
+			stFar.time[c] = cls.realtime;
+			stFar.reports[c] = qtrue;
+		}
+	} else if ( !Q_stricmp( word, "gone" ) ) {
+		stFar.time[c] = 0;
+		stFar.reports[c] = qtrue;
+	} else if ( !Q_stricmp( word, "use" ) && *p ) {
+		ST_LogUse( p, ST_ClientName( c ) );
+	}
+	return qtrue;
+}
+
+// cmd:story/watch/<num>: <map> | m <model> | s <x y z> <radius> | u <use trigger> | ...  and
+// cmd:story/unwatch/<num>. The uses say only that it listens: every use is told
+void CL_Storyteller_Hook( char **argv, int argc, const char *message ) {
+	char copy[MAX_STRING_CHARS], *part, *next;
+	int num, slot = -1;
+
+	if ( argc < 2 )
+		return;
+	num = atoi( argv[1] );
+	if ( num < 0 || num >= MAX_CLIENTS )
+		return;
+	for ( int i = 0; i < ST_MAX_WATCHERS; i++ ) {
+		if ( stWatchers[i].on && stWatchers[i].num == num )
+			slot = i;
+	}
+	if ( !Q_stricmp( argv[0], "unwatch" ) ) {
+		if ( slot >= 0 )
+			stWatchers[slot].on = qfalse;
+		return;
+	}
+	if ( Q_stricmp( argv[0], "watch" ) )
+		return;
+	if ( slot < 0 ) {
+		// a free one, or the oldest
+		slot = 0;
+		for ( int i = 0; i < ST_MAX_WATCHERS; i++ ) {
+			if ( !stWatchers[i].on ) {
+				slot = i;
+				break;
+			}
+			if ( stWatchers[i].time < stWatchers[slot].time )
+				slot = i;
+		}
+		memset( &stWatchers[slot], 0, sizeof( stWatchers[slot] ) );
+	}
+	stWatchers[slot].on = qtrue;
+	stWatchers[slot].num = num;
+	stWatchers[slot].time = cls.realtime;
+	stWatchers[slot].numAreas = 0;
+	Q_strncpyz( copy, message, sizeof( copy ) );
+	part = copy;
+	next = strchr( part, '|' );
+	if ( next )
+		*next++ = '\0';
+	while ( *part == ' ' )
+		part++;
+	for ( char *t = part + strlen( part ); t > part && t[-1] == ' '; )
+		*--t = '\0';
+	Q_strncpyz( stWatchers[slot].map, part, sizeof( stWatchers[slot].map ) );
+	for ( part = next; part && stWatchers[slot].numAreas < ST_MAX_AREAS; part = next ) {
+		stArea_t *a = &stWatchers[slot].areas[stWatchers[slot].numAreas];
+		char kind = 0;
+
+		next = strchr( part, '|' );
+		if ( next )
+			*next++ = '\0';
+		memset( a, 0, sizeof( *a ) );
+		if ( sscanf( part, " %c %f %f %f %f", &kind, &a->pos[0], &a->pos[1], &a->pos[2], &a->radius ) == 5 && kind == 's' ) {
+			a->sphere = qtrue;
+			stWatchers[slot].numAreas++;
+		} else if ( sscanf( part, " %c %i", &kind, &a->model ) == 2 && kind == 'm' && a->model > 0 && a->model < CM_NumInlineModels() ) {
+			stWatchers[slot].numAreas++;
+		}
+	}
+}
+
+// the areas a player is in, a bit each
+static unsigned ST_AreasHere( const stArea_t *areas, int n, const vec3_t org ) {
+	unsigned mask = 0;
+
+	for ( int i = 0; i < n; i++ ) {
+		if ( areas[i].sphere ? Distance( org, areas[i].pos ) <= areas[i].radius : ST_InTrigger( areas[i].model, org ) )
+			mask |= 1u << i;
+	}
+	return mask;
+}
+
+static void ST_TellWatcher( int num, const char *payload ) {
+	CL_AddReliableCommand( va( "tell %i " ST_FAR_MARKER "%i %s", num, clc.clientNum, payload ), qfalse );
+}
+
+// as a player, each frame: where we are, to each storyteller watching, when we go in or out of
+// one of their areas, and every while inside
+static void ST_ReportFrame( void ) {
+	const qboolean away = (qboolean)( !cl.snap.valid || cl.snap.ps.pm_type == PM_SPECTATOR || cl.snap.ps.stats[STAT_HEALTH] <= 0
+		|| ( cl.snap.ps.pm_flags & PMF_FOLLOW ) );
+
+	if ( cls.state != CA_ACTIVE )
+		return;
+	for ( int i = 0; i < ST_MAX_WATCHERS; i++ ) {
+		qboolean sent = qfalse;
+		unsigned mask;
+
+		if ( !stWatchers[i].on )
+			continue;
+		if ( cls.realtime - stWatchers[i].time > ST_WATCH_MS || !ST_Connected( stWatchers[i].num ) ) {
+			stWatchers[i].on = qfalse;
+			continue;
+		}
+		if ( stWatchers[i].num == clc.clientNum || Q_stricmp( stWatchers[i].map, cl.mapname ) )
+			continue;
+		mask = away ? 0 : ST_AreasHere( stWatchers[i].areas, stWatchers[i].numAreas, cl.snap.ps.origin );
+		if ( cls.realtime - stWatchers[i].lastSend < ST_CommandGap() )
+			continue;
+		if ( !stWatchers[i].told || mask != stWatchers[i].inMask || ( mask && cls.realtime - stWatchers[i].lastSend > ST_HEARTBEAT_MS ) ) {
+			if ( away )
+				ST_TellWatcher( stWatchers[i].num, "gone" );
+			else
+				ST_TellWatcher( stWatchers[i].num, va( "pos %i %i %i", ST_Round( cl.snap.ps.origin[0] ), ST_Round( cl.snap.ps.origin[1] ),
+					ST_Round( cl.snap.ps.origin[2] ) ) );
+			sent = qtrue;
+		}
+		if ( sent ) {
+			stWatchers[i].told = qtrue;
+			stWatchers[i].inMask = mask;
+			stWatchers[i].lastSend = cls.realtime;
+			// one a frame: the server's flood protection
+			return;
+		}
+	}
+}
+
+// the map editor's use trigger by that name was used here: heard by our own stories, and told to
+// the storytellers watching
+void CL_Storyteller_TriggerUsed( const char *name ) {
+	if ( !name || !name[0] )
+		return;
+	ST_LogUse( name, ST_ClientName( clc.clientNum ) );
+	for ( int i = 0; i < ST_MAX_WATCHERS; i++ ) {
+		if ( stWatchers[i].on && stWatchers[i].num != clc.clientNum && cls.realtime - stWatchers[i].time <= ST_WATCH_MS )
+			ST_TellWatcher( stWatchers[i].num, va( "use %s", name ) );
+	}
+}
+
+/*
+===============================================================================
+
 Picking with the managers
 
 ===============================================================================
@@ -2859,9 +3400,28 @@ static qboolean ST_PickOpen( void ) {
 	case ST_PICK_NPC_MANAGE:	return CL_NpcManager_Active();
 	case ST_PICK_SOUND:		return CL_SoundManager_Active();
 	case ST_PICK_MUSIC:		return CL_MusicManager_Active();
-	case ST_PICK_LOCK:		return CL_MapEditor_Active();
+	case ST_PICK_LOCK:
+	case ST_PICK_TRIGGER:	return CL_MapEditor_Active();
 	default:				return qfalse;
 	}
+}
+
+// the step's trigger, clicked in the map editor's free camera: 0 a map trigger, 1 a door or
+// button, 2 a use trigger
+static void ST_StartTriggerPick( int kind ) {
+	st.pick = ST_PICK_TRIGGER;
+	st.pickStep = st.stepList.sel;
+	st.numPicked = 0;
+	st.pickedTrigger[0] = '\0';
+	CL_MapEditor_PickForStory( kind );
+}
+
+// the map editor's click: "*12" for a map trigger or a door, the name of a use trigger
+void CL_Storyteller_TriggerPicked( const char *value ) {
+	if ( st.pick != ST_PICK_TRIGGER )
+		return;
+	Q_strncpyz( st.pickedTrigger, value, sizeof( st.pickedTrigger ) );
+	st.numPicked = 1;
 }
 
 // a manager opened from a step: what it sends goes in the story
@@ -3255,8 +3815,20 @@ static void ST_PickFrame( void ) {
 	CL_ShaderManager_Close();
 	CL_NpcManager_Close();
 	CL_SoundManager_Close();
-	if ( st.pick == ST_PICK_LOCK )
+	if ( st.pick == ST_PICK_LOCK || st.pick == ST_PICK_TRIGGER )
 		CL_MapEditor_Close();
+	// a trigger clicked: the step's
+	if ( st.pick == ST_PICK_TRIGGER ) {
+		st.pick = ST_PICK_NONE;
+		if ( ST_Open() && st.numPicked && st.pickStep >= 0 && st.pickStep < st.numSteps && ST_Watches( &st.steps[st.pickStep] ) ) {
+			ST_SelectStep( st.pickStep );
+			Q_strncpyz( st.steps[st.pickStep].values[1], st.pickedTrigger, ST_VALUE_LEN );
+			ST_Changed();
+			ST_Message( va( S_COLOR_GREEN "Picked %s", st.pickedTrigger ) );
+		}
+		st.numPicked = 0;
+		return;
+	}
 	st.pick = ST_PICK_NONE;
 	// another tool opened from it stays
 	if ( !( Key_GetCatcher() & KEYCATCH_ENGINETOOLS ) && ST_Open() && st.numPicked )
@@ -3278,6 +3850,11 @@ void CL_Storyteller_Shutdown( void ) {
 	// armed ones wait on their first step again, if the map is still theirs
 	for ( int i = 0; i < stNumArmed; i++ )
 		stArmed[i].run.running = qfalse;
+	// who's where, and who watches, are the map's
+	memset( &stFar, 0, sizeof( stFar ) );
+	stFar.pollAsked = -1;
+	memset( stWatchers, 0, sizeof( stWatchers ) );
+	memset( stUses, 0, sizeof( stUses ) );
 }
 
 qboolean CL_Storyteller_Active( void ) {
@@ -3287,6 +3864,8 @@ qboolean CL_Storyteller_Active( void ) {
 void CL_Storyteller_Frame( void ) {
 	ST_PickFrame();
 	ST_RunFrame();
+	ST_FarFrame();
+	ST_ReportFrame();
 }
 
 /*
@@ -4010,11 +4589,32 @@ static void ST_DrawEdit( void ) {
 			st.focus = i;
 	}
 
-	if ( ST_Watches( s ) && !ST_TriggerNear( s ) && !ST_TriggerChat( s ) ) {
-		const qboolean door = ST_TriggerDoor( s );
+	// a use trigger: the one looked at
+	if ( ST_Watches( s ) && ST_TriggerUse( s ) ) {
 		const float bw = ( ST_EDIT_W - 4 ) * 0.5f;
 
-		if ( ST_Button( ST_EDIT_X, y, bw, door ? "The one I aim at" : "The one I stand in", qfalse, qtrue ) ) {
+		if ( ST_Button( ST_EDIT_X + bw + 4, y, bw, "Pick in the map", qfalse, qtrue ) )
+			ST_StartTriggerPick( 2 );
+		if ( ST_Button( ST_EDIT_X, y, bw, "The one I look at", qfalse, qtrue ) ) {
+			const char *name = CL_MapEditor_AimedUseTrigger();
+
+			if ( name && name[0] ) {
+				Q_strncpyz( s->values[1], name, ST_VALUE_LEN );
+				ST_Changed();
+			} else {
+				ST_Message( name ? S_COLOR_YELLOW "That use trigger has no name: give it one in the map editor's Triggers tab"
+					: S_COLOR_YELLOW "Look at one of the map editor's use triggers first, close enough to use it" );
+			}
+		}
+		y += ST_CTRL_H + 4;
+	}
+	if ( ST_Watches( s ) && !ST_TriggerNear( s ) && !ST_TriggerChat( s ) && !ST_TriggerUse( s ) ) {
+		const qboolean door = ST_TriggerDoor( s );
+		const float bw = ( ST_EDIT_W - 8 ) / 3.0f;
+
+		if ( ST_Button( ST_EDIT_X + bw + 4, y, bw, "In the map", qfalse, qtrue ) )
+			ST_StartTriggerPick( door ? 1 : 0 );
+		if ( ST_Button( ST_EDIT_X, y, bw, door ? "I aim at" : "I stand in", qfalse, qtrue ) ) {
 			const int m = door ? ST_AimedMover() : ST_TriggerHere();
 
 			if ( m ) {
@@ -4024,7 +4624,7 @@ static void ST_DrawEdit( void ) {
 				ST_Message( door ? S_COLOR_YELLOW "Aim at a door or button first" : S_COLOR_YELLOW "Stand in one of the map's triggers first" );
 			}
 		}
-		if ( ST_Button( ST_EDIT_X + bw + 4, y, bw, "Pick from the list", qfalse, qtrue ) )
+		if ( ST_Button( ST_EDIT_X + ( bw + 4 ) * 2, y, bw, "From a list", qfalse, qtrue ) )
 			ST_OpenChoose( door ? ST_CHOOSE_DOOR : ST_CHOOSE_TRIGGER );
 		y += ST_CTRL_H + 6;
 	}
@@ -4136,13 +4736,15 @@ static void ST_DrawEdit( void ) {
 		ST_TextWrapped( ST_EDIT_X, y + ( lines + 1 ) * ST_ROW_H, ST_EDIT_W, ST_TriggerDoor( s )
 			? "Whoever opens it: your game can't see who used it."
 			: ST_TriggerChat( s ) ? "Said in chat from when this step starts waiting, any of the words, | between them."
-			: ST_Number( s, 8 ) > 0 ? "Someone in already counts from when the step starts. Only who your game can see counts."
-			: "Someone already in has to leave and come back. Only who your game can see counts.", stDim, 3 );
+			: ST_TriggerUse( s ) ? "Used from when this step starts waiting: by you, or by anyone with this client with experimental on."
+			: ST_Number( s, 8 ) > 0 ? "Someone in already counts from when the step starts. Players out of sight count too; NPCs only near you."
+			: "Someone already in has to leave and come back. Players out of sight count too; NPCs only near you.", stDim, 3 );
 	} else if ( s->action == ST_A_IF ) {
 		const int lines = ST_TextWrapped( ST_EDIT_X, y, ST_EDIT_W, va( "%s: the steps after it play, else the ones after its Else.", ST_IfSummary( s ) ), stDim, 3 );
 		ST_TextWrapped( ST_EDIT_X, y + ( lines + 1 ) * ST_ROW_H, ST_EDIT_W, ST_TriggerChat( s )
 			? "Said in chat since the story began playing. End the If's steps with End if."
-			: "Looked at once, when the story gets to it; only who your game can see counts. End the If's steps with End if.", stDim, 3 );
+			: ST_TriggerUse( s ) ? "Used since the story began playing. End the If's steps with End if."
+			: "Looked at once, when the story gets to it; players out of sight count too, NPCs only near you. End the If's steps with End if.", stDim, 3 );
 	} else if ( s->action == ST_A_ELSE || s->action == ST_A_ENDIF ) {
 		ST_TextWrapped( ST_EDIT_X, y, ST_EDIT_W, s->action == ST_A_ELSE ? "The steps from here to the End if play when the If was false."
 			: "The If's steps end here; the story goes on either way.", stDim, 3 );
@@ -4579,8 +5181,8 @@ static void ST_Line( const vec3_t a, const vec3_t b, const byte *color ) {
 static qboolean ST_DrawTrigger( const stStep_t *s, const byte *color, vec3_t top ) {
 	vec3_t mins, maxs;
 
-	// what's said is nowhere
-	if ( ST_TriggerChat( s ) )
+	// what's said, or a use, is nowhere
+	if ( ST_TriggerChat( s ) || ST_TriggerUse( s ) )
 		return qfalse;
 
 	if ( ST_TriggerNear( s ) ) {

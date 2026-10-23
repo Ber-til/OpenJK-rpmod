@@ -425,8 +425,11 @@ rescan:
 		if ( !CL_RpHooks_ServerCommand( &replaced ) )
 			return qfalse;
 		if ( replaced ) {
-			// the storyteller hears it as said, for "someone says"
-			CL_Storyteller_ChatLine();
+			// the storyteller hears it as said, for "someone says"; its hidden messages never show
+			if ( CL_Storyteller_ChatLine() ) {
+				Cmd_TokenizeString( "print \"\"" );
+				return qtrue;
+			}
 			// NPC talk is chat too: in a language, as the character playing hears it
 			CL_Languages_ServerCommand();
 			return qtrue;
@@ -435,6 +438,12 @@ rescan:
 
 	// the admin check reads rpstatus, and hides the reply it asked for
 	if ( !strcmp( cmd, "print" ) && CL_RpAdmin_ServerPrint( Cmd_Argv( 1 ) ) ) {
+		Cmd_TokenizeString( "print \"\"" );
+		return qtrue;
+	}
+
+	// the storyteller asks where players out of sight are, and hides the answer
+	if ( !strcmp( cmd, "print" ) && CL_Storyteller_ServerPrint( Cmd_Argv( 1 ) ) ) {
 		Cmd_TokenizeString( "print \"\"" );
 		return qtrue;
 	}
@@ -542,8 +551,11 @@ rescan:
 
 	// we may want to put a "connect to other server" command here
 
-	// the storyteller hears chat as said, for "someone says"
-	CL_Storyteller_ChatLine();
+	// the storyteller hears chat as said, for "someone says"; its hidden messages never show
+	if ( CL_Storyteller_ChatLine() ) {
+		Cmd_TokenizeString( "print \"\"" );
+		return qtrue;
+	}
 	// chat in a language the character playing doesn't know is gibberish, everywhere it shows
 	CL_Languages_ServerCommand();
 	// chat from far away stays out of the console

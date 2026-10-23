@@ -50,6 +50,12 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 //   cmd:map/<verb>/...
 //     an admin's map edits, shown to everyone on the map; see cl_mapeditor.cpp.
 //
+//   cmd:mine/<client number>/<part>/<parts>: <shader>><shader>|...
+//     a player's shader manager player shaders: their own force powers, sabers and
+//     shells drawn with them on the screens of everyone with this client; sent as
+//     they change, as the map starts and as someone joins. cmd:mine/<client number>/clear
+//     drops them. See cl_shadermanager.cpp.
+//
 //   cmd:sky/<r g b>/<degrees a second>/<pitch yaw roll>/<x y z>
 //     the sky tinted, spun round and turned, a 3D skybox's view also moved, until the
 //     map changes; see cl_shadermanager.cpp. cmd:sky/off puts it back.
@@ -168,9 +174,33 @@ static rhResult_t RH_Npc( char **argv, int argc, const char *message ) {
 }
 
 static qboolean rhExperimental;
+static cvar_t *cl_rpExperimental;		// on as the game starts: rpexperimental
 
 qboolean CL_RpHooks_Experimental( void ) {
 	return rhExperimental;
+}
+
+// rpexperimental [on|off]: experimental features on or off now, and so every time the game starts.
+// A tool's TOGGLE EXPERIMENTAL is for the session only
+static void CL_RpExperimental_f( void ) {
+	const char *arg = Cmd_Argv( 1 );
+	qboolean on;
+
+	if ( !arg[0] )
+		on = (qboolean)!rhExperimental;
+	else if ( !Q_stricmp( arg, "on" ) || !Q_stricmp( arg, "1" ) )
+		on = qtrue;
+	else if ( !Q_stricmp( arg, "off" ) || !Q_stricmp( arg, "0" ) )
+		on = qfalse;
+	else {
+		Com_Printf( "usage: rpexperimental [on|off]   experimental features, kept for every time the game starts\n" );
+		return;
+	}
+	rhExperimental = on;
+	Cvar_Set( "cl_rpExperimental", on ? "1" : "0" );
+	Com_Printf( "Experimental features %s, now and every time the game starts\n", on ? S_COLOR_YELLOW "on" S_COLOR_WHITE : "off" );
+	if ( on )
+		Com_Printf( S_COLOR_YELLOW "%s\n", RP_EXPERIMENTAL_WARNING );
 }
 
 void CL_RpHooks_SetExperimental( qboolean on ) {
@@ -400,6 +430,14 @@ static rhResult_t RH_Run( const char *text ) {
 	}
 	if ( !Q_stricmp( argv[0], "map" ) ) {
 		CL_MapEditor_Hook( argv + 1, argc - 1, message );
+		return RH_DROP;
+	}
+	if ( !Q_stricmp( argv[0], "mine" ) ) {
+		CL_ShaderManager_MineHook( argv + 1, argc - 1, message );
+		return RH_DROP;
+	}
+	if ( !Q_stricmp( argv[0], "story" ) ) {
+		CL_Storyteller_Hook( argv + 1, argc - 1, message );
 		return RH_DROP;
 	}
 	if ( !Q_stricmp( argv[0], "sky" ) ) {
@@ -780,11 +818,15 @@ static void CL_Objective_f( void ) {
 
 void CL_RpHooks_Init( void ) {
 	memset( &rhObj, 0, sizeof( rhObj ) );
+	cl_rpExperimental = Cvar_Get( "cl_rpExperimental", "0", CVAR_ARCHIVE, "Experimental features on as the game starts (rpexperimental)" );
+	rhExperimental = (qboolean)( cl_rpExperimental->integer != 0 );
 	Cmd_AddCommand( "objective", CL_Objective_f, "Lists the mission objectives, or sends one to everyone with this client" );
+	Cmd_AddCommand( "rpexperimental", CL_RpExperimental_f, "Turns experimental features on or off, and keeps them so every time the game starts" );
 }
 
 void CL_RpHooks_Shutdown( void ) {
 	Cmd_RemoveCommand( "objective" );
+	Cmd_RemoveCommand( "rpexperimental" );
 }
 
 // a new server is a new story

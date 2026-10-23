@@ -56,6 +56,8 @@ cvar_t	*r_dynamiclight;
 // rjr - removed for hacking cvar_t	*r_dlightBacks;
 
 cvar_t	*r_lodbias;
+cvar_t	*r_safeModels;
+cvar_t	*r_safePlayerModels;
 cvar_t	*r_lodscale;
 cvar_t	*r_autolodscalevalue;
 
@@ -1600,6 +1602,8 @@ void R_Register( void )
 	r_singleShader						= ri.Cvar_Get( "r_singleShader",					"0",						CVAR_CHEAT|CVAR_LATCH, "" );
 	r_lodCurveError						= ri.Cvar_Get( "r_lodCurveError",					"250",						CVAR_ARCHIVE_ND, "" );
 	r_lodbias							= ri.Cvar_Get( "r_lodbias",						"0",						CVAR_ARCHIVE_ND, "" );
+	r_safeModels						= ri.Cvar_Get( "cl_safeModels",					"0",						CVAR_ARCHIVE_ND, "A model with more on a surface than the game draws shows as a missing model, not dropping you, for models loaded from then on" );
+	r_safePlayerModels					= ri.Cvar_Get( "cl_safePlayerModels",			"0",						CVAR_ARCHIVE_ND, "A player model with more on a surface than the game draws shows as Kyle, not dropping you, for models loaded from then on" );
 	r_autolodscalevalue					= ri.Cvar_Get( "r_autolodscalevalue",				"0",						CVAR_ROM, "" );
 	r_flares							= ri.Cvar_Get( "r_flares",							"1",						CVAR_ARCHIVE_ND, "" );
 
@@ -1868,6 +1872,9 @@ void RE_Shutdown( qboolean destroyWindow, qboolean restarting ) {
 		if ( tr.dofPxShader )
 			qglDeleteProgramsARB( 1, &tr.dofPxShader );
 		tr.dofVtxShader = tr.dofPxShader = 0;
+		if ( tr.filterPxShader )
+			qglDeleteProgramsARB( 1, &tr.filterPxShader );
+		tr.filterPxShader = 0;
 
 		qglDeleteTextures(1, &tr.gammaCorrectLUTImage);
 
@@ -2168,7 +2175,13 @@ Q_EXPORT refexport_t* QDECL GetRefAPI( int apiVersion, refimport_t *rimp ) {
 	re.ext.G2API_GetSkins					= G2API_GetSkins;
 	re.ext.HideWorldTriangles				= RE_HideWorldTriangles;
 	re.ext.SetDepthOfField					= RE_SetDepthOfField;
+	re.ext.SetScreenFilter					= RE_SetScreenFilter;
+	re.ext.GetFogs							= RE_GetFogs;
+	re.ext.SetFog							= RE_SetFog;
+	re.ext.AddFog							= RE_AddFog;
+	re.ext.ClearAddedFogs					= RE_ClearAddedFogs;
 	re.ext.SetSkyLook						= RE_SetSkyLook;
+	re.ext.SetSkyPortal						= RE_SetSkyPortal;
 	re.ext.WorldPieceModel					= RE_WorldPieceModel;
 
 	return &re;

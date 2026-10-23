@@ -32,6 +32,21 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 
 #define	REF_API_VERSION 10
 
+// a filter over the cinematic camera's view: its colours mixed, its brightness coloured along a
+// ramp, then grain, scanlines and darkened corners, all of it mixed with the view as it was
+typedef struct screenFilter_s {
+	float	matrix[3][4];		// red, green and blue out: each row . ( r, g, b, 1 )
+	float	ramp;				// how much the brightness coloured along rampColors takes over, 0-1
+	float	rampGain;			// the brightness times this before it's coloured
+	byte	rampColors[5][3];	// dark to light
+	float	grain;				// noise up to this much either way, 0-1
+	float	vignette;			// the corners darkened by up to this, 0-1
+	float	scanlines;			// dark lines this deep, 0-1
+	float	scanlineCount;		// lines down the screen
+	float	aberration;			// red and blue pulled apart this many pixels on a 480 high screen
+	float	strength;			// 0 none of it, 1 all
+} screenFilter_t;
+
 //
 // these are the functions exported by the refresh module
 //
@@ -258,6 +273,23 @@ typedef struct refexport_s {
 		// is) and turned by angles; a 3D skybox's view is turned instead, and moved by shift.
 		// A NULL tint puts the sky back as the map has it
 		void				(*SetSkyLook)							( const float *tint, const vec3_t angles, const vec3_t shift );
+		// the client's cinematic camera: a filter over the next world scene rendered, after its
+		// depth of field; NULL for none. Holds until changed
+		void				(*SetScreenFilter)						( const struct screenFilter_s *filter );
+		// the client's map editor: the map's fogs, 1 to the count returned less one (0 is no fog), as the
+		// map has them: their colour, how deep it takes to see nothing through them and their box;
+		// *global is the fog over the whole map, -1 none
+		int					(*GetFogs)								( vec3_t *colors, float *depths, vec3_t *mins, vec3_t *maxs, int *global, int max );
+		// a fog's colour and depth until the next map; a NULL colour puts the map's back
+		void				(*SetFog)								( int fog, const float *color, float depth );
+		// a fog volume of the client's own, until the next map or ClearAddedFogs: the world's surfaces in
+		// the box that aren't in one of the map's volumes are in it; its fog number, 0 if there's no room
+		int					(*AddFog)								( const vec3_t mins, const vec3_t maxs, const float *color, float depth );
+		void				(*ClearAddedFogs)						( void );
+		// the shader manager's sky portal, until changed: the map seen from origin takes the sky's
+		// place in every world scene, as a 3D skybox's view does; a map's own 3D skybox is moved
+		// there. NULL puts the sky back as the map has it
+		void				(*SetSkyPortal)							( const vec3_t origin );
 	} ext;
 
 } refexport_t;
