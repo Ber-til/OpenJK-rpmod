@@ -65,7 +65,9 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 // near each player, so things far from them may be missing in a shot of somewhere else.
 //
 // Shots are made in the camera editor, /cincam edit: a free camera that shows each
-// spot's view, the trail between them and a camera running along it. They are saved in
+// spot's view, the trail between them and a camera running along it, and a timeline under it
+// that shows the shot at any moment: through its camera, the NPCs where their walks have
+// them and the animations on their frames, all on this screen only. They are saved in
 // camshots/<name>.cam as their path or orbit hook, which /cincam play and the
 // Storyteller's Camera shot send. NPCs walking in the shot follow it there as
 //   walk <npc> <route> walk|run <seconds into the shot>
@@ -245,6 +247,7 @@ static cvar_t *rpc_cinematics;
 static cvar_t *rpc_cinThirdPerson;		// 1 while cg_thirdPerson is ours to put back to 0, a crash included
 
 static qboolean CE_Open( void );
+static void CE_TlLetGo( void );
 static char *CE_TypedText( int *size );
 static void RC_StopAnims( qboolean editorToo );
 static qboolean RC_DepthOfField( const rcShot_t *s, int prev, int next, float frac, const vec3_t org, const vec3_t ang,
@@ -253,6 +256,7 @@ static qboolean RC_ShotDepthOfField( const rcShot_t *s, int ms, const vec3_t org
 static void RC_NoDepthOfField( void );
 static qboolean RC_Filter( int type, int strength );
 static void RC_NoFilter( void );
+static void RC_DrawTransitions( const rcShot_t *shot, int ms );
 static int RC_FilterByWord( const char *word );
 static const char *RC_FilterWord( int type );
 static const char *RC_FilterName( int type );
@@ -1084,14 +1088,15 @@ static void RC_Release( rcPlaying_t *p ) {
 		rcFlip[p->num] = (qboolean)!rcFlip[p->num];
 }
 
-static void RC_StartAnim( int num, const char *anim, int from, int to, int mode, qboolean loop, int speed, int delay, int ms, qboolean editor ) {
+// several can wait their turn on someone: the one that started last plays, the editor's first
+static rcPlaying_t *RC_StartAnim( int num, const char *anim, int from, int to, int mode, qboolean loop, int speed, int delay, int ms, qboolean editor ) {
 	rcPlaying_t *p = NULL;
 
 	if ( num < 0 || num >= MAX_GENTITIES || !anim[0] )
-		return;
-	// in place of one it's playing already, the editor's apart
-	for ( int i = 0; i < RC_MAX_PLAYING; i++ ) {
-		if ( rcPlaying[i].active && rcPlaying[i].num == num && rcPlaying[i].editor == editor ) {
+		return NULL;
+	// the editor shows one at a time, in place of the one it showed
+	for ( int i = 0; i < RC_MAX_PLAYING && editor; i++ ) {
+		if ( rcPlaying[i].active && rcPlaying[i].num == num && rcPlaying[i].editor ) {
 			p = &rcPlaying[i];
 			break;
 		}
@@ -1103,7 +1108,7 @@ static void RC_StartAnim( int num, const char *anim, int from, int to, int mode,
 		}
 	}
 	if ( !p )
-		return;
+		return NULL;
 	memset( p, 0, sizeof( *p ) );
 	p->active = qtrue;
 	p->editor = editor;
@@ -1116,6 +1121,7 @@ static void RC_StartAnim( int num, const char *anim, int from, int to, int mode,
 	p->speed = Com_Clamp( 0.05f, 10.0f, speed / 100.0f );
 	p->start = cls.realtime + delay;
 	p->end = ms > 0 ? p->start + ms : 0;
+	return p;
 }
 
 // every one playing let go; the editor's too, or not
@@ -1134,6 +1140,8 @@ static qboolean RC_EntityOrigin( int num, vec3_t out ) {
 		VectorCopy( cl.snap.ps.origin, out );
 		return qtrue;
 	}
+	if ( CL_NpcWalk_PoseOf( num, out ) )
+		return qtrue;
 	for ( int i = 0; CL_NpcWalk_GetWalk( i, &w ); i++ ) {
 		if ( w.num == num ) {
 			VectorCopy( w.pos, out );
@@ -1198,8 +1206,13 @@ static void RC_AnimateModel( const refEntity_t *ent ) {
 
 		if ( !p->active || cls.realtime < p->start || !RC_EntityOrigin( p->num, org ) )
 			continue;
-		// the editor's first, it's what's being made
-		if ( Distance( org, ent->origin ) < best || ( pick && pick->num == p->num && p->editor ) ) {
+		// on the same one: the editor's first, it's what's being made, then the latest
+		if ( pick && pick->num == p->num ) {
+			if ( ( p->editor && !pick->editor ) || ( p->editor == pick->editor && p->start > pick->start ) )
+				pick = p;
+			continue;
+		}
+		if ( Distance( org, ent->origin ) < best ) {
 			best = Distance( org, ent->origin );
 			pick = p;
 		}
@@ -1362,8 +1375,26 @@ static void RC_RunAnimSend( void ) {
 static void RC_RunAnims( void ) {
 	RC_RunAnimSend();
 	for ( int i = 0; i < RC_MAX_PLAYING && rcNumPlaying; i++ ) {
-		if ( rcPlaying[i].active && rcPlaying[i].end && cls.realtime >= rcPlaying[i].end )
-			RC_Release( &rcPlaying[i] );
+		rcPlaying_t *p = &rcPlaying[i];
+
+		if ( !p->active )
+			continue;
+		if ( p->end && cls.realtime >= p->end ) {
+			RC_Release( p );
+			continue;
+		}
+		// one that started after it on the same one, and lasts as long, has taken over for good:
+		// dropped, the cgame not told, the other playing on
+		for ( int j = 0; j < RC_MAX_PLAYING; j++ ) {
+			const rcPlaying_t *q = &rcPlaying[j];
+
+			if ( q != p && q->active && q->num == p->num && q->editor == p->editor && q->start > p->start && q->start <= cls.realtime
+				&& ( !q->end || ( p->end && p->end <= q->end ) ) ) {
+				p->active = qfalse;
+				rcNumPlaying--;
+				break;
+			}
+		}
 	}
 }
 
@@ -1721,7 +1752,24 @@ typedef struct {
 	// a preview on this screen; the cinematic it stood in for comes back after
 	qboolean	preview;
 	int			previewEnd;
+	int			previewStart;		// cls.realtime the shot would have started, from its beginning
 	rcState_t	saved;
+
+	// the timeline under the view: a moment picked, the camera, NPCs and animations are shown
+	// as the shot has them then
+	qboolean	tlHidden;
+	qboolean	tlPinned;
+	int			tlMs;
+	qboolean	tlCam;				// seen through the shot's camera then, not the free one
+	qboolean	tlPosed;			// NPCs held and animations set for it
+	int			tlScroll;
+	int			tlDrag;				// ceTlDrag_t
+	int			tlDragIndex;
+	int			tlDragGrab;			// ms from where the bar starts to where it was grabbed
+	int			tlDragSpan;			// the timeline's length when it was grabbed, kept while dragging
+	int			tlPlanTime;			// the walks' plans, worked out then
+	rcWalk_t	tlPlanned[RC_MAX_WALKS];
+	int			tlNumPlanned;
 
 	// the view drawn, for the numbers over the keys
 	qboolean	haveView;
@@ -1884,8 +1932,10 @@ static void CE_ToggleThrough( void ) {
 		return;
 	}
 	ce.through = (qboolean)!ce.through;
-	if ( ce.through )
+	if ( ce.through ) {
 		CE_CameraFromKey( k );
+		ce.tlCam = qfalse;
+	}
 }
 
 static void CE_SetOrbit( qboolean orbit ) {
@@ -1940,6 +1990,9 @@ static void CE_New( void ) {
 	ce.sel = -1;
 	ce.keyScroll = 0;
 	ce.through = qfalse;
+	CE_TlLetGo();
+	ce.tlMs = 0;
+	ce.tlScroll = 0;
 }
 
 static qboolean CE_Load( const char *name ) {
@@ -2058,10 +2111,325 @@ static void CE_ListShots( void ) {
 	ce.listing = qtrue;
 }
 
+/*
+===============================================================================
+
+The timeline: the shot at a moment
+
+A moment picked on it shows the camera, the NPCs walking and the animations as the shot has
+them then, on this screen only: the view through the shot's camera, or the free one, the
+NPCs held on their routes and the animations on their frames.
+
+===============================================================================
+*/
+
+typedef enum {
+	CE_TL_NONE,
+	CE_TL_HEAD,			// the moment
+	CE_TL_KEY,			// a spot, or an orbit's end
+	CE_TL_WALK,
+	CE_TL_ANIM,
+	CE_TL_ANIM_END
+} ceTlDrag_t;
+
+#define CE_TL_SNAP_MS		100
+#define CE_TL_PLAN_MS		1000		// where the NPCs stand is looked at again this often
+#define CE_TL_MIN_MS		100			// the least between two spots
+#define CE_MAX_GROUP		16
+
+// a walk as it would go: each NPC from where it stands, or where a walk before has it then,
+// through the route; a group keeping its shape
+typedef struct {
+	int			count;
+	int			nums[CE_MAX_GROUP];
+	vec3_t		pts[CE_MAX_GROUP][NW_MAX_ROUTE_POINTS + 1];
+	int			numPts;
+	float		speed;
+	int			ms;					// until the last of them is there
+} ceWalkPlan_t;
+
+static ceWalkPlan_t cePlans[RC_MAX_WALKS];
+
+// a preview's walks, each set off when its time comes
+static struct {
+	qboolean	pending;
+	int			at;					// cls.realtime
+} cePvWalks[RC_MAX_WALKS];
+
+static void CE_PlanWalk( const rcWalk_t *wk, ceWalkPlan_t *p ) {
+	vec3_t route[NW_MAX_ROUTE_POINTS], starts[CE_MAX_GROUP], middle;
+	int nums[CE_MAX_GROUP], n, count, known = 0;
+	float routeSpeed;
+
+	p->count = 0;
+	p->ms = 0;
+	if ( !wk->npc[0] || !wk->route[0] )
+		return;
+	n = CL_NpcWalk_LoadRoute( wk->route, route, NW_MAX_ROUTE_POINTS, &routeSpeed );
+	count = n > 0 ? CL_NpcWalk_Targets( wk->npc, nums, CE_MAX_GROUP ) : 0;
+	for ( int i = 0; i < count; i++ ) {
+		if ( CL_NpcWalk_NpcOrigin( nums[i], starts[known] ) ) {
+			nums[known++] = nums[i];
+		} else if ( count == 1 ) {
+			// out of sight, from the route's first spot, as npcmanager walk does
+			VectorCopy( route[0], starts[0] );
+			known = 1;
+		}
+	}
+	if ( !known )
+		return;
+	p->speed = CL_NpcWalk_PaceSpeed( wk->run );
+	p->numPts = n + 1;
+	CL_NpcWalk_GroupMiddle( starts, known, middle );
+	for ( int m = 0; m < known; m++ ) {
+		vec3_t offset;
+
+		p->nums[m] = nums[m];
+		VectorCopy( starts[m], p->pts[m][0] );
+		VectorSubtract( starts[m], middle, offset );
+		offset[2] = 0.0f;
+		for ( int i = 0; i < n; i++ ) {
+			if ( known == 1 )
+				VectorCopy( route[i], p->pts[m][i + 1] );
+			else
+				CL_NpcWalk_GroupSpot( route[i], offset, p->pts[m][i + 1] );
+		}
+	}
+	p->count = known;
+}
+
+// the walks by when they set off
+static void CE_WalkOrder( int *order ) {
+	for ( int i = 0; i < ce.numWalks; i++ ) {
+		int j = i;
+
+		for ( ; j > 0 && ce.walks[order[j - 1]].delay > ce.walks[i].delay; j-- )
+			order[j] = order[j - 1];
+		order[j] = i;
+	}
+}
+
+// the walks' plans, worked out again when the walks change, and now and then for where the NPCs are
+static void CE_TlPlans( qboolean force ) {
+	int order[RC_MAX_WALKS];
+
+	if ( !force && ce.tlNumPlanned == ce.numWalks && !memcmp( ce.tlPlanned, ce.walks, ce.numWalks * sizeof( ce.walks[0] ) )
+		&& cls.realtime >= ce.tlPlanTime && cls.realtime - ce.tlPlanTime < CE_TL_PLAN_MS )
+		return;
+	for ( int i = 0; i < ce.numWalks; i++ )
+		CE_PlanWalk( &ce.walks[i], &cePlans[i] );
+	// an NPC walked again sets off from where the walk before has it then
+	CE_WalkOrder( order );
+	for ( int a = 0; a < ce.numWalks; a++ ) {
+		ceWalkPlan_t *p = &cePlans[order[a]];
+
+		p->ms = 0;
+		for ( int m = 0; m < p->count; m++ ) {
+			for ( int b = a - 1; b >= 0; b-- ) {
+				const ceWalkPlan_t *q = &cePlans[order[b]];
+				int k = 0;
+				float yaw;
+
+				while ( k < q->count && q->nums[k] != p->nums[m] )
+					k++;
+				if ( k == q->count )
+					continue;
+				CL_NpcWalk_RouteAt( q->pts[k], q->numPts, q->speed, ce.walks[order[a]].delay - ce.walks[order[b]].delay, p->pts[m][0], &yaw );
+				break;
+			}
+			p->ms = Q_max( p->ms, CL_NpcWalk_RouteMs( p->pts[m], p->numPts, p->speed ) );
+		}
+	}
+	memcpy( ce.tlPlanned, ce.walks, sizeof( ce.tlPlanned ) );
+	ce.tlNumPlanned = ce.numWalks;
+	ce.tlPlanTime = cls.realtime;
+}
+
+// how far into the shot a spot is
+static int CE_KeyMs( const rcShot_t *s, int key ) {
+	int ms = 0;
+
+	for ( int i = 1; i <= key && i < s->numKeys; i++ )
+		ms += s->keys[i].ms;
+	return ms;
+}
+
+// the view is the shot's camera at the timeline's moment
+static qboolean CE_TlLooking( void ) {
+	return (qboolean)( ce.open && !ce.preview && ce.tlPinned && ce.tlCam && ( ce.shot.orbit || ce.shot.numKeys ) );
+}
+
+// where the editor's view looks from: the free camera, or the shot's at the timeline's moment;
+// qtrue for the shot's
+static qboolean CE_ViewCam( vec3_t org, vec3_t ang, float *fov ) {
+	rcShot_t s;
+
+	if ( CE_TlLooking() && CE_Shown( &s, NULL, 0 ) ) {
+		RC_EvalShot( &s, Com_Clampi( 0, RC_ShotMs( &s ), ce.tlMs ), org, ang, fov );
+		return qtrue;
+	}
+	VectorCopy( ce.camOrg, org );
+	VectorCopy( ce.camAng, ang );
+	*fov = ce.camFov;
+	return qfalse;
+}
+
+static void CE_TlPin( void ) {
+	if ( ce.tlPinned )
+		return;
+	ce.tlPinned = qtrue;
+	if ( ce.tlCam )
+		ce.through = qfalse;
+}
+
+static void CE_TlLetGo( void ) {
+	ce.tlPinned = qfalse;
+	ce.tlDrag = CE_TL_NONE;
+}
+
+// the NPCs and animations it held let go
+static void CE_TlRelease( void ) {
+	CL_NpcWalk_ClearPoses();
+	for ( int i = 0; i < RC_MAX_PLAYING; i++ ) {
+		if ( rcPlaying[i].active && rcPlaying[i].editor )
+			RC_Release( &rcPlaying[i] );
+	}
+	ce.tlPosed = qfalse;
+}
+
+// each one in an animation then on its frame: the one that started last, as when it plays
+static void CE_TlAnims( int total ) {
+	int nums[32], picks[32], count = 0;
+
+	for ( int i = 0; i < ce.numAnims; i++ ) {
+		const rcAnim_t *a = &ce.anims[i];
+		const int len = RC_AnimMs( a, total );
+		int targets[16], n;
+
+		if ( ce.tlMs < a->delay || ( len > 0 && ce.tlMs >= a->delay + len ) )
+			continue;
+		n = RC_AnimTargets( a->who, targets, ARRAY_LEN( targets ) );
+		for ( int t = 0; t < n; t++ ) {
+			int j = 0;
+
+			while ( j < count && nums[j] != targets[t] )
+				j++;
+			if ( j == count ) {
+				if ( count == (int)ARRAY_LEN( nums ) )
+					continue;
+				nums[count++] = targets[t];
+				picks[j] = i;
+			} else if ( ce.anims[picks[j]].delay <= a->delay ) {
+				picks[j] = i;
+			}
+		}
+	}
+	for ( int j = 0; j < count; j++ ) {
+		const rcAnim_t *a = &ce.anims[picks[j]];
+		rcPlaying_t *p = RC_StartAnim( nums[j], a->anim, a->from, a->to, a->mode, a->loop, a->speed, 0, 0, qtrue );
+
+		if ( p )
+			p->start = cls.realtime - ( ce.tlMs - a->delay );
+	}
+	// the rest let go
+	for ( int i = 0; i < RC_MAX_PLAYING; i++ ) {
+		rcPlaying_t *p = &rcPlaying[i];
+		int j = 0;
+
+		if ( !p->active || !p->editor )
+			continue;
+		while ( j < count && nums[j] != p->num )
+			j++;
+		if ( j == count )
+			RC_Release( p );
+	}
+}
+
+// every frame: what the moment picked has, or let go once there's none
+static void CE_TlFrame( void ) {
+	int order[RC_MAX_WALKS];
+	rcShot_t s;
+
+	if ( !ce.open || ce.preview || !ce.tlPinned ) {
+		if ( ce.tlPosed )
+			CE_TlRelease();
+		return;
+	}
+	CE_TlPlans( qfalse );
+	// the NPCs on their routes, a later walk of the same one over an earlier
+	CL_NpcWalk_ClearPoses();
+	CE_WalkOrder( order );
+	for ( int a = 0; a < ce.numWalks; a++ ) {
+		const rcWalk_t *wk = &ce.walks[order[a]];
+		const ceWalkPlan_t *p = &cePlans[order[a]];
+		const int t = ce.tlMs - wk->delay;
+
+		if ( t <= 0 )
+			continue;
+		for ( int m = 0; m < p->count; m++ ) {
+			vec3_t pos;
+			float yaw;
+			const qboolean moving = CL_NpcWalk_RouteAt( p->pts[m], p->numPts, p->speed, t, pos, &yaw );
+
+			CL_NpcWalk_Pose( p->nums[m], pos, yaw, moving ? ( wk->run ? 2 : 1 ) : 0 );
+		}
+	}
+	CE_TlAnims( CE_Shown( &s, NULL, 0 ) ? RC_ShotMs( &s ) : 0 );
+	ce.tlPosed = qtrue;
+}
+
+// a preview's walks, from fromMs into the shot: each as far along as it would be
+static void CE_PreviewWalks( int fromMs ) {
+	CE_TlPlans( qtrue );
+	for ( int i = 0; i < ce.numWalks; i++ ) {
+		cePvWalks[i].pending = (qboolean)( cePlans[i].count > 0 );
+		cePvWalks[i].at = cls.realtime + ce.walks[i].delay - fromMs;
+	}
+}
+
+static void CE_RunPreviewWalks( void ) {
+	int order[RC_MAX_WALKS];
+
+	CE_WalkOrder( order );
+	for ( int a = 0; a < ce.numWalks; a++ ) {
+		const int i = order[a];
+		const ceWalkPlan_t *p = &cePlans[i];
+
+		if ( !cePvWalks[i].pending || cls.realtime < cePvWalks[i].at )
+			continue;
+		cePvWalks[i].pending = qfalse;
+		for ( int m = 0; m < p->count; m++ )
+			CL_NpcWalk_StartLocal( p->nums[m], p->pts[m], p->numPts, p->speed, cls.realtime - cePvWalks[i].at, ce.walks[i].route );
+	}
+}
+
+// a preview's animations, from fromMs into the shot: the ones over left out, the others as far
+// along as they would be
+static void CE_PreviewAnims( int fromMs, int total ) {
+	rcAnim_t anims[RC_MAX_ANIMS];
+	int count = 0;
+
+	for ( int i = 0; i < ce.numAnims; i++ ) {
+		rcAnim_t a = ce.anims[i];
+		const int len = RC_AnimMs( &a, total );
+
+		if ( len > 0 && a.delay + len <= fromMs )
+			continue;
+		a.ms = len;
+		a.delay -= fromMs;
+		anims[count++] = a;
+	}
+	RC_PlayAnims( anims, count, total - fromMs, qtrue );
+}
+
 static void CE_StopPreview( void ) {
 	if ( !ce.preview )
 		return;
 	ce.preview = qfalse;
+	memset( cePvWalks, 0, sizeof( cePvWalks ) );
+	// the timeline's moment where it got to
+	if ( ce.tlPinned )
+		ce.tlMs = Q_max( 0, cls.realtime - ce.previewStart );
 	RC_StopLocalWalks( ce.walks, ce.numWalks );
 	RC_StopAnims( qfalse );
 	// the cinematic that was on before, or none
@@ -2070,17 +2438,25 @@ static void CE_StopPreview( void ) {
 	RC_SyncThirdPerson();
 }
 
-// the shot on this screen, from the selected key on
-static void CE_Preview( qboolean fromKey ) {
+// the shot on this screen: from the selected key on, or from fromMs into it, its NPCs and
+// animations as far along as they would be then
+static void CE_Preview( qboolean fromKey, int fromMs ) {
 	char hook[MAX_STRING_CHARS];
 	rcShot_t shown;
+	int total;
 
 	if ( ce.preview || !CE_Shown( &shown, NULL, 0 ) ) {
 		if ( !ce.preview )
 			CE_Message( S_COLOR_YELLOW "Add a spot first" );
 		return;
 	}
-	if ( fromKey && !ce.shot.orbit && ce.sel > 0 ) {
+	total = RC_ShotMs( &shown );
+	fromKey = (qboolean)( fromKey && !ce.shot.orbit && ce.sel > 0 );
+	fromMs = fromKey ? 0 : Com_Clampi( 0, total, fromMs );
+	ce.previewStart = cls.realtime - ( fromKey ? CE_KeyMs( &shown, ce.sel ) : fromMs );
+	// what the timeline held is let go, the preview plays it
+	CE_TlRelease();
+	if ( fromKey ) {
 		rcShot_t part = ce.shot;
 
 		part.numKeys = ce.shot.numKeys - ce.sel;
@@ -2095,10 +2471,10 @@ static void CE_Preview( qboolean fromKey ) {
 		RC_WriteShot( &ce.shot, hook, sizeof( hook ) );
 	}
 
-	// the NPCs walk on this screen too, from the start of the shot
-	if ( !fromKey || ce.shot.orbit || ce.sel <= 0 ) {
-		RC_QueueWalks( ce.walks, ce.numWalks, qtrue );
-		RC_PlayAnims( ce.anims, ce.numAnims, RC_ShotMs( &shown ), qtrue );
+	// the NPCs walk on this screen too, as the timeline has them
+	if ( !fromKey ) {
+		CE_PreviewWalks( fromMs );
+		CE_PreviewAnims( fromMs, total );
 	}
 	ce.saved = rc;
 	ce.preview = qtrue;
@@ -2110,11 +2486,15 @@ static void CE_Preview( qboolean fromKey ) {
 	VectorCopy( ce.camAng, rc.viewAng );
 	rc.viewFovY = RC_FovY( ce.camFov );
 	RC_RunLocal( hook );
+	if ( fromMs ) {
+		rc.start -= fromMs;
+		rc.frame = -1;
+	}
 	if ( ce.bars ) {
 		rc.bars = qtrue;
 		rc.barsDuration = 0;
 	}
-	ce.previewEnd = cls.realtime + RC_ShotMs( &shown ) + 1000;
+	ce.previewEnd = cls.realtime + RC_ShotMs( &shown ) - fromMs + 1000;
 }
 
 static void CE_SendShot( void ) {
@@ -2145,6 +2525,14 @@ static void CE_SendShot( void ) {
 static void CE_ReleaseKeys( void ) {
 	memset( ce.held, 0, sizeof( ce.held ) );
 	ce.flying = qfalse;
+}
+
+// the preview from the timeline's moment, from the start when there's none or it's at the end
+static void CE_PlayFromHere( void ) {
+	rcShot_t s;
+	const int total = CE_Shown( &s, NULL, 0 ) ? RC_ShotMs( &s ) : 0;
+
+	CE_Preview( qfalse, ce.tlPinned && ce.tlMs < total ? ce.tlMs : 0 );
 }
 
 // the editor opens on the named shot, or the one it had
@@ -2205,6 +2593,7 @@ void CL_RpCinematic_EditorClose( void ) {
 	if ( !ce.open )
 		return;
 	CE_StopPreview();
+	CE_TlLetGo();
 	ce.open = qfalse;
 	ce.typing = qfalse;
 	ce.listing = qfalse;
@@ -2280,6 +2669,12 @@ void CL_RpCinematic_EditorKeyEvent( int key, qboolean down ) {
 		ce.clickY = ce.cursorY;
 		return;
 	case A_MOUSE2:
+		// from the shot's camera, it's the free camera that flies on from there
+		if ( CE_TlLooking() ) {
+			CE_ViewCam( ce.camOrg, ce.camAng, &ce.camFov );
+			ce.camAng[PITCH] = Com_Clamp( -89.0f, 89.0f, AngleNormalize180( ce.camAng[PITCH] ) );
+			ce.tlCam = qfalse;
+		}
 		ce.flying = qtrue;
 		ce.typing = qfalse;
 		return;
@@ -2338,7 +2733,16 @@ void CL_RpCinematic_EditorKeyEvent( int key, qboolean down ) {
 		break;
 	case A_CAP_P:
 	case A_LOW_P:
-		CE_Preview( qfalse );
+		CE_Preview( qfalse, 0 );
+		break;
+	case A_SPACE:
+		CE_PlayFromHere();
+		break;
+	case A_CAP_T:
+	case A_LOW_T:
+		ce.tlHidden = (qboolean)!ce.tlHidden;
+		if ( ce.tlHidden )
+			CE_TlLetGo();
 		break;
 	default:
 		break;
@@ -2414,6 +2818,8 @@ void CL_RpCinematic_EditorEscape( void ) {
 		ce.typing = qfalse;
 	} else if ( ce.listing ) {
 		ce.listing = qfalse;
+	} else if ( ce.tlPinned ) {
+		CE_TlLetGo();
 	} else {
 		const qboolean back = ce.fromStoryteller;
 
@@ -2444,6 +2850,7 @@ static void CE_Frame( void ) {
 	ce.lastFrameTime = cls.realtime;
 
 	if ( ce.preview ) {
+		CE_RunPreviewWalks();
 		if ( cls.realtime >= ce.previewEnd )
 			CE_StopPreview();
 		return;
@@ -2670,29 +3077,75 @@ static void CE_AddScene( void ) {
 			CE_Cross( s.lookAt, 10.0f, ceLookColor );
 	}
 
-	// a camera running along the shot, as fast as it will
+	// a camera running along the shot, as fast as it will; held at the timeline's moment
 	if ( total > 0 ) {
-		const int ms = cls.realtime % ( total + 1000 );
+		const int ms = ce.tlPinned ? ce.tlMs : cls.realtime % ( total + 1000 );
 
 		RC_EvalShot( &s, Q_min( ms, total ), org, ang, &fov );
 		CE_Camera( org, ang, fov, ceGhostColor );
 	}
 }
 
+// where the timeline has the NPCs walking: a post over each, seen even when they aren't
+static void CE_AddPoses( void ) {
+	if ( !ce.tlPinned )
+		return;
+	for ( int i = 0; i < ce.numWalks; i++ ) {
+		const ceWalkPlan_t *p = &cePlans[i];
+
+		for ( int m = 0; m < p->count; m++ ) {
+			vec3_t pos, top;
+
+			if ( !CL_NpcWalk_PoseOf( p->nums[m], pos ) )
+				continue;
+			VectorCopy( pos, top );
+			pos[2] -= 24.0f;
+			top[2] += 48.0f;
+			CE_Line( pos, top, ceWalkColor );
+			CE_Cross( top, 4.0f, ceWalkColor );
+		}
+	}
+}
+
 static void CE_RenderScene( const refdef_t *fd ) {
 	refdef_t view = *fd;
-	const float fovY = RC_FovY( ce.camFov );
+	vec3_t org, ang;
+	float fov, fovY;
+	const qboolean looking = CE_ViewCam( org, ang, &fov );
 
+	fovY = RC_FovY( fov );
 	view.fov_y = fovY;
 	view.fov_x = RC_FovX( fovY, (float)fd->width, (float)fd->height );
-	VectorCopy( ce.camAng, view.viewangles );
-	AnglesToAxis( ce.camAng, view.viewaxis );
+	VectorCopy( ang, view.viewangles );
+	AnglesToAxis( ang, view.viewaxis );
 	// the sky portal keeps its own origin but looks the way the camera does
 	if ( !( fd->rdflags & RDF_SKYBOXPORTAL ) ) {
-		VectorCopy( ce.camOrg, view.vieworg );
-		view.viewContents = CM_PointContents( ce.camOrg, 0 );
+		VectorCopy( org, view.vieworg );
+		view.viewContents = CM_PointContents( org, 0 );
 		memset( view.areamask, 0, sizeof( view.areamask ) );
+		// through the shot's camera it's as the players will see it, nothing of the editor's
+		if ( looking ) {
+			rcShot_t s;
+			const qboolean have = CE_Shown( &s, NULL, 0 );
+			const qboolean dof = (qboolean)( have && RC_ShotDepthOfField( &s, Q_min( ce.tlMs, RC_ShotMs( &s ) ), org, ang, &ce.dofNow, &ce.dofTime ) );
+			const qboolean filter = (qboolean)( have && RC_Filter( s.filter, s.filterStrength ) );
+
+			ce.haveView = qtrue;
+			VectorCopy( view.vieworg, ce.viewOrg );
+			VectorCopy( view.viewaxis[0], ce.viewAxis[0] );
+			VectorCopy( view.viewaxis[1], ce.viewAxis[1] );
+			VectorCopy( view.viewaxis[2], ce.viewAxis[2] );
+			ce.viewFovX = view.fov_x;
+			ce.viewFovY = view.fov_y;
+			re->RenderScene( &view );
+			if ( dof )
+				RC_NoDepthOfField();
+			if ( filter )
+				RC_NoFilter();
+			return;
+		}
 		CE_AddScene();
+		CE_AddPoses();
 		ce.haveView = qtrue;
 		VectorCopy( view.vieworg, ce.viewOrg );
 		VectorCopy( view.viewaxis[0], ce.viewAxis[0] );
@@ -3430,6 +3883,11 @@ static void CE_LiveAnim( void ) {
 	const rcAnim_t *a = ce.animSel >= 0 && ce.animSel < ce.numAnims ? &ce.anims[ce.animSel] : NULL;
 	int nums[4], n = 0;
 
+	// the timeline's moment shows the animations then, its own way
+	if ( ce.open && ce.tlPinned && !ce.preview ) {
+		shownNum = -1;
+		return;
+	}
 	if ( a && ce.open && ce.animPage && ce.animLive && !ce.preview )
 		n = RC_AnimTargets( a->who, nums, ARRAY_LEN( nums ) );
 	if ( !n ) {
@@ -3643,6 +4101,372 @@ static void CE_DrawAnimPanel( float x, float y, float w ) {
 		ce.animLive = (qboolean)!ce.animLive;
 }
 
+// the panel's page: 0 the spots or the orbit, 1 focus, 2 look, 3 NPCs, 4 animations
+static void CE_SetPage( int page ) {
+	ce.focusPage = (qboolean)( page == 1 );
+	ce.lookPage = (qboolean)( page == 2 );
+	ce.npcPage = (qboolean)( page == 3 );
+	ce.animPage = (qboolean)( page == 4 );
+	if ( ce.npcPage )
+		CE_ListRoutes();
+	if ( !ce.focusPage && ce.typingFocus )
+		ce.typing = ce.typingFocus = qfalse;
+}
+
+/*
+===============================================================================
+
+The timeline, under the view: the shot from its start to its end, a row for the camera's
+spots, one for each NPC walking and one for each animation. A click or a drag picks a moment,
+the bars drag to when they start, an animation's right end to how long it lasts, a spot to
+when the camera gets there.
+
+===============================================================================
+*/
+
+#define CE_HELP_LINES		5
+#define CE_TL_X				8.0f
+#define CE_TL_W				( CE_PANEL_X - 16.0f )
+#define CE_TL_LABEL_W		78.0f
+#define CE_TL_RULER_H		11.0f
+#define CE_TL_ROWS			5
+#define CE_TL_BOTTOM		( SCREEN_HEIGHT - 12 - ( CE_HELP_LINES - 1 ) * CE_ROW_H - 4 )
+#define CE_TL_GRAB			4.0f		// a spot or an end is grabbed this near
+
+static vec4_t ceTlStripe	= { 1.0f, 1.0f, 1.0f, 0.04f };
+static vec4_t ceTlCam		= { 0.85f, 0.7f, 0.15f, 0.55f };
+static vec4_t ceTlTrans		= { 0.0f, 0.0f, 0.0f, 0.6f };
+static vec4_t ceTlWalk		= { 0.55f, 0.3f, 0.9f, 0.85f };
+static vec4_t ceTlAnim		= { 0.9f, 0.5f, 0.12f, 0.85f };
+static vec4_t ceTlMissing	= { 0.5f, 0.5f, 0.5f, 0.6f };
+static vec4_t ceTlSel		= { 0.25f, 0.85f, 1.0f, 1.0f };
+static vec4_t ceTlHead		= { 1.0f, 0.3f, 0.25f, 1.0f };
+static vec4_t ceTlGhost		= { 0.3f, 1.0f, 0.45f, 0.5f };
+
+typedef struct {
+	float	x, w;			// the track
+	int		span;			// ms across it
+} ceTrack_t;
+
+static float CE_TlX( const ceTrack_t *t, int ms ) {
+	return t->x + t->w * Com_Clamp( 0.0f, 1.0f, (float)ms / t->span );
+}
+
+// the ms under x, past the end too when it's let
+static int CE_TlMsAt( const ceTrack_t *t, float x, qboolean pastEnd ) {
+	const float f = ( x - t->x ) / t->w;
+
+	return (int)( Com_Clamp( 0.0f, pastEnd ? 4.0f : 1.0f, f ) * t->span + 0.5f );
+}
+
+static int CE_TlSnap( int ms ) {
+	return Q_max( 0, ( ms + CE_TL_SNAP_MS / 2 ) / CE_TL_SNAP_MS * CE_TL_SNAP_MS );
+}
+
+// how long an animation lasts on the timeline: its own, or to the end
+static int CE_TlAnimEnd( const rcAnim_t *a, int total, int span ) {
+	const int len = RC_AnimMs( a, total );
+
+	return len > 0 ? a->delay + len : span;
+}
+
+static int CE_TlWalkEnd( int i ) {
+	return ce.walks[i].delay + ( cePlans[i].count ? cePlans[i].ms : 1000 );
+}
+
+static void CE_TlBar( float x0, float x1, float ry, const float *color, const char *label, qboolean sel ) {
+	const float w = Q_max( 2.0f, x1 - x0 ), y = ry + 1, h = CE_ROW_H - 2;
+
+	CE_Fill( x0, y, w, h, color );
+	if ( sel ) {
+		CE_Fill( x0, y, w, 1, ceTlSel );
+		CE_Fill( x0, y + h - 1, w, 1, ceTlSel );
+		CE_Fill( x0, y, 1, h, ceTlSel );
+		CE_Fill( x0 + w - 1, y, 1, h, ceTlSel );
+	}
+	if ( label && w > 16.0f )
+		CE_TextClipped( x0 + 3, ry, w - 5, label, ceWhite );
+}
+
+// a click on the timeline: a row's name picks it, a spot or a bar is grabbed, anywhere else is
+// the moment
+static void CE_TlClick( const ceTrack_t *t, float rowsY, int numRows, int total ) {
+	const float cx = ce.clickX;
+	const int row = ce.clickY >= rowsY ? ce.tlScroll + (int)( ( ce.clickY - rowsY ) / CE_ROW_H ) : -1;
+	const int at = CE_TlMsAt( t, cx, qfalse );
+
+	ce.tlDragSpan = t->span;
+	if ( row >= numRows )
+		return;
+	if ( cx < t->x - 2 ) {
+		if ( row == 0 ) {
+			CE_SetPage( 0 );
+		} else if ( row > 0 && row <= ce.numWalks ) {
+			ce.walkSel = row - 1;
+			CE_SetPage( 3 );
+		} else if ( row > ce.numWalks ) {
+			ce.animSel = row - 1 - ce.numWalks;
+			CE_SetPage( 4 );
+		}
+		return;
+	}
+	if ( row == 0 && ( ce.shot.orbit || ce.shot.numKeys ) ) {
+		if ( ce.shot.orbit ) {
+			if ( fabsf( cx - CE_TlX( t, total ) ) <= CE_TL_GRAB ) {
+				ce.tlDrag = CE_TL_KEY;
+				return;
+			}
+		} else {
+			for ( int k = ce.shot.numKeys - 1; k >= 0; k-- ) {
+				if ( fabsf( cx - CE_TlX( t, CE_KeyMs( &ce.shot, k ) ) ) > CE_TL_GRAB )
+					continue;
+				CE_Select( k );
+				CE_SetPage( 0 );
+				if ( k > 0 ) {
+					ce.tlDrag = CE_TL_KEY;
+					ce.tlDragIndex = k;
+				}
+				return;
+			}
+		}
+	} else if ( row > 0 && row <= ce.numWalks ) {
+		const int i = row - 1;
+
+		if ( cx >= CE_TlX( t, ce.walks[i].delay ) - 2 && cx <= CE_TlX( t, CE_TlWalkEnd( i ) ) + 2 ) {
+			ce.walkSel = i;
+			CE_SetPage( 3 );
+			ce.tlDrag = CE_TL_WALK;
+			ce.tlDragIndex = i;
+			ce.tlDragGrab = at - ce.walks[i].delay;
+			return;
+		}
+	} else if ( row > ce.numWalks ) {
+		const int i = row - 1 - ce.numWalks;
+		const rcAnim_t *a = &ce.anims[i];
+		const float x0 = CE_TlX( t, a->delay ), x1 = CE_TlX( t, CE_TlAnimEnd( a, total, t->span ) );
+
+		if ( cx >= x0 - 2 && cx <= x1 + CE_TL_GRAB ) {
+			ce.animSel = i;
+			CE_SetPage( 4 );
+			ce.tlDragIndex = i;
+			if ( cx >= x1 - CE_TL_GRAB && x1 - x0 > CE_TL_GRAB * 2 ) {
+				ce.tlDrag = CE_TL_ANIM_END;
+			} else {
+				ce.tlDrag = CE_TL_ANIM;
+				ce.tlDragGrab = at - a->delay;
+			}
+			return;
+		}
+	}
+	ce.tlMs = at;
+	CE_TlPin();
+	ce.tlDrag = CE_TL_HEAD;
+}
+
+// what's grabbed follows the mouse, until the button's let go
+static void CE_TlDrag( const ceTrack_t *t ) {
+	const int at = CE_TlMsAt( t, ce.cursorX, (qboolean)( ce.tlDrag != CE_TL_HEAD ) );
+	rcShot_t *s = &ce.shot;
+
+	if ( !ce.held[A_MOUSE1] )
+		ce.tlDrag = CE_TL_NONE;
+	switch ( ce.tlDrag ) {
+	case CE_TL_HEAD:
+		ce.tlMs = at;
+		break;
+	case CE_TL_KEY:
+		if ( s->orbit ) {
+			const int ms = Q_max( 500, CE_TlSnap( at ) );
+
+			if ( ms != s->ms ) {
+				s->ms = ms;
+				CE_Changed();
+			}
+		} else if ( ce.tlDragIndex > 0 && ce.tlDragIndex < s->numKeys ) {
+			// between the spots either side; the one after keeps where it is
+			const int k = ce.tlDragIndex, prev = CE_KeyMs( s, k - 1 ), next = k + 1 < s->numKeys ? CE_KeyMs( s, k + 1 ) : -1;
+			int ms = Q_max( prev + CE_TL_MIN_MS, CE_TlSnap( at ) );
+
+			if ( next >= 0 )
+				ms = Q_min( next - CE_TL_MIN_MS, ms );
+			if ( ms - prev != s->keys[k].ms ) {
+				s->keys[k].ms = ms - prev;
+				if ( next >= 0 )
+					s->keys[k + 1].ms = next - ms;
+				CE_Changed();
+			}
+		}
+		break;
+	case CE_TL_WALK:
+		if ( ce.tlDragIndex < ce.numWalks ) {
+			const int ms = CE_TlSnap( at - ce.tlDragGrab );
+
+			if ( ms != ce.walks[ce.tlDragIndex].delay ) {
+				ce.walks[ce.tlDragIndex].delay = ms;
+				CE_Changed();
+			}
+		}
+		break;
+	case CE_TL_ANIM:
+	case CE_TL_ANIM_END:
+		if ( ce.tlDragIndex < ce.numAnims ) {
+			rcAnim_t *a = &ce.anims[ce.tlDragIndex];
+			const int ms = ce.tlDrag == CE_TL_ANIM ? CE_TlSnap( at - ce.tlDragGrab ) : Q_max( CE_TL_MIN_MS, CE_TlSnap( at - a->delay ) );
+			int *field = ce.tlDrag == CE_TL_ANIM ? &a->delay : &a->ms;
+
+			if ( ms != *field ) {
+				*field = ms;
+				CE_Changed();
+			}
+		}
+		break;
+	default:
+		break;
+	}
+}
+
+static void CE_DrawTimeline( void ) {
+	const int numRows = 1 + ce.numWalks + ce.numAnims, visRows = Q_min( CE_TL_ROWS, numRows );
+	const float x = CE_TL_X, w = CE_TL_W;
+	const float boxH = CE_TL_RULER_H + visRows * CE_ROW_H + 3, boxY = CE_TL_BOTTOM - boxH, headY = boxY - CE_CTRL_H - 2;
+	const float rowsY = boxY + 1 + CE_TL_RULER_H;
+	rcShot_t s;
+	const qboolean have = CE_Shown( &s, NULL, 0 );
+	const int total = have ? RC_ShotMs( &s ) : 0;
+	ceTrack_t t;
+
+	if ( ce.tlHidden )
+		return;
+	t.x = x + CE_TL_LABEL_W;
+	t.w = w - CE_TL_LABEL_W - 6;
+	t.span = ce.tlDrag ? ce.tlDragSpan : have ? Q_max( 1000, total ) : 10000;
+	CE_TlPlans( qfalse );
+	CE_TlDrag( &t );
+	if ( !ce.tlDrag )
+		ce.tlMs = Com_Clampi( 0, t.span, ce.tlMs );
+
+	// what it's at, and what to do with it
+	if ( ce.tlPinned )
+		CE_Text( x, headY + 2, va( "Timeline" S_COLOR_CYAN "  %.1f s" S_COLOR_GREY " of %.1f", ce.tlMs / 1000.0f, total / 1000.0f ), ceWhite );
+	else
+		CE_Text( x, headY + 2, va( "Timeline" S_COLOR_GREY "  %.1f s: click a moment to see it", total / 1000.0f ), ceWhite );
+	{
+		float bx = x + w - 44;
+
+		if ( CE_Button( bx, headY, 44, "Let go", qfalse, ce.tlPinned ) )
+			CE_TlLetGo();
+		bx -= 4 + 72;
+		if ( CE_Button( bx, headY, 72, "Play from here", qfalse, have ) )
+			CE_PlayFromHere();
+		bx -= 4 + 84;
+		if ( CE_Button( bx, headY, 84, ce.tlCam ? "Shot's camera" : "Free camera", qfalse, ce.tlPinned ) ) {
+			ce.tlCam = (qboolean)!ce.tlCam;
+			if ( ce.tlCam )
+				ce.through = qfalse;
+		}
+	}
+
+	CE_Box( x, boxY, w, boxH, cePanel );
+
+	// a second or so between the marks, whatever its length
+	{
+		static const int steps[] = { 250, 500, 1000, 2000, 5000, 10000, 30000, 60000 };
+		int step = steps[ARRAY_LEN( steps ) - 1];
+
+		for ( size_t i = 0; i < ARRAY_LEN( steps ); i++ ) {
+			if ( t.w * steps[i] / t.span >= 30.0f ) {
+				step = steps[i];
+				break;
+			}
+		}
+		for ( int ms = 0; ms <= t.span; ms += step ) {
+			const float mx = CE_TlX( &t, ms );
+			const char *label = va( step < 1000 ? "%.1f" : "%.0f", ms / 1000.0f );
+
+			CE_Fill( mx, boxY + 1, 1, CE_TL_RULER_H, ceBorder );
+			if ( mx + 2 + CE_TextWidth( label ) < t.x + t.w )
+				CE_Text( mx + 2, boxY, label, ceDim );
+		}
+	}
+
+	// the wheel over the names scrolls them, over the rest steps the moment
+	if ( ce.wheel && CE_InRect( x, boxY, CE_TL_LABEL_W, boxH ) && numRows > visRows ) {
+		ce.tlScroll += ce.wheel;
+		ce.wheel = 0;
+	} else if ( ce.wheel && CE_InRect( t.x - 4, headY, t.w + 10, CE_TL_BOTTOM - headY ) ) {
+		ce.tlMs = Com_Clampi( 0, t.span, ce.tlMs + ce.wheel * ( CE_ShiftDown() ? 1000 : CE_CtrlDown() ? 20 : 100 ) );
+		CE_TlPin();
+		ce.wheel = 0;
+	}
+	ce.tlScroll = Com_Clampi( 0, numRows - visRows, ce.tlScroll );
+
+	for ( int r = 0; r < visRows; r++ ) {
+		const int row = ce.tlScroll + r;
+		const float ry = rowsY + r * CE_ROW_H;
+
+		if ( r & 1 )
+			CE_Fill( x + 1, ry, w - 2, CE_ROW_H, ceTlStripe );
+		if ( row == 0 ) {
+			// the camera: the shot, its fades, its spots
+			CE_TextClipped( x + 3, ry, CE_TL_LABEL_W - 6, ce.shot.orbit ? "Camera, orbit" : "Camera", ( !ce.focusPage && !ce.lookPage && !ce.npcPage && !ce.animPage ) ? ceTlSel : ceWhite );
+			if ( !have ) {
+				CE_Text( t.x + 3, ry, S_COLOR_GREY "no spots yet", ceWhite );
+				continue;
+			}
+			CE_Fill( t.x, ry + 4, CE_TlX( &t, total ) - t.x, CE_ROW_H - 8, ceTlCam );
+			if ( s.in.type != RC_TR_CUT && s.in.ms > 0 )
+				CE_Fill( t.x, ry + 1, CE_TlX( &t, s.in.ms ) - t.x, CE_ROW_H - 2, ceTlTrans );
+			if ( s.out.type != RC_TR_CUT && s.out.ms > 0 )
+				CE_Fill( CE_TlX( &t, total - s.out.ms ), ry + 1, CE_TlX( &t, total ) - CE_TlX( &t, total - s.out.ms ), CE_ROW_H - 2, ceTlTrans );
+			if ( ce.shot.orbit ) {
+				CE_Fill( CE_TlX( &t, total ) - 2, ry + 1, 5, CE_ROW_H - 2, ceWhite );
+			} else {
+				for ( int k = 0; k < ce.shot.numKeys; k++ ) {
+					const float mx = CE_TlX( &t, CE_KeyMs( &ce.shot, k ) );
+
+					CE_Fill( mx - 2, ry + 1, 5, CE_ROW_H - 2, k == ce.sel ? ceTlSel : ceWhite );
+					if ( mx + 4 + CE_TextWidth( va( "%i", k + 1 ) ) < t.x + t.w && ( k + 1 == ce.shot.numKeys || CE_TlX( &t, CE_KeyMs( &ce.shot, k + 1 ) ) - mx > 16.0f ) )
+						CE_Text( mx + 4, ry, va( S_COLOR_GREY "%i", k + 1 ), ceWhite );
+				}
+			}
+		} else if ( row <= ce.numWalks ) {
+			const int i = row - 1;
+			const rcWalk_t *wk = &ce.walks[i];
+			const ceWalkPlan_t *p = &cePlans[i];
+
+			CE_TextClipped( x + 3, ry, CE_TL_LABEL_W - 6, wk->npc[0] ? wk->npc : S_COLOR_YELLOW "no NPC", ce.npcPage && i == ce.walkSel ? ceTlSel : ceWhite );
+			CE_TlBar( CE_TlX( &t, wk->delay ), CE_TlX( &t, CE_TlWalkEnd( i ) ), ry, p->count ? ceTlWalk : ceTlMissing,
+				p->count ? va( "%s %s", wk->run ? "runs" : "walks", wk->route ) : !wk->route[0] ? "no route" : "not here", (qboolean)( i == ce.walkSel ) );
+		} else {
+			const int i = row - 1 - ce.numWalks;
+			const rcAnim_t *a = &ce.anims[i];
+			int nums[4];
+
+			CE_TextClipped( x + 3, ry, CE_TL_LABEL_W - 6, a->who[0] ? a->who : S_COLOR_YELLOW "no one", ce.animPage && i == ce.animSel ? ceTlSel : ceWhite );
+			CE_TlBar( CE_TlX( &t, a->delay ), CE_TlX( &t, CE_TlAnimEnd( a, total, t.span ) ), ry,
+				RC_AnimTargets( a->who, nums, ARRAY_LEN( nums ) ) ? ceTlAnim : ceTlMissing, a->anim, (qboolean)( i == ce.animSel ) );
+		}
+	}
+	if ( numRows > visRows )
+		CE_Text( x + 3, boxY, va( S_COLOR_GREY "%i-%i of %i", ce.tlScroll + 1, ce.tlScroll + visRows, numRows ), ceWhite );
+
+	// the moment, or the green camera's in the view running along
+	if ( ce.tlPinned ) {
+		const float mx = CE_TlX( &t, ce.tlMs );
+
+		CE_Fill( mx, boxY + 1, 1, boxH - 2, ceTlHead );
+		CE_Fill( mx - 2, boxY + 1, 5, 3, ceTlHead );
+	} else if ( total > 0 ) {
+		CE_Fill( CE_TlX( &t, Q_min( cls.realtime % ( total + 1000 ), total ) ), rowsY, 1, visRows * CE_ROW_H, ceTlGhost );
+	}
+
+	if ( ce.click && ce.clickX >= x && ce.clickX < x + w && ce.clickY >= boxY && ce.clickY < boxY + boxH ) {
+		ce.click = qfalse;
+		ce.typing = qfalse;
+		CE_TlClick( &t, rowsY, numRows, total );
+	}
+}
+
 static qboolean CE_Project( const vec3_t point, float *x, float *y ) {
 	vec3_t d;
 	float forward;
@@ -3692,10 +4516,14 @@ static void CE_DrawEditor( void ) {
 		return;
 	}
 
+	// through the shot's camera at the timeline's moment: its fade or wipe then
+	if ( CE_TlLooking() && CE_Shown( &shown, NULL, 0 ) )
+		RC_DrawTransitions( &shown, Q_min( ce.tlMs, RC_ShotMs( &shown ) ) );
+
 	CE_DrawGuides();
 
 	// numbers over the spots
-	if ( !ce.shot.orbit ) {
+	if ( !ce.shot.orbit && !CE_TlLooking() ) {
 		for ( int i = 0; i < ce.shot.numKeys; i++ ) {
 			float sx, sy;
 
@@ -3710,6 +4538,8 @@ static void CE_DrawEditor( void ) {
 	// top left, under the console's lines: what this is, how it went
 	if ( ce.through )
 		CE_Text( 8, CE_INFO_Y, va( "Camera editor" S_COLOR_CYAN "   looking through spot %i: flying moves it", ce.sel + 1 ), ceWhite );
+	else if ( CE_TlLooking() )
+		CE_Text( 8, CE_INFO_Y, va( "Camera editor" S_COLOR_CYAN "   the shot at %.1f s: right mouse flies from here", ce.tlMs / 1000.0f ), ceWhite );
 	else
 		CE_Text( 8, CE_INFO_Y, "Camera editor", ceWhite );
 	CE_Text( 8, CE_INFO_Y + CE_ROW_H, va( S_COLOR_GREY "FOV %i%s", RC_Round( ce.camFov ),
@@ -3719,15 +4549,18 @@ static void CE_DrawEditor( void ) {
 
 	// bottom left: the keys
 	{
-		static const char *help[] = {
+		const char *help[CE_HELP_LINES] = {
 			"Hold right mouse: look and fly   WASD  Space/C up/down  Shift fast  Ctrl slow",
 			"While flying: wheel zooms   Q/E roll   R levels",
 			"Enter add a spot   Del delete   Up/Down pick   F look through it   P preview",
-			"Esc back"
+			ce.tlHidden ? "T shows the timeline" : "Timeline: click or drag a moment, drag bars to move them   Space plays from it   T hides it",
+			ce.tlPinned ? "Esc lets go of the moment" : "Esc back"
 		};
-		for ( int i = 0; i < (int)ARRAY_LEN( help ); i++ )
-			CE_Text( 8, SCREEN_HEIGHT - 12 - ( ARRAY_LEN( help ) - 1 - i ) * CE_ROW_H, va( S_COLOR_GREY "%s", help[i] ), ceWhite );
+		for ( int i = 0; i < CE_HELP_LINES; i++ )
+			CE_Text( 8, SCREEN_HEIGHT - 12 - ( CE_HELP_LINES - 1 - i ) * CE_ROW_H, va( S_COLOR_GREY "%s", help[i] ), ceWhite );
 	}
+
+	CE_DrawTimeline();
 
 	CE_Fill( CE_PANEL_X, 0, CE_PANEL_W, SCREEN_HEIGHT, cePanel );
 
@@ -3794,16 +4627,8 @@ static void CE_DrawEditor( void ) {
 				page = 3;
 			if ( CE_Button( x + ( fifth + 4 ) * 4, y, fifth, ce.numAnims ? va( "Anim %i", ce.numAnims ) : "Anims", ce.animPage, qtrue ) )
 				page = 4;
-			if ( page >= 0 ) {
-				ce.focusPage = (qboolean)( page == 1 );
-				ce.lookPage = (qboolean)( page == 2 );
-				ce.npcPage = (qboolean)( page == 3 );
-				ce.animPage = (qboolean)( page == 4 );
-				if ( ce.npcPage )
-					CE_ListRoutes();
-				if ( !ce.focusPage && ce.typingFocus )
-					ce.typing = ce.typingFocus = qfalse;
-			}
+			if ( page >= 0 )
+				CE_SetPage( page );
 		}
 		y += CE_CTRL_H + CE_GAP + 6;
 
@@ -3832,10 +4657,10 @@ static void CE_DrawEditor( void ) {
 				CE_Text( x, y, va( S_COLOR_GREY "%.1f s, %i characters to send", RC_ShotMs( &shown ) / 1000.0f, len ), ceWhite );
 			y += CE_ROW_H;
 			if ( CE_Button( x, y, half, "Preview (P)", qfalse, have ) )
-				CE_Preview( qfalse );
+				CE_Preview( qfalse, 0 );
 			if ( CE_Button( x + half + 4, y, half, va( "From spot %i", ce.sel + 1 ), qfalse,
 				(qboolean)( have && !ce.shot.orbit && ce.sel > 0 ) ) )
-				CE_Preview( qtrue );
+				CE_Preview( qtrue, 0 );
 			y += CE_CTRL_H + CE_GAP;
 			if ( CE_Button( x, y, half, "Play for everyone", qfalse, (qboolean)( have && len <= RC_MAX_HOOK && CL_RpHooks_Experimental() ) ) )
 				CE_SendShot();
@@ -4339,8 +5164,9 @@ qboolean CL_RpCinematic_RenderScene( const refdef_t *fd ) {
 // the camera, for the effects system to cull against
 qboolean CL_RpCinematic_Camera( vec3_t origin, vec3_t angles ) {
 	if ( CE_Viewing() ) {
-		VectorCopy( ce.camOrg, origin );
-		VectorCopy( ce.camAng, angles );
+		float fov;
+
+		CE_ViewCam( origin, angles, &fov );
 		return qtrue;
 	}
 	if ( !rc.active )
@@ -4356,7 +5182,7 @@ qboolean CL_RpCinematic_Camera( vec3_t origin, vec3_t angles ) {
 // the filter over the picture now: the shot's, or the editor's where it's shown
 static int RC_FilterNow( void ) {
 	if ( CE_Viewing() )
-		return ( ( ce.lookPage || ce.through ) && !ce.listing && ce.shot.filterStrength > 0 ) ? ce.shot.filter : RC_FI_NONE;
+		return ( ( ce.lookPage || ce.through || CE_TlLooking() ) && !ce.listing && ce.shot.filterStrength > 0 ) ? ce.shot.filter : RC_FI_NONE;
 	if ( rc.active && rc.filter && rc.shot.filterStrength > 0 )
 		return rc.shot.filter;
 	return RC_FI_NONE;
@@ -4382,6 +5208,7 @@ void CL_RpCinematic_Frame( void ) {
 	RC_RunQueue();
 	RC_RunAnims();
 	CE_Frame();
+	CE_TlFrame();
 	CE_LiveAnim();
 }
 
@@ -4560,6 +5387,7 @@ void CL_RpCinematic_Init( void ) {
 	ce.camFov = RC_DEFAULT_FOV;
 	ce.animSel = -1;
 	ce.animLive = qtrue;
+	ce.tlCam = qtrue;
 	RC_ForgetShots();
 	rpc_cinematics = Cvar_Get( "rpc_cinematics", "1", CVAR_ARCHIVE_ND, "Let cinematics sent through RPMod take over the camera" );
 	rpc_cinThirdPerson = Cvar_Get( "rpc_cinThirdPerson", "0", CVAR_ARCHIVE_ND | CVAR_INTERNAL, "" );

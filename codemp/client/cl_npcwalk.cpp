@@ -224,6 +224,16 @@ static struct {
 	int			time;
 } nwSent;
 
+// NPCs the camera editor's timeline holds where a shot would have them, on this screen only
+#define NW_MAX_POSES		32
+static struct {
+	int			num;
+	vec3_t		pos;				// its origin, on the floor
+	float		yaw;
+	int			pace;				// 0 stands, 1 walks, 2 runs
+} nwPose[NW_MAX_POSES];
+static int nwNumPoses;
+
 // a walk waiting for the NPC list, its NPC given by name
 static struct {
 	char		target[MAX_QPATH];
@@ -648,6 +658,28 @@ qboolean CL_NpcWalk_Entity( entityState_t *es, int serverTime ) {
 		return qtrue;
 	}
 	if ( !nwActive || !( w = NW_Find( es->number ) ) ) {
+		// held where the camera editor's timeline has it
+		for ( int i = 0; i < nwNumPoses; i++ ) {
+			if ( nwPose[i].num != es->number || es->eType != ET_NPC || ( es->eFlags & EF_DEAD ) )
+				continue;
+			es->pos.trType = TR_INTERPOLATE;
+			es->pos.trTime = serverTime;
+			VectorCopy( nwPose[i].pos, es->pos.trBase );
+			VectorClear( es->pos.trDelta );
+			VectorCopy( nwPose[i].pos, es->origin );
+			es->apos.trType = TR_INTERPOLATE;
+			VectorSet( es->apos.trBase, 0, nwPose[i].yaw, 0 );
+			VectorClear( es->apos.trDelta );
+			VectorSet( es->angles, 0, nwPose[i].yaw, 0 );
+			if ( nwPose[i].pace ) {
+				const int anim = nwPose[i].pace > 1 ? BOTH_RUN1 : BOTH_WALK1;
+
+				if ( es->torsoAnim == es->legsAnim )
+					es->torsoAnim = anim;
+				es->legsAnim = anim;
+			}
+			return qtrue;
+		}
 		// just let go: the last teleport's uncloak may be yet to come
 		for ( int i = 0; i < NW_MAX_WALKS; i++ ) {
 			if ( nwQuiet[i].until && serverTime < nwQuiet[i].until && nwQuiet[i].num == es->number && !nw[i].active ) {
@@ -879,6 +911,7 @@ void CL_NpcWalk_Reset( void ) {
 	nwNextSend = nwTurn = nwListAsk = 0;
 	nwSent.time = 0;
 	nwPending.time = 0;
+	nwNumPoses = 0;
 }
 
 // the NPC manager has just read the whole NPC list: a walk whose NPC isn't in it any more, or
@@ -1122,6 +1155,100 @@ static qboolean NW_NpcOrigin( int num, vec3_t out ) {
 		}
 	}
 	return CL_NpcManager_NpcOrigin( num, out );
+}
+
+/*
+===============================================================================
+
+For the camera editor's timeline: where a walk has its NPCs at any moment
+
+===============================================================================
+*/
+
+qboolean CL_NpcWalk_NpcOrigin( int num, vec3_t out ) {
+	return NW_NpcOrigin( num, out );
+}
+
+// every NPC a target names, numbers as they are; -1 if a name isn't in the NPC list
+int CL_NpcWalk_Targets( const char *target, int *nums, int max ) {
+	return NW_Resolve( target, nums, max, qtrue );
+}
+
+// how fast npcmanager walk's walk and run go
+float CL_NpcWalk_PaceSpeed( qboolean run ) {
+	return run ? NW_RUN_SPEED : NW_WALK_SPEED;
+}
+
+static void NW_Plan( nwWalk_t *w, const vec3_t *pts, int numPts, float speed ) {
+	memset( w, 0, sizeof( *w ) );
+	w->numPts = Com_Clampi( 1, NW_MAX_ROUTE_POINTS + 1, numPts );
+	w->speed = Q_max( 1.0f, speed );
+	for ( int i = 0; i < w->numPts; i++ )
+		VectorCopy( pts[i], w->pts[i] );
+	NW_Times( w );
+}
+
+// how long walking from pts[0] through the others takes
+int CL_NpcWalk_RouteMs( const vec3_t *pts, int numPts, float speed ) {
+	nwWalk_t w;
+
+	if ( numPts < 2 )
+		return 0;
+	NW_Plan( &w, pts, numPts, speed );
+	return w.arrive[w.numPts - 1];
+}
+
+// where it is t ms after setting off from pts[0], and which way it faces; qfalse once it's there
+qboolean CL_NpcWalk_RouteAt( const vec3_t *pts, int numPts, float speed, int t, vec3_t pos, float *yaw ) {
+	nwWalk_t w;
+	vec3_t velocity;
+
+	if ( numPts < 1 )
+		return qfalse;
+	NW_Plan( &w, pts, numPts, speed );
+	return NW_At( &w, t, pos, yaw, velocity );
+}
+
+// held at pos as a walk would have it, on the floor as it stands now, until the poses are cleared;
+// pace 0 stands, 1 walks, 2 runs
+void CL_NpcWalk_Pose( int num, const vec3_t pos, float yaw, int pace ) {
+	vec3_t real;
+	float ground, ofs = NW_GROUND_HEIGHT;
+
+	if ( nwNumPoses >= NW_MAX_POSES )
+		return;
+	if ( NW_NpcOrigin( num, real ) && NW_Ground( real, &ground ) )
+		ofs = Com_Clamp( 0.0f, 128.0f, real[2] - ground );
+	nwPose[nwNumPoses].num = num;
+	VectorCopy( pos, nwPose[nwNumPoses].pos );
+	if ( NW_Ground( pos, &ground ) )
+		nwPose[nwNumPoses].pos[2] = ground + ofs;
+	nwPose[nwNumPoses].yaw = yaw;
+	nwPose[nwNumPoses].pace = pace;
+	nwNumPoses++;
+}
+
+void CL_NpcWalk_ClearPoses( void ) {
+	nwNumPoses = 0;
+}
+
+// where the timeline holds it; qfalse if it doesn't
+qboolean CL_NpcWalk_PoseOf( int num, vec3_t out ) {
+	for ( int i = 0; i < nwNumPoses; i++ ) {
+		if ( nwPose[i].num == num ) {
+			VectorCopy( nwPose[i].pos, out );
+			return qtrue;
+		}
+	}
+	return qfalse;
+}
+
+// a walk on this screen only, elapsed ms along already: a preview from the middle of a shot
+void CL_NpcWalk_StartLocal( int num, const vec3_t *pts, int numPts, float speed, int elapsed, const char *route ) {
+	nwWalk_t *w = NW_Start( num, speed, qfalse, pts, numPts, qfalse, route );
+
+	if ( w )
+		w->start -= Q_max( 0, elapsed );
 }
 
 static float NW_ParseSpeed( const char *s, float route ) {
