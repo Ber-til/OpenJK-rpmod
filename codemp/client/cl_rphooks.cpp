@@ -56,9 +56,10 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 //     they change, as the map starts and as someone joins. cmd:mine/<client number>/clear
 //     drops them. See cl_shadermanager.cpp.
 //
-//   cmd:sky/<r g b>/<degrees a second>/<pitch yaw roll>/<x y z>
-//     the sky tinted, spun round and turned, a 3D skybox's view also moved, until the
-//     map changes; see cl_shadermanager.cpp. cmd:sky/off puts it back.
+//   cmd:sky/<r g b>/<degrees a second>/<pitch yaw roll>/<x y z>[/<portal x y z>|-[/<zoom>]]
+//     the sky tinted, spun round, turned and zoomed, a 3D skybox's view also moved, the map
+//     seen from a spot in place of the sky with a portal, until the map changes; see
+//     cl_shadermanager.cpp. cmd:sky/off puts it back.
 //     cmd:startcinematic and cmd:endcinematic start and end one too.
 //
 // Hooks only ever show things: nothing a server sends here runs a command.
