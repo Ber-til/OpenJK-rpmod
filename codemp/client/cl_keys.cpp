@@ -1325,6 +1325,10 @@ void CL_KeyDownEvent( int key, unsigned time )
 		return;
 	}
 
+	// a cinematic's recording ended with its key, whatever it's bound to
+	if ( CL_Cinematic_RecordKey( key ) )
+		return;
+
 	// keys can still be used for bound actions
 	if ( cls.state == CA_CINEMATIC && !Key_GetCatcher() ) {
 		if ( !com_cameraMode->integer ) {

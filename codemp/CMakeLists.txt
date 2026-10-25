@@ -481,6 +481,8 @@ if(BuildMPEngine)
 		"${MPDir}/client/cl_npcwalk.cpp"
 		"${MPDir}/client/cl_languages.cpp"
 		"${MPDir}/client/cl_rpcinematic.cpp"
+		"${MPDir}/client/cl_rpcinematic.h"
+		"${MPDir}/client/cl_cinematic.cpp"
 		"${MPDir}/client/cl_ui.cpp"
 		"${MPDir}/client/cl_uiapi.cpp"
 		"${MPDir}/client/cl_uiapi.h"

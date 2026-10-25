@@ -724,7 +724,23 @@ qboolean CL_NpcWalk_RouteAt( const vec3_t *pts, int numPts, float speed, int t, 
 void CL_NpcWalk_Pose( int num, const vec3_t pos, float yaw, int pace );
 void CL_NpcWalk_ClearPoses( void );
 qboolean CL_NpcWalk_PoseOf( int num, vec3_t out );
-void CL_NpcWalk_StartLocal( int num, const vec3_t *pts, int numPts, float speed, int elapsed, const char *route );
+qboolean CL_NpcWalk_PoseYaw( int num, float *yaw );
+void CL_NpcWalk_PosePlayer( playerState_t *ps );
+// what a cinematic's recording has someone doing, beyond where they are
+typedef struct {
+	int			legsAnim, torsoAnim;
+	qboolean	legsFlip, torsoFlip;
+	int			forcePowersActive;
+	int			saberHolstered;
+	int			saberMove;
+} npcPoseState_t;
+void CL_NpcWalk_PoseEvent( int num, int event, int parm );
+void CL_NpcWalk_PoseEx( int num, const vec3_t pos, const vec3_t angles, int pace, qboolean free, const npcPoseState_t *st, qboolean tilt );
+int CL_NpcWalk_Tilts( vec3_t *pos, vec3_t *angles, int max );
+int CL_EmotePreview_Count( void );
+const char *CL_EmotePreview_Name( int index );
+const char *CL_EmotePreview_Anim( const char *emote );
+qboolean CL_Cinematic_RecordKey( int key );
 qboolean CL_NpcManager_Active( void );
 void CL_NpcManager_Frame( void );
 void CL_NpcManager_Close( void );
@@ -889,6 +905,8 @@ void CL_RpCinematic_EditorKeyEvent( int key, qboolean down );
 void CL_RpCinematic_EditorCharEvent( int ch );
 void CL_RpCinematic_EditorMouseEvent( int dx, int dy );
 void CL_RpCinematic_EditorEscape( void );
+void CL_Cinematic_Hook( char **argv, int argc, const char *message );
+int CL_Cinematic_PlayMs( const char *name );
 
 // cl_storyteller.cpp
 // cl_soundmanager.cpp

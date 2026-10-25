@@ -123,6 +123,7 @@ typedef enum {
 	ST_A_LOCK,
 	ST_A_SOUND,
 	ST_A_MUSIC,
+	ST_A_CINEMATIC,
 	ST_A_CIN_START,
 	ST_A_CAM_SHOT,
 	ST_A_CAM_FOV,
@@ -281,6 +282,9 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 	{ "music", "Change music", "World", "Changes the music for everyone with rpmusic: a file from the music folder, the map's own again, or none. Pick it in the music manager to hear it first.", -1, -1, 2, {
 		{ "Do", ST_K_CHOICE, "play", "play|map default|none" },
 		{ "Music", ST_K_TEXT, "", NULL } } },
+	{ "cinematic", "Play cinematic", "Cinematic", "Plays a cinematic made in the cinematic manager for everyone with this client: its camera shots, and what the players and NPCs in it do. Edit opens it there (or /cinematicmanager <name>). It goes out a part a second first, then plays; the story waits for it to end unless told not to.", -1, -1, 2, {
+		{ "Cinematic", ST_K_TEXT, "", NULL },
+		{ "Wait", ST_K_CHOICE, "until it ends", "until it ends|no" } } },
 	{ "cinstart", "Start cinematic", "Cinematic", "Takes everyone with this client from their own view to the cinematic camera, starting where each of them looks from. Camera shots start one too. Players can leave it with /cincam stop.", -1, -1, 2, {
 		{ "HUD", ST_K_CHOICE, "hide", "hide|show" },
 		{ "Bars", ST_K_CHOICE, "on", "on|off" } } },
@@ -776,6 +780,7 @@ static qboolean ST_Experimental( stAction_t action ) {
 	case ST_A_NPC_TALK:
 	case ST_A_NPC_WALK:
 	case ST_A_OBJECTIVE:
+	case ST_A_CINEMATIC:
 	case ST_A_CIN_START:
 	case ST_A_CAM_SHOT:
 	case ST_A_CAM_FOV:
@@ -785,6 +790,13 @@ static qboolean ST_Experimental( stAction_t action ) {
 	default:
 		return qfalse;
 	}
+}
+
+// the camera steps from before the cinematic manager: stories that have them still play them,
+// but they're no longer in the list to add
+static qboolean ST_OldAction( int action ) {
+	return (qboolean)( action == ST_A_CIN_START || action == ST_A_CAM_SHOT || action == ST_A_CAM_FOV
+		|| action == ST_A_CIN_BARS || action == ST_A_CIN_END );
 }
 
 // an action from the list can go in the story
@@ -1006,6 +1018,24 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 		else
 			Com_sprintf( cmd, sizeof( cmd ), "rpnotify -1 1 cmd:objective/%s", v[0] );
 		return cmd;
+
+	case ST_A_CINEMATIC: {
+		static char why[MAX_STRING_CHARS];
+
+		if ( !v[0][0] ) {
+			*error = "Name the cinematic, then Edit to make it";
+			return NULL;
+		}
+		if ( CL_Cinematic_PlayMs( v[0] ) < 0 ) {
+			Com_sprintf( why, sizeof( why ), "No cinematic called %s yet: Edit makes it", v[0] );
+			*error = why;
+			return NULL;
+		}
+		// it sends itself, a part at a time
+		*local = qtrue;
+		Com_sprintf( cmd, sizeof( cmd ), "cinematicmanager send %s", v[0] );
+		return cmd;
+	}
 
 	case ST_A_CIN_START:
 		Com_sprintf( cmd, sizeof( cmd ), "rpnotify -1 1 cmd:cin/start%s%s", !Q_stricmp( v[0], "show" ) ? "/hud" : "",
@@ -1807,6 +1837,10 @@ static const char *ST_StepSummary( const stStep_t *s ) {
 	case ST_A_OBJECTIVE:
 		Com_sprintf( buf, sizeof( buf ), "Objective %s%s%s", s->values[0], s->values[1][0] ? ": " : "", s->values[1] );
 		break;
+	case ST_A_CINEMATIC:
+		Com_sprintf( buf, sizeof( buf ), "Cinematic %s%s", s->values[0][0] ? s->values[0] : "?",
+			!Q_stricmp( s->values[1], "no" ) ? " (goes on)" : "" );
+		break;
 	case ST_A_CIN_START:
 		Com_sprintf( buf, sizeof( buf ), "Start cinematic (HUD %s, bars %s)", s->values[0], s->values[1] );
 		break;
@@ -2230,6 +2264,13 @@ static qboolean ST_Play( stRun_t *r, stStep_t *steps, int numSteps, const char *
 			r->sent++;
 			// a console command may well send one too
 			st.nextSend = cls.realtime + ST_CommandGap();
+			// a cinematic goes out and plays out
+			if ( s->action == ST_A_CINEMATIC && Q_stricmp( s->values[1], "no" ) ) {
+				const int ms = CL_Cinematic_PlayMs( s->values[0] );
+
+				if ( ms > 0 )
+					r->shotUntil = cls.realtime + ms;
+			}
 			if ( s->action == ST_A_CAM_SHOT ) {
 				char hook[MAX_STRING_CHARS];
 				int ms;
@@ -2694,6 +2735,8 @@ static void ST_BuildActionRows( void ) {
 
 	st.numActionRows = 0;
 	for ( int i = 0; i < ST_NUM_ACTIONS; i++ ) {
+		if ( ST_OldAction( i ) )
+			continue;
 		if ( !category || Q_stricmp( category, stActions[i].category ) ) {
 			category = stActions[i].category;
 			st.actionRows[st.numActionRows].header = category;
@@ -2755,11 +2798,18 @@ void CL_Storyteller_Open( void ) {
 		ST_Open();
 }
 
-// the camera editor saved a shot it was opened on: the step takes the name it went under
+// the cinematic manager saved what it was opened on: the step takes the name it went under; an
+// old Camera shot step plays it as a cinematic from now on, waiting for it or not as it did
 void CL_Storyteller_ShotSaved( const char *name ) {
 	stStep_t *s = ST_SelectedStep();
 
-	if ( s && s->action == ST_A_CAM_SHOT && Q_stricmp( s->values[0], name ) ) {
+	if ( !s || ( s->action != ST_A_CINEMATIC && s->action != ST_A_CAM_SHOT ) )
+		return;
+	if ( s->action == ST_A_CAM_SHOT ) {
+		s->action = ST_A_CINEMATIC;
+		ST_Changed();
+	}
+	if ( Q_stricmp( s->values[0], name ) ) {
 		Q_strncpyz( s->values[0], name, ST_VALUE_LEN );
 		ST_Changed();
 	}
@@ -4698,11 +4748,11 @@ static void ST_DrawEdit( void ) {
 		y += ST_CTRL_H + 6;
 	}
 
-	if ( s->action == ST_A_CAM_SHOT ) {
-		if ( ST_Button( ST_EDIT_X, y, ST_EDIT_W, "Edit shot in the camera editor", qfalse, qtrue ) ) {
+	if ( s->action == ST_A_CINEMATIC || s->action == ST_A_CAM_SHOT ) {
+		if ( ST_Button( ST_EDIT_X, y, ST_EDIT_W, s->action == ST_A_CAM_SHOT ? "Open in the cinematic manager" : "Edit in the cinematic manager", qfalse, qtrue ) ) {
 			// a new one gets a name of its own
 			if ( !s->values[0][0] ) {
-				Com_sprintf( s->values[0], ST_VALUE_LEN, "shot%i", st.stepList.sel + 1 );
+				Com_sprintf( s->values[0], ST_VALUE_LEN, "cinematic%i", st.stepList.sel + 1 );
 				ST_Changed();
 			}
 			CL_RpCinematic_Edit( s->values[0], qtrue );

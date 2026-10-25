@@ -282,6 +282,26 @@ static void EP_Load( void ) {
 	EP_AddBuiltIn();
 }
 
+// the emotes known, for the cinematic manager: their names and the animation each plays
+int CL_EmotePreview_Count( void ) {
+	EP_Load();
+	return epNumEmotes;
+}
+
+const char *CL_EmotePreview_Name( int index ) {
+	EP_Load();
+	return index >= 0 && index < epNumEmotes ? epEmotes[index].emote : NULL;
+}
+
+// the animation an emote plays, NULL if it isn't known
+const char *CL_EmotePreview_Anim( const char *emote ) {
+	const epEmote_t *e;
+
+	EP_Load();
+	e = EP_Find( emote );
+	return e ? e->torso : NULL;
+}
+
 static void EP_Save( void ) {
 	fileHandle_t f = FS_FOpenFileWrite( EP_FILE );
 

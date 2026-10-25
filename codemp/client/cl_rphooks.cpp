@@ -44,6 +44,9 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 //     away; they name it by its text or its number in the list. clear empties the
 //     list, or with "done" only takes the struck ones. cmd:objective: <text> adds.
 //
+//   cmd:cine/<id>/<part>/<parts>: <text>
+//     a cinematic from the cinematic manager, played once all its parts are in; cmd:cine/stop
+//     ends it. See cl_cinematic.cpp.
 //   cmd:cin/<verb>/...
 //     a cinematic camera for everyone with this client; see cl_rpcinematic.cpp.
 //
@@ -425,6 +428,10 @@ static rhResult_t RH_Run( const char *text ) {
 		return RH_Npc( argv + 1, argc - 1, message );
 	if ( !Q_stricmp( argv[0], "objective" ) || !Q_stricmp( argv[0], "objectives" ) )
 		return RH_Objective( argv + 1, argc - 1, message );
+	if ( !Q_stricmp( argv[0], "cine" ) ) {
+		CL_Cinematic_Hook( argv + 1, argc - 1, message );
+		return RH_DROP;
+	}
 	if ( !Q_stricmp( argv[0], "cin" ) || !Q_stricmp( argv[0], "cinematic" ) ) {
 		CL_RpCinematic_Hook( argv + 1, argc - 1 );
 		return RH_DROP;
