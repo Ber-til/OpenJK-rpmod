@@ -30,15 +30,16 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define CS_COMMAND		"consolesettings"
 #define CS_FOLDER		"consolebg"
 #define CS_MAX_IMAGES	64
-#define CS_X			300.0f
-#define CS_Y			150.0f
-#define CS_W			320.0f
-#define CS_H			300.0f
+#define CS_X			12.0f
+#define CS_Y			166.0f
+#define CS_W			616.0f
+#define CS_H			306.0f
+#define CS_COL_W		290.0f
 #define CS_ROW_H		13.0f
 #define CS_CTRL_H		15.0f
 #define CS_GAP			5.0f
 #define CS_SCALE		0.8f
-#define CS_LIST_ROWS	7
+#define CS_LIST_ROWS	5
 
 static vec4_t csPanel		= { 0.06f, 0.07f, 0.09f, 0.94f };
 static vec4_t csLight		= { 0.16f, 0.17f, 0.21f, 1.0f };
@@ -113,7 +114,7 @@ qboolean CL_ConSettings_Active( void ) {
 static void CS_Open( void ) {
 	cs.open = qtrue;
 	cs.cursorX = CS_X + CS_W * 0.5f;
-	cs.cursorY = CS_Y + 40;
+	cs.cursorY = CS_Y + 60;
 	cs.typing = qfalse;
 	Q_strncpyz( cs.typed, con_background->string, sizeof( cs.typed ) );
 	CS_ListImages();
@@ -151,6 +152,7 @@ void CL_ConSettings_Shutdown( void ) {
 
 // the renderer started again: the picture is registered anew
 void CL_ConSettings_RendererRestarted( void ) {
+	Con_FontsLost();
 	cs.shown = 0;
 	cs.shownName[0] = '\0';
 }
@@ -214,7 +216,7 @@ static qboolean CS_Button( float x, float y, float w, const char *label, qboolea
 
 // a value with - and + either side, the wheel over it too; how many steps it went
 static int CS_Stepper( float x, float y, float w, const char *label, const char *value ) {
-	const float lw = 76.0f, vx = x + lw + 18, vw = w - lw - 36;
+	const float lw = 86.0f, vx = x + lw + 18, vw = w - lw - 36;
 	int steps = 0;
 
 	CS_Text( x, y + 2, label, csDim );
@@ -243,11 +245,40 @@ static void CS_SetBackground( const char *name ) {
 	CS_Message( name[0] ? va( "Behind the console: %s", name ) : "Behind the console: the standard picture" );
 }
 
+// plain text's colours to pick from, "" white
+static const struct {
+	const char	*name, *rgb;
+} csTextColors[] = {
+	{ "White", "" }, { "Soft white", "235 235 225" }, { "Light grey", "200 200 200" }, { "Light yellow", "255 245 170" },
+	{ "Amber", "255 200 90" }, { "Light green", "170 255 170" }, { "Light blue", "170 210 255" },
+};
+
+static int CS_TextColor( void ) {
+	extern cvar_t *con_textColor;
+
+	for ( size_t i = 0; i < ARRAY_LEN( csTextColors ); i++ ) {
+		if ( !Q_stricmp( con_textColor->string, csTextColors[i].rgb ) )
+			return (int)i;
+	}
+	return -1;
+}
+
+// one of a few: steps go round
+static void CS_Cycle( cvar_t *cv, int steps, int count ) {
+	if ( steps )
+		Cvar_SetValue( cv->name, (float)( ( ( cv->integer + steps ) % count + count ) % count ) );
+}
+
 // drawn over the console, so what changes shows
 void CL_ConSettings_Draw( void ) {
-	extern cvar_t *con_opacity, *con_scale, *con_height;
-	const float x = CS_X + 10, w = CS_W - 20;
-	float y = CS_Y + 6;
+	extern cvar_t *con_opacity, *con_scale, *con_height, *con_timestamps, *con_notifytime;
+	extern cvar_t *con_lineSpacing, *con_textShadow, *con_bgDarken, *con_margin, *con_textColor, *con_contrast, *con_colorblind,
+		*con_noFade, *con_font, *con_notifyScale;
+	static const char *shadows[] = { "None", "A shadow", "An outline" };
+	static const char *contrasts[] = { "As sent", "Dark colours lit", "All in the text colour" };
+	static const char *blinds[] = { "Off", "Red-green", "Blue-yellow" };
+	const float x = CS_X + 10, w = CS_COL_W, x2 = CS_X + CS_W - 10 - CS_COL_W;
+	float y = CS_Y + 6, y2;
 	int steps;
 
 	if ( !cs.open )
@@ -258,20 +289,48 @@ void CL_ConSettings_Draw( void ) {
 	}
 	CS_Box( CS_X, CS_Y, CS_W, CS_H, csPanel );
 	CS_Text( x, y, "Console settings", csWhite );
-	if ( CS_Button( x + w - 70, y - 2, 70, "Close (Esc)", qfalse ) ) {
+	if ( CS_Button( CS_X + CS_W - 10 - 84 - 110, y - 2, 110, "Everything as it was", qfalse ) ) {
+		static const char *defaults[][2] = {
+			{ "con_opacity", "1.0" }, { "con_scale", "1" }, { "con_height", "0.5" }, { "con_lineSpacing", "0" }, { "con_textShadow", "0" },
+			{ "con_bgDarken", "0" }, { "con_margin", "0" }, { "con_textColor", "" }, { "con_contrast", "0" }, { "con_colorblind", "0" },
+			{ "con_noFade", "0" }, { "con_font", "0" }, { "con_notifyScale", "0" }, { "con_notifytime", "3" }, { "con_timestamps", "0" },
+		};
+
+		for ( size_t i = 0; i < ARRAY_LEN( defaults ); i++ )
+			Cvar_Set( defaults[i][0], defaults[i][1] );
+		CS_SetBackground( "" );
+	}
+	if ( CS_Button( CS_X + CS_W - 10 - 80, y - 2, 80, "Close (Esc)", qfalse ) ) {
 		CL_ConSettings_Close();
 		return;
 	}
 	y += CS_CTRL_H + CS_GAP + 2;
+	y2 = y;
 
+	// left: how it's laid out and drawn
 	steps = CS_Stepper( x, y, w, "See-through", va( "%i%% solid", (int)( Com_Clamp( 0.0f, 1.0f, con_opacity->value ) * 100.0f + 0.5f ) ) );
 	CS_Step( con_opacity, steps, 0.05f, 0.0f, 1.0f );
 	y += CS_CTRL_H + CS_GAP;
 	steps = CS_Stepper( x, y, w, "Letters", va( "x%.1f", con_scale->value > 0.0f ? con_scale->value : 1.0f ) );
 	CS_Step( con_scale, steps, 0.1f, 0.5f, 3.0f );
 	y += CS_CTRL_H + CS_GAP;
+	steps = CS_Stepper( x, y, w, "Font", Con_FontName( con_font->integer ) );
+	CS_Cycle( con_font, steps, Con_NumFonts() );
+	y += CS_CTRL_H + CS_GAP;
+	steps = CS_Stepper( x, y, w, "Behind letters", shadows[Com_Clampi( 0, 2, con_textShadow->integer )] );
+	CS_Cycle( con_textShadow, steps, 3 );
+	y += CS_CTRL_H + CS_GAP;
+	steps = CS_Stepper( x, y, w, "Line spacing", con_lineSpacing->value > 0.0f ? va( "+%i%% of a letter", (int)( con_lineSpacing->value * 100.0f + 0.5f ) ) : "none" );
+	CS_Step( con_lineSpacing, steps, 0.1f, 0.0f, 1.5f );
+	y += CS_CTRL_H + CS_GAP;
+	steps = CS_Stepper( x, y, w, "Margins", con_margin->integer > 0 ? va( "%i letters each side", con_margin->integer ) : "none" );
+	CS_Step( con_margin, steps, 1.0f, 0.0f, 30.0f );
+	y += CS_CTRL_H + CS_GAP;
 	steps = CS_Stepper( x, y, w, "Comes down", va( "%i%% of the screen", (int)( Com_Clamp( 0.1f, 1.0f, con_height->value ) * 100.0f + 0.5f ) ) );
 	CS_Step( con_height, steps, 0.05f, 0.1f, 1.0f );
+	y += CS_CTRL_H + CS_GAP;
+	steps = CS_Stepper( x, y, w, "Timestamps", con_timestamps->integer ? "shown" : "hidden" );
+	CS_Cycle( con_timestamps, steps, 2 );
 	y += CS_CTRL_H + CS_GAP + 4;
 
 	// the picture behind it
@@ -301,31 +360,53 @@ void CL_ConSettings_Draw( void ) {
 			CS_SetBackground( name );
 	}
 	y += CS_LIST_ROWS * CS_ROW_H + 2 + CS_GAP;
-
-	// any image or shader, typed
-	CS_Text( x, y + 2, "Or type one", csDim );
-	CS_Box( x + 76, y, w - 76 - 44, CS_CTRL_H, cs.typing ? csLit : csLight );
-	CS_TextClipped( x + 80, y + 2, w - 76 - 52, cs.typed[0] || cs.typing ? va( "%s%s", cs.typed, cs.typing && ( ( cls.realtime >> 8 ) & 1 ) ? "_" : "" )
-		: S_COLOR_GREY "gfx/menus/... or a shader", csWhite );
-	if ( CS_Clicked( x + 76, y, w - 76 - 44, CS_CTRL_H ) )
+	CS_Box( x, y, w - 44 - 64, CS_CTRL_H, cs.typing ? csLit : csLight );
+	CS_TextClipped( x + 4, y + 2, w - 116, cs.typed[0] || cs.typing ? va( "%s%s", cs.typed, cs.typing && ( ( cls.realtime >> 8 ) & 1 ) ? "_" : "" )
+		: S_COLOR_GREY "or type an image or a shader", csWhite );
+	if ( CS_Clicked( x, y, w - 44 - 64, CS_CTRL_H ) )
 		cs.typing = qtrue;
-	if ( CS_Button( x + w - 40, y, 40, "Use", qfalse ) ) {
+	if ( CS_Button( x + w - 104, y, 40, "Use", qfalse ) ) {
 		cs.typing = qfalse;
 		CS_SetBackground( cs.typed );
 	}
-	y += CS_CTRL_H + CS_GAP + 4;
-
-	if ( CS_Button( x, y, ( w - 4 ) * 0.5f, "Read the folder again", qfalse ) )
+	if ( CS_Button( x + w - 60, y, 60, "Read again", qfalse ) )
 		CS_ListImages();
-	if ( CS_Button( x + ( w - 4 ) * 0.5f + 4, y, ( w - 4 ) * 0.5f, "Everything as it was", qfalse ) ) {
-		Cvar_Set( "con_opacity", "1.0" );
-		Cvar_Set( "con_scale", "1" );
-		Cvar_Set( "con_height", "0.5" );
-		CS_SetBackground( "" );
+
+	// right: colours, and the lines over the game
+	y = y2;
+	steps = CS_Stepper( x2, y, w, "Text colour", CS_TextColor() >= 0 ? csTextColors[CS_TextColor()].name : con_textColor->string );
+	if ( steps ) {
+		const int n = (int)ARRAY_LEN( csTextColors );
+
+		Cvar_Set( "con_textColor", csTextColors[( ( Q_max( 0, CS_TextColor() ) + steps ) % n + n ) % n].rgb );
 	}
 	y += CS_CTRL_H + CS_GAP;
+	steps = CS_Stepper( x2, y, w, "Contrast", contrasts[Com_Clampi( 0, 2, con_contrast->integer )] );
+	CS_Cycle( con_contrast, steps, 3 );
+	y += CS_CTRL_H + CS_GAP;
+	steps = CS_Stepper( x2, y, w, "Colour-blind", blinds[Com_Clampi( 0, 2, con_colorblind->integer )] );
+	CS_Cycle( con_colorblind, steps, 3 );
+	y += CS_CTRL_H + CS_GAP;
+	steps = CS_Stepper( x2, y, w, "Fading", con_noFade->integer ? "nothing faded" : "far chat faded" );
+	CS_Cycle( con_noFade, steps, 2 );
+	y += CS_CTRL_H + CS_GAP;
+	steps = CS_Stepper( x2, y, w, "Darker behind", con_bgDarken->value > 0.0f ? va( "%i%%", (int)( con_bgDarken->value * 100.0f + 0.5f ) ) : "no" );
+	CS_Step( con_bgDarken, steps, 0.1f, 0.0f, 0.9f );
+	y += CS_CTRL_H + CS_GAP + 8;
+
+	CS_Text( x2, y, "Lines over the game", csWhite );
+	y += CS_ROW_H + 4;
+	steps = CS_Stepper( x2, y, w, "Letters", con_notifyScale->value > 0.0f ? va( "x%.2g", con_notifyScale->value ) : "as the console's" );
+	CS_Step( con_notifyScale, steps, 0.25f, 0.0f, 4.0f );
+	y += CS_CTRL_H + CS_GAP;
+	steps = CS_Stepper( x2, y, w, "Stay", va( "%i s", con_notifytime->integer ) );
+	CS_Step( con_notifytime, steps, 1.0f, 1.0f, 30.0f );
+	y += CS_CTRL_H + CS_GAP + 8;
+
+	CS_TextClipped( x2, y, w, S_COLOR_GREY "The console behind this window shows each change", csWhite );
+	y += CS_ROW_H + 4;
 	if ( cs.message[0] && cls.realtime - cs.messageTime < 5000 )
-		CS_TextClipped( x, y, w, cs.message, csWhite );
+		CS_TextClipped( x2, y, w, cs.message, csWhite );
 
 	cs.click = qfalse;
 	cs.wheel = 0;
