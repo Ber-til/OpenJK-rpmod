@@ -252,6 +252,7 @@ typedef struct smSky_s {
 	vec3_t		shift;			// a 3D skybox's view moved this far
 	qboolean	portalOn;		// the map seen from portalOrg in place of the sky
 	vec3_t		portalOrg;
+	float		zoom;			// the sky drawn this much nearer, 1 as it is
 } smSky_t;
 
 // a spot a sky portal can show the map from
@@ -3555,6 +3556,7 @@ SKY
 static void SM_SkyDefault( smSky_t *sky ) {
 	memset( sky, 0, sizeof( *sky ) );
 	sky->tint[0] = sky->tint[1] = sky->tint[2] = 255.0f;
+	sky->zoom = 1.0f;
 }
 
 static qboolean SM_SkyAltered( const smSky_t *sky ) {
@@ -3577,6 +3579,8 @@ void CL_ShaderManager_SkyLook( void ) {
 	SM_MineFrame();
 	if ( re->ext.SetSkyPortal )
 		re->ext.SetSkyPortal( sm.sky.portalOn ? sm.sky.portalOrg : NULL );
+	if ( re->ext.SetSkyZoom )
+		re->ext.SetSkyZoom( sm.sky.zoom );
 	if ( !re->ext.SetSkyLook )
 		return;
 	if ( !SM_SkyAltered( &sm.sky ) ) {
@@ -3592,7 +3596,7 @@ void CL_ShaderManager_SkyLook( void ) {
 	sm.skySet = qtrue;
 }
 
-// cmd:sky/<r g b>/<spin>/<pitch yaw roll>/<x y z>[/<portal x y z>]: the sky look an admin shared; cmd:sky/off
+// cmd:sky/<r g b>/<spin>/<pitch yaw roll>/<x y z>[/<portal x y z>|-[/<zoom>]]: the sky look an admin shared; cmd:sky/off
 void CL_ShaderManager_SkyHook( char **argv, int argc ) {
 	smSky_t sky;
 
@@ -3607,6 +3611,8 @@ void CL_ShaderManager_SkyHook( char **argv, int argc ) {
 			sscanf( argv[3], "%f %f %f", &sky.shift[0], &sky.shift[1], &sky.shift[2] );
 		if ( argc >= 5 && sscanf( argv[4], "%f %f %f", &sky.portalOrg[0], &sky.portalOrg[1], &sky.portalOrg[2] ) == 3 )
 			sky.portalOn = qtrue;
+		if ( argc >= 6 && atof( argv[5] ) > 0.0f )
+			sky.zoom = Com_Clamp( 0.25f, 4.0f, (float)atof( argv[5] ) );
 		for ( int i = 0; i < 3; i++ )
 			sky.tint[i] = Com_Clamp( 0.0f, 255.0f, sky.tint[i] );
 	}
@@ -3685,12 +3691,16 @@ static void SM_DrawSkyTab( float x, float y, float w ) {
 	SM_Slider( x, y, w, "Speed", &sm.sky.spin, -20, 20, 0.1f, "%.1f/s", qtrue );
 	y += 22;
 
-	SM_Text( x, y, "Turn", smWhite );
+	SM_Text( x, y, "Turn and zoom", smWhite );
 	y += 13;
 	SM_Slider( x, y, w, "Around", &sm.sky.angles[YAW], 0, 360, 1, "%.0f", qtrue );
 	SM_Slider( x, y + 17, w, "Tilt", &sm.sky.angles[PITCH], -90, 90, 1, "%.0f", qtrue );
 	SM_Slider( x, y + 34, w, "Roll", &sm.sky.angles[ROLL], -180, 180, 1, "%.0f", qtrue );
-	y += 56;
+	// above 1 nearer, below 1 farther; a 3D skybox or sky portal's view zooms
+	SM_Slider( x, y + 51, w, "Zoom", &sm.sky.zoom, 0.25f, 4.0f, 0.05f, "%.2fx", qtrue );
+	if ( fabsf( sm.sky.zoom - 1.0f ) < 0.01f )
+		sm.sky.zoom = 1.0f;	// back to the map's own, not a step's rounding off it
+	y += 73;
 
 	y = SM_DrawPortals( x, y, w, portal );
 
@@ -3710,9 +3720,10 @@ static void SM_DrawSkyTab( float x, float y, float w ) {
 		else if ( !SM_SkyAltered( &sm.sky ) )
 			SM_Send( "rpnotify -1 1 cmd:sky/off" );
 		else
-			SM_Send( va( "rpnotify -1 1 cmd:sky/%g %g %g/%g/%g %g %g/%g %g %g%s", sm.sky.tint[0], sm.sky.tint[1], sm.sky.tint[2], sm.sky.spin,
+			SM_Send( va( "rpnotify -1 1 cmd:sky/%g %g %g/%g/%g %g %g/%g %g %g%s%s", sm.sky.tint[0], sm.sky.tint[1], sm.sky.tint[2], sm.sky.spin,
 				sm.sky.angles[0], sm.sky.angles[1], sm.sky.angles[2], sm.sky.shift[0], sm.sky.shift[1], sm.sky.shift[2],
-				sm.sky.portalOn ? va( "/%g %g %g", sm.sky.portalOrg[0], sm.sky.portalOrg[1], sm.sky.portalOrg[2] ) : "" ) );
+				sm.sky.portalOn ? va( "/%g %g %g", sm.sky.portalOrg[0], sm.sky.portalOrg[1], sm.sky.portalOrg[2] ) : sm.sky.zoom != 1.0f ? "/-" : "",
+				sm.sky.zoom != 1.0f ? va( "/%g", sm.sky.zoom ) : "" ) );
 	}
 	if ( SM_Button( x + 164, y, w - 164, "Reset for all", qfalse, qtrue ) ) {
 		if ( !CL_RpHooks_Experimental() ) {

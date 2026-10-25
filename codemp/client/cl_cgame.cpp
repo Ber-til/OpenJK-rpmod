@@ -131,6 +131,8 @@ qboolean CL_GetSnapshot( int snapshotNumber, snapshot_t *snapshot ) {
 	snapshot->vps = clSnap->vps; //get the vehicle ps
 	// a camera shot's animation let go: the cgame starts its own again
 	CL_RpCinematic_SnapPlayer( &snapshot->ps );
+	// and moved where a cinematic has them
+	CL_NpcWalk_PosePlayer( &snapshot->ps );
 	count = clSnap->numEntities;
 	if ( count > MAX_ENTITIES_IN_SNAPSHOT ) {
 		Com_DPrintf( "CL_GetSnapshot: truncated %i entities to %i\n", count, MAX_ENTITIES_IN_SNAPSHOT );

@@ -678,7 +678,8 @@ void CL_ModelManager_Draw( void );
 #define KEYCATCH_SOUNDMANAGER	0x0800	// engine only, the sound or the music manager owns keyboard and mouse
 #define KEYCATCH_RADIALMENU		0x1000	// engine only, the radial menus' settings own keyboard and mouse
 #define KEYCATCH_LANGUAGES		0x2000	// engine only, the languages window owns keyboard and mouse
-#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELMANAGER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER | KEYCATCH_MAPEDITOR | KEYCATCH_STORYTELLER | KEYCATCH_CINEDITOR | KEYCATCH_SOUNDMANAGER | KEYCATCH_RADIALMENU | KEYCATCH_LANGUAGES )	// mods never see or clear these
+#define KEYCATCH_CONSETTINGS	0x4000	// engine only, the console settings window owns keyboard and mouse
+#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELMANAGER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER | KEYCATCH_MAPEDITOR | KEYCATCH_STORYTELLER | KEYCATCH_CINEDITOR | KEYCATCH_SOUNDMANAGER | KEYCATCH_RADIALMENU | KEYCATCH_LANGUAGES | KEYCATCH_CONSETTINGS )	// mods never see or clear these
 
 void CL_NpcManager_Init( void );
 void CL_NpcManager_Shutdown( void );
@@ -716,6 +717,31 @@ const char *CL_NpcWalk_RouteOf( int num );
 void CL_NpcWalk_ListRead( int listTime );
 qboolean CL_NpcWalk_SaveRoute( const char *name, const vec3_t *pts, int numPts, float speed );
 int CL_NpcWalk_LoadRoute( const char *name, vec3_t *pts, int maxPts, float *speed );
+qboolean CL_NpcWalk_NpcOrigin( int num, vec3_t out );
+int CL_NpcWalk_Targets( const char *target, int *nums, int max );
+float CL_NpcWalk_PaceSpeed( qboolean run );
+int CL_NpcWalk_RouteMs( const vec3_t *pts, int numPts, float speed );
+qboolean CL_NpcWalk_RouteAt( const vec3_t *pts, int numPts, float speed, int t, vec3_t pos, float *yaw );
+void CL_NpcWalk_Pose( int num, const vec3_t pos, float yaw, int pace );
+void CL_NpcWalk_ClearPoses( void );
+qboolean CL_NpcWalk_PoseOf( int num, vec3_t out );
+qboolean CL_NpcWalk_PoseYaw( int num, float *yaw );
+void CL_NpcWalk_PosePlayer( playerState_t *ps );
+// what a cinematic's recording has someone doing, beyond where they are
+typedef struct {
+	int			legsAnim, torsoAnim;
+	qboolean	legsFlip, torsoFlip;
+	int			forcePowersActive;
+	int			saberHolstered;
+	int			saberMove;
+} npcPoseState_t;
+void CL_NpcWalk_PoseEvent( int num, int event, int parm );
+void CL_NpcWalk_PoseEx( int num, const vec3_t pos, const vec3_t angles, int pace, qboolean free, const npcPoseState_t *st, qboolean tilt );
+int CL_NpcWalk_Tilts( vec3_t *pos, vec3_t *angles, int max );
+int CL_EmotePreview_Count( void );
+const char *CL_EmotePreview_Name( int index );
+const char *CL_EmotePreview_Anim( const char *emote );
+qboolean CL_Cinematic_RecordKey( int key );
 qboolean CL_NpcManager_Active( void );
 void CL_NpcManager_Frame( void );
 void CL_NpcManager_Close( void );
@@ -803,6 +829,11 @@ qboolean CL_EffectManager_RenderScene( const refdef_t *fd );
 qboolean CL_EffectManager_Camera( vec3_t origin, vec3_t angles );
 qboolean CL_EffectManager_ServerPrint( const char *text );
 void CL_EffectManager_Draw( void );
+float CL_EffectManager_FxScale( const char *effect, const vec3_t org );
+void CL_EffectManager_OpenForCinematic( void );
+qboolean CL_Cinematic_CaptureEffect( const char *cmd, float scale );
+qboolean CL_Cinematic_PickingEffect( void );
+void CL_EffectManager_ScaleHook( char **argv, int argc, const char *message );
 
 // cl_mapeditor.cpp
 void CL_MapEditor_Init( void );
@@ -880,6 +911,8 @@ void CL_RpCinematic_EditorKeyEvent( int key, qboolean down );
 void CL_RpCinematic_EditorCharEvent( int ch );
 void CL_RpCinematic_EditorMouseEvent( int dx, int dy );
 void CL_RpCinematic_EditorEscape( void );
+void CL_Cinematic_Hook( char **argv, int argc, const char *message );
+int CL_Cinematic_PlayMs( const char *name );
 
 // cl_storyteller.cpp
 // cl_soundmanager.cpp
@@ -915,6 +948,19 @@ void CL_RadialMenu_CharEvent( int ch );
 void CL_RadialMenu_SettingsMouseEvent( int dx, int dy );
 void CL_RadialMenu_SettingsEscape( void );
 void CL_RadialMenu_DrawSettings( void );
+
+// cl_consettings.cpp
+void CL_ConSettings_Init( void );
+void CL_ConSettings_Shutdown( void );
+qboolean CL_ConSettings_Active( void );
+void CL_ConSettings_Close( void );
+void CL_ConSettings_Draw( void );
+void CL_ConSettings_KeyEvent( int key, qboolean down );
+void CL_ConSettings_CharEvent( int ch );
+void CL_ConSettings_MouseEvent( int dx, int dy );
+void CL_ConSettings_Escape( void );
+qhandle_t CL_ConSettings_Background( void );
+void CL_ConSettings_RendererRestarted( void );
 
 // cl_languages.cpp
 void CL_Languages_Init( void );

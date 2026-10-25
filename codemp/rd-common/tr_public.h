@@ -290,6 +290,9 @@ typedef struct refexport_s {
 		// place in every world scene, as a 3D skybox's view does; a map's own 3D skybox is moved
 		// there. NULL puts the sky back as the map has it
 		void				(*SetSkyPortal)							( const vec3_t origin );
+		// the shader manager's sky zoom, until changed: above 1 the sky looks nearer, below 1
+		// farther; a 3D skybox's view is zoomed instead. 1 is the sky as the map has it
+		void				(*SetSkyZoom)							( float zoom );
 	} ext;
 
 } refexport_t;

@@ -1325,6 +1325,10 @@ void CL_KeyDownEvent( int key, unsigned time )
 		return;
 	}
 
+	// a cinematic's recording ended with its key, whatever it's bound to
+	if ( CL_Cinematic_RecordKey( key ) )
+		return;
+
 	// keys can still be used for bound actions
 	if ( cls.state == CA_CINEMATIC && !Key_GetCatcher() ) {
 		if ( !com_cameraMode->integer ) {
@@ -1395,6 +1399,10 @@ void CL_KeyDownEvent( int key, unsigned time )
 			CL_Languages_Escape();
 			return;
 		}
+		if ( Key_GetCatcher() & KEYCATCH_CONSETTINGS ) {
+			CL_ConSettings_Escape();
+			return;
+		}
 
 		// escape always gets out of CGAME stuff
 		if ( Key_GetCatcher() & KEYCATCH_CGAME ) {
@@ -1430,8 +1438,11 @@ void CL_KeyDownEvent( int key, unsigned time )
 	if ( !cls.cursorActive ) CL_ParseBinding( key, qtrue, time );
 
 	// distribute the key down event to the appropriate handler
+	// the console settings window, over the console
+	if ( Key_GetCatcher() & KEYCATCH_CONSETTINGS )
+		CL_ConSettings_KeyEvent( key, qtrue );
 	// console
-	if ( Key_GetCatcher() & KEYCATCH_CONSOLE )
+	else if ( Key_GetCatcher() & KEYCATCH_CONSOLE )
 		Console_Key( key );
 	else if ( cls.cursorActive ) {
 		CL_CursorButton( key );
@@ -1572,7 +1583,8 @@ void CL_CharEvent( int key ) {
 		return;
 
 	// distribute the key down event to the appropriate handler
-		 if ( Key_GetCatcher() & KEYCATCH_CONSOLE )		{ if ( !Con_CharEvent( key ) ) Field_CharEvent( &g_consoleField, key ); }
+		 if ( Key_GetCatcher() & KEYCATCH_CONSETTINGS )	CL_ConSettings_CharEvent( key );
+	else if ( Key_GetCatcher() & KEYCATCH_CONSOLE )		{ if ( !Con_CharEvent( key ) ) Field_CharEvent( &g_consoleField, key ); }
 	else if ( Key_GetCatcher() & KEYCATCH_UI )			UIVM_KeyEvent( key|K_CHAR_FLAG, qtrue );
 	else if ( Key_GetCatcher() & KEYCATCH_MODELMANAGER )	CL_ModelManager_CharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_NPCMANAGER )	CL_NpcManager_CharEvent( key );
