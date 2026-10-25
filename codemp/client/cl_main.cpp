@@ -2468,6 +2468,7 @@ void CL_InitRenderer( void ) {
 
 	cls.whiteShader = re->RegisterShader( "white" );
 	cls.consoleShader = re->RegisterShader( "console" );
+	CL_ConSettings_RendererRestarted();
 	g_console_field_width = cls.glconfig.vidWidth / SMALLCHAR_WIDTH - 2;
 	g_consoleField.widthInChars = g_console_field_width;
 
@@ -2875,6 +2876,7 @@ void CL_Init( void ) {
 	cls.widthRatioCoef = 1.0f;
 	CL_RadialMenu_Init ();
 	CL_Languages_Init ();
+	CL_ConSettings_Init ();
 	CL_SaberStyle_Init ();
 	CL_EmotePreview_Init ();
 	CL_RpCinematic_Init ();
@@ -3119,6 +3121,7 @@ void CL_Shutdown( void ) {
 	Cmd_RemoveCommand ("clientinfo");
 	Cmd_RemoveCommand ("snd_restart");
 	Cmd_RemoveCommand ("vid_restart");
+	CL_ConSettings_Shutdown();
 	Cmd_RemoveCommand ("disconnect");
 	Cmd_RemoveCommand ("record");
 	Cmd_RemoveCommand ("demo");

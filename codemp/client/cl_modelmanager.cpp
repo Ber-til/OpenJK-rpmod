@@ -38,6 +38,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 
 #include "client.h"
 #include "qcommon/cm_public.h"
+#include "cl_gizmo.h"
 
 #define MM_ROOT				"models"			// where models are listed from, and what RPMod's names are relative to
 #define MM_SKIP				"models/players/"	// the player models are no use here
@@ -312,6 +313,13 @@ static struct {
 	qboolean	haveView;
 	vec3_t		viewOrg, viewAng;
 	int			viewFrame;		// cls.framecount the main view was last re-aimed on
+	float		fovX, fovY;		// the free camera's
+
+	// the move arrows: the mouse a cursor, an arrow dragged moves the selection along it
+	qboolean	gizmo;
+	qboolean	gzDragging;
+	gzDrag_t	gzDrag;
+	int			gzHot;
 } mm;
 
 static vec4_t mmWhite		= { 1.0f, 1.0f, 1.0f, 1.0f };
@@ -2839,6 +2847,8 @@ static void MM_BrowseKey( int key ) {
 }
 
 // the name box, offering a name where there is one to offer
+static void MM_GzView( gzView_t *v );
+
 static void MM_StartNaming( mmNaming_t naming ) {
 	const mmPiece_t *first = MM_FirstSelected();
 
@@ -2890,6 +2900,29 @@ static void MM_NameKey( int key ) {
 }
 
 static void MM_CameraKey( int key ) {
+	// the arrows: one grabbed moves the selection along it; the right button only looks
+	if ( key == GZ_KEY ) {
+		mm.gizmo = (qboolean)!mm.gizmo;
+		mm.gzDragging = qfalse;
+		mm.cursorX = SCREEN_WIDTH * 0.5f;
+		mm.cursorY = SCREEN_HEIGHT * 0.5f;
+		MM_Message( mm.gizmo ? "Move arrows: drag X, Y or Z to move the selection along it; hold the right mouse button to look; J hides them"
+			: "Move arrows hidden" );
+		return;
+	}
+	if ( mm.gizmo && key == A_MOUSE2 )
+		return;
+	if ( mm.gizmo && key == A_MOUSE1 && mm.gzHot >= 0 && MM_NumSelected() && MM_Pickup( qtrue ) ) {
+		gzView_t v;
+		vec3_t pivot;
+
+		MM_GzView( &v );
+		MM_Pivot( pivot );
+		GZ_Begin( &mm.gzDrag, &v, pivot, mm.gzHot, mm.cursorX, mm.cursorY );
+		mm.gzDragging = mm.gzDrag.on;
+		mm.locked = qtrue;
+		return;
+	}
 	switch ( key ) {
 	case A_MOUSE1:
 		if ( mm.carrying )
@@ -3001,6 +3034,13 @@ void CL_ModelManager_KeyEvent( int key, qboolean down ) {
 
 	if ( key >= 0 && key < MAX_KEYS )
 		mm.held[key] = down;
+	// an arrow let go: what's moved goes down, a model being placed stays in hand
+	if ( !down && key == A_MOUSE1 && mm.gzDragging ) {
+		mm.gzDragging = qfalse;
+		if ( !MM_CarryingTemplate() )
+			MM_Drop();
+		return;
+	}
 	if ( !down )
 		return;
 
@@ -3032,6 +3072,9 @@ void CL_ModelManager_CharEvent( int ch ) {
 
 void CL_ModelManager_MouseEvent( int dx, int dy ) {
 	if ( mm.state == MM_BROWSE ) {
+		mm.cursorX = Com_Clamp( 0, SCREEN_WIDTH, mm.cursorX + dx );
+		mm.cursorY = Com_Clamp( 0, SCREEN_HEIGHT, mm.cursorY + dy );
+	} else if ( mm.state == MM_CAMERA && mm.gizmo && !mm.held[A_MOUSE2] ) {
 		mm.cursorX = Com_Clamp( 0, SCREEN_WIDTH, mm.cursorX + dx );
 		mm.cursorY = Com_Clamp( 0, SCREEN_HEIGHT, mm.cursorY + dy );
 	} else if ( mm.state == MM_CAMERA ) {
@@ -3181,14 +3224,31 @@ static float MM_RayBox( const vec3_t start, const vec3_t dir, const vec3_t origi
 	return inside ? -1.0f : tmin;
 }
 
-// the model under the crosshair and in front of the world; -1 = none
-static int MM_PieceUnderCrosshair( void ) {
-	vec3_t forward, end, origin, angles, mins, maxs;
+static void MM_GzView( gzView_t *v ) {
+	GZ_ViewFromAngles( v, mm.camOrg, mm.camAng, mm.fovX > 0.0f ? mm.fovX : 90.0f, mm.fovY > 0.0f ? mm.fovY : 73.74f );
+}
+
+// the way the mouse points, from the camera
+static void MM_CursorDir( vec3_t dir ) {
+	const float fx = mm.fovX > 0.0f ? mm.fovX : 90.0f, fy = mm.fovY > 0.0f ? mm.fovY : 73.74f;
+	const float x = ( mm.cursorX / ( SCREEN_WIDTH * 0.5f ) - 1.0f ) * tanf( DEG2RAD( fx * 0.5f ) );
+	const float y = ( mm.cursorY / ( SCREEN_HEIGHT * 0.5f ) - 1.0f ) * tanf( DEG2RAD( fy * 0.5f ) );
+	vec3_t axis[3];
+
+	AnglesToAxis( mm.camAng, axis );
+	VectorCopy( axis[0], dir );
+	VectorMA( dir, -x, axis[1], dir );
+	VectorMA( dir, -y, axis[2], dir );
+	VectorNormalize( dir );
+}
+
+// the model along forward from the camera and in front of the world; -1 = none
+static int MM_PieceAlong( const vec3_t forward ) {
+	vec3_t end, origin, angles, mins, maxs;
 	trace_t tr;
 	float best, d;
 	int found = -1, scale;
 
-	AngleVectors( mm.camAng, forward, NULL, NULL );
 	VectorMA( mm.camOrg, MM_TRACE_DIST, forward, end );
 	CM_BoxTrace( &tr, mm.camOrg, end, vec3_origin, vec3_origin, 0, MM_TRACE_MASK, qfalse );
 	best = tr.fraction * MM_TRACE_DIST + 4.0f;	// models often sit a little in the floor or a wall
@@ -3208,6 +3268,38 @@ static int MM_PieceUnderCrosshair( void ) {
 		}
 	}
 	return found;
+}
+
+// the model under the crosshair, or under the mouse with the arrows up; -1 = none
+static int MM_PieceUnderCrosshair( void ) {
+	vec3_t forward;
+
+	if ( mm.gizmo )
+		MM_CursorDir( forward );
+	else
+		AngleVectors( mm.camAng, forward, NULL, NULL );
+	return MM_PieceAlong( forward );
+}
+
+// the arrow held: the selection goes where it says along its axis
+static void MM_GizmoFrame( void ) {
+	gzView_t v;
+	vec3_t pivot, to, delta;
+
+	mm.gzHot = -1;
+	if ( !mm.gizmo || !MM_NumSelected() )
+		return;
+	MM_GzView( &v );
+	MM_Pivot( pivot );
+	if ( mm.gzDragging ) {
+		GZ_Target( &mm.gzDrag, mm.cursorX, mm.cursorY, mmSnaps[mm.snap].grid, to );
+		VectorSubtract( to, pivot, delta );
+		if ( VectorLengthSquared( delta ) > 0.0001f )
+			MM_TranslateSelection( delta );
+		mm.gzHot = mm.gzDrag.axis;
+		return;
+	}
+	mm.gzHot = GZ_Hit( &v, pivot, mm.cursorX, mm.cursorY );
 }
 
 // called every frame before the cgame draws
@@ -3240,7 +3332,8 @@ void CL_ModelManager_Frame( void ) {
 
 	if ( mm.state == MM_CAMERA ) {
 		MM_UpdateCamera( dt );
-		if ( mm.carrying && !mm.locked )
+		MM_GizmoFrame();
+		if ( mm.carrying && !mm.locked && !mm.gzDragging )
 			MM_FollowCrosshair();
 		mm.hover = mm.carrying ? -1 : MM_PieceUnderCrosshair();
 		mm.peek = ( mm.hideBoxes && !mm.naming && ( mm.held[A_CAP_O] || mm.held[A_MOUSE3] ) ) ? MM_PieceUnderCrosshair() : -1;
@@ -3426,6 +3519,8 @@ void CL_ModelManager_RenderScene( const refdef_t *fd ) {
 	VectorCopy( mm.camOrg, view.vieworg );
 	VectorCopy( mm.camAng, view.viewangles );
 	AnglesToAxis( mm.camAng, view.viewaxis );
+	mm.fovX = view.fov_x;
+	mm.fovY = view.fov_y;
 	view.viewContents = CM_PointContents( mm.camOrg, 0 );
 	// the snapshot's area mask is from the player's position, the camera can be anywhere
 	memset( view.areamask, 0, sizeof( view.areamask ) );
@@ -3792,6 +3887,7 @@ static void MM_DrawCamera( void ) {
 		"L              read the map's models again",
 		"WASD Space C   fly (Shift fast, Ctrl slow)",
 		"Esc / Tab      cancel a move / browser",
+		"J              move arrows (drag X Y Z; RMB looks)",
 		"H              hide this help",
 	};
 	const float x = 10, w = 270, cx = SCREEN_WIDTH * 0.5f, cy = SCREEN_HEIGHT * 0.5f;
@@ -3804,6 +3900,20 @@ static void MM_DrawCamera( void ) {
 	// crosshair
 	MM_Fill( cx - 6, cy - 0.5f, 12, 1, mmWhite );
 	MM_Fill( cx - 0.5f, cy - 6, 1, 12, mmWhite );
+
+	// the move arrows over the selection, and the mouse
+	if ( mm.gizmo ) {
+		gzView_t v;
+		vec3_t pivot;
+
+		if ( count ) {
+			MM_GzView( &v );
+			MM_Pivot( pivot );
+			GZ_Draw( &v, pivot, mm.gzHot );
+		}
+		if ( !mm.held[A_MOUSE2] && !mm.naming )
+			GZ_DrawCursor( mm.cursorX, mm.cursorY );
+	}
 
 	if ( mm.carrying )
 		status = va( "%s %s", MM_CarryingTemplate() ? S_COLOR_GREEN "PLACING" : S_COLOR_MAGENTA "MOVING",

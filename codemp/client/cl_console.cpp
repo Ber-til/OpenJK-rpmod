@@ -1619,7 +1619,7 @@ void Con_DrawSolidConsole( float frac ) {
 		{
 			re->SetColor(NULL);
 		}
-		SCR_DrawPic( 0, 0, SCREEN_WIDTH, (float) y, cls.consoleShader );
+		SCR_DrawPic( 0, 0, SCREEN_WIDTH, (float) y, CL_ConSettings_Background() );
 	}
 
 	// draw the bottom bar and version number
@@ -1788,6 +1788,7 @@ void Con_DrawConsole( void ) {
 	if ( cls.state == CA_DISCONNECTED ) {
 		if ( !( Key_GetCatcher( ) & (KEYCATCH_UI | KEYCATCH_CGAME)) ) {
 			Con_DrawSolidConsole( 1.0 );
+			CL_ConSettings_Draw();
 			return;
 		}
 	}
@@ -1800,6 +1801,8 @@ void Con_DrawConsole( void ) {
 			Con_DrawNotify ();
 		}
 	}
+	// the console settings window, over it
+	CL_ConSettings_Draw();
 }
 
 //================================================================
@@ -1813,7 +1816,7 @@ Scroll it up or down
 */
 void Con_RunConsole (void) {
 	// decide on the destination height of the console
-	if ( Key_GetCatcher( ) & KEYCATCH_CONSOLE )
+	if ( ( Key_GetCatcher( ) & KEYCATCH_CONSOLE ) || CL_ConSettings_Active() )
 		con.finalFrac = con_height->value;
 	else
 		con.finalFrac = 0;				// none visible

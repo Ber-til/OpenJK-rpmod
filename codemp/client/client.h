@@ -678,7 +678,8 @@ void CL_ModelManager_Draw( void );
 #define KEYCATCH_SOUNDMANAGER	0x0800	// engine only, the sound or the music manager owns keyboard and mouse
 #define KEYCATCH_RADIALMENU		0x1000	// engine only, the radial menus' settings own keyboard and mouse
 #define KEYCATCH_LANGUAGES		0x2000	// engine only, the languages window owns keyboard and mouse
-#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELMANAGER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER | KEYCATCH_MAPEDITOR | KEYCATCH_STORYTELLER | KEYCATCH_CINEDITOR | KEYCATCH_SOUNDMANAGER | KEYCATCH_RADIALMENU | KEYCATCH_LANGUAGES )	// mods never see or clear these
+#define KEYCATCH_CONSETTINGS	0x4000	// engine only, the console settings window owns keyboard and mouse
+#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELMANAGER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER | KEYCATCH_MAPEDITOR | KEYCATCH_STORYTELLER | KEYCATCH_CINEDITOR | KEYCATCH_SOUNDMANAGER | KEYCATCH_RADIALMENU | KEYCATCH_LANGUAGES | KEYCATCH_CONSETTINGS )	// mods never see or clear these
 
 void CL_NpcManager_Init( void );
 void CL_NpcManager_Shutdown( void );
@@ -828,6 +829,11 @@ qboolean CL_EffectManager_RenderScene( const refdef_t *fd );
 qboolean CL_EffectManager_Camera( vec3_t origin, vec3_t angles );
 qboolean CL_EffectManager_ServerPrint( const char *text );
 void CL_EffectManager_Draw( void );
+float CL_EffectManager_FxScale( const char *effect, const vec3_t org );
+void CL_EffectManager_OpenForCinematic( void );
+qboolean CL_Cinematic_CaptureEffect( const char *cmd, float scale );
+qboolean CL_Cinematic_PickingEffect( void );
+void CL_EffectManager_ScaleHook( char **argv, int argc, const char *message );
 
 // cl_mapeditor.cpp
 void CL_MapEditor_Init( void );
@@ -942,6 +948,19 @@ void CL_RadialMenu_CharEvent( int ch );
 void CL_RadialMenu_SettingsMouseEvent( int dx, int dy );
 void CL_RadialMenu_SettingsEscape( void );
 void CL_RadialMenu_DrawSettings( void );
+
+// cl_consettings.cpp
+void CL_ConSettings_Init( void );
+void CL_ConSettings_Shutdown( void );
+qboolean CL_ConSettings_Active( void );
+void CL_ConSettings_Close( void );
+void CL_ConSettings_Draw( void );
+void CL_ConSettings_KeyEvent( int key, qboolean down );
+void CL_ConSettings_CharEvent( int ch );
+void CL_ConSettings_MouseEvent( int dx, int dy );
+void CL_ConSettings_Escape( void );
+qhandle_t CL_ConSettings_Background( void );
+void CL_ConSettings_RendererRestarted( void );
 
 // cl_languages.cpp
 void CL_Languages_Init( void );
