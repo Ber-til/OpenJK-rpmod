@@ -724,7 +724,7 @@ Edit fields and command line history/completion
 */
 
 #define CONSOLE_PROMPT_CHAR ']'
-#define	MAX_EDIT_LINE		256
+#define	MAX_EDIT_LINE		1000	// long chat is sent in parts (cl_chatsplit.cpp)
 #define COMMAND_HISTORY		32
 
 typedef struct field_s {

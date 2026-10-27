@@ -57,6 +57,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #include "FxScheduler.h"
 #include "qcommon/cm_public.h"
 #include "cl_gizmo.h"
+#include "cl_widgets.h"
 
 #define CM_DIR				"cinematics"	// in the game folder
 #define CM_EXT				".cin"
@@ -2855,6 +2856,27 @@ static char *CM_TypedText( int *size ) {
 	}
 }
 
+// a character the box typed in takes: a line anything, a name shown anything but the | that
+// ends it in the file; the rest names, who can be several with commas between
+static qboolean CM_AllowChar( int ch ) {
+	if ( cm.typing == CM_TYPE_SAY || cm.typing == CM_TYPE_SAYNAME )
+		return (qboolean)!( ch < ' ' || ch > '~' || ( cm.typing == CM_TYPE_SAYNAME && ch == '|' ) );
+	return (qboolean)( CM_NameChar( ch ) || ( ( cm.typing == CM_TYPE_WHO || cm.typing == CM_TYPE_FOCUS ) && ch == ',' ) );
+}
+
+// what was typed changed: the animations' names are in capitals, the emotes' small, and their
+// lists start again from the top
+static void CM_TypedChanged( char *text ) {
+	if ( cm.typing == CM_TYPE_ANIM ) {
+		Q_strupr( text );
+		cm.pickScroll = 0;
+	} else if ( cm.typing == CM_TYPE_EMOTE ) {
+		Q_strlwr( text );
+		cm.pickScroll = 0;
+	}
+	CM_Changed();
+}
+
 static void CM_AddPlaceKey( cmClip_t *clip );
 static void CM_DeletePlaceKey( cmClip_t *clip );
 
@@ -2922,12 +2944,17 @@ void CL_RpCinematic_EditorKeyEvent( int key, qboolean down ) {
 	if ( cm.typing ) {
 		int size;
 		char *text = CM_TypedText( &size );
-		const int len = text ? strlen( text ) : 0;
 
-		if ( key == A_BACKSPACE && len ) {
-			text[len - 1] = '\0';
-			CM_Changed();
-		} else if ( key == A_ENTER || key == A_KP_ENTER ) {
+		if ( text ) {
+			const int edit = WG_EditKey( text, size, key, CM_AllowChar );
+
+			if ( edit ) {
+				if ( edit & WG_EDIT_CHANGED )
+					CM_TypedChanged( text );
+				return;
+			}
+		}
+		if ( key == A_ENTER || key == A_KP_ENTER ) {
 			if ( cm.typing == CM_TYPE_NAME )
 				CM_SaveCurrent();
 			cm.typing = CM_TYPE_NONE;
@@ -2995,33 +3022,18 @@ void CL_RpCinematic_EditorKeyEvent( int key, qboolean down ) {
 }
 
 void CL_RpCinematic_EditorCharEvent( int ch ) {
-	int size, len;
+	int size;
 	char *text;
 
 	if ( !cm.open || cm.flying || !( text = CM_TypedText( &size ) ) )
 		return;
-	// a line can have anything in it, a name shown anything but the | that ends it in the file
-	if ( cm.typing == CM_TYPE_SAY || cm.typing == CM_TYPE_SAYNAME ) {
-		if ( ch < ' ' || ch > '~' || ( cm.typing == CM_TYPE_SAYNAME && ch == '|' ) )
-			return;
-	} else if ( !CM_NameChar( ch ) && !( ( cm.typing == CM_TYPE_WHO || cm.typing == CM_TYPE_FOCUS ) && ch == ',' ) ) {
-		// who can be several, commas between
-		return;
-	}
 	// the animations' names are in capitals, the emotes' small
-	if ( cm.typing == CM_TYPE_ANIM ) {
+	if ( cm.typing == CM_TYPE_ANIM )
 		ch = toupper( ch );
-		cm.pickScroll = 0;
-	} else if ( cm.typing == CM_TYPE_EMOTE ) {
+	else if ( cm.typing == CM_TYPE_EMOTE )
 		ch = tolower( ch );
-		cm.pickScroll = 0;
-	}
-	len = strlen( text );
-	if ( len < size - 1 ) {
-		text[len] = (char)ch;
-		text[len + 1] = '\0';
-		CM_Changed();
-	}
+	if ( WG_EditChar( text, size, ch, CM_AllowChar ) )
+		CM_TypedChanged( text );
 }
 
 void CL_RpCinematic_EditorMouseEvent( int dx, int dy ) {
@@ -3581,17 +3593,47 @@ static void CM_AdjustMs( int *ms, int steps, float seconds, int min ) {
 	CM_Changed();
 }
 
-// a box typed in; a click starts typing in it
-static void CM_TextBox( float x, float y, float w, const char *text, const char *empty, int typing ) {
-	const qboolean on = (qboolean)( cm.typing == typing );
+static vec4_t cmUnknown		= { 1.0f, 1.0f, 0.0f, 1.0f };
 
+static void CM_FieldStyle( wgStyle_t *style, const float *color ) {
+	style->font = cm.font;
+	style->scale = CM_TEXT_SCALE;
+	style->lineH = CM_ROW_H;
+	style->padX = 4.0f;
+	style->padY = 2.0f;
+	style->fill = cmFocusBox;
+	style->border = cmBorder;
+	style->text = color ? color : cmWhite;
+	style->dim = cmDim;
+}
+
+// a box typed in, its text in color (NULL white); a click starts typing in it, the cursor where
+// it was clicked. Its height now: grown down while it's typed in and long
+static float CM_TextBox( float x, float y, float w, char *text, const char *empty, int typing, const float *color ) {
+	const qboolean on = (qboolean)( cm.typing == typing );
+	wgStyle_t style;
+	float h;
+
+	CM_FieldStyle( &style, color );
 	CM_Box( x, y, w, CM_CTRL_H, on ? cmFocusBox : cmPanelLight );
-	CM_TextClipped( x + 4, y + 2, w - 8, text[0] || on ? va( "%s%s", text, on && ( ( cls.realtime >> 8 ) & 1 ) ? "_" : "" )
-		: va( S_COLOR_GREY "%s", empty ), cmWhite );
-	if ( CM_Clicked( x, y, w, CM_CTRL_H ) ) {
+	WG_Field( &style, x, y, w, CM_CTRL_H, text, on, empty, cm.cursorX, cm.cursorY );
+	h = WG_FieldHeight( &style, w, CM_CTRL_H, text, on );
+	if ( CM_Clicked( x, y, w, h ) ) {
+		if ( !on )
+			cm.pickScroll = 0;
 		cm.typing = typing;
-		cm.pickScroll = 0;
+		WG_FieldClick( text, cm.clickX, cm.clickY );
 	}
+	return h;
+}
+
+// a list's scrollbar along its right side (the box x, y, w, h) when there's more than fits;
+// the rows' width beside it
+static float CM_ListBar( float x, float y, float w, float h, int count, int rows, int *scroll ) {
+	if ( count <= rows )
+		return w;
+	WG_Scrollbar( x + w - WG_SCROLL_W - 1, y + 1, h - 2, count, rows, scroll, cm.cursorX, cm.cursorY, &cm.click, cm.clickX, cm.clickY );
+	return w - WG_SCROLL_W - 1;
 }
 
 // tabs, joined, the one open lit with a line under them all
@@ -3648,6 +3690,7 @@ static void CM_DrawSpotsPage( float x, float y, float w ) {
 	}
 	cm.keyScroll = Com_Clampi( 0, Q_max( 0, s->numKeys - CM_KEY_ROWS ), cm.keyScroll );
 	CM_Box( x, y, w, CM_KEY_ROWS * CM_ROW_H + 2, cmPanelLight );
+	const float lw = CM_ListBar( x, y, w, CM_KEY_ROWS * CM_ROW_H + 2, s->numKeys, CM_KEY_ROWS, &cm.keyScroll );
 	for ( int i = 0; i < CM_KEY_ROWS && cm.keyScroll + i < s->numKeys; i++ ) {
 		const int index = cm.keyScroll + i;
 		const rcKey_t *key = &s->keys[index];
@@ -3655,9 +3698,9 @@ static void CM_DrawSpotsPage( float x, float y, float w ) {
 		char row[64];
 
 		if ( index == cm.sel )
-			CM_Fill( x + 1, ry, w - 2, CM_ROW_H, cmHighlight );
-		else if ( CM_InRect( x, ry, w, CM_ROW_H ) )
-			CM_Fill( x + 1, ry, w - 2, CM_ROW_H, cmHoverBox );
+			CM_Fill( x + 1, ry, lw - 2, CM_ROW_H, cmHighlight );
+		else if ( CM_InRect( x, ry, lw, CM_ROW_H ) )
+			CM_Fill( x + 1, ry, lw - 2, CM_ROW_H, cmHoverBox );
 		if ( index )
 			Com_sprintf( row, sizeof( row ), "%i   after %.1f s", index + 1, RC_Seconds( key->ms ) );
 		else
@@ -3665,8 +3708,8 @@ static void CM_DrawSpotsPage( float x, float y, float w ) {
 		CM_Text( x + 4, ry, row, cmWhite );
 		Com_sprintf( row, sizeof( row ), "fov %i%s", RC_Round( key->fov ),
 			RC_Round( AngleNormalize180( key->ang[ROLL] ) ) ? va( "  roll %i", RC_Round( AngleNormalize180( key->ang[ROLL] ) ) ) : "" );
-		CM_Text( x + w - 4 - CM_TextWidth( row ), ry, row, cmDim );
-		if ( CM_Clicked( x, ry, w, CM_ROW_H ) )
+		CM_Text( x + lw - 4 - CM_TextWidth( row ), ry, row, cmDim );
+		if ( CM_Clicked( x, ry, lw, CM_ROW_H ) )
 			CM_SelectKey( index );
 	}
 	y += CM_KEY_ROWS * CM_ROW_H + 6;
@@ -3983,7 +4026,7 @@ static float CM_FocusControls( float x, float y, float w, float *focus, float *r
 
 		if ( whoBox ) {
 			CM_Text( x, y + 2, "Who", cmDim );
-			CM_TextBox( x + 62, y, w - 62 - 34, s->dofWho, "me, a number or a name", CM_TYPE_FOCUS );
+			CM_TextBox( x + 62, y, w - 62 - 34, s->dofWho, "me, a number or a name", CM_TYPE_FOCUS, NULL );
 			if ( CM_Button( x + w - 30, y, 30, "Aim", qfalse, (qboolean)( CM_PersonAtCrosshair() != NULL ) ) ) {
 				Q_strncpyz( s->dofWho, CM_PersonAtCrosshair(), sizeof( s->dofWho ) );
 				CM_Changed();
@@ -4190,7 +4233,7 @@ static void CM_DrawAnimClip( float x, float y, float w, cmClip_t *clip ) {
 	defs = RC_AnimDefs( cfg, &count );
 
 	// which: typed, the list under it the ones with that in their name
-	CM_TextBox( x, y, w, va( "%s%s", def || cm.typing == CM_TYPE_ANIM ? "" : S_COLOR_YELLOW, a->anim ), "type to look for one", CM_TYPE_ANIM );
+	CM_TextBox( x, y, w, a->anim, "type to look for one", CM_TYPE_ANIM, def || cm.typing == CM_TYPE_ANIM ? NULL : cmUnknown );
 	y += CM_CTRL_H + 1;
 	for ( int i = 0; i < count && numPicks < (int)ARRAY_LEN( picks ); i++ ) {
 		if ( cm.typing != CM_TYPE_ANIM || !a->anim[0] || Q_stristr( defs[i].name, a->anim ) )
@@ -4209,16 +4252,17 @@ static void CM_DrawAnimClip( float x, float y, float w, cmClip_t *clip ) {
 		}
 	}
 	cm.pickScroll = Com_Clampi( 0, Q_max( 0, numPicks - CM_PICK_ROWS ), cm.pickScroll );
+	const float lw = CM_ListBar( x, y, w, CM_PICK_ROWS * CM_ROW_H + 2, numPicks, CM_PICK_ROWS, &cm.pickScroll );
 	for ( int r = 0; r < CM_PICK_ROWS && cm.pickScroll + r < numPicks; r++ ) {
 		const rcAnimDef_t *d = &defs[picks[cm.pickScroll + r]];
 		const float ry = y + 1 + r * CM_ROW_H;
 
 		if ( def == d )
-			CM_Fill( x + 1, ry, w - 2, CM_ROW_H, cmHighlight );
-		else if ( CM_InRect( x, ry, w, CM_ROW_H ) )
-			CM_Fill( x + 1, ry, w - 2, CM_ROW_H, cmHoverBox );
-		CM_TextClipped( x + 4, ry, w - 8, va( "%s" S_COLOR_GREY " %i", d->name, d->num ), cmWhite );
-		if ( CM_Clicked( x, ry, w, CM_ROW_H ) ) {
+			CM_Fill( x + 1, ry, lw - 2, CM_ROW_H, cmHighlight );
+		else if ( CM_InRect( x, ry, lw, CM_ROW_H ) )
+			CM_Fill( x + 1, ry, lw - 2, CM_ROW_H, cmHoverBox );
+		CM_TextClipped( x + 4, ry, lw - 8, va( "%s" S_COLOR_GREY " %i", d->name, d->num ), cmWhite );
+		if ( CM_Clicked( x, ry, lw, CM_ROW_H ) ) {
 			Q_strncpyz( a->anim, d->name, sizeof( a->anim ) );
 			a->from = 0;
 			a->to = -1;
@@ -4391,11 +4435,11 @@ static void CM_DrawSayClip( float x, float y, float w, cmClip_t *clip ) {
 	const int n = CM_Resolve( cm.cine.ents[clip->ent].who, nums, ARRAY_LEN( nums ) );
 	const qboolean npc = (qboolean)( n && nums[0] >= MAX_CLIENTS );
 
-	CM_TextBox( x, y, w, clip->text, "type what they say", CM_TYPE_SAY );
+	CM_TextBox( x, y, w, clip->text, "type what they say", CM_TYPE_SAY, NULL );
 	y += CM_CTRL_H + CM_GAP;
 	if ( npc ) {
 		CM_Text( x, y + 2, "Name shown", cmDim );
-		CM_TextBox( x + 70, y, w - 70, clip->name, cm.cine.ents[clip->ent].who, CM_TYPE_SAYNAME );
+		CM_TextBox( x + 70, y, w - 70, clip->name, cm.cine.ents[clip->ent].who, CM_TYPE_SAYNAME, NULL );
 		y += CM_CTRL_H + CM_GAP;
 	}
 	CM_Text( x, y + 2, va( S_COLOR_GREY "At %.1f s: drag it on the timeline", clip->start / 1000.0f ), cmWhite );
@@ -4435,7 +4479,7 @@ static void CM_DrawEmoteClip( float x, float y, float w, cmClip_t *clip ) {
 	static int picks[512];
 	int numPicks = 0, nums[4], n;
 
-	CM_TextBox( x, y, w, va( "%s%s", anim || cm.typing == CM_TYPE_EMOTE ? "" : S_COLOR_YELLOW, clip->emote ), "type to look for one", CM_TYPE_EMOTE );
+	CM_TextBox( x, y, w, clip->emote, "type to look for one", CM_TYPE_EMOTE, anim || cm.typing == CM_TYPE_EMOTE ? NULL : cmUnknown );
 	y += CM_CTRL_H + 1;
 	for ( int i = 0; i < count && numPicks < (int)ARRAY_LEN( picks ); i++ ) {
 		if ( cm.typing != CM_TYPE_EMOTE || !clip->emote[0] || Q_stristr( CL_EmotePreview_Name( i ), clip->emote ) )
@@ -4447,16 +4491,17 @@ static void CM_DrawEmoteClip( float x, float y, float w, cmClip_t *clip ) {
 		cm.wheel = 0;
 	}
 	cm.pickScroll = Com_Clampi( 0, Q_max( 0, numPicks - CM_PICK_ROWS ), cm.pickScroll );
+	const float lw = CM_ListBar( x, y, w, CM_PICK_ROWS * CM_ROW_H + 2, numPicks, CM_PICK_ROWS, &cm.pickScroll );
 	for ( int r = 0; r < CM_PICK_ROWS && cm.pickScroll + r < numPicks; r++ ) {
 		const char *name = CL_EmotePreview_Name( picks[cm.pickScroll + r] );
 		const float ry = y + 1 + r * CM_ROW_H;
 
 		if ( !Q_stricmp( name, clip->emote ) )
-			CM_Fill( x + 1, ry, w - 2, CM_ROW_H, cmHighlight );
-		else if ( CM_InRect( x, ry, w, CM_ROW_H ) )
-			CM_Fill( x + 1, ry, w - 2, CM_ROW_H, cmHoverBox );
-		CM_TextClipped( x + 4, ry, w - 8, va( "%s" S_COLOR_GREY "  %s", name, CL_EmotePreview_Anim( name ) ), cmWhite );
-		if ( CM_Clicked( x, ry, w, CM_ROW_H ) ) {
+			CM_Fill( x + 1, ry, lw - 2, CM_ROW_H, cmHighlight );
+		else if ( CM_InRect( x, ry, lw, CM_ROW_H ) )
+			CM_Fill( x + 1, ry, lw - 2, CM_ROW_H, cmHoverBox );
+		CM_TextClipped( x + 4, ry, lw - 8, va( "%s" S_COLOR_GREY "  %s", name, CL_EmotePreview_Anim( name ) ), cmWhite );
+		if ( CM_Clicked( x, ry, lw, CM_ROW_H ) ) {
 			Q_strncpyz( clip->emote, name, sizeof( clip->emote ) );
 			cm.typing = CM_TYPE_NONE;
 			CM_Changed();
@@ -4507,18 +4552,19 @@ static void CM_DrawPlaceClip( float x, float y, float w, cmClip_t *clip ) {
 		cm.wheel = 0;
 	}
 	cm.pickScroll = Com_Clampi( 0, Q_max( 0, clip->numKeys - rows ), cm.pickScroll );
+	const float lw = CM_ListBar( x, y, w, rows * CM_ROW_H + 2, clip->numKeys, rows, &cm.pickScroll );
 	for ( int r = 0; r < rows && cm.pickScroll + r < clip->numKeys; r++ ) {
 		const int i = cm.pickScroll + r;
 		const cmPlace_t *key = &clip->keys[i];
 		const float ry = y + 1 + r * CM_ROW_H;
 
 		if ( i == cm.spot )
-			CM_Fill( x + 1, ry, w - 2, CM_ROW_H, cmHighlight );
-		else if ( CM_InRect( x, ry, w, CM_ROW_H ) )
-			CM_Fill( x + 1, ry, w - 2, CM_ROW_H, cmHoverBox );
-		CM_TextClipped( x + 4, ry, w - 8, va( "%i  at %.1f s" S_COLOR_GREY "   %i %i %i", i + 1, ( clip->start + key->ms ) / 1000.0f,
+			CM_Fill( x + 1, ry, lw - 2, CM_ROW_H, cmHighlight );
+		else if ( CM_InRect( x, ry, lw, CM_ROW_H ) )
+			CM_Fill( x + 1, ry, lw - 2, CM_ROW_H, cmHoverBox );
+		CM_TextClipped( x + 4, ry, lw - 8, va( "%i  at %.1f s" S_COLOR_GREY "   %i %i %i", i + 1, ( clip->start + key->ms ) / 1000.0f,
 			RC_Round( key->org[0] ), RC_Round( key->org[1] ), RC_Round( key->org[2] ) ), cmWhite );
-		if ( CM_Clicked( x, ry, w, CM_ROW_H ) )
+		if ( CM_Clicked( x, ry, lw, CM_ROW_H ) )
 			cm.spot = i;
 	}
 	y += rows * CM_ROW_H + 5;
@@ -4600,6 +4646,7 @@ static void CM_DrawEntitiesTab( float x, float y, float w ) {
 	}
 	cm.entScroll = Com_Clampi( 0, Q_max( 0, cmNumPeople - rows ), cm.entScroll );
 	CM_Box( x, y, w, rows * CM_ROW_H + 2, cmPanelLight );
+	const float lw = CM_ListBar( x, y, w, rows * CM_ROW_H + 2, cmNumPeople, rows, &cm.entScroll );
 	for ( int i = 0; i < cmNumPeople; i++ ) {
 		const cmPerson_t *p = &cmPeople[i];
 		const int r = i - cm.entScroll;
@@ -4610,14 +4657,14 @@ static void CM_DrawEntitiesTab( float x, float y, float w ) {
 		if ( r < 0 || r >= rows )
 			continue;
 		if ( CM_Picked( p ) )
-			CM_Fill( x + 1, ry, w - 2, CM_ROW_H, cmHighlight );
-		else if ( CM_InRect( x, ry, w, CM_ROW_H ) )
-			CM_Fill( x + 1, ry, w - 2, CM_ROW_H, cmHoverBox );
+			CM_Fill( x + 1, ry, lw - 2, CM_ROW_H, cmHighlight );
+		else if ( CM_InRect( x, ry, lw, CM_ROW_H ) )
+			CM_Fill( x + 1, ry, lw - 2, CM_ROW_H, cmHoverBox );
 		// who's in it already, marked
 		if ( p->ent >= 0 )
 			CM_Fill( x + 2, ry + 3, 3, CM_ROW_H - 6, cmTabLine );
-		CM_TextClipped( x + 8, ry, w - 12, p->label, cmWhite );
-		if ( CM_Clicked( x, ry, w, CM_ROW_H ) )
+		CM_TextClipped( x + 8, ry, lw - 12, p->label, cmWhite );
+		if ( CM_Clicked( x, ry, lw, CM_ROW_H ) )
 			CM_Pick( p );
 	}
 	if ( !cmNumPeople )
@@ -4837,6 +4884,7 @@ static void CM_DrawEffectsTab( float x, float y, float w ) {
 	}
 	cm.fxScroll = Com_Clampi( 0, Q_max( 0, c->numFx - rows ), cm.fxScroll );
 	CM_Box( x, y, w, rows * CM_ROW_H + 2, cmPanelLight );
+	const float lw = CM_ListBar( x, y, w, rows * CM_ROW_H + 2, c->numFx, rows, &cm.fxScroll );
 	for ( int i = 0; i < c->numFx; i++ ) {
 		const cmFx_t *e = &c->fx[i];
 		const int r = i - cm.fxScroll;
@@ -4845,12 +4893,12 @@ static void CM_DrawEffectsTab( float x, float y, float w ) {
 		if ( r < 0 || r >= rows )
 			continue;
 		if ( i == cm.fx )
-			CM_Fill( x + 1, ry, w - 2, CM_ROW_H, cmHighlight );
-		else if ( CM_InRect( x, ry, w, CM_ROW_H ) )
-			CM_Fill( x + 1, ry, w - 2, CM_ROW_H, cmHoverBox );
-		CM_TextClipped( x + 4, ry, w - 8, va( S_COLOR_CYAN "%.1fs " S_COLOR_WHITE "%s" S_COLOR_GREY "  %s", e->start / 1000.0f, COM_SkipPath( (char *)e->path ),
+			CM_Fill( x + 1, ry, lw - 2, CM_ROW_H, cmHighlight );
+		else if ( CM_InRect( x, ry, lw, CM_ROW_H ) )
+			CM_Fill( x + 1, ry, lw - 2, CM_ROW_H, cmHoverBox );
+		CM_TextClipped( x + 4, ry, lw - 8, va( S_COLOR_CYAN "%.1fs " S_COLOR_WHITE "%s" S_COLOR_GREY "  %s", e->start / 1000.0f, COM_SkipPath( (char *)e->path ),
 			e->ms > 0 ? va( "%.1f s", e->ms / 1000.0f ) : "once" ), cmWhite );
-		if ( CM_Clicked( x, ry, w, CM_ROW_H ) ) {
+		if ( CM_Clicked( x, ry, lw, CM_ROW_H ) ) {
 			cm.fx = i;
 			cm.fxPreviewNext = 0;
 		}
@@ -5856,16 +5904,17 @@ static void CM_DrawFileList( float x, float y, float w ) {
 	}
 	cm.fileScroll = Com_Clampi( 0, Q_max( 0, cm.numFiles - rows ), cm.fileScroll );
 	CM_Box( x, y, w, rows * CM_ROW_H + 2, cmPanelLight );
+	const float lw = CM_ListBar( x, y, w, rows * CM_ROW_H + 2, cm.numFiles, rows, &cm.fileScroll );
 	for ( int i = 0; i < rows && cm.fileScroll + i < cm.numFiles; i++ ) {
 		const int f = cm.fileScroll + i;
 		const float ry = y + 1 + i * CM_ROW_H;
 
-		if ( CM_InRect( x, ry, w, CM_ROW_H ) )
-			CM_Fill( x + 1, ry, w - 2, CM_ROW_H, cmHoverBox );
+		if ( CM_InRect( x, ry, lw, CM_ROW_H ) )
+			CM_Fill( x + 1, ry, lw - 2, CM_ROW_H, cmHoverBox );
 		if ( !cm.fileOld[f] && !Q_stricmp( cm.files[f], cm.name ) )
-			CM_Fill( x + 1, ry, w - 2, CM_ROW_H, cmHighlight );
-		CM_TextClipped( x + 4, ry, w - 8, cm.fileOld[f] ? va( "%s" S_COLOR_GREY "  old shot", cm.files[f] ) : cm.files[f], cmWhite );
-		if ( CM_Clicked( x, ry, w, CM_ROW_H ) && CM_Open( cm.files[f], cm.fileOld[f] ) )
+			CM_Fill( x + 1, ry, lw - 2, CM_ROW_H, cmHighlight );
+		CM_TextClipped( x + 4, ry, lw - 8, cm.fileOld[f] ? va( "%s" S_COLOR_GREY "  old shot", cm.files[f] ) : cm.files[f], cmWhite );
+		if ( CM_Clicked( x, ry, lw, CM_ROW_H ) && CM_Open( cm.files[f], cm.fileOld[f] ) )
 			cm.listing = qfalse;
 	}
 	if ( !cm.numFiles )
@@ -5965,7 +6014,9 @@ static void CM_DrawEditor( void ) {
 
 	// the name and the files
 	CM_Text( x, y, "Name", cmWhite );
-	CM_TextBox( x + 36, y - 2, w - 36, va( "%s%s", cm.name, cm.dirty ? S_COLOR_YELLOW " *" : "" ), "click to name it", CM_TYPE_NAME );
+	CM_TextBox( x + 36, y - 2, w - 36, cm.name, "click to name it", CM_TYPE_NAME, NULL );
+	if ( cm.dirty && cm.typing != CM_TYPE_NAME )
+		CM_Text( x + w - 4 - CM_TextWidth( "*" ), y, S_COLOR_YELLOW "*", cmWhite );
 	y += CM_CTRL_H + CM_GAP;
 	if ( CM_Button( x, y, third, "Save", qfalse, qtrue ) )
 		CM_SaveCurrent();
@@ -6045,6 +6096,7 @@ static void CM_DrawEditor( void ) {
 	cm.click = qfalse;
 	cm.wheel = 0;
 
+	WG_DrawOverlay();
 	if ( !cm.flying )
 		re->DrawStretchPic( cm.cursorX, cm.cursorY, 32, 32, 0, 0, 1, 1, cls.cursorShader );
 }

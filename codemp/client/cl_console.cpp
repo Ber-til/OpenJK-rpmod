@@ -52,6 +52,7 @@ cvar_t		*con_textColor;		// "r g b" 0-255 for plain text, "" white
 cvar_t		*con_contrast;		// 0 as sent, 1 dark colours brightened, 2 every line in the text colour
 cvar_t		*con_colorblind;	// 0 none, 1 red-green, 2 blue-yellow
 cvar_t		*con_noFade;		// 1 nothing drawn faded, far chat neither
+static cvar_t *con_modernInput;	// 1 the typing goes on to more lines, with a selection and word jumps
 cvar_t		*con_font;			// 0 the classic letters, else one of conFonts
 cvar_t		*con_notifyScale;	// the lines over the game: their letters' size, 0 as the console's
 
@@ -864,6 +865,7 @@ void Con_Init (void) {
 	con_textColor = Cvar_Get( "con_textColor", "", CVAR_ARCHIVE_ND, "Colour of the console's plain text, \"r g b\" 0-255, empty for white" );
 	con_contrast = Cvar_Get( "con_contrast", "0", CVAR_ARCHIVE_ND, "0 colours as sent, 1 dark colours brightened, 2 every line in the text colour" );
 	con_colorblind = Cvar_Get( "con_colorblind", "0", CVAR_ARCHIVE_ND, "Colours for the colour-blind: 0 none, 1 red-green, 2 blue-yellow" );
+	con_modernInput = Cvar_Get( "con_modernInput", "0", CVAR_ARCHIVE_ND, "1: the console's typing goes on to more lines, Ctrl+arrows jump words, Shift or the mouse select, Ctrl+A/C/X/V; the chat box too" );
 	con_noFade = Cvar_Get( "con_noFade", "0", CVAR_ARCHIVE_ND, "1 draws nothing in the console faded, chat from far away neither" );
 	con_font = Cvar_Get( "con_font", "0", CVAR_ARCHIVE_ND, "The console's letters: 0 its own, 1 Arial, 2 Ergo, 3 OCR, 4 A New Hope" );
 	con_notifyScale = Cvar_Get( "con_notifyScale", "0", CVAR_ARCHIVE_ND, "Size of the lines over the game, 0 as the console's letters" );
@@ -1102,12 +1104,87 @@ static struct {
 } cm;
 
 
+/*
+The input line goes on to more rows as it gets long, broken after a space where it can be, the
+text above moving up for them; past CON_INPUT_ROWS it scrolls to the cursor. The mouse puts the
+cursor in it and drags a selection, a double-click takes a word.
+*/
+#define CON_INPUT_ROWS		8
+
+typedef struct {
+	int		start[MAX_EDIT_LINE + 1];	// start[num] is the length
+	int		num;
+} conInputRows_t;
+
+static struct {
+	int			first;			// the first row shown
+	int			shown;			// rows drawn last frame, 0 none
+	int			topY;			// the first one's y
+	qboolean	dragging;
+	int			clickTime, clickAt;
+} ci;
+
 static const vec4_t conSelColor		= { 0.25f, 0.45f, 0.9f, 0.55f };
 static const vec4_t conMatchColor	= { 0.9f, 0.75f, 0.1f, 0.35f };
 static const vec4_t conCurColor		= { 1.0f, 0.5f, 0.0f, 0.8f };
 static const vec4_t conBoxColor		= { 0.08f, 0.08f, 0.1f, 0.95f };
 static const vec4_t conBoxBorder	= { 0.509f, 0.609f, 0.847f, 1.0f };
 static const vec4_t conBtnHover		= { 0.3f, 0.3f, 0.35f, 1.0f };
+
+int Con_ModernInput( void ) {
+	return con_modernInput ? con_modernInput->integer : 0;
+}
+
+static int Con_InputCols( void ) {
+	return Q_max( 8, g_consoleField.widthInChars - 1 );
+}
+
+static void Con_InputWrap( conInputRows_t *r ) {
+	const char *b = g_consoleField.buffer;
+	const int len = (int)strlen( b ), cols = Con_InputCols();
+	int start = 0;
+
+	r->num = 0;
+	for ( ;; ) {
+		int brk = -1;
+
+		r->start[r->num++] = start;
+		if ( len - start <= cols || r->num >= MAX_EDIT_LINE )
+			break;
+		for ( int i = start; i < start + cols; i++ ) {
+			if ( b[i] == ' ' )
+				brk = i + 1;
+		}
+		start = brk > start ? brk : start + cols;
+	}
+	r->start[r->num] = len;
+}
+
+// the row an index is on: where one row ends and the next begins is the next's
+static int Con_InputRowOf( const conInputRows_t *r, int at ) {
+	for ( int i = r->num - 1; i > 0; i-- ) {
+		if ( at >= r->start[i] )
+			return i;
+	}
+	return 0;
+}
+
+// the index under a point on the input rows
+static int Con_InputIndexAt( int px, int py ) {
+	conInputRows_t r;
+	int row, col, a, e;
+
+	Con_InputWrap( &r );
+	row = ci.first + Com_Clampi( 0, Q_max( 0, ci.shown - 1 ), (int)floorf( (float)( py - ci.topY ) / con.charHeight ) );
+	row = Com_Clampi( 0, r.num - 1, row );
+	a = r.start[row];
+	e = r.start[row + 1];
+	// the space a row broke after: the cursor goes before it
+	if ( row < r.num - 1 && e > a && g_consoleField.buffer[e - 1] == ' ' )
+		e--;
+	col = (int)floorf( (float)( px - Con_Left() ) / con.charWidth + 0.5f ) - 2;
+	return a + Com_Clampi( 0, e - a, col );
+}
 
 static qboolean Con_MouseOwned( void ) {
 	return (qboolean)( ( Key_GetCatcher() & KEYCATCH_CONSOLE ) && con.displayFrac > 0.0f && con.initialized );
@@ -1330,6 +1407,8 @@ qboolean Con_MouseKey( int key, qboolean down, qboolean shift ) {
 	if ( key != A_MOUSE1 && key != A_MOUSE2 )
 		return qfalse;
 	if ( !down ) {
+		if ( key == A_MOUSE1 )
+			ci.dragging = qfalse;
 		if ( key == A_MOUSE1 && cm.selecting ) {
 			cm.selecting = qfalse;
 			cm.haveSel = (qboolean)( cm.anchor.row != cm.end.row || cm.anchor.caret != cm.end.caret );
@@ -1342,8 +1421,12 @@ qboolean Con_MouseKey( int key, qboolean down, qboolean shift ) {
 		return qtrue;
 
 	if ( key == A_MOUSE2 ) {
+		int a, b;
+
 		// copies what's selected, else pastes
-		if ( cm.haveSel ) {
+		if ( Field_Selection( &g_consoleField, &a, &b ) ) {
+			Field_CharEvent( &g_consoleField, 'c' - 'a' + 1 );
+		} else if ( cm.haveSel ) {
 			Con_CopySelection();
 			Con_ClearSelection();
 		} else if ( cm.findFocus ) {
@@ -1383,8 +1466,8 @@ qboolean Con_MouseKey( int key, qboolean down, qboolean shift ) {
 	}
 	cm.findFocus = qfalse;
 
-	// the input line: the cursor goes where it's clicked
-	if ( cm.y >= cm.inputY ) {
+	// the input line as it was: the cursor goes where it's clicked
+	if ( cm.y >= cm.inputY && !Con_ModernInput() ) {
 		const int len = strlen( g_consoleField.buffer );
 		const int caret = (int)floorf( (float)( cm.x - Con_Left() ) / con.charWidth + 0.5f ) - 2;
 
@@ -1392,6 +1475,40 @@ qboolean Con_MouseKey( int key, qboolean down, qboolean shift ) {
 		g_consoleField.cursor = Com_Clampi( 0, len, g_consoleField.scroll + caret );
 		return qtrue;
 	}
+
+	// the input line: the cursor goes where it's clicked, a drag selects, a double-click a word
+	if ( cm.y >= cm.inputY ) {
+		const int at = Con_InputIndexAt( cm.x, cm.y );
+		int a, b;
+
+		Con_ClearSelection();
+		if ( cls.realtime - ci.clickTime < CON_DOUBLECLICK_MS && at == ci.clickAt ) {
+			const char *buf = g_consoleField.buffer;
+
+			for ( a = at; a > 0 && buf[a - 1] != ' '; a-- )
+				;
+			for ( b = at; buf[b] && buf[b] != ' '; b++ )
+				;
+			g_consoleField.cursor = b;
+			Field_Select( &g_consoleField, a );
+			ci.clickTime = 0;
+			ci.dragging = qfalse;
+			return qtrue;
+		}
+		ci.clickTime = cls.realtime;
+		ci.clickAt = at;
+		// Shift carries the selection on from where it began
+		if ( shift ) {
+			if ( !Field_Selection( &g_consoleField, &a, &b ) )
+				Field_Select( &g_consoleField, g_consoleField.cursor );
+		} else {
+			Field_Select( &g_consoleField, at );
+		}
+		g_consoleField.cursor = at;
+		ci.dragging = qtrue;
+		return qtrue;
+	}
+	Field_ClearSelection();
 
 	if ( !Con_HitPos( cm.x, cm.y, &pos ) )
 		return qtrue;
@@ -1464,7 +1581,9 @@ qboolean Con_CharEvent( int ch ) {
 	int len;
 
 	// Ctrl+C copies what's selected, and clears the input line only without
-	if ( ch == 'c' - 'a' + 1 && cm.haveSel ) {
+	int a, b;
+
+	if ( ch == 'c' - 'a' + 1 && cm.haveSel && !Field_Selection( &g_consoleField, &a, &b ) ) {
 		Con_CopySelection();
 		return qtrue;
 	}
@@ -1517,6 +1636,12 @@ static void Con_UpdateMouse( void ) {
 			cm.x = x;
 			cm.y = y;
 		}
+	}
+	if ( ci.dragging ) {
+		if ( kg.keys[A_MOUSE1].down && Con_MouseOwned() )
+			g_consoleField.cursor = Con_InputIndexAt( cm.x, cm.y );
+		else
+			ci.dragging = qfalse;
 	}
 	if ( !cm.selecting || !Con_MouseOwned() )
 		return;
@@ -1668,19 +1793,9 @@ DRAWING
 */
 
 
-/*
-================
-Con_DrawInput
-
-Draw the editline after a ] prompt
-================
-*/
-void Con_DrawInput (void) {
+// the input line as it was, on one line scrolled sideways
+static void Con_DrawInputClassic( void ) {
 	int		y;
-
-	if ( cls.state != CA_DISCONNECTED && !(Key_GetCatcher( ) & KEYCATCH_CONSOLE ) ) {
-		return;
-	}
 
 	y = con.vislines - ( con.charHeight * (re->Language_IsAsian() ? 1.5 : 2) );
 
@@ -1699,6 +1814,76 @@ void Con_DrawInput (void) {
 	int pos = Q_PrintStrLenTo( g_consoleField.buffer, g_consoleField.scroll, NULL );
 	if ( pos + g_consoleField.widthInChars < len )
 		SCR_DrawSmallChar( cls.glconfig.vidWidth - con.charWidth, y, CON_SCROLL_R_CHAR );
+}
+
+/*
+================
+Con_DrawInput
+
+Draw the editline after a ] prompt
+================
+*/
+void Con_DrawInput (void) {
+	const vec4_t white = { 1.0f, 1.0f, 1.0f, 1.0f };
+	const char *buf = g_consoleField.buffer;
+	const int cw = con.charWidth, x0 = Con_Left() + 2 * cw;
+	conInputRows_t r;
+	int		y, row, shown, a, b;
+	qboolean sel;
+
+	ci.shown = 0;
+	if ( cls.state != CA_DISCONNECTED && !(Key_GetCatcher( ) & KEYCATCH_CONSOLE ) ) {
+		return;
+	}
+	if ( !Con_ModernInput() ) {
+		Con_DrawInputClassic();
+		return;
+	}
+
+	g_consoleField.cursor = Com_Clampi( 0, (int)strlen( buf ), g_consoleField.cursor );
+	Con_InputWrap( &r );
+	row = Con_InputRowOf( &r, g_consoleField.cursor );
+	shown = Q_min( r.num, CON_INPUT_ROWS );
+	if ( row < ci.first )
+		ci.first = row;
+	else if ( row >= ci.first + shown )
+		ci.first = row - shown + 1;
+	ci.first = Com_Clampi( 0, r.num - shown, ci.first );
+
+	y = con.vislines - ( con.charHeight * (re->Language_IsAsian() ? 1.5 : 2) );
+	ci.topY = y - ( shown - 1 ) * con.charHeight;
+	ci.shown = shown;
+	sel = Field_Selection( &g_consoleField, &a, &b );
+
+	for ( int k = 0; k < shown; k++ ) {
+		const int n = ci.first + k, from = r.start[n], to = r.start[n + 1];
+		const int ry = ci.topY + k * con.charHeight;
+
+		if ( sel && b > from && a < to ) {
+			const int sa = Q_max( a, from ), sb = Q_min( b, to );
+			Con_Fill( (float)( x0 + ( sa - from ) * cw ), (float)ry, (float)( ( sb - sa ) * cw ), (float)con.charHeight, conSelColor );
+		}
+		re->SetColor( white );
+		for ( int i = from; i < to; i++ )
+			SCR_DrawSmallChar( x0 + ( i - from ) * cw, ry, buf[i] );
+	}
+
+	re->SetColor( con.color );
+	SCR_DrawSmallChar( Con_Left() + cw, ci.topY, CONSOLE_PROMPT_CHAR );
+
+	// rows out of view above or below
+	re->SetColor( g_color_table[ColorIndex(COLOR_GREY)] );
+	if ( ci.first > 0 )
+		SCR_DrawSmallChar( 0, ci.topY, CON_SCROLL_L_CHAR );
+	if ( ci.first + shown < r.num )
+		SCR_DrawSmallChar( cls.glconfig.vidWidth - cw, y, CON_SCROLL_R_CHAR );
+
+	// the cursor, blinking
+	if ( !( ( cls.realtime >> 8 ) & 1 ) && row >= ci.first && row < ci.first + shown ) {
+		re->SetColor( white );
+		SCR_DrawSmallChar( x0 + ( g_consoleField.cursor - r.start[row] ) * cw, ci.topY + ( row - ci.first ) * con.charHeight,
+			kg.key_overstrikeMode ? 11 : 10 );
+	}
 }
 
 
@@ -1927,11 +2112,12 @@ void Con_DrawSolidConsole( float frac ) {
 
 	// draw the text
 	con.vislines = lines;
-	cm.inputY = lines - (int)( con.charHeight * ( re->Language_IsAsian() ? 1.5f : 2.0f ) ) - 1;
+	const int inputExtra = ci.shown > 1 ? ( ci.shown - 1 ) * con.charHeight : 0;
+	cm.inputY = lines - (int)( con.charHeight * ( re->Language_IsAsian() ? 1.5f : 2.0f ) ) - 1 - inputExtra;
 	Con_UpdateMouse();
-	rows = ( lines - con.charHeight * 3 ) / Con_RowH() + 1;		// rows of text to draw
+	rows = ( lines - con.charHeight * 3 - inputExtra ) / Con_RowH() + 1;		// rows of text to draw
 
-	y = lines - (con.charHeight*3);
+	y = lines - (con.charHeight*3) - inputExtra;
 
 	// draw from the bottom up
 	if (con.display != con.current)

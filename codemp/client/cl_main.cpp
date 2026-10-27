@@ -894,6 +894,10 @@ void CL_ForwardCommandToServer( const char *string ) {
 		return;
 	}
 
+	// a chat too long for the server: in parts
+	if ( CL_ChatSplit_Forward() )
+		return;
+
 	if ( Cmd_Argc() > 1 ) {
 		CL_AddReliableCommand( string, qfalse );
 	} else {
@@ -2368,6 +2372,9 @@ void CL_Frame ( int msec ) {
 	// drop the connection
 	CL_CheckTimeout();
 
+	// the parts of a long chat, one by one
+	CL_ChatSplit_Frame();
+
 	// send intentions now
 	CL_SendCmd();
 
@@ -2876,6 +2883,7 @@ void CL_Init( void ) {
 	cls.widthRatioCoef = 1.0f;
 	CL_RadialMenu_Init ();
 	CL_Languages_Init ();
+	CL_ChatSplit_Init ();
 	CL_ConSettings_Init ();
 	CL_SaberStyle_Init ();
 	CL_EmotePreview_Init ();
