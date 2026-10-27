@@ -41,6 +41,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #include "FXExport.h"
 #include "FxScheduler.h"
 #include "cl_gizmo.h"
+#include "cl_widgets.h"
 
 #define EM_ROOT				"effects"
 #define EM_EXT				".efx"
@@ -3826,6 +3827,18 @@ static qboolean EM_FieldAllows( emField_t f, int ch ) {
 	return (qboolean)( ch >= ' ' && ch < 127 );
 }
 
+// a character the field typed in takes
+static qboolean EM_AllowChar( int ch ) {
+	const emField_t f = EM_ActiveField();
+
+	return (qboolean)( f != EM_F_NONE && EM_FieldAllows( f, ch ) );
+}
+
+// a search box typed in without a click: the list keeps its keys
+static qboolean EM_ImplicitField( void ) {
+	return (qboolean)( em.naming == EM_NAMING_NONE && ( em.picker != EM_PICKER_NONE || em.focus == EM_F_NONE ) );
+}
+
 static void EM_FieldChanged( int f ) {
 	switch ( f ) {
 	case EM_F_SEARCH:
@@ -3890,7 +3903,28 @@ static void EM_BrowseListKey( int key ) {
 
 static void EM_BrowseKey( int key ) {
 	emField_t f = EM_ActiveField();
-	int len;
+
+	if ( f != EM_F_NONE && key != A_MOUSE1 && key != A_MWHEELUP && key != A_MWHEELDOWN ) {
+		qboolean toField = qtrue;
+
+		// a search box the list shares: up, down, page, home and end are the list's, left and
+		// right too while it's empty
+		if ( EM_ImplicitField() ) {
+			if ( key == A_CURSOR_UP || key == A_CURSOR_DOWN || key == A_PAGE_UP || key == A_PAGE_DOWN || key == A_HOME || key == A_END )
+				toField = qfalse;
+			else if ( ( key == A_CURSOR_LEFT || key == A_CURSOR_RIGHT ) && !em.fields[f][0] )
+				toField = qfalse;
+		}
+		if ( toField ) {
+			const int edit = WG_EditKey( em.fields[f], EM_FIELD_LEN, key, EM_AllowChar );
+
+			if ( edit ) {
+				if ( edit & WG_EDIT_CHANGED )
+					EM_FieldChanged( f );
+				return;
+			}
+		}
+	}
 
 	switch ( key ) {
 	case A_MOUSE1:
@@ -3903,21 +3937,6 @@ static void EM_BrowseKey( int key ) {
 		break;
 	case A_MWHEELDOWN:
 		em.wheel += 3;
-		break;
-	case A_BACKSPACE:
-		if ( f == EM_F_NONE )
-			break;
-		len = strlen( em.fields[f] );
-		if ( len ) {
-			em.fields[f][len - 1] = '\0';
-			EM_FieldChanged( f );
-		}
-		break;
-	case A_DELETE:
-		if ( f == EM_F_NONE )
-			break;
-		em.fields[f][0] = '\0';
-		EM_FieldChanged( f );
 		break;
 	case A_TAB:
 		if ( em.picker == EM_PICKER_NONE )
@@ -4375,24 +4394,11 @@ static void EM_ConfirmNaming( void ) {
 // the keys the name box takes; qtrue if it took this one
 static qboolean EM_NamingKey( int key ) {
 	const emField_t f = EM_ActiveField();
-	int len;
 
-	switch ( key ) {
-	case A_ENTER:
-	case A_KP_ENTER:
+	if ( WG_EditKey( em.fields[f], EM_FIELD_LEN, key, EM_AllowChar ) )
+		return qtrue;
+	if ( key == A_ENTER || key == A_KP_ENTER )
 		EM_ConfirmNaming();
-		break;
-	case A_BACKSPACE:
-		len = strlen( em.fields[f] );
-		if ( len )
-			em.fields[f][len - 1] = '\0';
-		break;
-	case A_DELETE:
-		em.fields[f][0] = '\0';
-		break;
-	default:
-		break;
-	}
 	return qtrue;
 }
 
@@ -4446,19 +4452,14 @@ void CL_EffectManager_KeyEvent( int key, qboolean down ) {
 
 void CL_EffectManager_CharEvent( int ch ) {
 	emField_t f;
-	int len;
 
 	if ( em.state != EM_BROWSE && em.naming == EM_NAMING_NONE )
 		return;
 	f = EM_ActiveField();
 	if ( f == EM_F_NONE )
 		return;
-	len = strlen( em.fields[f] );
-	if ( EM_FieldAllows( f, ch ) && len < EM_FIELD_LEN - 1 ) {
-		em.fields[f][len] = (char)ch;
-		em.fields[f][len + 1] = '\0';
+	if ( WG_EditChar( em.fields[f], EM_FIELD_LEN, ch, EM_AllowChar ) )
 		EM_FieldChanged( f );
-	}
 }
 
 void CL_EffectManager_MouseEvent( int dx, int dy ) {
@@ -4902,24 +4903,31 @@ static qboolean EM_DangerButton( float x, float y, float w, const char *label, e
 	return qfalse;
 }
 
-static void EM_Field( emField_t f, float x, float y, float w, const char *placeholder ) {
-	qboolean focused = (qboolean)( EM_ActiveField() == f );
-	const char *text = em.fields[f];
-	char buf[EM_FIELD_LEN + 2];
+static void EM_FieldStyle( wgStyle_t *style ) {
+	style->font = em.font;
+	style->scale = EM_TEXT_SCALE;
+	style->lineH = EM_ROW_H;
+	style->padX = 4.0f;
+	style->padY = 2.0f;
+	style->fill = emPanelFocus;
+	style->border = emBorder;
+	style->text = emWhite;
+	style->dim = emDim;
+}
 
+static void EM_Field( emField_t f, float x, float y, float w, const char *placeholder ) {
+	const qboolean focused = (qboolean)( EM_ActiveField() == f );
+	wgStyle_t style;
+	float h;
+
+	EM_FieldStyle( &style );
 	EM_Box( x, y, w, EM_CTRL_H, focused ? emPanelFocus : emPanelLight );
-	if ( !text[0] && !focused ) {
-		EM_TextClipped( x + 4, y + 2, w - 8, placeholder, emDim );
-	} else {
-		// keep the end in view
-		Com_sprintf( buf, sizeof( buf ), "%s%s", text, focused && ( ( cls.realtime >> 8 ) & 1 ) ? "_" : "" );
-		const char *shown = buf;
-		while ( shown[1] && EM_TextWidth( shown ) > w - 8 )
-			shown++;
-		EM_Text( x + 4, y + 2, shown, emWhite );
-	}
-	if ( EM_Clicked( x, y, w, EM_CTRL_H ) )
+	WG_Field( &style, x, y, w, EM_CTRL_H, em.fields[f], focused, placeholder, em.cursorX, em.cursorY );
+	h = WG_FieldHeight( &style, w, EM_CTRL_H, em.fields[f], focused );
+	if ( EM_Clicked( x, y, w, h ) ) {
 		em.focus = ( f == EM_F_SEARCH || f == EM_F_ACTIVE_SEARCH || f == EM_F_PICKER_SEARCH ) ? EM_F_NONE : f;
+		WG_FieldClick( em.fields[f], em.clickX, em.clickY );
+	}
 }
 
 static void EM_Label( float x, float y, const char *label ) {
@@ -4940,6 +4948,11 @@ static int EM_List( emList_t *list, int count, float x, float y, float w, float 
 		em.wheel = 0;
 	}
 	EM_ListClamp( list, count, visible );
+	if ( count > visible ) {
+		EM_Box( x, y, w, h, emPanelLight );
+		WG_Scrollbar( x + w - WG_SCROLL_W - 1, y + 1, h - 2, count, visible, &list->scroll, em.cursorX, em.cursorY, &em.click, em.clickX, em.clickY );
+		w -= WG_SCROLL_W + 1;
+	}
 
 	if ( EM_Clicked( x, y, w, h ) ) {
 		row = list->scroll + (int)( ( em.clickY - y ) / EM_ROW_H );
@@ -4957,7 +4970,8 @@ static int EM_List( emList_t *list, int count, float x, float y, float w, float 
 		}
 	}
 
-	EM_Box( x, y, w, h, emPanelLight );
+	if ( count <= visible )
+		EM_Box( x, y, w, h, emPanelLight );
 	for ( int i = 0; i < visible; i++ ) {
 		float ry = y + i * EM_ROW_H;
 
@@ -5647,8 +5661,11 @@ static void EM_DrawNaming( void ) {
 
 	EM_Box( bx, by, bw, note ? 58 : 46, emPanelOpaque );
 	EM_TextClipped( bx + 8, by + 4, bw - 16, title, emWhite );
+	wgStyle_t style;
+
+	EM_FieldStyle( &style );
 	EM_Box( bx + 8, by + 18, bw - 16, 16, emPanelLight );
-	EM_Text( bx + 12, by + 21, va( "%s%s", field, ( cls.realtime >> 8 ) & 1 ? "_" : "" ), emWhite );
+	WG_Field( &style, bx + 8, by + 18, bw - 16, 16, em.fields[EM_ActiveField()], qtrue, "", em.cursorX, em.cursorY );
 	EM_TextClipped( bx + 8, by + 36, bw - 16, hint, emWhite );
 	if ( note )
 		EM_TextClipped( bx + 8, by + 48, bw - 16, note, emWhite );
@@ -5718,6 +5735,7 @@ static void EM_DrawBrowse( void ) {
 	em.click = qfalse;
 	em.wheel = 0;
 
+	WG_DrawOverlay();
 	re->DrawStretchPic( em.cursorX, em.cursorY, 32, 32, 0, 0, 1, 1, cls.cursorShader );
 }
 
@@ -5935,8 +5953,10 @@ static void EM_DrawPlace( void ) {
 				em.numQueue ? va( S_COLOR_YELLOW "   %i more to go", em.numQueue ) : "" ), emWhite );
 	}
 
-	if ( em.naming != EM_NAMING_NONE )
+	if ( em.naming != EM_NAMING_NONE ) {
 		EM_DrawNaming();
+		WG_DrawOverlay();
+	}
 }
 
 // numbers over the active effects in view, checked ones highlighted

@@ -39,6 +39,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #include "client.h"
 #include "qcommon/cm_public.h"
 #include "cl_gizmo.h"
+#include "cl_widgets.h"
 
 #define MM_ROOT				"models"			// where models are listed from, and what RPMod's names are relative to
 #define MM_SKIP				"models/players/"	// the player models are no use here
@@ -277,6 +278,8 @@ static struct {
 	int			snap;
 	qboolean	hideHelp;
 	mmNaming_t	naming;			// typing a name, and what for
+	qboolean	barClick;		// a click on a list's scrollbar, for the frame to take
+	float		barClickX, barClickY;
 	char		saveName[MM_NAME_LEN];
 	char		tmplName[MM_NAME_LEN];	// what the model or construct in hand is called, to offer as its name
 	char		message[MAX_STRING_CHARS];
@@ -2721,8 +2724,33 @@ static void MM_ToggleFavorite( int model ) {
 	}
 }
 
+// the browser's lists have a scrollbar when there are more than fit
+static qboolean MM_RowsBar( void ) {
+	return (qboolean)( mm.numRows > MM_VISIBLE_ROWS );
+}
+
+static qboolean MM_ModelsBar( void ) {
+	return (qboolean)( mm.numView > MM_VISIBLE_ROWS );
+}
+
+static float MM_SearchLabelW( void ) {
+	return (float)re->Font_StrLenPixels( "Search: ", mm.font, MM_TEXT_SCALE ) + 4.0f;
+}
+
 static void MM_BrowseClick( void ) {
 	int row;
+
+	if ( ( MM_RowsBar() && MM_InRect( MM_FOLDER_X + MM_FOLDER_W - WG_SCROLL_W - 1, MM_LIST_Y, WG_SCROLL_W + 1, MM_LIST_H ) )
+		|| ( MM_ModelsBar() && MM_InRect( MM_MODEL_X + MM_MODEL_W - WG_SCROLL_W - 1, MM_LIST_Y, WG_SCROLL_W + 1, MM_LIST_H ) ) ) {
+		mm.barClick = qtrue;
+		mm.barClickX = mm.cursorX;
+		mm.barClickY = mm.cursorY;
+		return;
+	}
+	if ( MM_InRect( MM_FOLDER_X, MM_SEARCH_Y, MM_SEARCH_W, 16 ) ) {
+		WG_FieldClick( mm.search, mm.cursorX, mm.cursorY );
+		return;
+	}
 
 	for ( int i = 0; i < MM_FILTER_COUNT; i++ ) {
 		if ( MM_InRect( MM_FOLDER_X + MM_SEARCH_W + MM_FILTER_GAP + i * ( MM_FILTER_W + MM_FILTER_GAP ), MM_SEARCH_Y, MM_FILTER_W, 16 ) ) {
@@ -2764,29 +2792,36 @@ static void MM_BrowseClick( void ) {
 		MM_EnterCamera();
 }
 
-static void MM_BrowseChar( int ch ) {
-	int len = strlen( mm.search );
+static qboolean MM_SearchChar( int ch ) {
+	return (qboolean)( ch >= 32 && ch < 127 );
+}
 
-	if ( ch >= 32 && ch < 127 && len < (int)sizeof( mm.search ) - 1 ) {
-		mm.search[len] = (char)ch;
-		mm.search[len + 1] = '\0';
+static void MM_BrowseChar( int ch ) {
+	if ( WG_EditChar( mm.search, sizeof( mm.search ), ch, MM_SearchChar ) ) {
 		mm.selRow = mm.modelScroll = 0;
 		MM_RebuildView();
 	}
 }
 
 static void MM_BrowseKey( int key ) {
-	int len;
+	const qboolean ctrl = (qboolean)( Key_IsDown( A_CTRL ) || Key_IsDown( A_CTRL2 ) );
+	const qboolean shift = (qboolean)( Key_IsDown( A_SHIFT ) || Key_IsDown( A_SHIFT2 ) );
 
-	switch ( key ) {
-	case A_BACKSPACE:
-		len = strlen( mm.search );
-		if ( len ) {
-			mm.search[len - 1] = '\0';
+	// the search box: backspace, the clipboard, and with Ctrl or Shift its cursor and selection;
+	// the plain arrows, Home and End stay the lists'
+	if ( key == A_BACKSPACE || ( ctrl && key != A_MOUSE1 && key != A_MWHEELUP && key != A_MWHEELDOWN )
+		|| ( shift && ( key == A_INSERT || key == A_CURSOR_LEFT || key == A_CURSOR_RIGHT || key == A_HOME || key == A_END ) ) ) {
+		const int edit = WG_EditKey( mm.search, sizeof( mm.search ), key, MM_SearchChar );
+
+		if ( edit & WG_EDIT_CHANGED ) {
 			mm.selRow = mm.modelScroll = 0;
 			MM_RebuildView();
 		}
-		break;
+		if ( edit )
+			return;
+	}
+
+	switch ( key ) {
 	case A_DELETE:
 		mm.search[0] = '\0';
 		MM_RebuildView();
@@ -2849,6 +2884,10 @@ static void MM_BrowseKey( int key ) {
 // the name box, offering a name where there is one to offer
 static void MM_GzView( gzView_t *v );
 
+static qboolean MM_SaveNameAllow( int ch ) {
+	return MM_SaveNameChar( ch );
+}
+
 static void MM_StartNaming( mmNaming_t naming ) {
 	const mmPiece_t *first = MM_FirstSelected();
 
@@ -2878,8 +2917,8 @@ static void MM_StartNaming( mmNaming_t naming ) {
 }
 
 static void MM_NameKey( int key ) {
-	int len = strlen( mm.saveName );
-
+	if ( WG_EditKey( mm.saveName, sizeof( mm.saveName ), key, MM_SaveNameAllow ) )
+		return;
 	switch ( key ) {
 	case A_ENTER:
 	case A_KP_ENTER:
@@ -2889,10 +2928,6 @@ static void MM_NameKey( int key ) {
 		} else if ( mm.naming == MM_NAMING_STATE ? MM_SaveState( mm.saveName ) : MM_SaveSelection( mm.saveName ) ) {
 			mm.naming = MM_NAMING_NONE;
 		}
-		break;
-	case A_BACKSPACE:
-		if ( len )
-			mm.saveName[len - 1] = '\0';
 		break;
 	default:
 		break;
@@ -3061,12 +3096,7 @@ void CL_ModelManager_CharEvent( int ch ) {
 	if ( mm.state == MM_BROWSE ) {
 		MM_BrowseChar( ch );
 	} else if ( mm.naming ) {
-		int len = strlen( mm.saveName );
-
-		if ( MM_SaveNameChar( ch ) && len < (int)sizeof( mm.saveName ) - 1 ) {
-			mm.saveName[len] = (char)ch;
-			mm.saveName[len + 1] = '\0';
-		}
+		WG_EditChar( mm.saveName, sizeof( mm.saveName ), ch, MM_SaveNameAllow );
 	}
 }
 
@@ -3573,6 +3603,18 @@ static void MM_TextClipped( float x, float y, float w, const char *text, const f
 	MM_Text( x, y, buf, color );
 }
 
+static void MM_FieldStyle( wgStyle_t *style ) {
+	style->font = mm.font;
+	style->scale = MM_TEXT_SCALE;
+	style->lineH = MM_ROW_H;
+	style->padX = 4.0f;
+	style->padY = 3.0f;
+	style->fill = mmPanelOpaque;
+	style->border = mmBorder;
+	style->text = mmWhite;
+	style->dim = mmDim;
+}
+
 // clicks on it are handled in MM_BrowseClick
 static void MM_Button( float x, float y, float w, const char *label ) {
 	MM_Box( x, y, w, MM_BUTTON_H, MM_InRect( x, y, w, MM_BUTTON_H ) ? mmHighlight : mmPanelLight );
@@ -3701,7 +3743,12 @@ static void MM_DrawPreview( int sel ) {
 }
 
 static void MM_DrawRows( void ) {
+	float rw = MM_FOLDER_W;
+
 	MM_Box( MM_FOLDER_X, MM_LIST_Y, MM_FOLDER_W, MM_LIST_H, mmPanelLight );
+	if ( WG_Scrollbar( MM_FOLDER_X + MM_FOLDER_W - WG_SCROLL_W - 1, MM_LIST_Y + 1, MM_LIST_H - 2, mm.numRows, MM_VISIBLE_ROWS, &mm.rowScroll,
+		mm.cursorX, mm.cursorY, &mm.barClick, mm.barClickX, mm.barClickY ) )
+		rw -= WG_SCROLL_W + 1;
 	for ( int i = 0; i < MM_VISIBLE_ROWS; i++ ) {
 		const int row = mm.rowScroll + i;
 		const mmRow_t *r;
@@ -3713,9 +3760,9 @@ static void MM_DrawRows( void ) {
 			break;
 		r = &mm.rows[row];
 		if ( row == mm.row && !mm.search[0] )
-			MM_Fill( MM_FOLDER_X + 1, y, MM_FOLDER_W - 2, MM_ROW_H, mmHighlight );
-		else if ( MM_InRect( MM_FOLDER_X, y, MM_FOLDER_W, MM_ROW_H ) )
-			MM_Fill( MM_FOLDER_X + 1, y, MM_FOLDER_W - 2, MM_ROW_H, mmHover );
+			MM_Fill( MM_FOLDER_X + 1, y, rw - 2, MM_ROW_H, mmHighlight );
+		else if ( MM_InRect( MM_FOLDER_X, y, rw, MM_ROW_H ) )
+			MM_Fill( MM_FOLDER_X + 1, y, rw - 2, MM_ROW_H, mmHover );
 
 		switch ( r->type ) {
 		case MM_ROW_SAVED:
@@ -3745,7 +3792,7 @@ static void MM_DrawRows( void ) {
 			label = va( "%s " S_COLOR_GREY "(%i)", MM_FolderLabel( r->name ), r->count );
 			break;
 		}
-		MM_TextClipped( MM_FOLDER_X + 4 + indent, y + 1, MM_FOLDER_W - 8 - indent, label, mm.search[0] ? mmDim : mmWhite );
+		MM_TextClipped( MM_FOLDER_X + 4 + indent, y + 1, rw - 8 - indent, label, mm.search[0] ? mmDim : mmWhite );
 	}
 }
 
@@ -3764,9 +3811,15 @@ static void MM_DrawBrowser( void ) {
 		MM_Text( MM_FOLDER_X, 28, S_COLOR_GREY "Type to search everything. Enter places the model, Tab edits the map's models.", mmWhite );
 
 	// search box
-	MM_Box( MM_FOLDER_X, MM_SEARCH_Y, MM_SEARCH_W, 16, mmPanelLight );
-	Com_sprintf( buf, sizeof( buf ), "Search: %s%s", mm.search, ( cls.realtime >> 8 ) & 1 ? "_" : "" );
-	MM_Text( MM_FOLDER_X + 4, MM_SEARCH_Y + 3, buf, mm.search[0] ? mmWhite : mmDim );
+	{
+		const float lw = MM_SearchLabelW();
+		wgStyle_t style;
+
+		MM_FieldStyle( &style );
+		MM_Box( MM_FOLDER_X, MM_SEARCH_Y, MM_SEARCH_W, 16, mmPanelLight );
+		MM_Text( MM_FOLDER_X + 4, MM_SEARCH_Y + 3, "Search:", mm.search[0] ? mmWhite : mmDim );
+		WG_Field( &style, MM_FOLDER_X + lw - 4, MM_SEARCH_Y, MM_SEARCH_W - lw + 4, 16, mm.search, qtrue, "", mm.cursorX, mm.cursorY );
+	}
 
 	// filter bar
 	for ( int i = 0; i < MM_FILTER_COUNT; i++ ) {
@@ -3780,7 +3833,13 @@ static void MM_DrawBrowser( void ) {
 	MM_DrawRows();
 
 	// models, or saved constructs
+	float mw = MM_MODEL_W;
+
 	MM_Box( MM_MODEL_X, MM_LIST_Y, MM_MODEL_W, MM_LIST_H, mmPanelLight );
+	if ( WG_Scrollbar( MM_MODEL_X + MM_MODEL_W - WG_SCROLL_W - 1, MM_LIST_Y + 1, MM_LIST_H - 2, mm.numView, MM_VISIBLE_ROWS, &mm.modelScroll,
+		mm.cursorX, mm.cursorY, &mm.barClick, mm.barClickX, mm.barClickY ) )
+		mw -= WG_SCROLL_W + 1;
+	mm.barClick = qfalse;
 	if ( !mm.numView )
 		MM_Text( MM_MODEL_X + 4, MM_LIST_Y + 1, mm.viewSaves ? "None yet: select models, press K"
 			: mm.viewStates ? "None yet: Shift+K in the free camera"
@@ -3795,9 +3854,9 @@ static void MM_DrawBrowser( void ) {
 			break;
 		y = MM_LIST_Y + i * MM_ROW_H;
 		if ( row == mm.selRow )
-			MM_Fill( MM_MODEL_X + 1, y, MM_MODEL_W - 2, MM_ROW_H, mmHighlight );
-		else if ( MM_InRect( MM_MODEL_X, y, MM_MODEL_W, MM_ROW_H ) )
-			MM_Fill( MM_MODEL_X + 1, y, MM_MODEL_W - 2, MM_ROW_H, mmHover );
+			MM_Fill( MM_MODEL_X + 1, y, mw - 2, MM_ROW_H, mmHighlight );
+		else if ( MM_InRect( MM_MODEL_X, y, mw, MM_ROW_H ) )
+			MM_Fill( MM_MODEL_X + 1, y, mw - 2, MM_ROW_H, mmHover );
 		if ( mm.viewSaves ) {
 			label = mm.saves[mm.view[row]];
 		} else if ( mm.viewStates ) {
@@ -3812,10 +3871,10 @@ static void MM_DrawBrowser( void ) {
 			label = ( mm.search[0] || r->type != MM_ROW_FOLDER ) ? MM_FolderLabel( m->path ) : m->base;
 			// the star: click it for a favorite
 			MM_Text( MM_MODEL_X + 4, y + 1, CL_Fav_Star( CL_Fav_Has( MM_FAV_LIST, m->path ) ), mmWhite );
-			MM_TextClipped( MM_MODEL_X + 4 + MM_STAR_W, y + 1, MM_MODEL_W - 8 - MM_STAR_W, label, failed ? mmRed : mmWhite );
+			MM_TextClipped( MM_MODEL_X + 4 + MM_STAR_W, y + 1, mw - 8 - MM_STAR_W, label, failed ? mmRed : mmWhite );
 			continue;
 		}
-		MM_TextClipped( MM_MODEL_X + 4, y + 1, MM_MODEL_W - 8, label, failed ? mmRed : mmWhite );
+		MM_TextClipped( MM_MODEL_X + 4, y + 1, mw - 8, label, failed ? mmRed : mmWhite );
 	}
 
 	// preview and details
@@ -3853,6 +3912,7 @@ static void MM_DrawBrowser( void ) {
 		Key_GetKey( MM_TOGGLE_CMD ) >= 0 || Key_GetKey( MM_OLD_TOGGLE_CMD ) >= 0 ? "Your modelmanager bind closes" : "Tip: bind a key to modelmanager" );
 	MM_Text( MM_FOLDER_X, 452, buf, mmWhite );
 
+	WG_DrawOverlay();
 	re->DrawStretchPic( mm.cursorX, mm.cursorY, 32, 32, 0, 0, 1, 1, cls.cursorShader );
 }
 
@@ -4024,11 +4084,15 @@ static void MM_DrawCamera( void ) {
 
 		MM_Box( bx, by, bw, note ? 58 : 46, mmPanelOpaque );
 		MM_TextClipped( bx + 8, by + 4, bw - 16, title, mmWhite );
+		wgStyle_t style;
+
+		MM_FieldStyle( &style );
 		MM_Box( bx + 8, by + 18, bw - 16, 16, mmPanelLight );
-		MM_Text( bx + 12, by + 21, va( "%s%s", mm.saveName, ( cls.realtime >> 8 ) & 1 ? "_" : "" ), mmWhite );
+		WG_Field( &style, bx + 8, by + 18, bw - 16, 16, mm.saveName, qtrue, "", mm.cursorX, mm.cursorY );
 		MM_TextClipped( bx + 8, by + 36, bw - 16, hint, mmWhite );
 		if ( note )
 			MM_TextClipped( bx + 8, by + 48, bw - 16, note, mmWhite );
+		WG_DrawOverlay();
 	}
 }
 

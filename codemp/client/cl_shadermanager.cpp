@@ -63,6 +63,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #include "client.h"
 #include "qcommon/cm_public.h"
 #include "ghoul2/G2.h"
+#include "cl_widgets.h"
 
 extern IHeapAllocator *G2VertSpaceClient;
 
@@ -2307,9 +2308,34 @@ static int SM_ShaderRows( void ) {
 static void SM_AddOverlay( void );
 static void SM_MineEnter( void );
 
+static void SM_FieldChanged( smField_t f ) {
+	if ( f == SM_F_SEARCH ) {
+		sm.shaderList.scroll = 0;
+		SM_RebuildShaderView();
+	} else if ( f == SM_F_PATH ) {
+		SM_PathChanged();
+	} else if ( f == SM_F_OV_SEARCH ) {
+		sm.overlayShaders.scroll = 0;
+		SM_RebuildOverlayView();
+	}
+}
+
+static qboolean SM_AllowChar( int ch ) {
+	const smField_t f = SM_TypingField();
+
+	if ( ch < ' ' || ch > '~' )
+		return qfalse;
+	if ( ( f == SM_F_OFFSET || ( f >= SM_F_OV_FADE && f <= SM_F_OV_H ) ) && !( isdigit( ch ) || ch == '.' || ch == '-' ) )
+		return qfalse;
+	// goes on the command line as one word
+	if ( f == SM_F_PATH && ( ch == ' ' || ch == '"' || ch == ';' ) )
+		return qfalse;
+	return qtrue;
+}
+
 static void SM_EditKey( int key ) {
 	smList_t *list;
-	int count, visible, delta, len;
+	int count, visible, delta;
 	smField_t f = SM_TypingField();
 
 	switch ( key ) {
@@ -2340,29 +2366,24 @@ static void SM_EditKey( int key ) {
 		else if ( sm.tab == SM_TAB_MINE )
 			SM_MineEnter();
 		return;
-	case A_BACKSPACE:
-		len = strlen( sm.fields[f] );
-		if ( len ) {
-			sm.fields[f][len - 1] = '\0';
-			if ( f == SM_F_SEARCH )
-				SM_RebuildShaderView();
-			else if ( f == SM_F_PATH )
-				SM_PathChanged();
-			else if ( f == SM_F_OV_SEARCH )
-				SM_RebuildOverlayView();
-		}
-		return;
-	case A_DELETE:
-		sm.fields[f][0] = '\0';
-		if ( f == SM_F_SEARCH )
-			SM_RebuildShaderView();
-		else if ( f == SM_F_PATH )
-			SM_PathChanged();
-		else if ( f == SM_F_OV_SEARCH )
-			SM_RebuildOverlayView();
-		return;
 	default:
 		break;
+	}
+
+	// a box clicked takes the editing keys; typed in without a click, the arrows, home and end
+	// are the lists' and delete empties it
+	if ( sm.focus != SM_F_NONE || !( key == A_CURSOR_LEFT || key == A_CURSOR_RIGHT || key == A_CURSOR_UP
+		|| key == A_CURSOR_DOWN || key == A_HOME || key == A_END || key == A_DELETE ) ) {
+		const int edit = WG_EditKey( sm.fields[f], SM_FIELD_LEN, key, SM_AllowChar );
+
+		if ( edit & WG_EDIT_CHANGED )
+			SM_FieldChanged( f );
+		if ( edit )
+			return;
+	} else if ( key == A_DELETE ) {
+		sm.fields[f][0] = '\0';
+		SM_FieldChanged( f );
+		return;
 	}
 
 	if ( sm.tab == SM_TAB_OBJECT || sm.tab == SM_TAB_MINE ) {
@@ -2429,30 +2450,12 @@ void CL_ShaderManager_KeyEvent( int key, qboolean down ) {
 
 void CL_ShaderManager_CharEvent( int ch ) {
 	smField_t f;
-	int len;
 
-	if ( sm.state != SM_EDIT || sm.looking || ch < ' ' || ch > '~' )
+	if ( sm.state != SM_EDIT || sm.looking )
 		return;
 	f = SM_TypingField();
-	if ( ( f == SM_F_OFFSET || ( f >= SM_F_OV_FADE && f <= SM_F_OV_H ) ) && !( isdigit( ch ) || ch == '.' || ch == '-' ) )
-		return;
-	// goes on the command line as one word
-	if ( f == SM_F_PATH && ( ch == ' ' || ch == '"' || ch == ';' ) )
-		return;
-	len = strlen( sm.fields[f] );
-	if ( len < SM_FIELD_LEN - 1 ) {
-		sm.fields[f][len] = (char)ch;
-		sm.fields[f][len + 1] = '\0';
-		if ( f == SM_F_SEARCH ) {
-			sm.shaderList.scroll = 0;
-			SM_RebuildShaderView();
-		} else if ( f == SM_F_PATH ) {
-			SM_PathChanged();
-		} else if ( f == SM_F_OV_SEARCH ) {
-			sm.overlayShaders.scroll = 0;
-			SM_RebuildOverlayView();
-		}
-	}
+	if ( WG_EditChar( sm.fields[f], SM_FIELD_LEN, ch, SM_AllowChar ) )
+		SM_FieldChanged( f );
 }
 
 void CL_ShaderManager_MouseEvent( int dx, int dy ) {
@@ -3006,17 +3009,25 @@ static qboolean SM_Button( float x, float y, float w, const char *label, qboolea
 }
 
 static void SM_Field( smField_t f, float x, float y, float w, const char *placeholder ) {
-	qboolean active = (qboolean)( SM_TypingField() == f );
+	const qboolean active = (qboolean)( SM_TypingField() == f );
+	wgStyle_t style;
 
+	style.font = sm.font;
+	style.scale = SM_TEXT_SCALE;
+	style.lineH = SM_ROW_H;
+	style.padX = 4.0f;
+	style.padY = 2.0f;
+	style.fill = smPanelFocus;
+	style.border = smBorder;
+	style.text = smWhite;
+	style.dim = smDim;
 	SM_Box( x, y, w, SM_CTRL_H, active ? smPanelFocus : smPanelLight );
-	if ( sm.fields[f][0] )
-		SM_TextClipped( x + 4, y + 2, w - 12, sm.fields[f], smWhite );
-	else
-		SM_TextClipped( x + 4, y + 2, w - 8, placeholder, smDim );
-	if ( active && ( cls.realtime / 500 ) % 2 )
-		SM_Text( x + 4 + Q_min( SM_TextWidth( sm.fields[f] ), w - 12 ), y + 2, "_", smWhite );
-	if ( SM_Clicked( x, y, w, SM_CTRL_H ) )
+	WG_Field( &style, x, y, w, SM_CTRL_H, sm.fields[f], active, placeholder, sm.cursorX, sm.cursorY );
+	// a click: typed in, the cursor where it was clicked
+	if ( SM_Clicked( x, y, w, WG_FieldHeight( &style, w, SM_CTRL_H, sm.fields[f], active ) ) ) {
 		sm.focus = f;
+		WG_FieldClick( sm.fields[f], sm.clickX, sm.clickY );
+	}
 }
 
 typedef void ( *smRowFunc_t )( int row, float x, float y, float w );
@@ -3032,6 +3043,11 @@ static int SM_List( smList_t *list, int count, float x, float y, float w, int ro
 	}
 	list->scroll = Com_Clampi( 0, Q_max( count - rows, 0 ), list->scroll );
 	list->sel = Com_Clampi( 0, Q_max( count - 1, 0 ), list->sel );
+	SM_Box( x, y, w, h, smPanelLight );
+	if ( count > rows ) {
+		WG_Scrollbar( x + w - WG_SCROLL_W - 1, y + 1, h - 2, count, rows, &list->scroll, sm.cursorX, sm.cursorY, &sm.click, sm.clickX, sm.clickY );
+		w -= WG_SCROLL_W + 1;
+	}
 
 	if ( SM_Clicked( x, y, w, h ) ) {
 		row = list->scroll + (int)( ( sm.clickY - y ) / SM_ROW_H );
@@ -3041,7 +3057,6 @@ static int SM_List( smList_t *list, int count, float x, float y, float w, int ro
 		}
 	}
 
-	SM_Box( x, y, w, h, smPanelLight );
 	for ( int i = 0; i < rows; i++ ) {
 		float ry = y + i * SM_ROW_H;
 
@@ -4373,6 +4388,7 @@ void CL_ShaderManager_Draw( void ) {
 		sm.focus = SM_F_NONE;
 	sm.click = qfalse;
 	sm.wheel = 0;
+	WG_DrawOverlay();
 	if ( !sm.looking )
 		re->DrawStretchPic( sm.cursorX, sm.cursorY, 32, 32, 0, 0, 1, 1, cls.cursorShader );
 }

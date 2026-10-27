@@ -1,0 +1,239 @@
+/*
+===========================================================================
+Copyright (C) 2026, OpenJK contributors
+
+This file is part of the OpenJK source code.
+
+OpenJK is free software; you can redistribute it and/or modify it
+under the terms of the GNU General Public License version 2 as
+published by the Free Software Foundation.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program; if not, see <http://www.gnu.org/licenses/>.
+===========================================================================
+*/
+
+// cl_chatsplit.cpp -- a chat too long for the server sent as several, each but the last ending
+// with -- and each but the first starting with it. The server cuts a message at its length
+// (149 letters in the base game) and ignores a command come within a second of the one before,
+// so the parts go one by one, cl_chatSplitDelay apart.
+//
+//	cl_chatSplit			1 on, 0 off (the default)
+//	cl_chatSplitLength		the letters the server keeps of one message
+//	cl_chatSplitMark		what ends a part cut short and starts the next
+//	cl_chatSplitDelay		ms between the parts
+//	cl_chatSplitCommands	the chat commands; name:n keeps n words before the text, as tell's target
+
+#include "client.h"
+
+#define CS_MAX_QUEUED	32
+#define CS_MIN_PART		16		// a part's room no smaller than this, whatever the mark
+
+static cvar_t *cl_chatSplit;
+static cvar_t *cl_chatSplitLength;
+static cvar_t *cl_chatSplitMark;
+static cvar_t *cl_chatSplitDelay;
+static cvar_t *cl_chatSplitCommands;
+
+static struct {
+	char	cmd[CS_MAX_QUEUED][MAX_STRING_CHARS];
+	int		head, count;
+	int		nextTime;			// the next part not before
+} cs;
+
+void CL_ChatSplit_Init( void ) {
+	cl_chatSplit = Cvar_Get( "cl_chatSplit", "0", CVAR_ARCHIVE_ND, "A chat too long for the server sent as several, -- between them" );
+	cl_chatSplitLength = Cvar_Get( "cl_chatSplitLength", "149", CVAR_ARCHIVE_ND, "The letters the server keeps of one chat message" );
+	cl_chatSplitMark = Cvar_Get( "cl_chatSplitMark", "--", CVAR_ARCHIVE_ND, "Ends a chat message cut in parts, and starts the next part" );
+	cl_chatSplitDelay = Cvar_Get( "cl_chatSplitDelay", "1100", CVAR_ARCHIVE_ND, "Milliseconds between the parts of a long chat (the server ignores faster)" );
+	cl_chatSplitCommands = Cvar_Get( "cl_chatSplitCommands", "say say_team tell:1", CVAR_ARCHIVE_ND,
+		"The chat commands split when too long; name:n keeps n words before the text" );
+}
+
+static void CS_Queue( const char *cmd ) {
+	if ( cs.count >= CS_MAX_QUEUED ) {
+		Com_Printf( S_COLOR_YELLOW "Chat: too much waiting to be sent; the rest is dropped\n" );
+		return;
+	}
+	Q_strncpyz( cs.cmd[( cs.head + cs.count ) % CS_MAX_QUEUED], cmd, MAX_STRING_CHARS );
+	cs.count++;
+}
+
+// sends what waits, one part a delay
+void CL_ChatSplit_Frame( void ) {
+	if ( !cs.count )
+		return;
+	if ( cls.state != CA_ACTIVE || clc.demoplaying ) {
+		cs.count = 0;
+		return;
+	}
+	if ( cls.realtime < cs.nextTime )
+		return;
+	CL_AddReliableCommand( cs.cmd[cs.head], qfalse );
+	cs.head = ( cs.head + 1 ) % CS_MAX_QUEUED;
+	cs.count--;
+	cs.nextTime = cls.realtime + Com_Clampi( 0, 10000, cl_chatSplitDelay->integer );
+}
+
+// the command's words kept before the text, -1 if it isn't a chat command
+static int CS_KeptWords( const char *cmd ) {
+	char list[MAX_CVAR_VALUE_STRING];
+	char *p, *name;
+
+	Q_strncpyz( list, cl_chatSplitCommands->string, sizeof( list ) );
+	for ( p = list; *p; ) {
+		char *colon;
+
+		while ( *p == ' ' || *p == ',' )
+			p++;
+		if ( !*p )
+			break;
+		name = p;
+		while ( *p && *p != ' ' && *p != ',' )
+			p++;
+		if ( *p )
+			*p++ = '\0';
+		colon = strchr( name, ':' );
+		if ( colon )
+			*colon = '\0';
+		if ( !Q_stricmp( name, cmd ) )
+			return colon ? Q_max( 0, atoi( colon + 1 ) ) : 0;
+	}
+	return -1;
+}
+
+// the length the server will see of a part: a spoken language's label counted in
+static int CS_SaidLength( const char *cmd, const char *text, int n ) {
+	char part[MAX_STRING_CHARS];
+	const char *out;
+
+	Q_strncpyz( part, text, Q_min( (int)sizeof( part ), n + 1 ) );
+	if ( Q_stricmp( cmd, "say" ) )
+		return (int)strlen( part );
+	out = CL_Languages_OutgoingChat( va( "say \"%s\"", part ) );
+	if ( !Q_stricmpn( out, "say ", 4 ) ) {
+		int len = (int)strlen( out + 4 );
+
+		// still quoted: not changed
+		if ( out[4] == '"' )
+			len -= 2;
+		return len;
+	}
+	return (int)strlen( part );
+}
+
+// the last colour set in the text, 0 if none
+static char CS_LastColour( const char *text, int n ) {
+	char colour = 0;
+
+	for ( int i = 0; i + 1 < n; i++ ) {
+		if ( text[i] == Q_COLOR_ESCAPE && text[i + 1] != Q_COLOR_ESCAPE && text[i + 1] ) {
+			colour = text[i + 1];
+			i++;
+		}
+	}
+	return colour;
+}
+
+// the command forwarded to the server, when it's a chat too long: queued in parts. qtrue if it was
+qboolean CL_ChatSplit_Forward( void ) {
+	char text[MAX_STRING_CHARS], prefix[MAX_STRING_CHARS], before[64], after[64];
+	const char *cmd = Cmd_Argv( 0 );
+	const char *mark;
+	int keep, limit, len, at, parts = 0;
+	char colour = 0;
+
+	if ( !cl_chatSplit || !cl_chatSplit->integer )
+		return qfalse;
+	keep = CS_KeptWords( cmd );
+	if ( keep < 0 || Cmd_Argc() <= 1 + keep )
+		return qfalse;
+
+	Q_strncpyz( text, Cmd_ArgsFrom( 1 + keep ), sizeof( text ) );
+	len = (int)strlen( text );
+	limit = Com_Clampi( CS_MIN_PART * 2, MAX_STRING_CHARS - 64, cl_chatSplitLength->integer );
+
+	// the same chat behind parts still waiting goes after them, not before
+	if ( CS_SaidLength( cmd, text, len ) <= limit && !cs.count )
+		return qfalse;
+
+	// what goes before the text: the command and its kept words
+	Q_strncpyz( prefix, cmd, sizeof( prefix ) );
+	for ( int i = 1; i <= keep; i++ )
+		Q_strcat( prefix, sizeof( prefix ), va( " %s", Cmd_Argv( i ) ) );
+
+	mark = cl_chatSplitMark->string;
+	Com_sprintf( before, sizeof( before ), "%s ", mark );
+	Com_sprintf( after, sizeof( after ), " %s", mark );
+	if ( !mark[0] )
+		before[0] = after[0] = '\0';
+
+	for ( at = 0; at < len; ) {
+		char part[MAX_STRING_CHARS];
+		const char *rest = text + at;
+		const int restLen = len - at;
+		int n;
+
+		while ( *rest == ' ' && at < len ) {
+			rest++;
+			at++;
+		}
+		if ( at >= len )
+			break;
+
+		// all that's left, if it fits
+		Com_sprintf( part, sizeof( part ), "%s%s%s", parts ? before : "", colour ? va( "^%c", colour ) : "", rest );
+		if ( CS_SaidLength( cmd, part, (int)strlen( part ) ) <= limit ) {
+			CS_Queue( va( "%s \"%s\"", prefix, part ) );
+			break;
+		}
+
+		// the most that fits with the mark after it, cut at a space where it can be
+		{
+			char head[64];
+			int lo = 1, hi = restLen, best = 1, cut;
+
+			Com_sprintf( head, sizeof( head ), "%s%s", parts ? before : "", colour ? va( "^%c", colour ) : "" );
+			while ( lo <= hi ) {
+				const int mid = ( lo + hi ) / 2;
+
+				Com_sprintf( part, sizeof( part ), "%s%.*s%s", head, mid, rest, after );
+				if ( CS_SaidLength( cmd, part, (int)strlen( part ) ) <= limit ) {
+					best = mid;
+					lo = mid + 1;
+				} else {
+					hi = mid - 1;
+				}
+			}
+			n = best;
+			for ( cut = n; cut > n / 2; cut-- ) {
+				if ( rest[cut] == ' ' ) {
+					n = cut;
+					break;
+				}
+			}
+			// not between a ^ and its colour
+			if ( n > 1 && rest[n - 1] == Q_COLOR_ESCAPE )
+				n--;
+			while ( n > 1 && rest[n - 1] == ' ' )
+				n--;
+			Com_sprintf( part, sizeof( part ), "%s%.*s%s", head, n, rest, after );
+			CS_Queue( va( "%s \"%s\"", prefix, part ) );
+			{
+				const char c = CS_LastColour( rest, n );
+
+				if ( c )
+					colour = c;
+			}
+		}
+		at += n;
+		parts++;
+	}
+	CL_ChatSplit_Frame();
+	return qtrue;
+}

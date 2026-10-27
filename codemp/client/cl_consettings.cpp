@@ -26,6 +26,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 // in the consolebg folder, or any image or shader typed in.
 
 #include "client.h"
+#include "cl_widgets.h"
 
 #define CS_COMMAND		"consolesettings"
 #define CS_FOLDER		"consolebg"
@@ -208,6 +209,18 @@ static qboolean CS_Clicked( float x, float y, float w, float h ) {
 	return qtrue;
 }
 
+static void CS_FieldStyle( wgStyle_t *style ) {
+	style->font = cls.menuFont;
+	style->scale = CS_SCALE;
+	style->lineH = CS_ROW_H;
+	style->padX = 4.0f;
+	style->padY = 2.0f;
+	style->fill = csLit;
+	style->border = csBorder;
+	style->text = csWhite;
+	style->dim = csDim;
+}
+
 static qboolean CS_Button( float x, float y, float w, const char *label, qboolean lit ) {
 	CS_Box( x, y, w, CS_CTRL_H, lit ? csLit : CS_In( x, y, w, CS_CTRL_H ) ? csHover : csLight );
 	CS_Text( x + ( w - CS_TextWidth( label ) ) * 0.5f, y + 2, label, csWhite );
@@ -294,6 +307,7 @@ void CL_ConSettings_Draw( void ) {
 			{ "con_opacity", "1.0" }, { "con_scale", "1" }, { "con_height", "0.5" }, { "con_lineSpacing", "0" }, { "con_textShadow", "0" },
 			{ "con_bgDarken", "0" }, { "con_margin", "0" }, { "con_textColor", "" }, { "con_contrast", "0" }, { "con_colorblind", "0" },
 			{ "con_noFade", "0" }, { "con_font", "0" }, { "con_notifyScale", "0" }, { "con_notifytime", "3" }, { "con_timestamps", "0" },
+			{ "con_modernInput", "0" }, { "cl_chatSplit", "0" },
 		};
 
 		for ( size_t i = 0; i < ARRAY_LEN( defaults ); i++ )
@@ -343,6 +357,8 @@ void CL_ConSettings_Draw( void ) {
 	}
 	cs.scroll = Com_Clampi( 0, Q_max( 0, cs.numImages + 1 - CS_LIST_ROWS ), cs.scroll );
 	CS_Box( x, y, w, CS_LIST_ROWS * CS_ROW_H + 2, csLight );
+	const float lw = WG_Scrollbar( x + w - WG_SCROLL_W - 1, y + 1, CS_LIST_ROWS * CS_ROW_H, cs.numImages + 1, CS_LIST_ROWS, &cs.scroll,
+		cs.cursorX, cs.cursorY, &cs.click, cs.clickX, cs.clickY ) ? w - WG_SCROLL_W - 1 : w;
 	for ( int i = -1; i < cs.numImages; i++ ) {
 		const int r = i + 1 - cs.scroll;
 		const float ry = y + 1 + r * CS_ROW_H;
@@ -352,19 +368,25 @@ void CL_ConSettings_Draw( void ) {
 		if ( r < 0 || r >= CS_LIST_ROWS )
 			continue;
 		if ( on )
-			CS_Fill( x + 1, ry, w - 2, CS_ROW_H, csLit );
-		else if ( CS_In( x, ry, w, CS_ROW_H ) )
-			CS_Fill( x + 1, ry, w - 2, CS_ROW_H, csHover );
-		CS_TextClipped( x + 4, ry, w - 8, i < 0 ? "The standard picture" : COM_SkipPath( (char *)name ), csWhite );
-		if ( CS_Clicked( x, ry, w, CS_ROW_H ) )
+			CS_Fill( x + 1, ry, lw - 2, CS_ROW_H, csLit );
+		else if ( CS_In( x, ry, lw, CS_ROW_H ) )
+			CS_Fill( x + 1, ry, lw - 2, CS_ROW_H, csHover );
+		CS_TextClipped( x + 4, ry, lw - 8, i < 0 ? "The standard picture" : COM_SkipPath( (char *)name ), csWhite );
+		if ( CS_Clicked( x, ry, lw, CS_ROW_H ) )
 			CS_SetBackground( name );
 	}
 	y += CS_LIST_ROWS * CS_ROW_H + 2 + CS_GAP;
-	CS_Box( x, y, w - 44 - 64, CS_CTRL_H, cs.typing ? csLit : csLight );
-	CS_TextClipped( x + 4, y + 2, w - 116, cs.typed[0] || cs.typing ? va( "%s%s", cs.typed, cs.typing && ( ( cls.realtime >> 8 ) & 1 ) ? "_" : "" )
-		: S_COLOR_GREY "or type an image or a shader", csWhite );
-	if ( CS_Clicked( x, y, w - 44 - 64, CS_CTRL_H ) )
-		cs.typing = qtrue;
+	{
+		wgStyle_t style;
+
+		CS_FieldStyle( &style );
+		CS_Box( x, y, w - 44 - 64, CS_CTRL_H, cs.typing ? csLit : csLight );
+		WG_Field( &style, x, y, w - 44 - 64, CS_CTRL_H, cs.typed, cs.typing, "or type an image or a shader", cs.cursorX, cs.cursorY );
+		if ( CS_Clicked( x, y, w - 44 - 64, WG_FieldHeight( &style, w - 44 - 64, CS_CTRL_H, cs.typed, cs.typing ) ) ) {
+			cs.typing = qtrue;
+			WG_FieldClick( cs.typed, cs.clickX, cs.clickY );
+		}
+	}
 	if ( CS_Button( x + w - 104, y, 40, "Use", qfalse ) ) {
 		cs.typing = qfalse;
 		CS_SetBackground( cs.typed );
@@ -403,6 +425,18 @@ void CL_ConSettings_Draw( void ) {
 	CS_Step( con_notifytime, steps, 1.0f, 1.0f, 30.0f );
 	y += CS_CTRL_H + CS_GAP + 8;
 
+	// typing, in the console and the chat box
+	CS_Text( x2, y, "Typing", csWhite );
+	y += CS_ROW_H + 4;
+	steps = CS_Stepper( x2, y, w, "Console line", Cvar_VariableIntegerValue( "con_modernInput" ) ? "on more lines, selects" : "as it was" );
+	if ( steps )
+		Cvar_Set( "con_modernInput", Cvar_VariableIntegerValue( "con_modernInput" ) ? "0" : "1" );
+	y += CS_CTRL_H + CS_GAP;
+	steps = CS_Stepper( x2, y, w, "Long chat", Cvar_VariableIntegerValue( "cl_chatSplit" ) ? "sent in parts, --" : "cut by the server" );
+	if ( steps )
+		Cvar_Set( "cl_chatSplit", Cvar_VariableIntegerValue( "cl_chatSplit" ) ? "0" : "1" );
+	y += CS_CTRL_H + CS_GAP + 8;
+
 	CS_TextClipped( x2, y, w, S_COLOR_GREY "The console behind this window shows each change", csWhite );
 	y += CS_ROW_H + 4;
 	if ( cs.message[0] && cls.realtime - cs.messageTime < 5000 )
@@ -410,14 +444,21 @@ void CL_ConSettings_Draw( void ) {
 
 	cs.click = qfalse;
 	cs.wheel = 0;
+	WG_DrawOverlay();
 	re->SetColor( NULL );
 	re->DrawStretchPic( cs.cursorX, cs.cursorY, 24, 24, 0, 0, 1, 1, cls.cursorShader );
 }
 
-void CL_ConSettings_KeyEvent( int key, qboolean down ) {
-	int len;
+// a character the typed picture takes
+static qboolean CS_AllowChar( int ch ) {
+	return (qboolean)( ch >= ' ' && ch <= '~' && ch != '"' && ch != ';' );
+}
 
+void CL_ConSettings_KeyEvent( int key, qboolean down ) {
 	if ( !cs.open || !down )
+		return;
+	if ( cs.typing && key != A_MOUSE1 && key != A_MWHEELUP && key != A_MWHEELDOWN
+		&& WG_EditKey( cs.typed, sizeof( cs.typed ), key, CS_AllowChar ) )
 		return;
 	switch ( key ) {
 	case A_MOUSE1:
@@ -440,25 +481,15 @@ void CL_ConSettings_KeyEvent( int key, qboolean down ) {
 			CS_SetBackground( cs.typed );
 		}
 		return;
-	case A_BACKSPACE:
-		len = strlen( cs.typed );
-		if ( cs.typing && len )
-			cs.typed[len - 1] = '\0';
-		return;
 	default:
 		return;
 	}
 }
 
 void CL_ConSettings_CharEvent( int ch ) {
-	const int len = strlen( cs.typed );
-
-	if ( !cs.open || !cs.typing || ch < ' ' || ch > '~' || ch == '"' || ch == ';' )
+	if ( !cs.open || !cs.typing )
 		return;
-	if ( len < (int)sizeof( cs.typed ) - 1 ) {
-		cs.typed[len] = (char)ch;
-		cs.typed[len + 1] = '\0';
-	}
+	WG_EditChar( cs.typed, sizeof( cs.typed ), ch, CS_AllowChar );
 }
 
 void CL_ConSettings_MouseEvent( int dx, int dy ) {

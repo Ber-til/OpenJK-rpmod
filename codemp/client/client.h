@@ -977,6 +977,14 @@ void CL_Languages_CharEvent( int ch );
 void CL_Languages_MouseEvent( int dx, int dy );
 void CL_Languages_Escape( void );
 const char *CL_Languages_OutgoingChat( const char *cmd );
+
+//
+// cl_chatsplit.cpp
+//
+void CL_ChatSplit_Init( void );
+int Con_ModernInput( void );	// cl_console.cpp: con_modernInput
+void CL_ChatSplit_Frame( void );
+qboolean CL_ChatSplit_Forward( void );
 void CL_Languages_ServerCommand( void );
 const char *CL_Languages_Filter( const char *text );
 

@@ -441,6 +441,27 @@ void Field_VariableSizeDraw( field_t *edit, int x, int y, int size, qboolean sho
 	Com_Memcpy( str, edit->buffer + prestep, drawLen );
 	str[ drawLen ] = 0;
 
+	// the selection, under the letters
+	{
+		int a, b;
+
+		if ( Field_Selection( edit, &a, &b ) ) {
+			const vec4_t sel = { 0.25f, 0.45f, 0.9f, 0.55f };
+
+			a = Q_max( a, prestep ) - prestep;
+			b = Q_min( b, prestep + drawLen ) - prestep;
+			if ( b > a ) {
+				if ( size == con.charWidth ) {
+					re->SetColor( sel );
+					re->DrawStretchPic( ( x + a * size ) * con.xadjust, y * con.yadjust, ( b - a ) * size * con.xadjust, con.charHeight * con.yadjust, 0, 0, 0, 0, cls.whiteShader );
+					re->SetColor( NULL );
+				} else {
+					SCR_FillRect( x + a * size * cls.widthRatioCoef, (float)y, ( b - a ) * size * cls.widthRatioCoef, (float)BIGCHAR_HEIGHT, sel );
+				}
+			}
+		}
+	}
+
 	// draw it
 	if ( size == con.charWidth ) {
 		float	color[4];
@@ -488,6 +509,108 @@ void Field_BigDraw( field_t *edit, int x, int y, qboolean showCursor, qboolean n
 
 /*
 ================
+FIELD SELECTION
+
+One field at a time has a selection, from its anchor to its cursor: Shift with the arrows, Home
+and End, Ctrl+A, or the mouse in the console. Typing over it replaces it, Backspace and Delete
+remove it, Ctrl+C and Ctrl+X copy and cut it.
+================
+*/
+
+static field_t	*fieldSelOf;
+static int		fieldSelAnchor;
+
+// con_modernInput: the selection, Ctrl with the arrows, Ctrl+A/X; off, the fields are as they were
+static qboolean Field_Modern( void ) {
+	return (qboolean)( Con_ModernInput() != 0 );
+}
+
+// the selection in the field, a to b; qfalse if none
+qboolean Field_Selection( const field_t *edit, int *a, int *b ) {
+	const int len = (int)strlen( edit->buffer );
+
+	if ( !Field_Modern() || fieldSelOf != edit || fieldSelAnchor == edit->cursor || fieldSelAnchor > len || edit->cursor > len ) {
+		*a = *b = edit->cursor;
+		return qfalse;
+	}
+	*a = Q_min( fieldSelAnchor, edit->cursor );
+	*b = Q_max( fieldSelAnchor, edit->cursor );
+	return qtrue;
+}
+
+// from anchor to the cursor; an anchor < 0 lets it go
+void Field_Select( field_t *edit, int anchor ) {
+	fieldSelOf = anchor >= 0 && Field_Modern() ? edit : NULL;
+	fieldSelAnchor = anchor;
+}
+
+void Field_ClearSelection( void ) {
+	fieldSelOf = NULL;
+}
+
+// the anchor: where the selection began, else the cursor
+static int Field_Anchor( const field_t *edit ) {
+	int a, b;
+
+	if ( !Field_Selection( edit, &a, &b ) )
+		return edit->cursor;
+	return fieldSelAnchor;
+}
+
+static void Field_DeleteRange( field_t *edit, int a, int b ) {
+	memmove( edit->buffer + a, edit->buffer + b, strlen( edit->buffer + b ) + 1 );
+	edit->cursor = a;
+	if ( edit->scroll > a )
+		edit->scroll = a;
+	Field_ClearSelection();
+}
+
+// the selection removed; qtrue if there was one
+static qboolean Field_DeleteSelection( field_t *edit ) {
+	int a, b;
+
+	if ( !Field_Selection( edit, &a, &b ) )
+		return qfalse;
+	Field_DeleteRange( edit, a, b );
+	return qtrue;
+}
+
+static void Field_CopySelection( const field_t *edit ) {
+	char text[MAX_EDIT_LINE];
+	int a, b;
+
+	if ( !Field_Selection( edit, &a, &b ) )
+		return;
+	Q_strncpyz( text, edit->buffer + a, Q_min( (int)sizeof( text ), b - a + 1 ) );
+	Sys_SetClipboardData( text );
+}
+
+static int Field_WordLeft( const field_t *edit, int at ) {
+	while ( at > 0 && edit->buffer[at - 1] == ' ' )
+		at--;
+	while ( at > 0 && edit->buffer[at - 1] != ' ' )
+		at--;
+	return at;
+}
+
+static int Field_WordRight( const field_t *edit, int at ) {
+	while ( edit->buffer[at] && edit->buffer[at] != ' ' )
+		at++;
+	while ( edit->buffer[at] == ' ' )
+		at++;
+	return at;
+}
+
+static qboolean Field_Ctrl( void ) {
+	return (qboolean)( Field_Modern() && ( kg.keys[A_CTRL].down || kg.keys[A_CTRL2].down ) );
+}
+
+static qboolean Field_Shift( void ) {
+	return (qboolean)( kg.keys[A_SHIFT].down || kg.keys[A_SHIFT2].down );
+}
+
+/*
+================
 Field_Paste
 ================
 */
@@ -499,12 +622,17 @@ void Field_Paste( field_t *edit ) {
 	if ( !cbd ) {
 		return;
 	}
+	Field_DeleteSelection( edit );
 
-	// send as if typed, so insert / overstrike works properly
+	// send as if typed, so insert / overstrike works properly; a line break is a space
 	while( *c )
 	{
 		uint32_t utf32 = ConvertUTF8ToUTF32( c, &c );
-		Field_CharEvent( edit, ConvertUTF32ToExpectedCharset( utf32 ) );
+		int ch = ConvertUTF32ToExpectedCharset( utf32 );
+
+		if ( ch == '\n' || ch == '\r' || ch == '\t' )
+			ch = ' ';
+		Field_CharEvent( edit, ch );
 	}
 
 	Z_Free( cbd );
@@ -518,46 +646,66 @@ Performs the basic line editing functions for the console,
 in-game talk, and menu fields
 
 Key events are used for non-printable characters, others are gotten from char events.
+Ctrl with the arrows goes a word, Shift selects.
 =================
 */
 void Field_KeyDownEvent( field_t *edit, int key ) {
-	int		len;
+	const qboolean ctrl = Field_Ctrl(), shift = Field_Shift(), shiftSelects = (qboolean)( shift && Field_Modern() );
+	const int anchor = Field_Anchor( edit );
+	int		len, a, b;
+	qboolean moved = qfalse, hadSel;
 
-	// shift-insert is paste
-	if ( ( ( key == A_INSERT ) || ( key == A_KP_0 ) ) && kg.keys[A_SHIFT].down ) {
+	// shift-insert is paste, ctrl-insert copies
+	if ( ( ( key == A_INSERT ) || ( key == A_KP_0 ) ) && shift ) {
 		Field_Paste( edit );
+		return;
+	}
+	if ( key == A_INSERT && ctrl ) {
+		Field_CopySelection( edit );
 		return;
 	}
 
 	key = tolower( key );
 	len = strlen( edit->buffer );
+	hadSel = Field_Selection( edit, &a, &b );
 
 	switch ( key ) {
 		case A_DELETE:
-			if ( edit->cursor < len ) {
-				memmove( edit->buffer + edit->cursor,
-					edit->buffer + edit->cursor + 1, len - edit->cursor );
+			if ( hadSel ) {
+				Field_DeleteRange( edit, a, b );
+			} else if ( edit->cursor < len ) {
+				Field_DeleteRange( edit, edit->cursor, ctrl ? Field_WordRight( edit, edit->cursor ) : edit->cursor + 1 );
 			}
 			break;
 
 		case A_CURSOR_RIGHT:
-			if ( edit->cursor < len ) {
+			if ( hadSel && !shiftSelects )
+				edit->cursor = b;
+			else if ( ctrl )
+				edit->cursor = Field_WordRight( edit, edit->cursor );
+			else if ( edit->cursor < len )
 				edit->cursor++;
-			}
+			moved = qtrue;
 			break;
 
 		case A_CURSOR_LEFT:
-			if ( edit->cursor > 0 ) {
+			if ( hadSel && !shiftSelects )
+				edit->cursor = a;
+			else if ( ctrl )
+				edit->cursor = Field_WordLeft( edit, edit->cursor );
+			else if ( edit->cursor > 0 )
 				edit->cursor--;
-			}
+			moved = qtrue;
 			break;
 
 		case A_HOME:
 			edit->cursor = 0;
+			moved = qtrue;
 			break;
 
 		case A_END:
 			edit->cursor = len;
+			moved = qtrue;
 			break;
 
 		case A_INSERT:
@@ -567,6 +715,13 @@ void Field_KeyDownEvent( field_t *edit, int key ) {
 		default:
 			break;
  	}
+
+	if ( moved ) {
+		if ( shiftSelects )
+			Field_Select( edit, anchor );
+		else
+			Field_ClearSelection();
+	}
 
 	// Change scroll if cursor is no longer visible
 	if ( edit->cursor < edit->scroll ) {
@@ -589,35 +744,49 @@ void Field_CharEvent( field_t *edit, int ch ) {
 		return;
 	}
 
-	if ( ch == 'c' - 'a' + 1 ) {	// ctrl-c clears the field
+	if ( ch == 'c' - 'a' + 1 ) {	// ctrl-c copies the selection, or clears the field
+		int a, b;
+
+		if ( Field_Selection( edit, &a, &b ) ) {
+			Field_CopySelection( edit );
+			return;
+		}
 		Field_Clear( edit );
+		Field_ClearSelection();
+		return;
+	}
+
+	if ( ch == 'x' - 'a' + 1 && Field_Modern() ) {	// ctrl-x cuts the selection
+		Field_CopySelection( edit );
+		Field_DeleteSelection( edit );
 		return;
 	}
 
 	len = strlen( edit->buffer );
 
-	if ( ch == 'h' - 'a' + 1 )	{	// ctrl-h is backspace
-		if ( edit->cursor > 0 ) {
-			memmove( edit->buffer + edit->cursor - 1,
-				edit->buffer + edit->cursor, len + 1 - edit->cursor );
-			edit->cursor--;
-			if ( edit->cursor < edit->scroll )
-			{
-				edit->scroll--;
-			}
-		}
+	if ( ch == 'h' - 'a' + 1 )	{	// ctrl-h is backspace; with ctrl held, a word
+		if ( Field_DeleteSelection( edit ) )
+			return;
+		if ( edit->cursor > 0 )
+			Field_DeleteRange( edit, Field_Ctrl() ? Field_WordLeft( edit, edit->cursor ) : edit->cursor - 1, edit->cursor );
 		return;
 	}
 
-	if ( ch == 'a' - 'a' + 1 ) {	// ctrl-a is home
-		edit->cursor = 0;
-		edit->scroll = 0;
+	if ( ch == 'a' - 'a' + 1 ) {	// ctrl-a selects it all; as it was, it's home
+		if ( Field_Modern() ) {
+			edit->cursor = len;
+			Field_Select( edit, 0 );
+		} else {
+			edit->cursor = 0;
+			edit->scroll = 0;
+		}
 		return;
 	}
 
 	if ( ch == 'e' - 'a' + 1 ) {	// ctrl-e is end
 		edit->cursor = len;
 		edit->scroll = edit->cursor - edit->widthInChars;
+		Field_ClearSelection();
 		return;
 	}
 
@@ -627,6 +796,10 @@ void Field_CharEvent( field_t *edit, int ch ) {
 	if ( ch < 32 ) {
 		return;
 	}
+
+	// typed over the selection
+	if ( Field_DeleteSelection( edit ) )
+		len = strlen( edit->buffer );
 
 	if ( kg.key_overstrikeMode ) {
 		// - 2 to leave room for the leading slash and trailing \0
@@ -718,6 +891,7 @@ void Console_Key( int key ) {
 		}
 
 		// copy line to history buffer
+		Field_ClearSelection();
 		historyEditLines[nextHistoryLine % COMMAND_HISTORY] = g_consoleField;
 		nextHistoryLine++;
 		historyLine = nextHistoryLine;
@@ -736,6 +910,7 @@ void Console_Key( int key ) {
 
 	// tab completion
 	if ( key == A_TAB ) {
+		Field_ClearSelection();
 		Field_AutoComplete( &g_consoleField );
 		return;
 	}
@@ -748,6 +923,7 @@ void Console_Key( int key ) {
 		if ( nextHistoryLine - historyLine < COMMAND_HISTORY && historyLine > 0 )
 			historyLine--;
 		g_consoleField = historyEditLines[historyLine % COMMAND_HISTORY];
+		Field_ClearSelection();
 
 		return;
 	}
@@ -764,6 +940,7 @@ void Console_Key( int key ) {
 			return;
 		}
 		g_consoleField = historyEditLines[historyLine % COMMAND_HISTORY];
+		Field_ClearSelection();
 		return;
 	}
 
