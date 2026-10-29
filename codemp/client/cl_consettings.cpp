@@ -285,8 +285,8 @@ static void CS_Cycle( cvar_t *cv, int steps, int count ) {
 		Cvar_SetValue( cv->name, (float)( ( ( cv->integer + steps ) % count + count ) % count ) );
 }
 
-// a chat's capitals: none, the first letter, the emotes', both
-static const char *csCapitals[] = { "as typed", "the first letter", "each emote's", "first letter and emotes" };
+// a chat's capitals: none, each sentence's first letter, the emotes', both
+static const char *csCapitals[] = { "as typed", "each sentence", "each emote's", "sentences and emotes" };
 
 // the right side's second page: typing, in the console and the chat box, and the console's key
 static void CS_DrawTyping( float x, float y, float w ) {
@@ -314,7 +314,7 @@ static void CS_DrawTyping( float x, float y, float w ) {
 		Cvar_Set( "cl_chatCapitalEmotes", ( n & 2 ) ? "1" : "0" );
 	}
 	y += CS_CTRL_H + 2;
-	CS_TextClipped( x + lw, y, w - lw, S_COLOR_GREY "hello ::waves:: -> Hello ::Waves::", csWhite );
+	CS_TextClipped( x + lw, y, w - lw, S_COLOR_GREY "hi. ok ::waves:: -> Hi. Ok ::Waves::", csWhite );
 	y += CS_ROW_H;
 	CS_TextClipped( x + lw, y, w - lw, S_COLOR_GREY "in say, say_team and /me", csWhite );
 	y += CS_ROW_H + CS_GAP + 8;

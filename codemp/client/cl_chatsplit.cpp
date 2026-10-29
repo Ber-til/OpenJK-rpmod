@@ -31,7 +31,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 //
 // And a chat starting with a small letter given a capital, the console's and the chat box's:
 //
-//	cl_chatCapital			1 the first letter said (after any emotes it starts with), 0 as typed
+//	cl_chatCapital			1 the first letter said (after any emotes it starts with) and each sentence's, 0 as typed
 //	cl_chatCapitalEmotes	1 each :: emote ::'s first letter, 0 as typed
 //	cl_chatCapitalCommands	the chat commands given them, name:n as above
 
@@ -62,7 +62,7 @@ void CL_ChatSplit_Init( void ) {
 	cl_chatSplitDelay = Cvar_Get( "cl_chatSplitDelay", "1100", CVAR_ARCHIVE_ND, "Milliseconds between the parts of a long chat (the server ignores faster)" );
 	cl_chatSplitCommands = Cvar_Get( "cl_chatSplitCommands", "say say_team tell:1 me", CVAR_ARCHIVE_ND,
 		"The chat commands split when too long; name:n keeps n words before the text" );
-	cl_chatCapital = Cvar_Get( "cl_chatCapital", "0", CVAR_ARCHIVE_ND, "Chat starting with a small letter starts with a capital" );
+	cl_chatCapital = Cvar_Get( "cl_chatCapital", "0", CVAR_ARCHIVE_ND, "Chat and each sentence in it starting with a small letter start with a capital" );
 	cl_chatCapitalEmotes = Cvar_Get( "cl_chatCapitalEmotes", "0", CVAR_ARCHIVE_ND, "A :: emote :: in chat starts with a capital" );
 	cl_chatCapitalCommands = Cvar_Get( "cl_chatCapitalCommands", "say say_team me", CVAR_ARCHIVE_ND,
 		"The chat commands given capitals; name:n keeps n words before the text" );
@@ -141,8 +141,32 @@ static void CC_Upper( char *p ) {
 		*p = (char)( *p - 'a' + 'A' );
 }
 
+// each sentence's first letter from p on: after a . ! or ? and a space. Not after "..." (a pause,
+// the sentence going on), nor in 3.5 or www.site.com, with no space after the stop
+static void CC_Sentences( char *p ) {
+	while ( *p ) {
+		int dots = 0;
+		qboolean stop = qfalse;
+
+		if ( *p != '.' && *p != '!' && *p != '?' ) {
+			p++;
+			continue;
+		}
+		for ( ; *p == '.' || *p == '!' || *p == '?'; p++ ) {
+			if ( *p == '.' )
+				dots++;
+			else
+				stop = qtrue;
+		}
+		if ( dots == 1 )
+			stop = qtrue;
+		if ( stop && *p == ' ' )
+			CC_Upper( CC_Visible( p ) );
+	}
+}
+
 // a chat's text given its capitals, as cmd's: the first letter said, after any emotes it starts
-// with, and each emote's first letter
+// with, each sentence's, and each emote's first letter
 void CL_ChatCaps_Text( const char *cmd, char *text ) {
 	qboolean first, emotes;
 	char *p;
@@ -164,8 +188,10 @@ void CL_ChatCaps_Text( const char *cmd, char *text ) {
 			return;
 		p = CC_Visible( end + 2 );
 	}
-	if ( first )
+	if ( first ) {
 		CC_Upper( p );
+		CC_Sentences( p );
+	}
 
 	// the emotes after it
 	if ( !emotes )
