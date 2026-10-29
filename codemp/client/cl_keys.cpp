@@ -462,8 +462,38 @@ void Field_VariableSizeDraw( field_t *edit, int x, int y, int size, qboolean sho
 		}
 	}
 
-	// draw it
-	if ( size == con.charWidth ) {
+	// draw it: the codes shown, in the colour they give (RPMod's too), from the one the text
+	// scrolled out of view leaves off in
+	if ( noColorEscape ) {
+		const vec4_t white = { 1.0f, 1.0f, 1.0f, 1.0f }, shadow = { 0.0f, 0.0f, 0.0f, 1.0f };
+		const float *color = white;
+		const qboolean small = (qboolean)( size == con.charWidth );
+		const float step = small ? (float)size : size * cls.widthRatioCoef;
+
+		for ( i = 0; i < prestep; i++ ) {
+			const float *c = Con_TypedColor( edit->buffer + i );
+
+			if ( c )
+				color = c;
+		}
+		if ( !small ) {
+			re->SetColor( shadow );
+			for ( i = 0; str[i]; i++ )
+				SCR_DrawChar( (int)( x + i * step ) + 2, y + 2, (float)size, str[i] );
+		}
+		for ( i = 0; str[i]; i++ ) {
+			const float *c = Con_TypedColor( edit->buffer + prestep + i );
+
+			if ( c )
+				color = c;
+			re->SetColor( color );
+			if ( small )
+				SCR_DrawSmallChar( (int)( x + i * step ), y, str[i] );
+			else
+				SCR_DrawChar( (int)( x + i * step ), y, (float)size, str[i] );
+		}
+		re->SetColor( NULL );
+	} else if ( size == con.charWidth ) {
 		float	color[4];
 
 		color[0] = color[1] = color[2] = color[3] = 1.0;
@@ -1378,7 +1408,7 @@ void CL_InitKeyCommands( void ) {
 	Cmd_SetCommandCompletionFunc( "unbind", Key_CompleteUnbind );
 	Cmd_AddCommand( "unbindall", Key_Unbindall_f, "Delete all key bindings" );
 	Cmd_AddCommand( "bindlist", Key_Bindlist_f, "Show all bindings in the console" );
-	Cmd_AddCommand( "consolekey", Key_ConsoleKey_f, "The key that opens the console: consolekey <key> | none" );
+	Cmd_AddCommand( "con_keybind", Key_ConsoleKey_f, "The key that opens the console: con_keybind <key> | none" );
 }
 
 // a key that types a letter
@@ -1438,7 +1468,7 @@ static void Key_ConsoleKey_f( void ) {
 	if ( Cmd_Argc() < 2 ) {
 		Com_Printf( "Console key: %s%s\n", now >= 0 ? Key_KeynumToString( now ) : "none of its own",
 			cl_consoleTildeKey->integer ? ", and the key under Esc" : "" );
-		Com_Printf( "  consolekey <key> | none; cl_consoleTildeKey 0 makes the key under Esc a key as others. Shift+Esc always opens it\n" );
+		Com_Printf( "  con_keybind <key> | none; cl_consoleTildeKey 0 makes the key under Esc a key as others. Shift+Esc always opens it\n" );
 		return;
 	}
 	if ( !Q_stricmp( Cmd_Argv( 1 ), "none" ) ) {

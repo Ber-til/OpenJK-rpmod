@@ -2992,7 +2992,7 @@ void CL_Init( void ) {
 	// ~ and `, as keys and characters
 	cl_consoleKeys = Cvar_Get( "cl_consoleKeys", "~ ` 0x7e 0x60 0xb2", CVAR_ARCHIVE, "Which keys are used to toggle the console");
 	cl_consoleUseScanCode = Cvar_Get( "cl_consoleUseScanCode", "1", CVAR_ARCHIVE, "Use native console key detection" );
-	cl_consoleTildeKey = Cvar_Get( "cl_consoleTildeKey", "1", CVAR_ARCHIVE_ND, "The key under Esc opens the console; 0 it's a key as others, the console opened by the one consolekey sets" );
+	cl_consoleTildeKey = Cvar_Get( "cl_consoleTildeKey", "1", CVAR_ARCHIVE_ND, "The key under Esc opens the console; 0 it's a key as others, the console opened by the one con_keybind sets" );
 	cl_consoleShiftRequirement = Cvar_Get( "cl_consoleShiftRequirement", "0", CVAR_ARCHIVE, "Require shift key to be pressed for native console key detection" );
 
 	cl_filterGames = Cvar_Get( "cl_filterGames", "MBII MBIIOpenBeta", CVAR_ARCHIVE_ND, "List of fs_game to filter (space separated)" );

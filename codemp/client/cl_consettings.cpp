@@ -339,7 +339,7 @@ static void CS_DrawTyping( float x, float y, float w ) {
 			Cvar_Set( "cl_consoleTildeKey", tilde ? "0" : "1" );
 	}
 	y += CS_CTRL_H + 2;
-	CS_TextClipped( x + lw, y, w - lw, S_COLOR_GREY "Shift+Esc always opens it. /consolekey <key> too", csWhite );
+	CS_TextClipped( x + lw, y, w - lw, S_COLOR_GREY "Shift+Esc always opens it. /con_keybind <key> too", csWhite );
 }
 
 // drawn over the console, so what changes shows

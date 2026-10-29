@@ -112,6 +112,16 @@ static const float *Con_Color( int index, qboolean rpmod ) {
 	return g_color_table[index];
 }
 
+// the colour a code at p in typed text gives what follows, NULL when p isn't one: on RPMod its
+// colours too (^a-^z, ^A-^Z and its ^8 ^9), as the console shows them
+const float *Con_TypedColor( const char *p ) {
+	const qboolean rpmod = Con_RPModColors();
+
+	if ( !Con_IsColorString( p, rpmod ) )
+		return NULL;
+	return Con_Color( p[1] - '0', rpmod );
+}
+
 // the asian path hands its line to the renderer's font code, which only knows ^0-^9
 static char Con_ColorCode( int index ) {
 	if ( index >= CON_NUM_COLORS )
@@ -1855,6 +1865,15 @@ void Con_DrawInput (void) {
 	ci.shown = shown;
 	sel = Field_Selection( &g_consoleField, &a, &b );
 
+	// the colour the rows above the first shown leave off in
+	const float *color = white;
+
+	for ( int i = 0; i < r.start[ci.first]; i++ ) {
+		const float *c = Con_TypedColor( buf + i );
+
+		if ( c )
+			color = c;
+	}
 	for ( int k = 0; k < shown; k++ ) {
 		const int n = ci.first + k, from = r.start[n], to = r.start[n + 1];
 		const int ry = ci.topY + k * con.charHeight;
@@ -1863,9 +1882,15 @@ void Con_DrawInput (void) {
 			const int sa = Q_max( a, from ), sb = Q_min( b, to );
 			Con_Fill( (float)( x0 + ( sa - from ) * cw ), (float)ry, (float)( ( sb - sa ) * cw ), (float)con.charHeight, conSelColor );
 		}
-		re->SetColor( white );
-		for ( int i = from; i < to; i++ )
+		// the codes shown, in the colour they give
+		for ( int i = from; i < to; i++ ) {
+			const float *c = Con_TypedColor( buf + i );
+
+			if ( c )
+				color = c;
+			re->SetColor( color );
 			SCR_DrawSmallChar( x0 + ( i - from ) * cw, ry, buf[i] );
+		}
 	}
 
 	re->SetColor( con.color );
