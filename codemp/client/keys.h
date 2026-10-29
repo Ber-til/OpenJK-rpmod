@@ -70,6 +70,8 @@ void	Field_Select		( field_t *edit, int anchor );
 void	Field_ClearSelection( void );
 
 void		Key_SetBinding			( int keynum, const char *binding );
+int			Key_ConsoleKey			( void );
+void		Key_SetConsoleKey		( int keynum );
 char *		Key_GetBinding			( int keynum );
 qboolean	Key_IsDown				( int keynum );
 int			Key_StringToKeynum		( char *str );

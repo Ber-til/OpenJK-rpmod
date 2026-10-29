@@ -86,7 +86,7 @@ void SCR_DrawPic( float x, float y, float width, float height, qhandle_t hShader
 ** SCR_DrawChar
 ** chars are drawn at 640*480 virtual screen size
 */
-static void SCR_DrawChar( int x, int y, float size, int ch ) {
+void SCR_DrawChar( int x, int y, float size, int ch ) {
 	int row, col;
 	float frow, fcol;
 	float	ax, ay, aw, ah;

@@ -605,15 +605,21 @@ static void SM_MyOrigin( vec3_t out ) {
 // the player whose own what is at org, or bolted to entity entNum, is: the player entity, else
 // the player it started within reach of and nearer than any other player or NPC; -1 for none
 int CL_ShaderManager_Owner( const vec3_t org, int entNum ) {
-	vec3_t me;
-	float best = SM_MINE_REACH, dist;
-	int owner = -1;
-
 	if ( sm.mapped.empty() || !cl.snap.valid )
 		return -1;
 	if ( entNum >= 0 && entNum < ENTITYNUM_WORLD )
 		return entNum < MAX_CLIENTS ? entNum : -1;
-	if ( !org )
+	return CL_ShaderManager_NearestPlayer( org );
+}
+
+// the player what's at org is nearest, within reach and nearer than any other player or NPC;
+// -1 for none
+int CL_ShaderManager_NearestPlayer( const vec3_t org ) {
+	vec3_t me;
+	float best = SM_MINE_REACH, dist;
+	int owner = -1;
+
+	if ( !org || !cl.snap.valid )
 		return -1;
 	// the player the view is of: this one where cgame predicts them, or the one followed
 	if ( cl.snap.ps.pm_type != PM_SPECTATOR ) {
@@ -674,8 +680,7 @@ qhandle_t CL_ShaderManager_MineFor( qhandle_t shader, const vec3_t org, int entN
 const refEntity_t *CL_ShaderManager_MineEntity( const refEntity_t *ent, refEntity_t *copy ) {
 	qhandle_t shader;
 
-	if ( sm.mapped.empty() )
-		return ent;
+	// where this player is, for the saber light too
 	if ( ent->reType == RT_MODEL && ent->ghoul2 && cl.snap.valid && cl.snap.ps.clientNum == clc.clientNum ) {
 		vec3_t me;
 
@@ -685,6 +690,8 @@ const refEntity_t *CL_ShaderManager_MineEntity( const refEntity_t *ent, refEntit
 			sm.myOrgFrame = cls.framecount;
 		}
 	}
+	if ( sm.mapped.empty() )
+		return ent;
 	shader = CL_ShaderManager_MineFor( ent->customShader, ent->origin, -1 );
 	if ( shader == ent->customShader )
 		return ent;

@@ -446,6 +446,7 @@ extern	cvar_t	*cl_inGameVideo;
 
 extern	cvar_t	*cl_consoleKeys;
 extern	cvar_t	*cl_consoleUseScanCode;
+extern	cvar_t	*cl_consoleTildeKey;
 extern	cvar_t	*cl_consoleShiftRequirement;
 
 extern  cvar_t  *cl_lanForcePackets;
@@ -587,6 +588,8 @@ void	SCR_DrawNamedPic( float x, float y, float width, float height, const char *
 void	SCR_DrawBigString( int x, int y, const char *s, float alpha, qboolean noColorEscape );			// draws a string with embedded color control characters with fade
 void	SCR_DrawBigStringColor( int x, int y, const char *s, vec4_t color, qboolean noColorEscape );	// ignores embedded color control characters
 void	SCR_DrawSmallStringExt( int x, int y, const char *string, float *setColor, qboolean forceColor, qboolean noColorEscape );
+const float *Con_TypedColor( const char *p );
+void	SCR_DrawChar( int x, int y, float size, int ch );
 void	SCR_DrawSmallChar( int x, int y, int ch );
 
 
@@ -835,6 +838,8 @@ void CL_EffectManager_Draw( void );
 float CL_EffectManager_FxScale( const char *effect, const vec3_t org );
 void CL_EffectManager_OpenForCinematic( void );
 qboolean CL_Cinematic_CaptureEffect( const char *cmd, float scale );
+qboolean CL_Cinematic_CaptureSound( const char *cmd );
+void CL_SoundManager_OpenForCinematic( void );
 qboolean CL_Cinematic_PickingEffect( void );
 void CL_EffectManager_ScaleHook( char **argv, int argc, const char *message );
 
@@ -985,6 +990,20 @@ void CL_ChatSplit_Init( void );
 int Con_ModernInput( void );	// cl_console.cpp: con_modernInput
 void CL_ChatSplit_Frame( void );
 qboolean CL_ChatSplit_Forward( void );
+void CL_ChatCaps_Text( const char *cmd, char *text );
+qboolean CL_ChatCaps_Forward( char *out, int size );
+
+//
+// cl_saberlight.cpp
+//
+void CL_SaberLight_Init( void );
+void CL_SaberLight_Shutdown( void );
+void CL_SaberLight_RendererRestarted( void );
+void CL_SaberLight_Entity( const refEntity_t *ent );
+qboolean CL_SaberLight_GameLight( const vec3_t org, float radius, float r, float g, float b );
+void CL_SaberLight_ClearScene( void );
+void CL_SaberLight_RenderScene( void );
+int CL_ShaderManager_NearestPlayer( const vec3_t org );	// cl_shadermanager.cpp
 void CL_Languages_ServerCommand( void );
 const char *CL_Languages_Filter( const char *text );
 

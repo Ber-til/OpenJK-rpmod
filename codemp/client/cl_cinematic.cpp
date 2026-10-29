@@ -89,6 +89,8 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define CM_MAX_FX			24			// effects in a cinematic
 #define CM_FX_MS			4000		// a new looping one plays this long
 #define CM_FX_ONCE_MS		600			// how long a one-off shows on the timeline
+#define CM_MAX_SND			24			// sounds in a cinematic
+#define CM_SND_MS			4000		// a new looping one plays this long
 
 typedef enum {
 	CM_CLIP_MOVE,
@@ -179,6 +181,16 @@ typedef struct {
 	float		scale;				// how big, 1 as made
 } cmFx_t;
 
+// a sound played at its moment: once, or again and again while it lasts; heard everywhere,
+// or from a spot
+typedef struct {
+	int			start;				// ms into the cinematic
+	int			ms;					// how long it goes on, 0 once
+	char		path[MAX_QPATH];	// under sound/, as the sound manager has it
+	qboolean	spot;				// heard from org, else everywhere alike
+	vec3_t		org;
+} cmSnd_t;
+
 typedef struct {
 	qboolean	bars, hud;
 	int			numShots;
@@ -190,6 +202,8 @@ typedef struct {
 	cmRec_t		recs[CM_MAX_RECS];
 	int			numFx;
 	cmFx_t		fx[CM_MAX_FX];
+	int			numSnd;
+	cmSnd_t		snd[CM_MAX_SND];
 } cmCine_t;
 
 // a move as it goes: each of them from where they are then through the spots, a group
@@ -753,6 +767,13 @@ static int CM_ToText( const cmCine_t *c, char *out, int size ) {
 			RC_Round( f->org[0] ), RC_Round( f->org[1] ), RC_Round( f->org[2] ), f->haveAngles ? 1 : 0,
 			RC_Round( AngleNormalize180( f->ang[PITCH] ) ), RC_Round( AngleNormalize360( f->ang[YAW] ) ), RC_Round( AngleNormalize180( f->ang[ROLL] ) ), f->path ) );
 	}
+	// snd <start> <seconds, 0 once> <spot 0|1> <x y z> <sound>
+	for ( int i = 0; i < c->numSnd; i++ ) {
+		const cmSnd_t *s = &c->snd[i];
+
+		CM_ADD( va( "snd %g %g %i %i %i %i %s\n", RC_Seconds( s->start ), RC_Seconds( s->ms ), s->spot ? 1 : 0,
+			RC_Round( s->org[0] ), RC_Round( s->org[1] ), RC_Round( s->org[2] ), s->path ) );
+	}
 	for ( int i = 0; i < c->numShots; i++ ) {
 		RC_WriteShot( &c->shots[i], hook, sizeof( hook ) );
 		Com_sprintf( line, sizeof( line ), "shot %g %s\n", c->shots[i].numKeys == 1 && !c->shots[i].orbit ? RC_Seconds( c->shots[i].ms ) : 0.0f, hook );
@@ -883,6 +904,19 @@ static void CM_Parse( char *text, cmCine_t *c ) {
 			f->haveAngles = (qboolean)( have != 0 );
 			Q_strncpyz( f->path, line + 3 + n, sizeof( f->path ) );
 			c->numFx++;
+		} else if ( !Q_stricmpn( line, "snd ", 4 ) && c->numSnd < CM_MAX_SND ) {
+			cmSnd_t *s = &c->snd[c->numSnd];
+			float start, secs;
+			int spot = 0, n = 0;
+
+			memset( s, 0, sizeof( *s ) );
+			if ( sscanf( line + 4, "%f %f %i %f %f %f %n", &start, &secs, &spot, &s->org[0], &s->org[1], &s->org[2], &n ) < 6 || n <= 0 || !line[4 + n] )
+				continue;
+			s->start = RC_SecondsMs( start );
+			s->ms = RC_SecondsMs( secs );
+			s->spot = (qboolean)( spot != 0 );
+			Q_strncpyz( s->path, line + 4 + n, sizeof( s->path ) );
+			c->numSnd++;
 		} else if ( !Q_stricmpn( line, "ent ", 4 ) && c->numEnts < CM_MAX_ENTS ) {
 			// a player's name can have spaces in it
 			const char *who = line + 4;
@@ -1123,7 +1157,59 @@ static struct {
 	qboolean	said[CM_MAX_CLIPS];
 	qboolean	emoted[CM_MAX_CLIPS];
 	int			fxNext[CM_MAX_FX];		// when each effect plays again; a one-off, 1 once it has
+	int			sndNext[CM_MAX_SND];	// the same for each sound
 } cmp;
+
+static sfxHandle_t CM_SndHandle( const char *path ) {
+	if ( !path[0] )
+		return 0;
+	return S_RegisterSound( !Q_stricmpn( path, "sound/", 6 ) ? path : va( "sound/%s", path ) );
+}
+
+// how long it sounds, once
+static int CM_SndLen( const char *path ) {
+	const sfxHandle_t h = CM_SndHandle( path );
+
+	return h ? Q_max( 300, (int)S_GetSampleLengthInMilliSeconds( h ) ) : 1000;
+}
+
+static int CM_SndEnd( const cmSnd_t *s ) {
+	return s->start + ( s->ms > 0 ? s->ms : CM_SndLen( s->path ) );
+}
+
+static void CM_PlaySnd( const cmSnd_t *s, sfxHandle_t h ) {
+	if ( s->spot )
+		S_StartSound( s->org, ENTITYNUM_WORLD, CHAN_AUTO, h );
+	else
+		S_StartLocalSound( h, CHAN_AUTO );
+}
+
+// t ms in: the one-offs at their moment, the others again each time they end while they last
+static void CM_RunSnd( const cmCine_t *c, int t, int *next ) {
+	for ( int i = 0; i < c->numSnd; i++ ) {
+		const cmSnd_t *s = &c->snd[i];
+		sfxHandle_t h;
+
+		if ( t < s->start )
+			continue;
+		if ( s->ms <= 0 ) {
+			// one played from the middle that's long past isn't
+			if ( !next[i] && t - s->start < 500 && ( h = CM_SndHandle( s->path ) ) != 0 )
+				CM_PlaySnd( s, h );
+			next[i] = 1;
+			continue;
+		}
+		if ( t >= s->start + s->ms || cls.realtime < next[i] )
+			continue;
+		h = CM_SndHandle( s->path );
+		if ( !h ) {
+			next[i] = cls.realtime + 1000;
+			continue;
+		}
+		CM_PlaySnd( s, h );
+		next[i] = cls.realtime + Q_max( 200, (int)S_GetSampleLengthInMilliSeconds( h ) );
+	}
+}
 
 static int CM_FxId( const char *path ) {
 	if ( !path[0] )
@@ -1320,6 +1406,7 @@ static void CM_PlayerFrame( void ) {
 	}
 	CM_Apply( &cmp.cine, cmPlayPlans, t );
 	CM_RunFx( &cmp.cine, t, cmp.fxNext );
+	CM_RunSnd( &cmp.cine, t, cmp.sndNext );
 	if ( cmp.driver )
 		CM_DriverTeles( t, qfalse );
 	CM_RunSays( t );
@@ -1341,6 +1428,7 @@ static qboolean CM_Play( const cmCine_t *c, int fromMs, qboolean local ) {
 	memset( cmp.said, 0, sizeof( cmp.said ) );
 	memset( cmp.emoted, 0, sizeof( cmp.emoted ) );
 	memset( cmp.fxNext, 0, sizeof( cmp.fxNext ) );
+	memset( cmp.sndNext, 0, sizeof( cmp.sndNext ) );
 	CM_Plan( &cmp.cine, cmPlayPlans );
 	cmp.playing = qtrue;
 	RC_CineBegin( c->hud, c->bars );
@@ -1632,7 +1720,8 @@ cinematic, the timeline under the view its time.
 typedef enum {
 	CM_TAB_CAMERA,
 	CM_TAB_ENTITIES,
-	CM_TAB_EFFECTS
+	CM_TAB_EFFECTS,
+	CM_TAB_SOUNDS
 } cmTab_t;
 
 typedef enum {
@@ -1661,7 +1750,9 @@ typedef enum {
 	CM_DRAG_CLIP_END,
 	CM_DRAG_FOCUS,		// a key of a moving focus
 	CM_DRAG_FX,			// an effect, when it starts
-	CM_DRAG_FX_END		// how long it goes on
+	CM_DRAG_FX_END,		// how long it goes on
+	CM_DRAG_SND,		// a sound, when it starts
+	CM_DRAG_SND_END		// how long it goes on
 } cmDrag_t;
 
 static struct {
@@ -1706,6 +1797,18 @@ static struct {
 	cmFx_t		fxPickedFx;
 	qboolean	keepCam;			// opened again where the camera was
 	qboolean	fxPickPinned;
+
+	// the Sounds tab: the one picked, a spot's held and dragged as an effect is; picked in the
+	// sound manager, the editor closed meanwhile
+	int			snd;
+	int			sndScroll;
+	qboolean	sndDrag;
+	qboolean	sndPicking;
+	int			sndPickIndex;		// the one it replaces, -1 a new one
+	int			sndPickStart;
+	qboolean	sndPickPinned;
+	qboolean	sndPicked;
+	cmSnd_t		sndPickedSnd;
 
 	// the move arrows over the effect picked: J; one dragged moves it along
 	qboolean	gizmo;
@@ -1947,6 +2050,8 @@ static void CM_Ripple( void ) {
 		CM_REMAP( c->clips[i].start );
 	for ( int i = 0; i < c->numFx; i++ )
 		CM_REMAP( c->fx[i].start );
+	for ( int i = 0; i < c->numSnd; i++ )
+		CM_REMAP( c->snd[i].start );
 	if ( cm.tlPinned && !cm.tlDrag )
 		CM_REMAP( cm.tlMs );
 #undef CM_REMAP
@@ -1955,8 +2060,10 @@ static void CM_Ripple( void ) {
 
 // what starts at or after ms moves by delta, what's between ms and ms - delta back to ms
 static void CM_ShiftClips( int ms, int delta ) {
-	for ( int i = 0; i < cm.cine.numClips + cm.cine.numFx; i++ ) {
-		int *start = i < cm.cine.numClips ? &cm.cine.clips[i].start : &cm.cine.fx[i - cm.cine.numClips].start;
+	const int clips = cm.cine.numClips, fx = clips + cm.cine.numFx;
+
+	for ( int i = 0; i < fx + cm.cine.numSnd; i++ ) {
+		int *start = i < clips ? &cm.cine.clips[i].start : i < fx ? &cm.cine.fx[i - clips].start : &cm.cine.snd[i - fx].start;
 
 		if ( delta < 0 && *start >= ms + delta && *start < ms )
 			*start = ms + delta;
@@ -2881,6 +2988,7 @@ static void CM_AddPlaceKey( cmClip_t *clip );
 static void CM_DeletePlaceKey( cmClip_t *clip );
 
 static void CM_DeleteFx( void );
+static void CM_DeleteSnd( void );
 
 void CL_RpCinematic_EditorKeyEvent( int key, qboolean down ) {
 	cmClip_t *clip;
@@ -2982,6 +3090,8 @@ void CL_RpCinematic_EditorKeyEvent( int key, qboolean down ) {
 	case A_BACKSPACE:
 		if ( cm.tab == CM_TAB_EFFECTS )
 			CM_DeleteFx();
+		else if ( cm.tab == CM_TAB_SOUNDS )
+			CM_DeleteSnd();
 		else if ( cm.tab == CM_TAB_ENTITIES && clip && clip->kind == CM_CLIP_PLACE )
 			CM_DeletePlaceKey( clip );
 		else if ( cm.tab == CM_TAB_ENTITIES )
@@ -3008,7 +3118,7 @@ void CL_RpCinematic_EditorKeyEvent( int key, qboolean down ) {
 	case A_LOW_J:
 		cm.gizmo = (qboolean)!cm.gizmo;
 		cm.gzDragging = qfalse;
-		CM_Message( cm.gizmo ? "Move arrows on the effect picked (Effects tab): drag X, Y or Z to move it along; J hides them" : "Move arrows hidden" );
+		CM_Message( cm.gizmo ? "Move arrows on the effect or sound picked: drag X, Y or Z to move it along; J hides them" : "Move arrows hidden" );
 		break;
 	case A_CAP_T:
 	case A_LOW_T:
@@ -3320,6 +3430,14 @@ static void CM_AddScene( void ) {
 		const qboolean sel = (qboolean)( i == cm.fx && cm.tab == CM_TAB_EFFECTS );
 
 		CM_Cross( cm.cine.fx[i].org, sel ? 8.0f : 4.0f, sel ? cmSelColor : cm.tab == CM_TAB_EFFECTS ? fxColor : fxFaint );
+	}
+	// the sounds heard from a spot
+	for ( int i = 0; i < cm.cine.numSnd; i++ ) {
+		static const byte sndColor[4] = { 120, 200, 255, 255 }, sndFaint[4] = { 120, 200, 255, 110 };
+		const qboolean sel = (qboolean)( i == cm.snd && cm.tab == CM_TAB_SOUNDS );
+
+		if ( cm.cine.snd[i].spot )
+			CM_Cross( cm.cine.snd[i].org, sel ? 8.0f : 4.0f, sel ? cmSelColor : cm.tab == CM_TAB_SOUNDS ? sndColor : sndFaint );
 	}
 
 	// the shots' trails, the one shown brighter
@@ -5009,6 +5127,244 @@ static void CM_FxDrag( void ) {
 	}
 }
 
+/*
+===============================================================================
+
+The Sounds tab: sounds played at their moment, picked in the sound manager; heard everywhere,
+or from a spot moved in the view; for everyone the cinematic plays for
+
+===============================================================================
+*/
+
+static cmSnd_t *CM_Snd( void ) {
+	return cm.snd >= 0 && cm.snd < cm.cine.numSnd ? &cm.cine.snd[cm.snd] : NULL;
+}
+
+// the sound manager opened; what it would send comes back here (CL_Cinematic_CaptureSound)
+static void CM_PickSnd( int replace ) {
+	cm.sndPicking = qtrue;
+	cm.sndPicked = qfalse;
+	cm.sndPickIndex = replace;
+	cm.sndPickStart = cm.tlPinned ? cm.tlMs : 0;
+	cm.sndPickPinned = cm.tlPinned;
+	CL_RpCinematic_EditorClose();
+	CL_SoundManager_OpenForCinematic();
+	if ( !CL_SoundManager_Active() ) {
+		cm.sndPicking = qfalse;
+		cm.keepCam = qtrue;
+		CL_RpCinematic_Edit( NULL, cm.fromStoryteller );
+	}
+}
+
+// the sound manager about to send: the sound is the cinematic's instead, nothing goes out.
+// Played once it's heard everywhere; looping at a spot, from there
+qboolean CL_Cinematic_CaptureSound( const char *cmd ) {
+	char buf[MAX_STRING_CHARS], *argv[8];
+	int argc = 0;
+	cmSnd_t *s = &cm.sndPickedSnd;
+
+	if ( !cm.sndPicking || !CL_SoundManager_Active() )
+		return qfalse;
+	if ( cm.sndPicked || Q_stricmpn( cmd, "rpsound ", 8 ) )
+		return qtrue;
+	Q_strncpyz( buf, cmd, sizeof( buf ) );
+	for ( char *p = buf; *p && argc < (int)ARRAY_LEN( argv ); ) {
+		while ( *p == ' ' )
+			*p++ = '\0';
+		if ( !*p )
+			break;
+		argv[argc++] = p;
+		while ( *p && *p != ' ' )
+			p++;
+	}
+	if ( argc < 3 || ( Q_stricmp( argv[1], "once" ) && Q_stricmp( argv[1], "add" ) && Q_stricmp( argv[1], "local" ) ) )
+		return qtrue;
+	memset( s, 0, sizeof( *s ) );
+	Q_strncpyz( s->path, argv[2], sizeof( s->path ) );
+	s->ms = !Q_stricmp( argv[1], "add" ) ? CM_SND_MS : 0;
+	if ( argc >= 6 ) {
+		s->spot = qtrue;
+		VectorSet( s->org, (float)atof( argv[3] ), (float)atof( argv[4] ), (float)atof( argv[5] ) );
+	} else {
+		VectorCopy( cl.snap.ps.origin, s->org );
+	}
+	cm.sndPicked = qtrue;
+	return qtrue;
+}
+
+// every frame: back from the sound manager once a sound's sent, or it was closed
+static void CM_PickSndFrame( void ) {
+	cmCine_t *c = &cm.cine;
+
+	if ( !cm.sndPicking || ( CL_SoundManager_Active() && !cm.sndPicked ) )
+		return;
+	cm.sndPicking = qfalse;
+	CL_SoundManager_Close();
+	cm.keepCam = qtrue;
+	CL_RpCinematic_Edit( NULL, cm.fromStoryteller );
+	cm.tab = CM_TAB_SOUNDS;
+	if ( cm.sndPickPinned ) {
+		cm.tlMs = cm.sndPickStart;
+		CM_TlPin();
+	}
+	if ( !cm.sndPicked )
+		return;
+	if ( cm.sndPickIndex >= 0 && cm.sndPickIndex < c->numSnd ) {
+		// picked again: the sound changes, when and where it plays stay
+		Q_strncpyz( c->snd[cm.sndPickIndex].path, cm.sndPickedSnd.path, sizeof( c->snd[0].path ) );
+		cm.snd = cm.sndPickIndex;
+	} else if ( c->numSnd < CM_MAX_SND ) {
+		cm.sndPickedSnd.start = cm.sndPickStart;
+		c->snd[c->numSnd] = cm.sndPickedSnd;
+		cm.snd = c->numSnd++;
+	}
+	CM_Changed();
+	CM_Message( va( S_COLOR_GREEN "Sound %s at %.1f s", COM_SkipPath( cm.sndPickedSnd.path ), cm.sndPickStart / 1000.0f ) );
+}
+
+static void CM_DeleteSnd( void ) {
+	cmCine_t *c = &cm.cine;
+
+	if ( !CM_Snd() )
+		return;
+	c->numSnd--;
+	memmove( &c->snd[cm.snd], &c->snd[cm.snd + 1], ( c->numSnd - cm.snd ) * sizeof( c->snd[0] ) );
+	cm.snd = Q_min( cm.snd, c->numSnd - 1 );
+	CM_Changed();
+}
+
+// the one picked, heard here alone, as it would be
+static void CM_ListenSnd( const cmSnd_t *s ) {
+	const sfxHandle_t h = CM_SndHandle( s->path );
+
+	if ( !h ) {
+		CM_Message( va( S_COLOR_YELLOW "Can't play %s", s->path ) );
+		return;
+	}
+	CM_PlaySnd( s, h );
+}
+
+static void CM_DrawSoundsTab( float x, float y, float w ) {
+	cmCine_t *c = &cm.cine;
+	const float half = ( w - 4 ) * 0.5f;
+	const int rows = 6;
+	cmSnd_t *s;
+	int steps;
+
+	CM_Text( x, y + 2, va( "Sounds (%i)", c->numSnd ), cmWhite );
+	y += CM_CTRL_H + 2;
+	if ( cm.wheel && CM_InRect( x, y, w, rows * CM_ROW_H ) ) {
+		cm.sndScroll += cm.wheel;
+		cm.wheel = 0;
+	}
+	cm.sndScroll = Com_Clampi( 0, Q_max( 0, c->numSnd - rows ), cm.sndScroll );
+	CM_Box( x, y, w, rows * CM_ROW_H + 2, cmPanelLight );
+	const float lw = CM_ListBar( x, y, w, rows * CM_ROW_H + 2, c->numSnd, rows, &cm.sndScroll );
+	for ( int i = 0; i < c->numSnd; i++ ) {
+		const cmSnd_t *e = &c->snd[i];
+		const int r = i - cm.sndScroll;
+		const float ry = y + 1 + r * CM_ROW_H;
+
+		if ( r < 0 || r >= rows )
+			continue;
+		if ( i == cm.snd )
+			CM_Fill( x + 1, ry, lw - 2, CM_ROW_H, cmHighlight );
+		else if ( CM_InRect( x, ry, lw, CM_ROW_H ) )
+			CM_Fill( x + 1, ry, lw - 2, CM_ROW_H, cmHoverBox );
+		CM_TextClipped( x + 4, ry, lw - 8, va( S_COLOR_CYAN "%.1fs " S_COLOR_WHITE "%s" S_COLOR_GREY "  %s", e->start / 1000.0f, COM_SkipPath( (char *)e->path ),
+			e->ms > 0 ? va( "%.1f s", e->ms / 1000.0f ) : "once" ), cmWhite );
+		if ( CM_Clicked( x, ry, lw, CM_ROW_H ) )
+			cm.snd = i;
+	}
+	if ( !c->numSnd )
+		CM_Text( x + 4, y + 2, S_COLOR_GREY "None yet", cmWhite );
+	y += rows * CM_ROW_H + 6;
+	if ( CM_Button( x, y, w, va( "+ Pick a sound, at %.1f s...", ( cm.tlPinned ? cm.tlMs : 0 ) / 1000.0f ), qfalse, (qboolean)( c->numSnd < CM_MAX_SND ) ) ) {
+		CM_PickSnd( -1 );
+		return;
+	}
+	y += CM_CTRL_H + CM_GAP + 3;
+
+	s = CM_Snd();
+	if ( !s ) {
+		CM_Text( x, y, S_COLOR_GREY "The sound manager opens: pick one", cmWhite );
+		CM_Text( x, y + CM_ROW_H, S_COLOR_GREY "and add it; it comes back here, at", cmWhite );
+		CM_Text( x, y + CM_ROW_H * 2, S_COLOR_GREY "the moment picked on the timeline", cmWhite );
+		return;
+	}
+	CM_Fill( x, y - 2, w, 1, cmBorder );
+	CM_TextClipped( x, y + 2, w - 56, s->path, cmWhite );
+	if ( CM_Button( x + w - 50, y, 50, "Delete", qfalse, qtrue ) ) {
+		CM_DeleteSnd();
+		return;
+	}
+	y += CM_CTRL_H + CM_GAP;
+	if ( CM_Button( x, y, half, "Pick again...", qfalse, qtrue ) ) {
+		CM_PickSnd( cm.snd );
+		return;
+	}
+	if ( CM_Button( x + half + 4, y, half, "Listen", qfalse, qtrue ) )
+		CM_ListenSnd( s );
+	y += CM_CTRL_H + CM_GAP;
+	steps = CM_Stepper( x, y, w, "Starts", va( "%.1f s", s->start / 1000.0f ) );
+	CM_AdjustMs( &s->start, steps, 0.1f, 0 );
+	y += CM_CTRL_H + CM_GAP;
+	steps = CM_Stepper( x, y, w, "Plays", s->ms > 0 ? va( "%.1f s, over and over", s->ms / 1000.0f ) : "once" );
+	CM_AdjustMs( &s->ms, steps, 0.5f, 0 );
+	y += CM_CTRL_H + CM_GAP;
+	if ( CM_Button( x, y, half, "Everywhere", (qboolean)!s->spot, qtrue ) && s->spot ) {
+		s->spot = qfalse;
+		CM_Changed();
+	}
+	if ( CM_Button( x + half + 4, y, half, "From a spot", s->spot, qtrue ) && !s->spot ) {
+		s->spot = qtrue;
+		if ( cm.haveAim )
+			VectorCopy( cm.aim, s->org );
+		CM_Changed();
+	}
+	y += CM_CTRL_H + CM_GAP;
+	if ( s->spot ) {
+		if ( CM_Button( x, y, w, "To the crosshair", qfalse, cm.haveAim ) ) {
+			VectorCopy( cm.aim, s->org );
+			CM_Changed();
+		}
+		y += CM_CTRL_H + CM_GAP;
+		CM_Text( x, y, S_COLOR_GREY "Heard louder nearer it. Drag it", cmWhite );
+		CM_Text( x, y + CM_ROW_H, S_COLOR_GREY "in the view, or J: move arrows", cmWhite );
+		y += CM_ROW_H * 2;
+	} else {
+		CM_Text( x, y, S_COLOR_GREY "Heard the same wherever you are", cmWhite );
+		y += CM_ROW_H;
+	}
+	CM_Text( x, y, S_COLOR_GREY "Its bar on the timeline: drag it, or its end", cmWhite );
+}
+
+// the sound held follows what's under the mouse
+static void CM_SndDrag( void ) {
+	cmSnd_t *s = CM_Snd();
+	vec3_t at;
+
+	if ( !cm.sndDrag )
+		return;
+	if ( !cm.held[A_MOUSE1] || !s || !s->spot || cm.tab != CM_TAB_SOUNDS ) {
+		cm.sndDrag = qfalse;
+		return;
+	}
+	if ( CM_CursorSurface( at ) && !VectorCompare( at, s->org ) ) {
+		VectorCopy( at, s->org );
+		CM_Changed();
+	}
+}
+
+// where the move arrows are: the effect or the spot sound picked on its tab
+static float *CM_GzOrg( void ) {
+	if ( cm.tab == CM_TAB_EFFECTS && CM_Fx() )
+		return CM_Fx()->org;
+	if ( cm.tab == CM_TAB_SOUNDS && CM_Snd() && CM_Snd()->spot )
+		return CM_Snd()->org;
+	return NULL;
+}
+
 static void CM_GzView( gzView_t *v ) {
 	VectorCopy( cm.viewOrg, v->org );
 	VectorCopy( cm.viewAxis[0], v->axis[0] );
@@ -5020,11 +5376,11 @@ static void CM_GzView( gzView_t *v ) {
 
 // the arrows over the effect picked: the one under the mouse lit, the one held moving it
 static void CM_GizmoFrame( void ) {
-	cmFx_t *f = CM_Fx();
+	float *org = CM_GzOrg();
 	gzView_t v;
 
 	cm.gzHot = -1;
-	if ( !cm.gizmo || !f || cm.tab != CM_TAB_EFFECTS || !cm.haveView || cm.listing ) {
+	if ( !cm.gizmo || !org || !cm.haveView || cm.listing ) {
 		cm.gzDragging = qfalse;
 		return;
 	}
@@ -5035,15 +5391,15 @@ static void CM_GizmoFrame( void ) {
 		vec3_t to;
 
 		GZ_Target( &cm.gzDrag, cm.cursorX, cm.cursorY, 1, to );
-		if ( !VectorCompare( to, f->org ) ) {
-			VectorCopy( to, f->org );
+		if ( !VectorCompare( to, org ) ) {
+			VectorCopy( to, org );
 			CM_Changed();
 		}
 		cm.gzHot = cm.gzDrag.axis;
 	} else {
-		cm.gzHot = cm.cursorX < CM_PANEL_X ? GZ_Hit( &v, f->org, cm.cursorX, cm.cursorY ) : -1;
+		cm.gzHot = cm.cursorX < CM_PANEL_X ? GZ_Hit( &v, org, cm.cursorX, cm.cursorY ) : -1;
 	}
-	GZ_Draw( &v, f->org, cm.gzHot );
+	GZ_Draw( &v, org, cm.gzHot );
 }
 
 // the floor under the mouse, as the view sees it
@@ -5217,11 +5573,11 @@ static void CM_ViewClick( void ) {
 	int found = -1;
 
 	// the move arrows, then the effects
-	if ( cm.gizmo && cm.gzHot >= 0 && CM_Fx() ) {
+	if ( cm.gizmo && cm.gzHot >= 0 && CM_GzOrg() ) {
 		gzView_t v;
 
 		CM_GzView( &v );
-		GZ_Begin( &cm.gzDrag, &v, CM_Fx()->org, cm.gzHot, cm.clickX, cm.clickY );
+		GZ_Begin( &cm.gzDrag, &v, CM_GzOrg(), cm.gzHot, cm.clickX, cm.clickY );
 		cm.gzDragging = cm.gzDrag.on;
 		cm.click = qfalse;
 		return;
@@ -5237,6 +5593,20 @@ static void CM_ViewClick( void ) {
 			cm.fx = found;
 			cm.fxDrag = qtrue;
 			cm.fxPreviewNext = 0;
+			cm.click = qfalse;
+			return;
+		}
+	}
+	if ( cm.tab == CM_TAB_SOUNDS ) {
+		for ( int i = 0; i < cm.cine.numSnd; i++ ) {
+			if ( !cm.cine.snd[i].spot || !CM_Project( cm.cine.snd[i].org, &sx, &sy ) || sqrtf( Square( sx - cm.clickX ) + Square( sy - cm.clickY ) ) > best )
+				continue;
+			best = sqrtf( Square( sx - cm.clickX ) + Square( sy - cm.clickY ) );
+			found = i;
+		}
+		if ( found >= 0 ) {
+			cm.snd = found;
+			cm.sndDrag = qtrue;
 			cm.click = qfalse;
 			return;
 		}
@@ -5442,7 +5812,7 @@ static void CM_TlClick( const cmTrack_t *t, float rowsY, int numRows ) {
 	const int r = cm.clickY >= rowsY ? (int)( ( cm.clickY - rowsY ) / CM_ROW_H ) : -1;
 	const int row = r > 0 ? cm.tlScroll + r : r;
 	const int at = CM_TlMsAt( t, cx, qfalse );
-	const int fxRow = 1 + c->numEnts * 2;
+	const int fxRow = 1 + c->numEnts * 2, sndRow = fxRow + 1;
 
 	cm.tlDragSpan = t->span;
 	cm.typing = CM_TYPE_NONE;
@@ -5454,6 +5824,8 @@ static void CM_TlClick( const cmTrack_t *t, float rowsY, int numRows ) {
 			cm.tab = CM_TAB_CAMERA;
 		} else if ( row == fxRow ) {
 			cm.tab = CM_TAB_EFFECTS;
+		} else if ( row == sndRow ) {
+			cm.tab = CM_TAB_SOUNDS;
 		} else if ( row > 0 ) {
 			cm.ent = ( row - 1 ) / 2;
 			cm.clip = -1;
@@ -5529,6 +5901,25 @@ static void CM_TlClick( const cmTrack_t *t, float rowsY, int numRows ) {
 			} else {
 				cm.tlDrag = CM_DRAG_FX;
 				cm.tlDragGrab = at - f->start;
+			}
+			return;
+		}
+	} else if ( row == sndRow ) {
+		// a sound: its bar, or its end to make it last longer
+		for ( int i = c->numSnd - 1; i >= 0; i-- ) {
+			const cmSnd_t *s = &c->snd[i];
+			const float x0 = CM_TlX( t, s->start ), x1 = CM_TlX( t, CM_SndEnd( s ) );
+
+			if ( cx < x0 - 2 || cx > x1 + CM_TL_GRAB )
+				continue;
+			cm.snd = i;
+			cm.tab = CM_TAB_SOUNDS;
+			cm.tlDragIndex = i;
+			if ( s->ms > 0 && cx >= x1 - CM_TL_GRAB && x1 - x0 > CM_TL_GRAB * 2 ) {
+				cm.tlDrag = CM_DRAG_SND_END;
+			} else {
+				cm.tlDrag = CM_DRAG_SND;
+				cm.tlDragGrab = at - s->start;
 			}
 			return;
 		}
@@ -5657,6 +6048,19 @@ static void CM_TlDrag( const cmTrack_t *t ) {
 			}
 		}
 		break;
+	case CM_DRAG_SND:
+	case CM_DRAG_SND_END:
+		if ( cm.tlDragIndex < c->numSnd ) {
+			cmSnd_t *s = &c->snd[cm.tlDragIndex];
+			const int ms = cm.tlDrag == CM_DRAG_SND ? CM_TlSnap( at - cm.tlDragGrab ) : Q_max( CM_TL_MIN_MS, CM_TlSnap( at - s->start ) );
+			int *field = cm.tlDrag == CM_DRAG_SND ? &s->start : &s->ms;
+
+			if ( ms != *field ) {
+				*field = ms;
+				CM_Changed();
+			}
+		}
+		break;
 	case CM_DRAG_CLIP:
 	case CM_DRAG_CLIP_END:
 		if ( cm.tlDragIndex < c->numClips ) {
@@ -5677,7 +6081,7 @@ static void CM_TlDrag( const cmTrack_t *t ) {
 
 static void CM_DrawTimeline( void ) {
 	cmCine_t *c = &cm.cine;
-	const int fxRow = 1 + c->numEnts * 2, numRows = fxRow + 1, visRows = Q_min( CM_TL_ROWS, numRows );
+	const int fxRow = 1 + c->numEnts * 2, sndRow = fxRow + 1, numRows = sndRow + 1, visRows = Q_min( CM_TL_ROWS, numRows );
 	const float x = CM_TL_X, w = CM_TL_W;
 	const float boxH = CM_TL_RULER_H + Q_max( 2, visRows ) * CM_ROW_H + 3, boxY = CM_TL_BOTTOM - boxH, headY = boxY - CM_CTRL_H - 2;
 	const float rowsY = boxY + 1 + CM_TL_RULER_H;
@@ -5792,6 +6196,15 @@ static void CM_DrawTimeline( void ) {
 
 				CM_TlBar( CM_TlX( &t, f->start ), CM_TlX( &t, CM_FxEnd( f ) ), ry, fxBar, COM_SkipPath( (char *)f->path ), (qboolean)( i == cm.fx && cm.tab == CM_TAB_EFFECTS ) );
 			}
+		} else if ( row == sndRow ) {
+			static const vec4_t sndBar = { 0.25f, 0.55f, 0.85f, 0.85f };
+
+			CM_TextClipped( x + 3, ry, CM_TL_LABEL_W - 6, "Sounds", cm.tab == CM_TAB_SOUNDS ? cmTlSel : cmWhite );
+			for ( int i = 0; i < c->numSnd; i++ ) {
+				const cmSnd_t *s = &c->snd[i];
+
+				CM_TlBar( CM_TlX( &t, s->start ), CM_TlX( &t, CM_SndEnd( s ) ), ry, sndBar, COM_SkipPath( (char *)s->path ), (qboolean)( i == cm.snd && cm.tab == CM_TAB_SOUNDS ) );
+			}
 		} else {
 			const int e = ( row - 1 ) / 2, lane = ( row - 1 ) & 1;
 
@@ -5827,8 +6240,8 @@ static void CM_DrawTimeline( void ) {
 			}
 		}
 	}
-	if ( !c->numEnts && !c->numFx )
-		CM_Text( t.x + 3, rowsY + CM_ROW_H, S_COLOR_GREY "Who's in it: the Entities tab. Effects: the Effects tab", cmWhite );
+	if ( !c->numEnts && !c->numFx && !c->numSnd )
+		CM_Text( t.x + 3, rowsY + CM_ROW_H, S_COLOR_GREY "Who's in it: the Entities tab. Effects and sounds: their tabs", cmWhite );
 	else if ( numRows > visRows )
 		CM_Text( x + 3, boxY, va( S_COLOR_GREY "%i of %i", cm.tlScroll / 2 + 1, c->numEnts ), cmWhite );
 
@@ -5959,6 +6372,16 @@ static void CM_DrawEditor( void ) {
 			CM_Text( sx + 4, sy - 14, va( "%s%.1fs %s", i == cm.fx ? S_COLOR_CYAN : "", cm.cine.fx[i].start / 1000.0f, COM_SkipPath( cm.cine.fx[i].path ) ), cmWhite );
 		}
 	}
+	if ( cm.tab == CM_TAB_SOUNDS && !cm.listing ) {
+		for ( int i = 0; i < cm.cine.numSnd; i++ ) {
+			float sx, sy;
+
+			if ( !cm.cine.snd[i].spot || !CM_Project( cm.cine.snd[i].org, &sx, &sy ) )
+				continue;
+			CM_Fill( sx - 2, sy - 2, 5, 5, i == cm.snd ? cmTlSel : cmWhite );
+			CM_Text( sx + 4, sy - 14, va( "%s%.1fs %s", i == cm.snd ? S_COLOR_CYAN : "", cm.cine.snd[i].start / 1000.0f, COM_SkipPath( cm.cine.snd[i].path ) ), cmWhite );
+		}
+	}
 
 	// numbers over the spots: the shot's, or the move's
 	if ( !CM_TlLooking() ) {
@@ -5999,6 +6422,7 @@ static void CM_DrawEditor( void ) {
 			"While flying: wheel zooms   Q/E roll   R levels",
 			cm.tab == CM_TAB_ENTITIES ? "Click someone to pick them   Enter adds a move's spot or a position's key, a click picks one, drag moves it   Del takes it off"
 				: cm.tab == CM_TAB_EFFECTS ? "Click an effect to pick it, drag it over walls and floors   J move arrows   Del deletes it   P preview"
+				: cm.tab == CM_TAB_SOUNDS ? "Click a sound's spot to pick it, drag it over walls and floors   J move arrows   Del deletes it   P preview"
 				: "Enter add a spot   Del delete   Up/Down pick   F look through it   P preview",
 			cm.tlHidden ? "T shows the timeline" : "Timeline: click or drag a moment, drag bars to retime   P plays from it   T hides it",
 			cm.tlPinned ? "Esc lets go of the moment" : "Esc back"
@@ -6035,7 +6459,7 @@ static void CM_DrawEditor( void ) {
 	if ( cm.listing ) {
 		CM_DrawFileList( x, y + 6, w );
 	} else {
-		static const char *tabs[] = { "Camera", "Entities", "Effects" };
+		static const char *tabs[] = { "Camera", "Entities", "Effects", "Sounds" };
 
 		// how it looks to everyone
 		if ( CM_Switch( x, y, half, "Bars", cm.cine.bars ? "on" : "off" ) ) {
@@ -6061,6 +6485,8 @@ static void CM_DrawEditor( void ) {
 			CM_DrawEntitiesTab( x, y, w );
 		else if ( cm.tab == CM_TAB_EFFECTS )
 			CM_DrawEffectsTab( x, y, w );
+		else if ( cm.tab == CM_TAB_SOUNDS )
+			CM_DrawSoundsTab( x, y, w );
 		else
 			CM_DrawCameraTab( x, y, w );
 
@@ -6091,6 +6517,7 @@ static void CM_DrawEditor( void ) {
 	CM_SpotDrag();
 	CM_FocusDrag();
 	CM_FxDrag();
+	CM_SndDrag();
 	if ( cm.click )
 		cm.typing = CM_TYPE_NONE;
 	cm.click = qfalse;
@@ -6719,6 +7146,7 @@ Every frame, and the command
 
 void CM_Frame( void ) {
 	CM_PickFxFrame();
+	CM_PickSndFrame();
 	CM_PreviewFx();
 	CM_Clashes();
 	CM_RecordFrame();
