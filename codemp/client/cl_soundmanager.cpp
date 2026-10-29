@@ -510,7 +510,8 @@ typedef struct {
 static struct {
 	smOpen_t	open;
 	int			font;
-	qboolean	forStory;		// opened from a storyteller step
+	qboolean	forStory;		// opened from a storyteller step, or the cinematic manager
+	qboolean	forCine;		// opened from the cinematic manager
 
 	// input; clicks and the wheel are handled where the control under them is drawn
 	float		cursorX, cursorY;
@@ -600,7 +601,9 @@ static int SM_CommandGap( void ) {
 }
 
 static void SM_Queue( const char *cmd ) {
-	// opened from the storyteller, it goes in the story instead
+	// opened from the cinematic manager or the storyteller, it goes in that instead
+	if ( CL_Cinematic_CaptureSound( cmd ) )
+		return;
 	if ( CL_Storyteller_Capture( cmd ) )
 		return;
 	if ( sm.numQueue >= SM_MAX_QUEUE ) {
@@ -945,6 +948,7 @@ static qboolean SM_Open( smOpen_t which ) {
 		SM_BuildIndex( b );
 	sm.open = which;
 	sm.forStory = qfalse;
+	sm.forCine = qfalse;
 	sm.focus = SM_F_NONE;
 	sm.playerPicker = qfalse;
 	sm.cursorX = SCREEN_WIDTH * 0.5f;
@@ -971,6 +975,16 @@ void CL_SoundManager_OpenForStory( void ) {
 		sm.forStory = qtrue;
 		sm.tab = SM_TAB_SOUNDS;
 		SM_Message( S_COLOR_GREEN "For the story: what you send here goes in it as steps, not to the server" );
+	}
+}
+
+// opened from the cinematic manager's Sounds tab
+void CL_SoundManager_OpenForCinematic( void ) {
+	if ( SM_Open( SM_SOUND ) ) {
+		sm.forStory = qtrue;
+		sm.forCine = qtrue;
+		sm.tab = SM_TAB_SOUNDS;
+		SM_Message( S_COLOR_GREEN "For the cinematic: pick a sound and add it; it goes in the cinematic, not to the server" );
 	}
 }
 
@@ -1612,7 +1626,7 @@ static void SM_DrawSounds( void ) {
 
 	cmd = SM_SoundCommand( &why );
 	SM_DrawCommand( cmd, a ? why : NULL );
-	if ( SM_Button( SM_RIGHT_X, SM_BUTTON_Y, 100, sm.forStory ? "Add to story" : "Send  (Enter)", qfalse, (qboolean)( cmd != NULL ) ) )
+	if ( SM_Button( SM_RIGHT_X, SM_BUTTON_Y, 100, sm.forCine ? "Add to cinematic" : sm.forStory ? "Add to story" : "Send  (Enter)", qfalse, (qboolean)( cmd != NULL ) ) )
 		SM_SendSound();
 }
 

@@ -838,6 +838,8 @@ void CL_EffectManager_Draw( void );
 float CL_EffectManager_FxScale( const char *effect, const vec3_t org );
 void CL_EffectManager_OpenForCinematic( void );
 qboolean CL_Cinematic_CaptureEffect( const char *cmd, float scale );
+qboolean CL_Cinematic_CaptureSound( const char *cmd );
+void CL_SoundManager_OpenForCinematic( void );
 qboolean CL_Cinematic_PickingEffect( void );
 void CL_EffectManager_ScaleHook( char **argv, int argc, const char *message );
 
