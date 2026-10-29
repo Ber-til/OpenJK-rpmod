@@ -12,6 +12,7 @@ OpenJK-rpmod is built on [OpenJK](https://github.com/JACoders/OpenJK); for the c
 - [Added] `Console key`. /con_keybind &lt;key> makes any key open and close the console, over menus and the managers too unless it's a key that types something; /con_keybind none takes it away. /cl_consoleTildeKey 0 makes the key under Esc an ordinary key, to type \` and ~ or bind it. Shift+Esc always opens the console.
 - [Added] `Typing and keys tab`. A new tab in /consolesettings: the console line, long chat, capitals, the console's own key and whether the key under Esc opens it.
 - [Added] `Colors while typing`. What you type in the console and the chat box shows in its colors as you type it, RPMod's too, the codes still showing.
+- [Added] `Installer`. The Windows release comes with Install-OpenJK-rpmod.bat: double-click it after extracting the zip and it finds Jedi Academy (Steam, GOG or the CD version), or asks for the GameData folder, and copies the files there, keeping the ones it replaces in GameData/OpenJK-rpmod-backup. It asks for administrator rights only when the folder needs them.
 - [Changed] `Long chat`. A long /me is split too (cl_chatSplitCommands is now say say_team tell:1 me), and so is what you type in the chat box.
 
 ## 0.7.1 - Oct 27th 2026
