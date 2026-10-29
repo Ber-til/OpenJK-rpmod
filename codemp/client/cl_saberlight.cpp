@@ -24,11 +24,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 // light at the middle of a blade is left out while this one is on, and gives it its colour: the
 // blade's, an RGB one too.
 //
-//	saberlight [on|off|mine|style <letters>|bright <x>|size <x>]
-//	cl_saberLight			0 off (the default), 1 every blade, 2 only your own
-//	cl_saberLightStyle		the pulse: letters a (dark) to z (full), one each 50 ms
-//	cl_saberLightBright		how bright, 1 as the game's own
-//	cl_saberLightSize		how far it reaches, 1 as the game's own
+//	cg_saberlight	0 off (the default), 1 every blade, 2 only your own
 
 #include "client.h"
 
@@ -36,13 +32,12 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define SL_MAX_GAMELIGHTS	64
 #define SL_MAX_LIGHTS		24		// of the renderer's 32, the rest left to the map and the effects
 #define SL_STEP_MS			50
-#define SL_STYLE			"tuvwxyzzzyxwvutsrqqrs"
+#define SL_STYLE			"tuvwxyzzzyxwvutsrqqrs"	// the pulse: a (dark) to z (full), one letter each step
+#define SL_BRIGHT			1.0f	// as the game's own light
+#define SL_SIZE				3.0f	// how far it reaches, times the game's own
 #define SL_GAME_LIGHT_NEAR	2.0f	// the game's light this close to a blade's middle is the blade's
 
-static cvar_t *cl_saberLight;
-static cvar_t *cl_saberLightStyle;
-static cvar_t *cl_saberLightBright;
-static cvar_t *cl_saberLightSize;
+static cvar_t *cg_saberlight;
 
 typedef struct {
 	vec3_t		base, dir;
@@ -78,18 +73,11 @@ static struct {
 	qboolean	registered;
 } sl;
 
-static void SL_Command_f( void );
-
 void CL_SaberLight_Init( void ) {
-	cl_saberLight = Cvar_Get( "cl_saberLight", "0", CVAR_ARCHIVE_ND, "Lightsabers light what's around them, pulsing: 0 off, 1 every blade, 2 only your own" );
-	cl_saberLightStyle = Cvar_Get( "cl_saberLightStyle", SL_STYLE, CVAR_ARCHIVE_ND, "The blades' light pulse: letters a (dark) to z (full), one each 50 ms" );
-	cl_saberLightBright = Cvar_Get( "cl_saberLightBright", "1", CVAR_ARCHIVE_ND, "How bright a blade's light is, 1 as the game's own" );
-	cl_saberLightSize = Cvar_Get( "cl_saberLightSize", "1", CVAR_ARCHIVE_ND, "How far a blade's light reaches, 1 as the game's own" );
-	Cmd_AddCommand( "saberlight", SL_Command_f, "Lightsabers light what's around them, pulsing: saberlight [on|off|mine|style <letters>|bright <x>|size <x>]" );
+	cg_saberlight = Cvar_Get( "cg_saberlight", "0", CVAR_ARCHIVE_ND, "Lightsabers light what's around them, pulsing: 0 off, 1 every blade, 2 only your own" );
 }
 
 void CL_SaberLight_Shutdown( void ) {
-	Cmd_RemoveCommand( "saberlight" );
 }
 
 // the shaders' handles are the renderer's: looked up again once it's started anew
@@ -99,48 +87,7 @@ void CL_SaberLight_RendererRestarted( void ) {
 }
 
 static qboolean SL_On( void ) {
-	return (qboolean)( cl_saberLight && cl_saberLight->integer > 0 && cls.state == CA_ACTIVE );
-}
-
-static void SL_Command_f( void ) {
-	const char *what = Cmd_Argv( 1 );
-
-	if ( !what[0] ) {
-		Com_Printf( "Saber light: %s, style %s, bright x%g, size x%g\n",
-			!cl_saberLight->integer ? "off" : cl_saberLight->integer == 2 ? "your own blades" : "every blade",
-			cl_saberLightStyle->string[0] ? cl_saberLightStyle->string : "steady", cl_saberLightBright->value, cl_saberLightSize->value );
-		Com_Printf( "  saberlight on | off | mine | style <letters a-z> | bright <x> | size <x>\n" );
-		return;
-	}
-	if ( !Q_stricmp( what, "on" ) || !Q_stricmp( what, "all" ) )
-		Cvar_Set( "cl_saberLight", "1" );
-	else if ( !Q_stricmp( what, "off" ) )
-		Cvar_Set( "cl_saberLight", "0" );
-	else if ( !Q_stricmp( what, "mine" ) )
-		Cvar_Set( "cl_saberLight", "2" );
-	else if ( !Q_stricmp( what, "style" ) ) {
-		char style[MAX_CVAR_VALUE_STRING];
-		int n = 0;
-
-		// only the letters, small; none is the pulse as it was
-		for ( const char *p = Cmd_Argv( 2 ); *p && n < (int)sizeof( style ) - 1; p++ ) {
-			const int c = tolower( *p );
-
-			if ( c >= 'a' && c <= 'z' )
-				style[n++] = (char)c;
-		}
-		style[n] = '\0';
-		Cvar_Set( "cl_saberLightStyle", n ? style : SL_STYLE );
-	} else if ( !Q_stricmp( what, "bright" ) && Cmd_Argc() > 2 )
-		Cvar_SetValue( "cl_saberLightBright", Com_Clamp( 0.1f, 4.0f, atof( Cmd_Argv( 2 ) ) ) );
-	else if ( !Q_stricmp( what, "size" ) && Cmd_Argc() > 2 )
-		Cvar_SetValue( "cl_saberLightSize", Com_Clamp( 0.25f, 3.0f, atof( Cmd_Argv( 2 ) ) ) );
-	else {
-		Com_Printf( "saberlight on | off | mine | style <letters a-z> | bright <x> | size <x>\n" );
-		return;
-	}
-	if ( cl_saberLight->integer && !Cvar_VariableIntegerValue( "r_dynamiclight" ) )
-		Com_Printf( S_COLOR_YELLOW "Saber light needs dynamic lights: r_dynamiclight 1\n" );
+	return (qboolean)( cg_saberlight && cg_saberlight->integer > 0 && cls.state == CA_ACTIVE );
 }
 
 // a blade's colour, when the game gives it no light of its own: an RGB blade's tint, else its glow's
@@ -174,7 +121,7 @@ void CL_SaberLight_Entity( const refEntity_t *ent ) {
 	if ( ent->reType != RT_SABER_GLOW || !SL_On() || sl.numBlades >= SL_MAX_BLADES || ent->saberLength < 1.0f )
 		return;
 	// only your own: the blade nearer you than anyone else
-	if ( cl_saberLight->integer == 2 && CL_ShaderManager_NearestPlayer( ent->origin ) != clc.clientNum )
+	if ( cg_saberlight->integer == 2 && CL_ShaderManager_NearestPlayer( ent->origin ) != clc.clientNum )
 		return;
 	b = &sl.blades[sl.numBlades++];
 	VectorCopy( ent->origin, b->base );
@@ -208,13 +155,11 @@ void CL_SaberLight_ClearScene( void ) {
 
 // the pulse now, 0 dark .. 1 full: the style's letters run smoothly into each other
 static float SL_Pulse( int phase ) {
-	const char *style = cl_saberLightStyle->string;
+	const char *style = SL_STYLE;
 	const int len = (int)strlen( style );
 	float pos, frac, a, b;
 	int i;
 
-	if ( !len )
-		return 1.0f;
 	pos = ( Q_max( 0, cls.realtime ) / (float)SL_STEP_MS ) + phase;
 	i = (int)pos;
 	frac = pos - i;
@@ -253,9 +198,8 @@ void CL_SaberLight_RenderScene( void ) {
 		const int n = Q_min( budget, bl->length > 40.0f ? perBlade : bl->length > 16.0f ? Q_min( 2, perBlade ) : 1 );
 		// the blades out of step with each other, and a little flicker as a blade has
 		const float pulse = SL_Pulse( j * 7 ) * ( 0.96f + 0.04f * Q_flrand( 0.0f, 1.0f ) );
-		const float size = Com_Clamp( 0.25f, 3.0f, cl_saberLightSize->value );
-		const float bright = Com_Clamp( 0.1f, 4.0f, cl_saberLightBright->value ) * pulse * ( n > 1 ? 1.4f / n : 1.0f );
-		const float radius = bl->length * 1.4f * size * ( n > 1 ? 0.8f : 1.0f );
+		const float bright = SL_BRIGHT * pulse * ( n > 1 ? 1.4f / n : 1.0f );
+		const float radius = bl->length * 1.4f * SL_SIZE * ( n > 1 ? 0.8f : 1.0f );
 
 		for ( int i = 0; i < n; i++ ) {
 			vec3_t at;
