@@ -70,6 +70,9 @@ static struct {
 	qhandle_t	shown;
 	char		message[MAX_STRING_CHARS];
 	int			messageTime;
+
+	int			page;			// the right side: 0 its colours, 1 typing and keys
+	qboolean	pickingKey;		// the next key pressed opens the console
 } cs;
 
 static void CS_Message( const char *text ) {
@@ -282,6 +285,63 @@ static void CS_Cycle( cvar_t *cv, int steps, int count ) {
 		Cvar_SetValue( cv->name, (float)( ( ( cv->integer + steps ) % count + count ) % count ) );
 }
 
+// a chat's capitals: none, the first letter, the emotes', both
+static const char *csCapitals[] = { "as typed", "the first letter", "each emote's", "first letter and emotes" };
+
+// the right side's second page: typing, in the console and the chat box, and the console's key
+static void CS_DrawTyping( float x, float y, float w ) {
+	const int capitals = ( Cvar_VariableIntegerValue( "cl_chatCapital" ) ? 1 : 0 ) + ( Cvar_VariableIntegerValue( "cl_chatCapitalEmotes" ) ? 2 : 0 );
+	const int key = Key_ConsoleKey();
+	const qboolean tilde = (qboolean)( Cvar_VariableIntegerValue( "cl_consoleTildeKey" ) != 0 );
+	const float lw = 86.0f;
+	int steps;
+
+	CS_Text( x, y, "Typing", csWhite );
+	y += CS_ROW_H + 4;
+	steps = CS_Stepper( x, y, w, "Console line", Cvar_VariableIntegerValue( "con_modernInput" ) ? "on more lines, selects" : "as it was" );
+	if ( steps )
+		Cvar_Set( "con_modernInput", Cvar_VariableIntegerValue( "con_modernInput" ) ? "0" : "1" );
+	y += CS_CTRL_H + CS_GAP;
+	steps = CS_Stepper( x, y, w, "Long chat", Cvar_VariableIntegerValue( "cl_chatSplit" ) ? "sent in parts, --" : "cut by the server" );
+	if ( steps )
+		Cvar_Set( "cl_chatSplit", Cvar_VariableIntegerValue( "cl_chatSplit" ) ? "0" : "1" );
+	y += CS_CTRL_H + CS_GAP;
+	steps = CS_Stepper( x, y, w, "Capitals", csCapitals[capitals] );
+	if ( steps ) {
+		const int n = ( ( capitals + steps ) % 4 + 4 ) % 4;
+
+		Cvar_Set( "cl_chatCapital", ( n & 1 ) ? "1" : "0" );
+		Cvar_Set( "cl_chatCapitalEmotes", ( n & 2 ) ? "1" : "0" );
+	}
+	y += CS_CTRL_H + 2;
+	CS_TextClipped( x + lw, y, w - lw, S_COLOR_GREY "hello ::waves:: -> Hello ::Waves::", csWhite );
+	y += CS_ROW_H;
+	CS_TextClipped( x + lw, y, w - lw, S_COLOR_GREY "in say, say_team and /me", csWhite );
+	y += CS_ROW_H + CS_GAP + 8;
+
+	CS_Text( x, y, "Opening the console", csWhite );
+	y += CS_ROW_H + 4;
+	CS_Text( x, y + 2, "Its key", csDim );
+	if ( CS_Button( x + lw, y, w - lw - 50, cs.pickingKey ? "press a key... (Esc: as it was)"
+		: key >= 0 ? va( "%s - click to change", Key_KeynumToString( key ) ) : "none of its own - click to pick", cs.pickingKey ) )
+		cs.pickingKey = qtrue;
+	if ( CS_Button( x + w - 46, y, 46, "None", qfalse ) ) {
+		cs.pickingKey = qfalse;
+		Key_SetConsoleKey( -1 );
+		CS_Message( "The console opens with the key under Esc" );
+	}
+	y += CS_CTRL_H + CS_GAP;
+	steps = CS_Stepper( x, y, w, "Key under Esc", tilde ? "opens the console" : "a key as others" );
+	if ( steps ) {
+		if ( tilde && key < 0 )
+			CS_Message( "Pick the console's own key first" );
+		else
+			Cvar_Set( "cl_consoleTildeKey", tilde ? "0" : "1" );
+	}
+	y += CS_CTRL_H + 2;
+	CS_TextClipped( x + lw, y, w - lw, S_COLOR_GREY "Shift+Esc always opens it. /consolekey <key> too", csWhite );
+}
+
 // drawn over the console, so what changes shows
 void CL_ConSettings_Draw( void ) {
 	extern cvar_t *con_opacity, *con_scale, *con_height, *con_timestamps, *con_notifytime;
@@ -307,7 +367,8 @@ void CL_ConSettings_Draw( void ) {
 			{ "con_opacity", "1.0" }, { "con_scale", "1" }, { "con_height", "0.5" }, { "con_lineSpacing", "0" }, { "con_textShadow", "0" },
 			{ "con_bgDarken", "0" }, { "con_margin", "0" }, { "con_textColor", "" }, { "con_contrast", "0" }, { "con_colorblind", "0" },
 			{ "con_noFade", "0" }, { "con_font", "0" }, { "con_notifyScale", "0" }, { "con_notifytime", "3" }, { "con_timestamps", "0" },
-			{ "con_modernInput", "0" }, { "cl_chatSplit", "0" },
+			{ "con_modernInput", "0" }, { "cl_chatSplit", "0" }, { "cl_chatCapital", "0" }, { "cl_chatCapitalEmotes", "0" },
+			{ "cl_consoleTildeKey", "1" },
 		};
 
 		for ( size_t i = 0; i < ARRAY_LEN( defaults ); i++ )
@@ -394,8 +455,19 @@ void CL_ConSettings_Draw( void ) {
 	if ( CS_Button( x + w - 60, y, 60, "Read again", qfalse ) )
 		CS_ListImages();
 
-	// right: colours, and the lines over the game
+	// right: colours, and the lines over the game; or typing and keys
 	y = y2;
+	if ( CS_Button( x2, y, 70, "Colours", (qboolean)( cs.page == 0 ) ) ) {
+		cs.page = 0;
+		cs.pickingKey = qfalse;
+	}
+	if ( CS_Button( x2 + 74, y, 110, "Typing and keys", (qboolean)( cs.page == 1 ) ) )
+		cs.page = 1;
+	y += CS_CTRL_H + CS_GAP + 4;
+	if ( cs.page == 1 ) {
+		CS_DrawTyping( x2, y, w );
+		goto done;
+	}
 	steps = CS_Stepper( x2, y, w, "Text colour", CS_TextColor() >= 0 ? csTextColors[CS_TextColor()].name : con_textColor->string );
 	if ( steps ) {
 		const int n = (int)ARRAY_LEN( csTextColors );
@@ -425,22 +497,11 @@ void CL_ConSettings_Draw( void ) {
 	CS_Step( con_notifytime, steps, 1.0f, 1.0f, 30.0f );
 	y += CS_CTRL_H + CS_GAP + 8;
 
-	// typing, in the console and the chat box
-	CS_Text( x2, y, "Typing", csWhite );
-	y += CS_ROW_H + 4;
-	steps = CS_Stepper( x2, y, w, "Console line", Cvar_VariableIntegerValue( "con_modernInput" ) ? "on more lines, selects" : "as it was" );
-	if ( steps )
-		Cvar_Set( "con_modernInput", Cvar_VariableIntegerValue( "con_modernInput" ) ? "0" : "1" );
-	y += CS_CTRL_H + CS_GAP;
-	steps = CS_Stepper( x2, y, w, "Long chat", Cvar_VariableIntegerValue( "cl_chatSplit" ) ? "sent in parts, --" : "cut by the server" );
-	if ( steps )
-		Cvar_Set( "cl_chatSplit", Cvar_VariableIntegerValue( "cl_chatSplit" ) ? "0" : "1" );
-	y += CS_CTRL_H + CS_GAP + 8;
-
 	CS_TextClipped( x2, y, w, S_COLOR_GREY "The console behind this window shows each change", csWhite );
-	y += CS_ROW_H + 4;
+
+done:
 	if ( cs.message[0] && cls.realtime - cs.messageTime < 5000 )
-		CS_TextClipped( x2, y, w, cs.message, csWhite );
+		CS_TextClipped( x2, CS_Y + CS_H - CS_ROW_H - 6, w, cs.message, csWhite );
 
 	cs.click = qfalse;
 	cs.wheel = 0;
@@ -457,6 +518,16 @@ static qboolean CS_AllowChar( int ch ) {
 void CL_ConSettings_KeyEvent( int key, qboolean down ) {
 	if ( !cs.open || !down )
 		return;
+	// the console's key picked: any but a mouse button, Esc and the key under Esc
+	if ( cs.pickingKey && key != A_MOUSE1 && key != A_MOUSE2 && key != A_MWHEELUP && key != A_MWHEELDOWN && key != A_CONSOLE ) {
+		cs.pickingKey = qfalse;
+		Key_SetConsoleKey( key );
+		CS_Message( va( "The console opens with %s%s", Key_KeynumToString( key ),
+			( key >= A_SPACE && key <= A_TILDE ) || ( key >= A_CAP_AGRAVE && key <= A_LOW_YDIERESIS ) ? ", in game only: it types its letter" : "" ) );
+		return;
+	}
+	if ( key == A_MOUSE1 )
+		cs.pickingKey = qfalse;
 	if ( cs.typing && key != A_MOUSE1 && key != A_MWHEELUP && key != A_MWHEELDOWN
 		&& WG_EditKey( cs.typed, sizeof( cs.typed ), key, CS_AllowChar ) )
 		return;
@@ -498,7 +569,9 @@ void CL_ConSettings_MouseEvent( int dx, int dy ) {
 }
 
 void CL_ConSettings_Escape( void ) {
-	if ( cs.typing )
+	if ( cs.pickingKey )
+		cs.pickingKey = qfalse;
+	else if ( cs.typing )
 		cs.typing = qfalse;
 	else
 		CL_ConSettings_Close();

@@ -101,6 +101,7 @@ cvar_t	*cl_autolodscale;
 
 cvar_t	*cl_consoleKeys;
 cvar_t	*cl_consoleUseScanCode;
+cvar_t	*cl_consoleTildeKey;
 cvar_t	*cl_consoleShiftRequirement;
 
 cvar_t  *cl_lanForcePackets;
@@ -881,6 +882,7 @@ so when they are typed in at the console, they will need to be forwarded.
 */
 void CL_ForwardCommandToServer( const char *string ) {
 	char	*cmd;
+	char	capped[MAX_STRING_CHARS];
 
 	cmd = Cmd_Argv(0);
 
@@ -894,7 +896,12 @@ void CL_ForwardCommandToServer( const char *string ) {
 		return;
 	}
 
-	// a chat too long for the server: in parts
+	// a chat given its capitals, then, too long for the server, in parts
+	if ( CL_ChatCaps_Forward( capped, sizeof( capped ) ) ) {
+		Cmd_TokenizeString( capped );
+		string = capped;
+		cmd = Cmd_Argv( 0 );
+	}
 	if ( CL_ChatSplit_Forward() )
 		return;
 
@@ -2476,6 +2483,7 @@ void CL_InitRenderer( void ) {
 	cls.whiteShader = re->RegisterShader( "white" );
 	cls.consoleShader = re->RegisterShader( "console" );
 	CL_ConSettings_RendererRestarted();
+	CL_SaberLight_RendererRestarted();
 	g_console_field_width = cls.glconfig.vidWidth / SMALLCHAR_WIDTH - 2;
 	g_consoleField.widthInChars = g_console_field_width;
 
@@ -2884,6 +2892,7 @@ void CL_Init( void ) {
 	CL_RadialMenu_Init ();
 	CL_Languages_Init ();
 	CL_ChatSplit_Init ();
+	CL_SaberLight_Init ();
 	CL_ConSettings_Init ();
 	CL_SaberStyle_Init ();
 	CL_EmotePreview_Init ();
@@ -2983,6 +2992,7 @@ void CL_Init( void ) {
 	// ~ and `, as keys and characters
 	cl_consoleKeys = Cvar_Get( "cl_consoleKeys", "~ ` 0x7e 0x60 0xb2", CVAR_ARCHIVE, "Which keys are used to toggle the console");
 	cl_consoleUseScanCode = Cvar_Get( "cl_consoleUseScanCode", "1", CVAR_ARCHIVE, "Use native console key detection" );
+	cl_consoleTildeKey = Cvar_Get( "cl_consoleTildeKey", "1", CVAR_ARCHIVE_ND, "The key under Esc opens the console; 0 it's a key as others, the console opened by the one consolekey sets" );
 	cl_consoleShiftRequirement = Cvar_Get( "cl_consoleShiftRequirement", "0", CVAR_ARCHIVE, "Require shift key to be pressed for native console key detection" );
 
 	cl_filterGames = Cvar_Get( "cl_filterGames", "MBII MBIIOpenBeta", CVAR_ARCHIVE_ND, "List of fs_game to filter (space separated)" );
@@ -3130,6 +3140,7 @@ void CL_Shutdown( void ) {
 	Cmd_RemoveCommand ("snd_restart");
 	Cmd_RemoveCommand ("vid_restart");
 	CL_ConSettings_Shutdown();
+	CL_SaberLight_Shutdown();
 	Cmd_RemoveCommand ("disconnect");
 	Cmd_RemoveCommand ("record");
 	Cmd_RemoveCommand ("demo");

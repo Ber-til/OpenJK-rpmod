@@ -28,6 +28,12 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 //	cl_chatSplitMark		what ends a part cut short and starts the next
 //	cl_chatSplitDelay		ms between the parts
 //	cl_chatSplitCommands	the chat commands; name:n keeps n words before the text, as tell's target
+//
+// And a chat starting with a small letter given a capital, the console's and the chat box's:
+//
+//	cl_chatCapital			1 the first letter said (after any emotes it starts with), 0 as typed
+//	cl_chatCapitalEmotes	1 each :: emote ::'s first letter, 0 as typed
+//	cl_chatCapitalCommands	the chat commands given them, name:n as above
 
 #include "client.h"
 
@@ -39,6 +45,9 @@ static cvar_t *cl_chatSplitLength;
 static cvar_t *cl_chatSplitMark;
 static cvar_t *cl_chatSplitDelay;
 static cvar_t *cl_chatSplitCommands;
+static cvar_t *cl_chatCapital;
+static cvar_t *cl_chatCapitalEmotes;
+static cvar_t *cl_chatCapitalCommands;
 
 static struct {
 	char	cmd[CS_MAX_QUEUED][MAX_STRING_CHARS];
@@ -51,8 +60,12 @@ void CL_ChatSplit_Init( void ) {
 	cl_chatSplitLength = Cvar_Get( "cl_chatSplitLength", "149", CVAR_ARCHIVE_ND, "The letters the server keeps of one chat message" );
 	cl_chatSplitMark = Cvar_Get( "cl_chatSplitMark", "--", CVAR_ARCHIVE_ND, "Ends a chat message cut in parts, and starts the next part" );
 	cl_chatSplitDelay = Cvar_Get( "cl_chatSplitDelay", "1100", CVAR_ARCHIVE_ND, "Milliseconds between the parts of a long chat (the server ignores faster)" );
-	cl_chatSplitCommands = Cvar_Get( "cl_chatSplitCommands", "say say_team tell:1", CVAR_ARCHIVE_ND,
+	cl_chatSplitCommands = Cvar_Get( "cl_chatSplitCommands", "say say_team tell:1 me", CVAR_ARCHIVE_ND,
 		"The chat commands split when too long; name:n keeps n words before the text" );
+	cl_chatCapital = Cvar_Get( "cl_chatCapital", "0", CVAR_ARCHIVE_ND, "Chat starting with a small letter starts with a capital" );
+	cl_chatCapitalEmotes = Cvar_Get( "cl_chatCapitalEmotes", "0", CVAR_ARCHIVE_ND, "A :: emote :: in chat starts with a capital" );
+	cl_chatCapitalCommands = Cvar_Get( "cl_chatCapitalCommands", "say say_team me", CVAR_ARCHIVE_ND,
+		"The chat commands given capitals; name:n keeps n words before the text" );
 }
 
 static void CS_Queue( const char *cmd ) {
@@ -80,12 +93,12 @@ void CL_ChatSplit_Frame( void ) {
 	cs.nextTime = cls.realtime + Com_Clampi( 0, 10000, cl_chatSplitDelay->integer );
 }
 
-// the command's words kept before the text, -1 if it isn't a chat command
-static int CS_KeptWords( const char *cmd ) {
+// the command's words kept before the text, -1 if it isn't one of the list's
+static int CS_KeptWordsIn( const char *commands, const char *cmd ) {
 	char list[MAX_CVAR_VALUE_STRING];
 	char *p, *name;
 
-	Q_strncpyz( list, cl_chatSplitCommands->string, sizeof( list ) );
+	Q_strncpyz( list, commands, sizeof( list ) );
 	for ( p = list; *p; ) {
 		char *colon;
 
@@ -105,6 +118,89 @@ static int CS_KeptWords( const char *cmd ) {
 			return colon ? Q_max( 0, atoi( colon + 1 ) ) : 0;
 	}
 	return -1;
+}
+
+static int CS_KeptWords( const char *cmd ) {
+	return CS_KeptWordsIn( cl_chatSplitCommands->string, cmd );
+}
+
+// past the spaces and colours at p
+static char *CC_Visible( char *p ) {
+	for ( ;; ) {
+		if ( *p == ' ' )
+			p++;
+		else if ( p[0] == Q_COLOR_ESCAPE && p[1] && p[1] != Q_COLOR_ESCAPE )
+			p += 2;
+		else
+			return p;
+	}
+}
+
+static void CC_Upper( char *p ) {
+	if ( *p >= 'a' && *p <= 'z' )
+		*p = (char)( *p - 'a' + 'A' );
+}
+
+// a chat's text given its capitals, as cmd's: the first letter said, after any emotes it starts
+// with, and each emote's first letter
+void CL_ChatCaps_Text( const char *cmd, char *text ) {
+	qboolean first, emotes;
+	char *p;
+
+	if ( !cl_chatCapital )
+		return;
+	first = (qboolean)( cl_chatCapital->integer != 0 );
+	emotes = (qboolean)( cl_chatCapitalEmotes->integer != 0 );
+	if ( ( !first && !emotes ) || CS_KeptWordsIn( cl_chatCapitalCommands->string, cmd ) < 0 )
+		return;
+
+	// the emotes it starts with, then the first letter said
+	for ( p = CC_Visible( text ); !strncmp( p, "::", 2 ); ) {
+		char *end = strstr( p + 2, "::" );
+
+		if ( emotes )
+			CC_Upper( CC_Visible( p + 2 ) );
+		if ( !end )
+			return;
+		p = CC_Visible( end + 2 );
+	}
+	if ( first )
+		CC_Upper( p );
+
+	// the emotes after it
+	if ( !emotes )
+		return;
+	for ( p = strstr( p, "::" ); p; ) {
+		char *end = strstr( p + 2, "::" );
+
+		CC_Upper( CC_Visible( p + 2 ) );
+		if ( !end )
+			break;
+		p = strstr( end + 2, "::" );
+	}
+}
+
+// the chat command just typed, given its capitals: rebuilt into out, qtrue, when they changed it
+qboolean CL_ChatCaps_Forward( char *out, int size ) {
+	char text[MAX_STRING_CHARS], typed[MAX_STRING_CHARS];
+	const char *cmd = Cmd_Argv( 0 );
+	int keep;
+
+	if ( !cl_chatCapital || ( !cl_chatCapital->integer && !cl_chatCapitalEmotes->integer ) )
+		return qfalse;
+	keep = CS_KeptWordsIn( cl_chatCapitalCommands->string, cmd );
+	if ( keep < 0 || Cmd_Argc() <= 1 + keep )
+		return qfalse;
+	Q_strncpyz( text, Cmd_ArgsFrom( 1 + keep ), sizeof( text ) );
+	Q_strncpyz( typed, text, sizeof( typed ) );
+	CL_ChatCaps_Text( cmd, text );
+	if ( !strcmp( text, typed ) )
+		return qfalse;
+	Q_strncpyz( out, cmd, size );
+	for ( int i = 1; i <= keep; i++ )
+		Q_strcat( out, size, va( " %s", Cmd_Argv( i ) ) );
+	Q_strcat( out, size, va( " \"%s\"", text ) );
+	return qtrue;
 }
 
 // the length the server will see of a part: a spoken language's label counted in

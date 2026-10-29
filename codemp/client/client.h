@@ -446,6 +446,7 @@ extern	cvar_t	*cl_inGameVideo;
 
 extern	cvar_t	*cl_consoleKeys;
 extern	cvar_t	*cl_consoleUseScanCode;
+extern	cvar_t	*cl_consoleTildeKey;
 extern	cvar_t	*cl_consoleShiftRequirement;
 
 extern  cvar_t  *cl_lanForcePackets;
@@ -985,6 +986,20 @@ void CL_ChatSplit_Init( void );
 int Con_ModernInput( void );	// cl_console.cpp: con_modernInput
 void CL_ChatSplit_Frame( void );
 qboolean CL_ChatSplit_Forward( void );
+void CL_ChatCaps_Text( const char *cmd, char *text );
+qboolean CL_ChatCaps_Forward( char *out, int size );
+
+//
+// cl_saberlight.cpp
+//
+void CL_SaberLight_Init( void );
+void CL_SaberLight_Shutdown( void );
+void CL_SaberLight_RendererRestarted( void );
+void CL_SaberLight_Entity( const refEntity_t *ent );
+qboolean CL_SaberLight_GameLight( const vec3_t org, float radius, float r, float g, float b );
+void CL_SaberLight_ClearScene( void );
+void CL_SaberLight_RenderScene( void );
+int CL_ShaderManager_NearestPlayer( const vec3_t org );	// cl_shadermanager.cpp
 void CL_Languages_ServerCommand( void );
 const char *CL_Languages_Filter( const char *text );
 

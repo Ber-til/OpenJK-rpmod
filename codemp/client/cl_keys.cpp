@@ -996,11 +996,13 @@ void Message_Key( int key ) {
 
 	if ( key == A_ENTER || key == A_KP_ENTER ) {
 		if ( chatField.buffer[0] && cls.state == CA_ACTIVE ) {
-				 if ( chat_playerNum != -1 )	Com_sprintf( buffer, sizeof( buffer ), "tell %i \"%s\"\n", chat_playerNum, chatField.buffer );
-			else if ( chat_team )				Com_sprintf( buffer, sizeof( buffer ), "say_team \"%s\"\n", chatField.buffer );
-			else								Com_sprintf( buffer, sizeof( buffer ), "say \"%s\"\n", chatField.buffer );
+				 if ( chat_playerNum != -1 )	Com_sprintf( buffer, sizeof( buffer ), "tell %i \"%s\"", chat_playerNum, chatField.buffer );
+			else if ( chat_team )				Com_sprintf( buffer, sizeof( buffer ), "say_team \"%s\"", chatField.buffer );
+			else								Com_sprintf( buffer, sizeof( buffer ), "say \"%s\"", chatField.buffer );
 
-			CL_AddReliableCommand( buffer, qfalse );
+			// as the console's: given its capitals, and in parts when too long
+			Cmd_TokenizeString( buffer );
+			CL_ForwardCommandToServer( buffer );
 		}
 		Key_SetCatcher( Key_GetCatcher() & ~KEYCATCH_MESSAGE );
 		Field_Clear( &chatField );
@@ -1366,6 +1368,8 @@ static void Key_CompleteBind( char *args, int argNum ) {
 CL_InitKeyCommands
 ===================
 */
+static void Key_ConsoleKey_f( void );
+
 void CL_InitKeyCommands( void ) {
 	// register our functions
 	Cmd_AddCommand( "bind", Key_Bind_f, "Bind a key to a console command" );
@@ -1374,6 +1378,12 @@ void CL_InitKeyCommands( void ) {
 	Cmd_SetCommandCompletionFunc( "unbind", Key_CompleteUnbind );
 	Cmd_AddCommand( "unbindall", Key_Unbindall_f, "Delete all key bindings" );
 	Cmd_AddCommand( "bindlist", Key_Bindlist_f, "Show all bindings in the console" );
+	Cmd_AddCommand( "consolekey", Key_ConsoleKey_f, "The key that opens the console: consolekey <key> | none" );
+}
+
+// a key that types a letter
+static qboolean Key_TypesLetter( int key ) {
+	return (qboolean)( ( key >= A_SPACE && key <= A_TILDE ) || ( key >= A_CAP_AGRAVE && key <= A_LOW_YDIERESIS ) );
 }
 
 /*
@@ -1383,16 +1393,69 @@ CL_BindUICommand
 Returns qtrue if bind command should be executed while user interface is shown
 ===================
 */
-static qboolean CL_BindUICommand( const char *cmd ) {
+static qboolean CL_BindUICommand( const char *cmd, int key ) {
+	// the console's key opens and closes it over anything, but one that types a letter only in game
+	if ( !Q_stricmp( cmd, "toggleconsole" ) )
+		return (qboolean)!Key_TypesLetter( key );
+
 	if ( Key_GetCatcher( ) & KEYCATCH_CONSOLE )
 		return qfalse;
 
-	if ( !Q_stricmp( cmd, "toggleconsole" ) )
-		return qtrue;
 	if ( !Q_stricmp( cmd, "togglemenu" ) )
 		return qtrue;
 
 	return qfalse;
+}
+
+// the first key bound to open the console, -1 for none: ` and ~ bound to it are the key under Esc
+int Key_ConsoleKey( void ) {
+	for ( int i = 0; i < MAX_KEYS; i++ ) {
+		if ( i == A_LEFT_SINGLE_QUOTE || i == A_TILDE )
+			continue;
+		if ( kg.keys[i].binding && !Q_stricmp( kg.keys[i].binding, "toggleconsole" ) )
+			return i;
+	}
+	return -1;
+}
+
+// the key that opens the console, the others bound to it before let go; -1 none but the one under Esc
+void Key_SetConsoleKey( int keynum ) {
+	for ( int i = 0; i < MAX_KEYS; i++ ) {
+		if ( kg.keys[i].binding && !Q_stricmp( kg.keys[i].binding, "toggleconsole" ) )
+			Key_SetBinding( i, NULL );
+	}
+	if ( keynum > 0 && keynum < MAX_KEYS )
+		Key_SetBinding( keynum, "toggleconsole" );
+	// with no key of its own, the one under Esc opens it again
+	if ( Key_ConsoleKey() < 0 )
+		Cvar_Set( "cl_consoleTildeKey", "1" );
+}
+
+static void Key_ConsoleKey_f( void ) {
+	const int now = Key_ConsoleKey();
+	int keynum;
+
+	if ( Cmd_Argc() < 2 ) {
+		Com_Printf( "Console key: %s%s\n", now >= 0 ? Key_KeynumToString( now ) : "none of its own",
+			cl_consoleTildeKey->integer ? ", and the key under Esc" : "" );
+		Com_Printf( "  consolekey <key> | none; cl_consoleTildeKey 0 makes the key under Esc a key as others. Shift+Esc always opens it\n" );
+		return;
+	}
+	if ( !Q_stricmp( Cmd_Argv( 1 ), "none" ) ) {
+		Key_SetConsoleKey( -1 );
+		Com_Printf( "Console key: only the key under Esc\n" );
+		return;
+	}
+	keynum = Key_StringToKeynum( Cmd_Argv( 1 ) );
+	if ( keynum <= 0 || keynum == A_ESCAPE || keynum == A_CONSOLE ) {
+		Com_Printf( "\"%s\" can't be the console key\n", Cmd_Argv( 1 ) );
+		return;
+	}
+	if ( kg.keys[keynames[keynum].upper].binding && kg.keys[keynames[keynum].upper].binding[0] && Q_stricmp( kg.keys[keynames[keynum].upper].binding, "toggleconsole" ) )
+		Com_Printf( "%s was bound to \"%s\"\n", Key_KeynumToString( keynum ), kg.keys[keynames[keynum].upper].binding );
+	Key_SetConsoleKey( keynum );
+	Com_Printf( "Console key: %s%s\n", Key_KeynumToString( keynum ),
+		Key_TypesLetter( keynum ) ? " (it types its letter: it opens the console only in game, not in the chat box or a menu)" : "" );
 }
 
 /*
@@ -1441,7 +1504,7 @@ void CL_ParseBinding( int key, qboolean down, unsigned time )
 		else if( down )
 		{
 			// normal commands only execute on key press
-			if ( allCommands || CL_BindUICommand( p ) ) {
+			if ( allCommands || CL_BindUICommand( p, key ) ) {
 				// down-only command
 				if ( cls.cgameStarted && cl.mSharedMemory ) {
 					// don't do this unless cgame is inited and shared memory is valid
