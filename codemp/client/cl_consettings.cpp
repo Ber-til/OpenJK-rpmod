@@ -73,6 +73,8 @@ static struct {
 
 	int			page;			// the right side: 0 its colours, 1 typing and keys
 	qboolean	pickingKey;		// the next key pressed opens the console
+
+	qhandle_t	font;			// the tools' narrow font, the menu's if it isn't there
 } cs;
 
 static void CS_Message( const char *text ) {
@@ -122,6 +124,10 @@ static void CS_Open( void ) {
 	cs.typing = qfalse;
 	Q_strncpyz( cs.typed, con_background->string, sizeof( cs.typed ) );
 	CS_ListImages();
+	if ( !cs.font )
+		cs.font = re->RegisterFont( "arialnb" );
+	if ( !cs.font )
+		cs.font = cls.menuFont;
 	// the console's own keys let go: the window takes them, the console stays down to be seen
 	Key_SetCatcher( ( Key_GetCatcher() & ~KEYCATCH_CONSOLE ) | KEYCATCH_CONSETTINGS );
 }
@@ -150,6 +156,7 @@ void CL_ConSettings_Init( void ) {
 void CL_ConSettings_Shutdown( void ) {
 	CL_ConSettings_Close();
 	Cmd_RemoveCommand( CS_COMMAND );
+	cs.font = 0;
 	cs.shown = 0;
 	cs.shownName[0] = '\0';
 }
@@ -157,6 +164,12 @@ void CL_ConSettings_Shutdown( void ) {
 // the renderer started again: the picture is registered anew
 void CL_ConSettings_RendererRestarted( void ) {
 	Con_FontsLost();
+	cs.font = 0;
+	if ( cs.open ) {
+		cs.font = re->RegisterFont( "arialnb" );
+		if ( !cs.font )
+			cs.font = cls.menuFont;
+	}
 	cs.shown = 0;
 	cs.shownName[0] = '\0';
 }
@@ -184,11 +197,11 @@ static void CS_Box( float x, float y, float w, float h, const float *fill ) {
 }
 
 static float CS_TextWidth( const char *text ) {
-	return (float)re->Font_StrLenPixels( text, cls.menuFont, CS_SCALE );
+	return (float)re->Font_StrLenPixels( text, cs.font, CS_SCALE );
 }
 
 static void CS_Text( float x, float y, const char *text, const float *color ) {
-	re->Font_DrawString( (int)x, (int)y, text, color, cls.menuFont, -1, CS_SCALE );
+	re->Font_DrawString( (int)x, (int)y, text, color, cs.font | STYLE_DROPSHADOW, -1, CS_SCALE );
 }
 
 static void CS_TextClipped( float x, float y, float w, const char *text, const float *color ) {
@@ -213,7 +226,7 @@ static qboolean CS_Clicked( float x, float y, float w, float h ) {
 }
 
 static void CS_FieldStyle( wgStyle_t *style ) {
-	style->font = cls.menuFont;
+	style->font = cs.font;
 	style->scale = CS_SCALE;
 	style->lineH = CS_ROW_H;
 	style->padX = 4.0f;

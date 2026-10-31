@@ -7,6 +7,7 @@ OpenJK-rpmod is built on [OpenJK](https://github.com/JACoders/OpenJK); for the c
 ## 0.7.3 (unreleased)
 
 - [Fixed] `Languages`. What you say in a language keeps the colors you type in it, from its first word too; the &lt;&lt; >> around it and what has no color of its own stay yellow, after an emote as well.
+- [Fixed] `Console settings`. /consolesettings writes in the same narrow letters as the other tools, so every label and value fits in its box.
 
 ## 0.7.2 - Oct 29th 2026
 
