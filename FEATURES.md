@@ -28,6 +28,7 @@ Some features reach other players through workarounds only this client understan
 - [Chat Range in the Console](#chat-range-in-the-console)
 - [Whispers](#whispers)
 - [Background Exec](#background-exec)
+- [Load a pk3 while playing](#load-a-pk3-while-playing)
 - [Fighter Takeoff Guard](#fighter-takeoff-guard)
 - [Toggle Crouch](#toggle-crouch)
 - [Wall Stick](#wall-stick)
@@ -545,6 +546,15 @@ Run long *.cfg* scripts without being stuck until they finish.
 - `/execlist` lists the scripts still running
 - `/execstop` stops all of them, `/execstop <file>` only that one
 
+## Load a pk3 while playing
+
+Put a new pk3 in the game's folder and use it at once, without a vid_restart.
+
+- `/loadpk3` loads every pk3 added to the game's folders since the game started; `/loadpk3 <name>` only that one
+- Models, skins, shaders and sounds the game couldn't find before are looked for again, and the new pk3's .shader files are read
+- Players using a model from the new pk3, who showed as Kyle, change to it straight away; the map's models and sounds in it load again too
+- A pk3 that changes files the game already loaded, or a map, still needs a vid_restart or the next map
+- Not on a pure server: it only lets you use the pk3s it lists
 ## Fighter Takeoff Guard
 
 Hold jump to take off in a fighter without being launched into a boost the moment you leave the ground.

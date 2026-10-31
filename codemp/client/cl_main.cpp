@@ -2385,6 +2385,7 @@ void CL_Frame ( int msec ) {
 
 	// the parts of a long chat, one by one
 	CL_ChatSplit_Frame();
+	CL_LoadPk3_Frame();
 
 	// send intentions now
 	CL_SendCmd();
@@ -2905,6 +2906,7 @@ void CL_Init( void ) {
 	CL_FighterAssist_Init ();
 	CL_ChatRange_Init ();
 	CL_Whisper_Init ();
+	CL_LoadPk3_Init ();
 
 	//
 	// register our variables

@@ -1453,6 +1453,9 @@ void		RE_ClearAddedFogs( void );
 void		RE_SetSkyLook( const float *tint, const vec3_t angles, const vec3_t shift );
 void		RE_SetSkyPortal( const vec3_t origin );
 void		RE_SetSkyZoom( float zoom );
+int			RE_ForgetMissing( const char **shaderFiles, int numShaderFiles );
+int			R_ForgetBadModels( void );
+int			R_ForgetBadSkins( void );
 qhandle_t	RE_WorldPieceModel( const int *surfaces, const int *triangles, int count, const vec3_t origin );
 
 void    	R_Init( void );

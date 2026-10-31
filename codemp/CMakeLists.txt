@@ -458,6 +458,7 @@ if(BuildMPEngine)
 		"${MPDir}/client/cl_fighterassist.cpp"
 		"${MPDir}/client/cl_chatrange.cpp"
 		"${MPDir}/client/cl_whisper.cpp"
+		"${MPDir}/client/cl_loadpk3.cpp"
 		"${MPDir}/client/cl_input.cpp"
 		"${MPDir}/client/cl_keys.cpp"
 		"${MPDir}/client/cl_lan.cpp"

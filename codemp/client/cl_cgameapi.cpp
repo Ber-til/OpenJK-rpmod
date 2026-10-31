@@ -933,6 +933,8 @@ static qboolean CL_G2API_RemoveBone( void *ghoul2, const char *boneName, int mod
 }
 
 static void CL_G2API_AttachInstanceToEntNum( void *ghoul2, int entityNum, qboolean server ) {
+	// a player loadpk3 loaded again: their animation on the new model
+	CL_LoadPk3_Attached( ghoul2, entityNum );
 	if ( !ghoul2 ) return;
 	re->G2API_AttachInstanceToEntNum( *((CGhoul2Info_v *)ghoul2), entityNum, server );
 }

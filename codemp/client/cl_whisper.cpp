@@ -33,7 +33,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 // the subtitles alike. The distance is the one RPMod's chat carries, a /me's worked out as the
 // chat range's is (CL_ChatSenderDistance). Your own whispers always show.
 //
-// The notice is RPMod's own, an "info" the cgame is handed after the chat (CL_AddCgameCommand):
+// The notice is RPMod's own, an "info" the cgame is handed after the chat (CL_QueueCgameCommand):
 //   info <ms> <icon> 29 8 "<text>", icon 2 the "i", as rpnotify sends it.
 
 #include "client.h"
@@ -226,6 +226,6 @@ void CL_Whisper_ServerCommand( void ) {
 		Q_strcat( rebuilt, sizeof( rebuilt ), va( " \"%s\"", part ) );
 	}
 	if ( notice )
-		CL_AddCgameCommand( va( WH_NOTICE, name ) );
+		CL_QueueCgameCommand( va( WH_NOTICE, name ) );
 	Cmd_TokenizeString( rebuilt );
 }

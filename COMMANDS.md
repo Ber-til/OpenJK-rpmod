@@ -224,6 +224,7 @@ The console commands, keys and settings this client adds. What each feature does
 - `/con_keybind <key>` the key that opens the console; `/con_keybind none` takes it away; `/con_keybind` alone shows it
 - `/execlist` lists the scripts still running
 - `/execstop [file]` stops all running scripts, or only that one
+- `/loadpk3 [name]` loads pk3s added to the game's folders while it runs, without a vid_restart
 
 ## Settings
 

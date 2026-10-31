@@ -603,6 +603,12 @@ void FS_HomeRmdir( const char *homePath, qboolean recursive );
 
 qboolean FS_FileExists( const char *file );
 
+// loadpk3: pk3s put in the game's folders while it runs
+qboolean FS_ServerIsPure( void );
+int FS_AddNewPaks( const char *only, char (*names)[MAX_QPATH], int maxNames );
+qboolean FS_AddedPaksHave( const char *start );
+int FS_AddedPaksFiles( const char *dir, const char *ext, char (*names)[MAX_QPATH], int maxNames );
+
 char   *FS_BuildOSPath( const char *base, const char *game, const char *qpath );
 qboolean FS_CompareZipChecksum(const char *zipfile);
 

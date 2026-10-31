@@ -1933,4 +1933,28 @@ void R_ModelBounds( qhandle_t handle, vec3_t mins, vec3_t maxs ) {
 	VectorCopy( frame->bounds[1], maxs );
 }
 
+/*
+================
+R_ForgetBadModels
 
+loadpk3: the models that failed to load are out of the name hash, so they're looked for again;
+their handles stay, as bad as they were. How many
+================
+*/
+int R_ForgetBadModels( void ) {
+	int count = 0;
+
+	for ( int h = 0; h < FILE_HASH_SIZE; h++ ) {
+		for ( modelHash_t **link = &mhHashTable[h]; *link; ) {
+			const int handle = ( *link )->handle;
+
+			if ( handle > 0 && handle < tr.numModels && tr.models[handle] && tr.models[handle]->type == MOD_BAD ) {
+				*link = ( *link )->next;
+				count++;
+				continue;
+			}
+			link = &( *link )->next;
+		}
+	}
+	return count;
+}

@@ -96,7 +96,7 @@ qboolean	CL_GetParseEntityState( int parseEntityNumber, entityState_t *state ) {
 
 Commands of the client's own for the cgame
 
-CL_AddCgameCommand gives the cgame a command the server never sent, right after the server
+CL_QueueCgameCommand gives the cgame a command the server never sent, right after the server
 command being given to it (a whisper's notice after its chat). The cgame numbers them in with
 the server's: a server command's number for the cgame is its own plus how many of these came
 before it. With none, the numbers are the server's.
@@ -104,11 +104,11 @@ before it. With none, the numbers are the server's.
 ===============================================================================
 */
 
-#define CL_MAX_OWN_CMDS		32
+#define CL_MAX_OWN_CMDS		256
 
 static struct {
 	int		after;						// the server command it follows
-	char	text[MAX_STRING_CHARS];
+	char	*text;
 }			clOwnCmds[CL_MAX_OWN_CMDS];	// oldest first
 static int	clNumOwnCmds;
 static int	clOwnCmdsGone;				// older ones let go, before any command the cgame can still ask for
@@ -116,6 +116,8 @@ static int	clLastCgameCommand;			// the cgame's number for the last command it w
 
 // the connection is wiped: the numbers are the server's again
 void CL_ResetCgameCommands( void ) {
+	for ( int i = 0; i < clNumOwnCmds; i++ )
+		Z_Free( clOwnCmds[i].text );
 	clNumOwnCmds = 0;
 	clOwnCmdsGone = 0;
 	clLastCgameCommand = 0;
@@ -142,19 +144,31 @@ static int CL_CgameSequence( int num ) {
 	return num + CL_OwnCmdsBefore( num + 1 );
 }
 
-// a command for the cgame after the server command it's being given now
-void CL_AddCgameCommand( const char *text ) {
+// a command for the cgame after the server command it's being given now; the cgame's number for it
+int CL_QueueCgameCommand( const char *text ) {
 	const int after = clc.lastExecutedServerCommand;
+	int sameAfter = 0;
 
 	// what the cgame can no longer ask for, or the oldest if there are too many
 	while ( clNumOwnCmds && ( clOwnCmds[0].after <= clc.serverCommandSequence - MAX_RELIABLE_COMMANDS || clNumOwnCmds == CL_MAX_OWN_CMDS ) ) {
+		Z_Free( clOwnCmds[0].text );
 		memmove( &clOwnCmds[0], &clOwnCmds[1], sizeof( clOwnCmds[0] ) * ( clNumOwnCmds - 1 ) );
 		clNumOwnCmds--;
 		clOwnCmdsGone++;
 	}
 	clOwnCmds[clNumOwnCmds].after = after;
-	Q_strncpyz( clOwnCmds[clNumOwnCmds].text, text, sizeof( clOwnCmds[0].text ) );
+	clOwnCmds[clNumOwnCmds].text = CopyString( text );
 	clNumOwnCmds++;
+	for ( int i = 0; i < clNumOwnCmds; i++ ) {
+		if ( clOwnCmds[i].after == after )
+			sameAfter++;
+	}
+	return CL_CgameNumber( after ) + sameAfter;
+}
+
+// the cgame's number for the last command it was given, the client's own counted
+int CL_LastCgameCommand( void ) {
+	return clLastCgameCommand;
 }
 
 // the cgame's number as one of ours, its index; -1 if it's the server's
@@ -478,6 +492,11 @@ qboolean CL_GetServerCommand( int serverCommandNumber ) {
 			clLastCgameCommand = serverCommandNumber;
 			Com_DPrintf( "clientCommand for cgame: %i : %s\n", serverCommandNumber, clOwnCmds[own].text );
 			Cmd_TokenizeString( clOwnCmds[own].text );
+			// a configstring of ours (loadpk3's players) is the cgame's to read, as the server's is
+			if ( !strcmp( Cmd_Argv( 0 ), "cs" ) ) {
+				CL_ConfigstringModified();
+				Cmd_TokenizeString( clOwnCmds[own].text );
+			}
 			return qtrue;
 		}
 		clLastCgameCommand = serverCommandNumber;
