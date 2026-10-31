@@ -513,7 +513,8 @@ CHAT
 */
 
 // what's said, in the language, the emotes left out of it:
-// ^3::Language:: << said >> ^7:: emote :: ^3<< said >>; NULL if there are only emotes
+// ^3::Language:: << said >> ^7:: emote :: ^3<< said >>; NULL if there are only emotes.
+// What's said keeps the colours typed in it, the << >> stay in the language's
 static const char *LG_InLanguage( const char *lang, const char *text ) {
 	static char out[MAX_STRING_CHARS];
 	qboolean afterEmote = qfalse, spoke = qfalse;
@@ -529,18 +530,11 @@ static const char *LG_InLanguage( const char *lang, const char *text ) {
 			afterEmote = qtrue;
 			continue;
 		}
-		// what's said up to the next emote, without the spaces around it nor the colour it starts
-		// with (the chat's, put back after an emote), as it's in the language's
+		// what's said up to the next emote, without the spaces around it nor colours at its end
 		for ( end = p; *end && !LG_Emote( end ); end++ )
 			;
-		for ( start = p; start < end; ) {
-			if ( *start == ' ' )
-				start++;
-			else if ( start[0] == Q_COLOR_ESCAPE && start + 1 < end && start[1] != Q_COLOR_ESCAPE )
-				start += 2;
-			else
-				break;
-		}
+		for ( start = p; start < end && *start == ' '; )
+			start++;
 		p = end;
 		while ( end > start ) {
 			if ( end[-1] == ' ' )
@@ -550,10 +544,27 @@ static const char *LG_InLanguage( const char *lang, const char *text ) {
 			else
 				break;
 		}
-		if ( end == start )
-			continue;
-		// after an emote in its own colour, what's said is back in the language's
-		Q_strcat( out, sizeof( out ), va( " %s<< %.*s >>", afterEmote ? LG_LABEL_COLOR : "", (int)( end - start ), start ) );
+		// nothing said, or only colours
+		{
+			const char *t = start;
+
+			while ( t < end && ( *t == ' ' || ( t[0] == Q_COLOR_ESCAPE && t + 1 < end && t[1] != Q_COLOR_ESCAPE ) ) )
+				t += *t == ' ' ? 1 : 2;
+			if ( t == end )
+				continue;
+		}
+		// the << >> in the language's colour, after an emote or a colour typed; what's said without
+		// a colour of its own in the language's too
+		{
+			qboolean colored = qfalse;
+
+			for ( const char *t = start; t + 1 < end; t++ ) {
+				if ( t[0] == Q_COLOR_ESCAPE && t[1] != Q_COLOR_ESCAPE )
+					colored = qtrue;
+			}
+			Q_strcat( out, sizeof( out ), va( " %s<< %.*s%s >>", afterEmote ? LG_LABEL_COLOR : "",
+				(int)( end - start ), start, colored ? LG_LABEL_COLOR : "" ) );
+		}
 		afterEmote = qfalse;
 		spoke = qtrue;
 	}

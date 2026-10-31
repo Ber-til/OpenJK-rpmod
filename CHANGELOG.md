@@ -4,6 +4,10 @@ What changed in OpenJK-rpmod from version to version, newest first. What each fe
 
 OpenJK-rpmod is built on [OpenJK](https://github.com/JACoders/OpenJK); for the changes OpenJK itself made, see [its changelog](https://github.com/JACoders/OpenJK/blob/master/CHANGELOG.md).
 
+## 0.7.3 (unreleased)
+
+- [Fixed] `Languages`. What you say in a language keeps the colors you type in it, from its first word too; the &lt;&lt; >> around it and what has no color of its own stay yellow, after an emote as well.
+
 ## 0.7.2 - Oct 29th 2026
 
 - [Added] `Cinematic sounds`. A new Sounds tab in the cinematic manager: pick a sound in the soundmanager (its button says Add to cinematic) and it goes in the cinematic at the moment picked, played for everyone it plays for. Once or over and over, heard everywhere or from a spot dragged in the view or with the move arrows; it has its own row on the timeline.
