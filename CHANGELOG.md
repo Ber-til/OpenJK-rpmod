@@ -6,6 +6,7 @@ OpenJK-rpmod is built on [OpenJK](https://github.com/JACoders/OpenJK); for the c
 
 ## 0.7.3 (unreleased)
 
+- [Added] `Fuse maps`. In the map editor's Models tab, another map in your game can be placed whole (type map in the list): Add puts its middle at the crosshair, then move, turn and scale it like a model, around that spot. Its sky and fog are left out. Drawn only, not walked on; shared with those who have that map.
 - [Added] `Load a pk3 while playing`. /loadpk3 loads the pk3s put in the game's folders since it started (/loadpk3 &lt;name> only that one), without a vid_restart: models, skins, shaders and sounds that couldn't be found are looked for again, and players using a model from the new pk3 change from Kyle to it at once. Files the game already had, and maps, still need a vid_restart. Not on pure servers.
 - [Added] `Whispers` (off by default). /cl_whisper 1: chat in ^k, the whisper color, shows only up to cl_whisperHear (128) units away; up to cl_whisperNotice (384) it's left out and RPMod's notification says :: You hear &lt;name> whispering... ::, the name in its colors; farther, it's only left out. The rest of the line shows as ever. For say and /me, in the chat box, the console and subtitles.
 - [Fixed] `Languages`. What you say in a language keeps the colors you type in it, from its first word too; the &lt;&lt; >> around it and what has no color of its own stay yellow, after an emote as well.
