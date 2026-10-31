@@ -299,7 +299,7 @@ static void CS_Cycle( cvar_t *cv, int steps, int count ) {
 }
 
 // a chat's capitals: none, each sentence's first letter, the emotes', both
-static const char *csCapitals[] = { "as typed", "each sentence", "each emote's", "sentences and emotes" };
+static const char *csCapitals[] = { "disabled", "each sentence", "each emote's", "sentences and emotes" };
 
 // the right side's second page: typing, in the console and the chat box, and the console's key
 static void CS_DrawTyping( float x, float y, float w ) {

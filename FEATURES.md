@@ -573,7 +573,7 @@ Make the console look the way you like.
 - Timestamps shown or hidden
 - The lines over the game get their own letter size, and stay as long as you like; long ones go on to the next row instead of off the screen
 - **Typing** *(both off at first)*: **Console line** (`con_modernInput`) lets a long line in the console go on to more rows, with Ctrl+arrows to jump a word, Shift or the mouse to select (double-click a word, right-click copies) and Ctrl+A, C, X and V, in the chat box too. **Long chat** (`cl_chatSplit`) sends a message too long for the server in parts a second apart, "--" between them
-- **Typing and keys** tab: the console line and long chat, **Capitals** (as typed, each sentence, each emote's, or sentences and emotes), and **Opening the console**: its own key (click, then press the key), **None**, and whether the key under Esc opens it
+- **Typing and keys** tab: the console line and long chat, **Capitals** (disabled, each sentence, each emote's, or sentences and emotes), and **Opening the console**: its own key (click, then press the key), **None**, and whether the key under Esc opens it
 - "Everything as it was" puts it all back. The settings are `con_opacity`, `con_scale`, `con_height`, `con_background`, `con_font`, `con_textShadow`, `con_lineSpacing`, `con_margin`, `con_bgDarken`, `con_textColor`, `con_contrast`, `con_colorblind`, `con_noFade`, `con_timestamps`, `con_notifyScale`, `con_notifytime`, `con_modernInput`, `cl_chatSplit`, `cl_chatCapital`, `cl_chatCapitalEmotes` and `cl_consoleTildeKey`
 
 ## Model Safeguards
