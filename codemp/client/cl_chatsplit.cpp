@@ -309,7 +309,8 @@ qboolean CL_ChatSplit_Forward( void ) {
 			break;
 
 		// all that's left, if it fits
-		Com_sprintf( part, sizeof( part ), "%s%s%s", parts ? before : "", colour ? va( "^%c", colour ) : "", rest );
+		// the colour the part before ended in, the mark in it too
+		Com_sprintf( part, sizeof( part ), "%s%s%s", colour ? va( "^%c", colour ) : "", parts ? before : "", rest );
 		if ( CS_SaidLength( cmd, part, (int)strlen( part ) ) <= limit ) {
 			CS_Queue( va( "%s \"%s\"", prefix, part ) );
 			break;
@@ -320,7 +321,7 @@ qboolean CL_ChatSplit_Forward( void ) {
 			char head[64];
 			int lo = 1, hi = restLen, best = 1, cut;
 
-			Com_sprintf( head, sizeof( head ), "%s%s", parts ? before : "", colour ? va( "^%c", colour ) : "" );
+			Com_sprintf( head, sizeof( head ), "%s%s", colour ? va( "^%c", colour ) : "", parts ? before : "" );
 			while ( lo <= hi ) {
 				const int mid = ( lo + hi ) / 2;
 
