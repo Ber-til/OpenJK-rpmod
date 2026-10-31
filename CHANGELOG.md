@@ -6,6 +6,7 @@ OpenJK-rpmod is built on [OpenJK](https://github.com/JACoders/OpenJK); for the c
 
 ## 0.7.3 (unreleased)
 
+- [Added] `Whispers` (off by default). /cl_whisper 1: chat in ^k, the whisper color, shows only up to cl_whisperHear (128) units away; up to cl_whisperNotice (384) it's left out and RPMod's notification says :: You hear &lt;name> whispering... ::, the name in its colors; farther, it's only left out. The rest of the line shows as ever. For say and /me, in the chat box, the console and subtitles.
 - [Fixed] `Languages`. What you say in a language keeps the colors you type in it, from its first word too; the &lt;&lt; >> around it and what has no color of its own stay yellow, after an emote as well.
 - [Fixed] `Console settings`. /consolesettings writes in the same narrow letters as the other tools, so every label and value fits in its box.
 - [Changed] `Console settings`. Capitals' first choice reads disabled instead of as typed.

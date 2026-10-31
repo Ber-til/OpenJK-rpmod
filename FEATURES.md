@@ -26,6 +26,7 @@ Some features reach other players through workarounds only this client understan
 - [Saber Light](#saber-light)
 - [RPMod Colors in the Console](#rpmod-colors-in-the-console)
 - [Chat Range in the Console](#chat-range-in-the-console)
+- [Whispers](#whispers)
 - [Background Exec](#background-exec)
 - [Fighter Takeoff Guard](#fighter-takeoff-guard)
 - [Toggle Crouch](#toggle-crouch)
@@ -524,6 +525,16 @@ RPMod's chat ranges, now for the console too: chat from far away can fade out or
 - `rpc_chatRangeConsole_alpha` (25): how visible the farthest chat stays, in percent
 - /me lines too, by how far the player is from you; someone out of sight counts as beyond the max range
 - Your chat box and chat sounds don't change
+
+## Whispers
+
+Characters whisper in ^k. With `/cl_whisper 1`, only those close by read it.
+
+- Up to `cl_whisperHear` (128) units away, the whisper shows as it is
+- Up to `cl_whisperNotice` (384), it's left out of the chat and RPMod's notification says *:: You hear <name> whispering... ::*, the name in its colors
+- Farther, it's only left out
+- Only the ^k parts go: the rest of the line, in other colors, shows as ever, and a line that was all whisper doesn't show at all
+- Works for say and /me, in the chat box, the console and cinematic subtitles; your own whispers always show
 
 ## Background Exec
 

@@ -46,6 +46,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 
 #define CR_MATCH_FRAMES		2		// the cgame prints the chat as it runs the command, this frame or the next
 #define CR_OWN_ME_MS		5000	// a /me back from the server this soon after yours sent is yours
+#define CR_OUT_OF_SIGHT		1.0e9f	// someone not in the snapshot: farther than any range
 
 typedef enum {
 	CR_MODE_OFF,
@@ -137,7 +138,7 @@ static void CR_PlainName( const char *in, char *out, int size ) {
 // how far the player whose name starts this line ("name\x19 ...") is, in units; qfalse if
 // nobody playing goes by it. With more than one by that name, it's you only when a /me of
 // yours is waiting to come back, else the nearest of the others in sight
-static qboolean CR_SenderDistance( const char *line, float *distance ) {
+static qboolean CR_FindSender( const char *line, float *distance ) {
 	const char *sep = strchr( line, '\x19' );
 	char said[256], name[256], plain[256];
 	qboolean mine = qfalse, others = qfalse, seen = qfalse;
@@ -192,8 +193,30 @@ static qboolean CR_SenderDistance( const char *line, float *distance ) {
 		return qtrue;
 	}
 	// out of sight
-	*distance = Q_max( rpc_chatRangeConsole_max->value, rpc_chatRangeConsole_min->value ) + 1.0f;
+	*distance = CR_OUT_OF_SIGHT;
 	return qtrue;
+}
+
+// how far the sender of the chat line being given to the cgame is (see CR_FindSender), worked
+// out once for it: the whispers ask, then the chat range
+qboolean CL_ChatSenderDistance( const char *line, float *distance ) {
+	static int lastCommand = -1;
+	static char lastName[256];
+	static qboolean lastFound;
+	static float lastDistance;
+	const char *sep = strchr( line, '\x19' );
+	const int nameLen = sep ? (int)( sep - line ) : (int)strlen( line );
+
+	if ( lastCommand == clc.lastExecutedServerCommand && nameLen < (int)sizeof( lastName )
+		&& !strncmp( lastName, line, nameLen ) && !lastName[nameLen] ) {
+		*distance = lastDistance;
+		return lastFound;
+	}
+	lastFound = CR_FindSender( line, &lastDistance );
+	lastCommand = clc.lastExecutedServerCommand;
+	Q_strncpyz( lastName, line, Q_min( (int)sizeof( lastName ), nameLen + 1 ) );
+	*distance = lastDistance;
+	return lastFound;
 }
 
 // how chat from this far away shows: qfalse to leave it out, else its fade (0 solid)
@@ -245,7 +268,7 @@ void CL_ChatRange_ServerCommand( void ) {
 	}
 	if ( isdigit( (unsigned char)num[0] ) )
 		distance = (float)atoi( num );
-	else if ( num[0] || !CR_SenderDistance( text, &distance ) )
+	else if ( num[0] || !CL_ChatSenderDistance( text, &distance ) )
 		return;
 
 	cr.hide = (qboolean)!CR_Range( distance, &fade );

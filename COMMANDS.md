@@ -229,6 +229,7 @@ The console commands, keys and settings this client adds. What each feature does
 
 - `rpc_removeExtraColorsInConsole 0` shows RPMod's extra colors in the console
 - `rpc_chatRangeConsole_mode <0-3>`, `rpc_chatRangeConsole_min`, `rpc_chatRangeConsole_max`, `rpc_chatRangeConsole_alpha` set the chat range in the console
+- `cl_whisper 1` shows whispers (chat in ^k) only to those close by, `cl_whisperHear` and `cl_whisperNotice` set how close
 - `cl_shaderCrosshair 1` names the shader under your crosshair
 - `cl_fighterTakeoffGuard 0` turns the fighter takeoff guard off
 - `+vehboost` fires a fighter's boost on its own key
