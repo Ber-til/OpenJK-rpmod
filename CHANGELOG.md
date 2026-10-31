@@ -4,6 +4,17 @@ What changed in OpenJK-rpmod from version to version, newest first. What each fe
 
 OpenJK-rpmod is built on [OpenJK](https://github.com/JACoders/OpenJK); for the changes OpenJK itself made, see [its changelog](https://github.com/JACoders/OpenJK/blob/master/CHANGELOG.md).
 
+## 0.7.3 - Oct 31st 2026
+
+- [Added] `Fuse maps`. In the map editor's Models tab, another map in your game can be placed whole (type map in the list): Add puts its middle at the crosshair, then move, turn and scale it like a model, around that spot. Its sky and fog are left out. Drawn only, not walked on; shared with those who have that map.
+- [Added] `Load a pk3 while playing`. /loadpk3 loads the pk3s put in the game's folders since it started (/loadpk3 &lt;name> only that one), without a vid_restart: models, skins, shaders and sounds that couldn't be found are looked for again, and players using a model from the new pk3 change from Kyle to it at once. Files the game already had, and maps, still need a vid_restart. Not on pure servers.
+- [Added] `Whispers` (off by default). /cl_whisper 1: chat in ^k, the whisper color, shows only up to cl_whisperHear (128) units away; up to cl_whisperNotice (384) it's left out and RPMod's notification says :: You hear &lt;name> whispering... ::, the name in its colors; farther, it's only left out. The rest of the line shows as ever. For say and /me, in the chat box, the console and subtitles.
+- [Fixed] `Languages`. What you say in a language keeps the colors you type in it, from its first word too; the &lt;&lt; >> around it and what has no color of its own stay yellow, after an emote as well.
+- [Fixed] `Console settings`. /consolesettings writes in the same narrow letters as the other tools, so every label and value fits in its box.
+- [Fixed] `Long chat`. The -- that starts the next part is in the color the part before ended in, not the chat's own.
+- [Changed] `Console settings`. Capitals' first choice reads disabled instead of as typed.
+- [Changed] `Chat range in the console`. /me lines fade or stay out too, with the same rpc_chatRangeConsole_* settings as say, by how far the player is from you; someone out of sight counts as beyond the max range.
+
 ## 0.7.2 - Oct 29th 2026
 
 - [Added] `Cinematic sounds`. A new Sounds tab in the cinematic manager: pick a sound in the soundmanager (its button says Add to cinematic) and it goes in the cinematic at the moment picked, played for everyone it plays for. Once or over and over, heard everywhere or from a spot dragged in the view or with the move arrows; it has its own row on the timeline.

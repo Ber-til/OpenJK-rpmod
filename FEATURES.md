@@ -26,7 +26,9 @@ Some features reach other players through workarounds only this client understan
 - [Saber Light](#saber-light)
 - [RPMod Colors in the Console](#rpmod-colors-in-the-console)
 - [Chat Range in the Console](#chat-range-in-the-console)
+- [Whispers](#whispers)
 - [Background Exec](#background-exec)
+- [Load a pk3 while playing](#load-a-pk3-while-playing)
 - [Fighter Takeoff Guard](#fighter-takeoff-guard)
 - [Toggle Crouch](#toggle-crouch)
 - [Wall Stick](#wall-stick)
@@ -337,6 +339,7 @@ Edit the map on your own screen: move or hide any part of it, place models, ligh
 - **Map**: every entity of the map, with all its keys; triggers boxed in orange and brush entities in blue
 - **Brushes**: any brush of the map, not only its props, moved with the X, Y and Z arrows, or hidden on your screen
 - **Models**: place models, carry them to the crosshair, turn and scale them. The map's own props can be lifted out too, to move or remove them
+  - Other maps too, whole: type *map* in the list, pick one and Add puts it at the crosshair, its middle there and its lowest point on what you're looking at; move, turn and scale it like a model to fuse the two maps; it turns and scales around that spot, and its sky and fog are left out. It's drawn only: no one can walk on it, as the server only knows its own map. Others see it shared if they have that map too
 - **Lights**: dynamic lights with a color and reach, that can follow a light style
 - **Triggers**: boxes that run a console command when you walk in
 - **Use triggers**: boxes players use (+use), with a name shown when they look at one; their character reaches out to it, and the Storyteller can wait for it. Shared with the edits
@@ -522,7 +525,18 @@ RPMod's chat ranges, now for the console too: chat from far away can fade out or
 - `rpc_chatRangeConsole_min` (128): chat from closer than this is fully visible
 - `rpc_chatRangeConsole_max` (1024): chat from this far or farther is at the minimum alpha, or left out in mode 2
 - `rpc_chatRangeConsole_alpha` (25): how visible the farthest chat stays, in percent
+- /me lines too, by how far the player is from you; someone out of sight counts as beyond the max range
 - Your chat box and chat sounds don't change
+
+## Whispers
+
+Characters whisper in ^k. With `/cl_whisper 1`, only those close by read it.
+
+- Up to `cl_whisperHear` (128) units away, the whisper shows as it is
+- Up to `cl_whisperNotice` (384), it's left out of the chat and RPMod's notification says *:: You hear <name> whispering... ::*, the name in its colors
+- Farther, it's only left out
+- Only the ^k parts go: the rest of the line, in other colors, shows as ever, and a line that was all whisper doesn't show at all
+- Works for say and /me, in the chat box, the console and cinematic subtitles; your own whispers always show
 
 ## Background Exec
 
@@ -533,6 +547,15 @@ Run long *.cfg* scripts without being stuck until they finish.
 - `/execlist` lists the scripts still running
 - `/execstop` stops all of them, `/execstop <file>` only that one
 
+## Load a pk3 while playing
+
+Put a new pk3 in the game's folder and use it at once, without a vid_restart.
+
+- `/loadpk3` loads every pk3 added to the game's folders since the game started; `/loadpk3 <name>` only that one
+- Models, skins, shaders and sounds the game couldn't find before are looked for again, and the new pk3's .shader files are read
+- Players using a model from the new pk3, who showed as Kyle, change to it straight away; the map's models and sounds in it load again too
+- A pk3 that changes files the game already loaded, or a map, still needs a vid_restart or the next map
+- Not on a pure server: it only lets you use the pk3s it lists
 ## Fighter Takeoff Guard
 
 Hold jump to take off in a fighter without being launched into a boost the moment you leave the ground.
@@ -573,7 +596,7 @@ Make the console look the way you like.
 - Timestamps shown or hidden
 - The lines over the game get their own letter size, and stay as long as you like; long ones go on to the next row instead of off the screen
 - **Typing** *(both off at first)*: **Console line** (`con_modernInput`) lets a long line in the console go on to more rows, with Ctrl+arrows to jump a word, Shift or the mouse to select (double-click a word, right-click copies) and Ctrl+A, C, X and V, in the chat box too. **Long chat** (`cl_chatSplit`) sends a message too long for the server in parts a second apart, "--" between them
-- **Typing and keys** tab: the console line and long chat, **Capitals** (as typed, each sentence, each emote's, or sentences and emotes), and **Opening the console**: its own key (click, then press the key), **None**, and whether the key under Esc opens it
+- **Typing and keys** tab: the console line and long chat, **Capitals** (disabled, each sentence, each emote's, or sentences and emotes), and **Opening the console**: its own key (click, then press the key), **None**, and whether the key under Esc opens it
 - "Everything as it was" puts it all back. The settings are `con_opacity`, `con_scale`, `con_height`, `con_background`, `con_font`, `con_textShadow`, `con_lineSpacing`, `con_margin`, `con_bgDarken`, `con_textColor`, `con_contrast`, `con_colorblind`, `con_noFade`, `con_timestamps`, `con_notifyScale`, `con_notifytime`, `con_modernInput`, `cl_chatSplit`, `cl_chatCapital`, `cl_chatCapitalEmotes` and `cl_consoleTildeKey`
 
 ## Model Safeguards

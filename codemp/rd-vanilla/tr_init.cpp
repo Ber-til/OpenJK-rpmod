@@ -2183,6 +2183,7 @@ Q_EXPORT refexport_t* QDECL GetRefAPI( int apiVersion, refimport_t *rimp ) {
 	re.ext.SetSkyLook						= RE_SetSkyLook;
 	re.ext.SetSkyPortal						= RE_SetSkyPortal;
 	re.ext.SetSkyZoom						= RE_SetSkyZoom;
+	re.ext.ForgetMissing					= RE_ForgetMissing;
 	re.ext.WorldPieceModel					= RE_WorldPieceModel;
 
 	return &re;

@@ -23,8 +23,8 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 // A free camera over the map, the panel on the right in tabs:
 // Map: the map's own entities, triggers boxed in orange and brush entities in blue, with
 // all their keys; a brush entity can be hidden.
-// Models: models placed here, carried to the crosshair, turned and scaled; and the map's
-// own props. Those were melted into the map when it was built, so a click finds the
+// Models: models placed here, carried to the crosshair, turned and scaled; other maps too,
+// whole ("#name", as misc_bsp has them), to fuse with this one; and the map's own props. Those were melted into the map when it was built, so a click finds the
 // triangles under the cursor and the ones joined to them; lifted out, they're hidden in
 // the world and drawn as a model of their own, with the light they had. What's joined to
 // the whole map is taken a brush at a time instead: the faces lying on the brush clicked.
@@ -1650,6 +1650,43 @@ static meItem_t *ME_NewItem( int kind ) {
 }
 
 // where a new thing goes: on what the crosshair is on, or in front of the camera
+static const char *ME_ShownName( const char *name );
+static void ME_ItemAxis( const meItem_t *it, matrix3_t axis );
+
+// a placed map ("#name") turns and scales around its bottom middle, the point it was put down by,
+// not its origin, which can be far from it. That point in its own space; qfalse if it isn't a map
+static qboolean ME_MapPivot( const meItem_t *it, vec3_t pivot ) {
+	vec3_t mins, maxs;
+
+	if ( it->kind != ME_ITEM_MODEL || it->model[0] != '#' || !it->h )
+		return qfalse;
+	re->ModelBounds( it->h, mins, maxs );
+	pivot[0] = ( mins[0] + maxs[0] ) * 0.5f;
+	pivot[1] = ( mins[1] + maxs[1] ) * 0.5f;
+	pivot[2] = mins[2];
+	return qtrue;
+}
+
+// a point in the item's own space, where it is in the world
+static void ME_ItemPoint( const meItem_t *it, const vec3_t local, vec3_t out ) {
+	matrix3_t axis;
+
+	ME_ItemAxis( it, axis );
+	VectorCopy( it->org, out );
+	for ( int i = 0; i < 3; i++ )
+		VectorMA( out, local[i], axis[i], out );
+}
+
+// the item moved so a point in its own space is at that place in the world
+static void ME_PutPointAt( meItem_t *it, const vec3_t local, const vec3_t world ) {
+	matrix3_t axis;
+
+	ME_ItemAxis( it, axis );
+	VectorCopy( world, it->org );
+	for ( int i = 0; i < 3; i++ )
+		VectorMA( it->org, -local[i], axis[i], it->org );
+}
+
 static void ME_PlaceAt( meItem_t *it, const vec3_t at, const vec3_t normal ) {
 	switch ( it->kind ) {
 	case ME_ITEM_MODEL:
@@ -1690,7 +1727,8 @@ static void ME_AddItem( int kind ) {
 	}
 	if ( kind == ME_ITEM_MODEL ) {
 		Q_strncpyz( it->model, me.pickModel, sizeof( it->model ) );
-		it->ang[YAW] = AngleNormalize360( ME_Round( ( me.camAng[YAW] + 180.0f ) / 15.0f ) * 15.0f );
+		if ( it->model[0] != '#' )
+			it->ang[YAW] = AngleNormalize360( ME_Round( ( me.camAng[YAW] + 180.0f ) / 15.0f ) * 15.0f );
 	}
 	// what the middle of the screen is on
 	AngleVectors( me.camAng, forward, NULL, NULL );
@@ -1704,6 +1742,16 @@ static void ME_AddItem( int kind ) {
 		VectorSet( normal, 0, 0, 1 );
 	}
 	ME_PlaceAt( it, at, normal );
+	if ( kind == ME_ITEM_MODEL && it->model[0] == '#' ) {
+		vec3_t pivot;
+
+		ME_RegisterItem( it );
+		if ( !ME_MapPivot( it, pivot ) ) {
+			ME_Message( va( S_COLOR_YELLOW "%s couldn't be loaded", ME_ShownName( it->model ) ) );
+			return;
+		}
+		ME_PutPointAt( it, pivot, at );
+	}
 	me.numItems++;
 	ME_Select( ME_SEL_ITEM, me.numItems - 1 );
 	me.tab = ME_ItemTab( kind );
@@ -2804,6 +2852,31 @@ static void ME_AddName( const char *name, void *ctx ) {
 	me.names[me.numNames++] = stored;
 }
 
+// another map, by its name in maps/ without .bsp: "#mp/ffa3", as the renderer takes it; not
+// the one loaded
+static void ME_AddMapName( const char *name, void *ctx ) {
+	char map[MAX_QPATH], current[MAX_QPATH];
+
+	if ( Q_stricmpn( name, "maps/", 5 ) )
+		return;
+	COM_StripExtension( name + 5, map, sizeof( map ) );
+	COM_StripExtension( cl.mapname[0] ? cl.mapname + 5 : "", current, sizeof( current ) );
+	for ( char *c = map; *c; c++ ) {
+		if ( *c == '\\' )
+			*c = '/';
+	}
+	if ( !map[0] || !Q_stricmp( map, current ) )
+		return;
+	ME_AddName( va( "#%s", map ), ctx );
+}
+
+// a name in the list as it's shown: a model's without "models/", a map's as one
+static const char *ME_ShownName( const char *name ) {
+	if ( name[0] == '#' )
+		return va( "map: %s", name + 1 );
+	return !Q_stricmpn( name, "models/", 7 ) ? name + 7 : name;
+}
+
 static int QDECL ME_CompareNames( const void *a, const void *b ) {
 	return strcmp( *(const char **)a, *(const char **)b );
 }
@@ -2813,6 +2886,7 @@ static void ME_IndexModels( void ) {
 
 	me.numNames = me.poolUsed = 0;
 	FS_ListFilesRecursive( "models", ".md3", ME_AddName, NULL );
+	FS_ListFilesRecursive( "maps", ".bsp", ME_AddMapName, NULL );
 	qsort( me.names, me.numNames, sizeof( me.names[0] ), ME_CompareNames );
 	// a model in a pk3 and loose shows once
 	for ( int i = 0; i < me.numNames; i++ ) {
@@ -4719,8 +4793,12 @@ static void ME_DrawModelsTab( float x, float y, float w ) {
 	}
 
 	if ( it ) {
+		vec3_t pivot, pivotAt;
+		const qboolean isMap = ME_MapPivot( it, pivot );
 		int steps;
 
+		if ( isMap )
+			ME_ItemPoint( it, pivot, pivotAt );
 		steps = ME_Stepper( x, y, w, "Yaw", va( "%i", ME_Round( it->ang[YAW] ) ) );
 		ME_AdjustAngle( &it->ang[YAW], steps, 15.0f );
 		y += ME_CTRL_H + ME_GAP;
@@ -4733,6 +4811,9 @@ static void ME_DrawModelsTab( float x, float y, float w ) {
 		steps = ME_Stepper( x, y, w, "Scale", va( "%.2f", it->scale ) );
 		ME_Adjust( &it->scale, steps, 0.1f, 0.05f, 50.0f );
 		y += ME_CTRL_H + ME_GAP + 4;
+		// a map turned or scaled stays where it was put
+		if ( isMap )
+			ME_PutPointAt( it, pivot, pivotAt );
 	} else {
 		y += 4;
 	}
@@ -4743,7 +4824,7 @@ static void ME_DrawModelsTab( float x, float y, float w ) {
 	Q_strncpyz( lower, me.search, sizeof( lower ) );
 	Q_strlwr( lower );
 	for ( int i = 0; i < me.numNames; i++ ) {
-		if ( !lower[0] || strstr( me.names[i] + 7, lower ) )
+		if ( !lower[0] || Q_stristr( ME_ShownName( me.names[i] ), lower ) )
 			matches[numMatches++] = i;
 	}
 	float rowW;
@@ -4754,7 +4835,7 @@ static void ME_DrawModelsTab( float x, float y, float w ) {
 
 		if ( !Q_stricmp( name, me.pickModel ) )
 			ME_Fill( x + 1, y + 1 + r * ME_ROW_H, rowW - 2, ME_ROW_H, meHighlight );
-		ME_TextTail( x + 4, y + 1 + r * ME_ROW_H, rowW - 8, name + 7, meWhite );
+		ME_TextTail( x + 4, y + 1 + r * ME_ROW_H, rowW - 8, ME_ShownName( name ), meWhite );
 	}
 	if ( clicked >= 0 ) {
 		Q_strncpyz( me.pickModel, me.names[matches[clicked]], sizeof( me.pickModel ) );
@@ -4766,7 +4847,7 @@ static void ME_DrawModelsTab( float x, float y, float w ) {
 		}
 	}
 	y += rows * ME_ROW_H + 4;
-	ME_TextTail( x, y, w, me.pickModel[0] ? va( "Adds %s", me.pickModel + 7 ) : "Pick one, then Add puts it at the crosshair", meDim );
+	ME_TextTail( x, y, w, me.pickModel[0] ? va( "Adds %s", ME_ShownName( me.pickModel ) ) : "Pick a model or a map (type map), then Add puts it at the crosshair", meDim );
 }
 
 static void ME_DrawLightsTab( float x, float y, float w ) {

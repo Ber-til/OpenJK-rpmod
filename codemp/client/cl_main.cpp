@@ -189,6 +189,9 @@ void CL_AddReliableCommand( const char *cmd, qboolean isDisconnectCmd ) {
 	// RPMod: what would crash the server stays here
 	if ( !isDisconnectCmd && !CL_RpHooks_AllowCommand( cmd ) )
 		return;
+	// a /me of your own is known for yours when it comes back
+	if ( !isDisconnectCmd )
+		CL_ChatRange_OutgoingCommand( cmd );
 	// an emote's animation is watched for, a Help click shows one
 	if ( !isDisconnectCmd )
 		CL_EmotePreview_Command( cmd );
@@ -851,6 +854,7 @@ void CL_Disconnect( qboolean showMainMenu ) {
 
 	// wipe the client connection
 	Com_Memset( &clc, 0, sizeof( clc ) );
+	CL_ResetCgameCommands();
 
 	cls.state = CA_DISCONNECTED;
 
@@ -2381,6 +2385,7 @@ void CL_Frame ( int msec ) {
 
 	// the parts of a long chat, one by one
 	CL_ChatSplit_Frame();
+	CL_LoadPk3_Frame();
 
 	// send intentions now
 	CL_SendCmd();
@@ -2900,6 +2905,8 @@ void CL_Init( void ) {
 
 	CL_FighterAssist_Init ();
 	CL_ChatRange_Init ();
+	CL_Whisper_Init ();
+	CL_LoadPk3_Init ();
 
 	//
 	// register our variables

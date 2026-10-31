@@ -1056,6 +1056,30 @@ void CL_FighterAssist_FilterCmd( usercmd_t *cmd, qboolean boost );
 void CL_ChatRange_Init( void );
 void CL_ChatRange_Shutdown( void );
 void CL_ChatRange_ServerCommand( void );
+void CL_ChatRange_OutgoingCommand( const char *cmd );
+qboolean CL_ChatSenderDistance( const char *line, float *distance );
+
+//
+// cl_whisper.cpp
+//
+void CL_Whisper_Init( void );
+void CL_Whisper_ServerCommand( void );
+
+//
+// cl_cgame.cpp: the client's own commands for the cgame
+//
+int CL_QueueCgameCommand( const char *text );
+int CL_LastCgameCommand( void );
+void CL_ResetCgameCommands( void );
+
+//
+// cl_loadpk3.cpp
+//
+void CL_LoadPk3_Init( void );
+void CL_LoadPk3_Frame( void );
+void CL_LoadPk3_Attached( void *ghoul2, int entityNum );
+void CL_EmotePreview_PlayerAnims( void *ghoul2, int legsAnim, int torsoAnim );
+int S_ForgetMissing( void );
 void CL_ChatRange_CgamePrint( const char *text );
 
 //
