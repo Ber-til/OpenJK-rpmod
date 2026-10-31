@@ -522,6 +522,7 @@ RPMod's chat ranges, now for the console too: chat from far away can fade out or
 - `rpc_chatRangeConsole_min` (128): chat from closer than this is fully visible
 - `rpc_chatRangeConsole_max` (1024): chat from this far or farther is at the minimum alpha, or left out in mode 2
 - `rpc_chatRangeConsole_alpha` (25): how visible the farthest chat stays, in percent
+- /me lines too, by how far the player is from you; someone out of sight counts as beyond the max range
 - Your chat box and chat sounds don't change
 
 ## Background Exec

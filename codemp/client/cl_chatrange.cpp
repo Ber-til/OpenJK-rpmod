@@ -32,6 +32,10 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 //   rpc_chatRangeConsole_max    here and beyond it is at the min alpha (or left out, mode 2)
 //   rpc_chatRangeConsole_alpha  the min alpha, in percent
 //
+// A /me comes as a "chat" with no distance ("name^7\x19 ^7::emote::"): its distance is
+// the one from here to the player of that name, as the last snapshot has them; someone not
+// in it is too far to see, as far as the max range.
+//
 // The cgame still gets the command, so its chat box and sound are as before. Only on RPMod
 // (fs_game rpmod), as elsewhere the number is a client number.
 //
@@ -41,6 +45,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #include "client.h"
 
 #define CR_MATCH_FRAMES		2		// the cgame prints the chat as it runs the command, this frame or the next
+#define CR_OWN_ME_MS		5000	// a /me back from the server this soon after yours sent is yours
 
 typedef enum {
 	CR_MODE_OFF,
@@ -54,6 +59,8 @@ static struct {
 	int			frame;
 	qboolean	hide;
 	int			fade;						// 1-255 when not hidden
+	int			ownMeTime;					// cls.realtime your last /me went
+	int			ownMePending;				// how many of yours are still to come back
 } cr;
 
 static cvar_t *rpc_chatRangeConsole_mode;
@@ -96,6 +103,99 @@ static void CR_Plain( const char *in, char *out, int size ) {
 	out[len] = '\0';
 }
 
+// a command on its way to the server: a /me of your own is waited for
+void CL_ChatRange_OutgoingCommand( const char *cmd ) {
+	while ( *cmd == ' ' )
+		cmd++;
+	if ( !Q_stricmpn( cmd, "me ", 3 ) ) {
+		// any that never came back are forgotten
+		if ( cls.realtime - cr.ownMeTime >= CR_OWN_ME_MS )
+			cr.ownMePending = 0;
+		cr.ownMeTime = cls.realtime;
+		cr.ownMePending++;
+	}
+}
+
+// the name with no colours in it, nor spaces at its ends
+static void CR_PlainName( const char *in, char *out, int size ) {
+	int len = 0;
+
+	for ( ; *in && len < size - 1; in++ ) {
+		if ( *in == Q_COLOR_ESCAPE && in[1] ) {
+			in++;
+			continue;
+		}
+		if ( *in == ' ' && !len )
+			continue;
+		out[len++] = *in;
+	}
+	while ( len && out[len - 1] == ' ' )
+		len--;
+	out[len] = '\0';
+}
+
+// how far the player whose name starts this line ("name\x19 ...") is, in units; qfalse if
+// nobody playing goes by it. With more than one by that name, it's you only when a /me of
+// yours is waiting to come back, else the nearest of the others in sight
+static qboolean CR_SenderDistance( const char *line, float *distance ) {
+	const char *sep = strchr( line, '\x19' );
+	char said[256], name[256], plain[256];
+	qboolean mine = qfalse, others = qfalse, seen = qfalse;
+	float nearest = 0.0f;
+
+	if ( !sep || sep - line >= (int)sizeof( said ) || !cl.snap.valid )
+		return qfalse;
+	Q_strncpyz( said, line, (int)( sep - line ) + 1 );
+	CR_PlainName( said, name, sizeof( name ) );
+	if ( !name[0] )
+		return qfalse;
+	for ( int c = 0; c < MAX_CLIENTS; c++ ) {
+		const int ofs = cl.gameState.stringOffsets[CS_PLAYERS + c];
+
+		if ( !ofs )
+			continue;
+		CR_PlainName( Info_ValueForKey( cl.gameState.stringData + ofs, "n" ), plain, sizeof( plain ) );
+		if ( Q_stricmp( plain, name ) )
+			continue;
+		if ( c == cl.snap.ps.clientNum ) {
+			mine = qtrue;
+			continue;
+		}
+		others = qtrue;
+		for ( int i = 0; i < cl.snap.numEntities; i++ ) {
+			const entityState_t *es = &cl.parseEntities[( cl.snap.parseEntitiesNum + i ) & ( MAX_PARSE_ENTITIES - 1 )];
+
+			if ( es->number == c ) {
+				const float d = Distance( cl.snap.ps.origin, es->pos.trBase );
+
+				if ( !seen || d < nearest )
+					nearest = d;
+				seen = qtrue;
+				break;
+			}
+		}
+	}
+	if ( mine ) {
+		const qboolean waiting = (qboolean)( cr.ownMePending > 0 && cls.realtime - cr.ownMeTime < CR_OWN_ME_MS );
+
+		if ( waiting )
+			cr.ownMePending--;
+		if ( !others || waiting ) {
+			*distance = 0.0f;
+			return qtrue;
+		}
+	}
+	if ( !others )
+		return qfalse;
+	if ( seen ) {
+		*distance = nearest;
+		return qtrue;
+	}
+	// out of sight
+	*distance = Q_max( rpc_chatRangeConsole_max->value, rpc_chatRangeConsole_min->value ) + 1.0f;
+	return qtrue;
+}
+
 // how chat from this far away shows: qfalse to leave it out, else its fade (0 solid)
 static qboolean CR_Range( float distance, int *fade ) {
 	const int mode = rpc_chatRangeConsole_mode->integer;
@@ -124,6 +224,7 @@ static qboolean CR_Range( float distance, int *fade ) {
 // a chat command is about to run: what it prints is faded or left out by its distance
 void CL_ChatRange_ServerCommand( void ) {
 	const char *cmd = Cmd_Argv( 0 ), *num, *text;
+	float distance;
 	int fade;
 
 	cr.text[0] = '\0';
@@ -132,10 +233,8 @@ void CL_ChatRange_ServerCommand( void ) {
 
 	// "chat" "name: message" <distance>; "lchat" "name" "location" "color" "message" <distance>
 	if ( !strcmp( cmd, "chat" ) || !strcmp( cmd, "tchat" ) ) {
-		if ( Cmd_Argc() < 3 )
-			return;
 		text = Cmd_Argv( 1 );
-		num = Cmd_Argv( 2 );
+		num = Cmd_Argc() >= 3 ? Cmd_Argv( 2 ) : "";
 	} else if ( !strcmp( cmd, "lchat" ) || !strcmp( cmd, "ltchat" ) ) {
 		if ( Cmd_Argc() < 6 )
 			return;
@@ -144,10 +243,12 @@ void CL_ChatRange_ServerCommand( void ) {
 	} else {
 		return;
 	}
-	if ( !isdigit( (unsigned char)num[0] ) )
+	if ( isdigit( (unsigned char)num[0] ) )
+		distance = (float)atoi( num );
+	else if ( num[0] || !CR_SenderDistance( text, &distance ) )
 		return;
 
-	cr.hide = (qboolean)!CR_Range( (float)atoi( num ), &fade );
+	cr.hide = (qboolean)!CR_Range( distance, &fade );
 	cr.fade = fade;
 	if ( !cr.hide && !cr.fade )
 		return;
