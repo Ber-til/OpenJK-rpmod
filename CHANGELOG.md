@@ -4,6 +4,15 @@ What changed in OpenJK-rpmod from version to version, newest first. What each fe
 
 OpenJK-rpmod is built on [OpenJK](https://github.com/JACoders/OpenJK); for the changes OpenJK itself made, see [its changelog](https://github.com/JACoders/OpenJK/blob/master/CHANGELOG.md).
 
+## 0.7.4 - Nov 2nd 2026
+
+- [Removed] `Installer`. The Windows release no longer comes with Install-OpenJK-rpmod.bat: the zip is extracted into GameData by hand, as the README says. Installing and updating will be a separate program's.
+- [Added] `Update check`. As the game starts, at most once a day, it asks GitHub whether there's a newer OpenJK-rpmod; when there is, the console says so, with the link, and the main menu shows it. `/version` shows your version and the newest, `/version check` asks again. `cl_updateCheck 0` never asks. On Linux and macOS it uses the computer's libcurl, and is left out where there's none.
+- [Fixed] `Whispers`. The notice "You hear <name> whispering..." always plays RPMod's info sound (sound/effects/info.wav). It used to play whatever sound sat in one fixed slot of the server's sound list, which differs from map to map: a ping, a saber turning on.
+- [Fixed] `Console fonts`. In a font picked in /consolesettings, text in several colours no longer has wide gaps where the colour changes; selecting text and the find highlights follow the letters.
+- [Changed] `Whispers`. Comms ("Comm-<name>:") aren't touched by whispers: a comm goes straight to the one it's for, so a whispered one is heard in full, no notice. It used to show as an empty "Comm-<name>:".
+- [Fixed] `Admin tools`. Logging in to your RPMod account ("You are now logged in as ...") or out checks your admin rank again: a tool opened before logging in no longer stays shut after it.
+
 ## 0.7.3 - Oct 31st 2026
 
 - [Added] `Fuse maps`. In the map editor's Models tab, another map in your game can be placed whole (type map in the list): Add puts its middle at the crosshair, then move, turn and scale it like a model, around that spot. Its sky and fog are left out. Drawn only, not walked on; shared with those who have that map.
