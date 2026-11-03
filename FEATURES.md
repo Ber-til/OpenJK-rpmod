@@ -17,6 +17,10 @@ Some features reach other players through workarounds only this client understan
 - [Radial Menus](#radial-menus)
 - [Saber Styles](#saber-styles)
 - [Emote Preview](#emote-preview)
+- [Animation Manager](#animation-manager-custom-emotes-are-experimental)
+- [Presets](#presets)
+- [Discord Status](#discord-status)
+- [In-game Menu and Camera Settings](#in-game-menu-and-camera-settings)
 - [Widescreen Text](#widescreen-text)
 - [Console Selection and Find](#console-selection-and-find)
 - [Lists and Text Boxes](#lists-and-text-boxes)
@@ -24,6 +28,7 @@ Some features reach other players through workarounds only this client understan
 - [Chat Capitals](#chat-capitals)
 - [Console Key](#console-key)
 - [Saber Light](#saber-light)
+- [NPC Names](#npc-names)
 - [RPMod Colors in the Console](#rpmod-colors-in-the-console)
 - [Chat Range in the Console](#chat-range-in-the-console)
 - [Whispers](#whispers)
@@ -35,6 +40,7 @@ Some features reach other players through workarounds only this client understan
 - [Console Settings](#console-settings)
 - [Model Safeguards](#model-safeguards)
 - [Update Check](#update-check)
+- [Vulkan Renderer](#vulkan-renderer-experimental)
 - [Experimental features](#experimental-features)
 
 ## Model Manager
@@ -175,7 +181,7 @@ Click any surface, see what it's made of, and swap its texture for everyone on t
 - Zoom it, from 0.25x to 4x, to make the sky look nearer or farther; a 3D skybox or sky portal zooms its view
 - On a map with a 3D skybox, the whole skybox turns, and can be moved too
 - Shown on your screen as you change it; **Share with all** *(experimental)* sends it to everyone with this client until the map changes, **Reset for all** puts the map's sky back
-- Click a sky in the free camera and *Sky look...* takes you there. *Needs the rd-vanilla_x86.dll from the release.*
+- Click a sky in the free camera and *Sky look...* takes you there. *Needs the release's renderer, OpenGL (rd-vanilla_x86.dll) or Vulkan (rd-vulkan_x86.dll).*
 - **Sky portal**: the map seen from a spot in place of the sky, as a 3D skybox does, even on a map without one. Pick the map's own 3D skybox, or add the free camera's spot; the spots are kept per map. Turn and move it with the sliders above, and Share with all sends it too
 
 ### Player shaders (Mine tab)
@@ -258,7 +264,7 @@ Assemble a mission out of steps, then play it: NPCs, models, effects, sounds, mu
 
 ![](https://i.ibb.co/cc1QJSmd/openjk-x86-2026-10-14-20-17-25-677.png)
 
-- **Flow**: wait a number of seconds, "wait for me" until you press Continue (or `/storyteller continue`), a "when" for each kind of trigger (someone enters a map trigger, comes near a spot or an effect, a door moves, someone says something or uses a use trigger), If / Else / End if under a "when", and run any console command
+- **Flow**: wait a number of seconds, "wait for me" until you press Continue (or `/storyteller continue`), a "when" for each kind of trigger (someone enters a map trigger, comes near a spot or an effect, a door moves, someone says something or uses a use trigger), If / Else / End if under a "when", play another saved story alongside (**Play story**), and run any console command
 - **Speech**: say a line in chat, as you or as one of the players on the server *(experimental)*, a center message for everyone or one player, a notification with a countdown, NPC talk and objectives *(experimental)*
 - **NPCs**: spawn an NPC, teleport NPCs, walk them along a route *(experimental)*, and any `npc` command on them
 - **World**: place a model, play an effect, a screen effect (fade, shake...), remap a shader, a screen overlay, the sky's look *(experimental)*, lock or unlock a door, play a sound, change the music
@@ -270,9 +276,12 @@ Assemble a mission out of steps, then play it: NPCs, models, effects, sounds, mu
 
 ### Conditions and timers
 
-- **If** goes under a "when" step and looks once, when the story gets to it: how many players, NPCs or people are in a map trigger or near a spot or an effect (at least, at most or exactly so many), or whether someone has said one of the words you give since the story began. True, the steps after it play; false, the ones after its **Else**. **End if** closes it, and Ifs can sit inside Ifs. If, Else and End if are greyed out until there's a "when" above where they'd go; one left above every "when" shows in red, and the story stops there
+- **If** goes under a "when" step and looks once, when the story gets to it: how many players, NPCs or people are in a map trigger or near a spot or an effect (at least, at most or exactly so many), whether someone has said one of the words you give since the story began, or **who set off** the "when" above it, by name (the whole of it, or a part of three letters or more). True, the steps after it play; false, the ones after its **Else**. **End if** closes it, and Ifs can sit inside Ifs. If, Else and End if are greyed out until there's a "when" above where they'd go; one left above every "when" shows in red, and the story stops there
 - A "when" on an area can wait for them to **stay** in it a number of seconds; "When someone says" waits for one of the words you give (`|` between them)
 - "When someone uses a trigger" waits for one of the Map Editor's use triggers, the one you look at or pick in a free camera (a held one once it's been held long enough); If can ask whether someone used it too
+- Its **Too early** keeps the story in order: while the story is at an earlier step (or waits armed for its first), the use trigger is hidden from the players, or shows them its message instead of being used, until the story gets there. Dinner after breakfast: one story, "When someone uses breakfast", then "When someone uses dinner" with Too early set. For players with this client, while the storyteller is on the map
+- **Play story** plays a saved story alongside the one playing, which goes on: from its start, or once its own first "when" is set off. "When someone uses lever", then "Play story Story2", and the lever starts Story2
+- **Diagram** shows the story as a flowchart: the "whens", each If splitting into a yes and a no side that join again at its End if, and the stories it plays; click a step to pick it, or a Play story to open that story's diagram. The wheel or the arrows scroll, Esc goes back
 - Map triggers and doors are picked where you stand or aim, in a free camera, or from a list
 - The **Notification** step shows a line in the top left corner with `rpnotify`, for everyone or one player; give it a countdown and it shows the seconds left, live (`<timer>`)
 - The **Lock** step locks a door or a trigger to a rank with `rplock`, or unlocks it, picked in the Map Editor's Locks tab
@@ -306,12 +315,16 @@ Make a whole cut scene on one timeline, the camera's shots and what the players 
 
 - `/cinematicmanager` (or `/cincam edit`) opens it: fly a free camera over the map, the panel on the right, the timeline under the view
 - **Camera tab**: the cinematic's shots, one after the other. A shot is a path through spots (smooth or steady, optionally always looking at a point), one spot held still, or an orbit round a point with zoom. Add spots where the camera is with Enter, look through each one, watch the trail between them
-- **Entities tab**: every player on the server, you included, and every NPC in the NPC list; pick one there or click them in the view, then **+ Add action**:
+- **Entities tab**: every player on the server, you included, and every NPC in the NPC list; pick one there or click them in the view, or type the targetname of an NPC that isn't here yet and press **+ To spawn**; then **+ Add action**:
   - **Move**: aim at the floor and press Enter for each spot they walk or run through; click a spot in the view to pick it, drag it to move it, Del takes it off. A move starts from wherever they are then, a group of NPCs with the same name keeping their shape
   - **Animation**: JKA's own, a range of frames, one held, or played backwards, once or looping, at any speed, picked from the model's own list and shown on it as you make it
   - **Say**: a line, as the Storyteller's Say and NPC talk do: a player's shows in chat as theirs for everyone with this client, yours you say in chat, an NPC's with the name you give it
   - **Emote**: one of RPMod's emotes at that moment, once or looping, for as long as you drag it; an NPC's, or yours, is done for real too when it's played for everyone
   - **Position**: put them anywhere, turned any way, X Y Z, yaw, pitch and roll, in keys along the timeline, smooth or straight from one to the next; pitch and roll tip the whole body, so with an emote you can have someone thrown across the room by an explosion and land on their back. Drag the keys in the view
+  - **Teleport**: they're somewhere else at once, a spot and the way they face: where you aim, or dragged in the view. An NPC is teleported for real (`npc tele`) when it's played for everyone; a player is only seen there, on screens with this client, until it ends
+  - **NPC command**: freeze or unfreeze, follow you or stop, a dialog or none, a hologram, a projector or none, or kill, at that moment, sent when it's played for everyone
+  - **Spawn**: the NPC appears at that moment, of the type and team you pick, where you aim, with the row's targetname, so its moves and lines can follow; sent when it's played for everyone (the NPC manager's spawn)
+  - **Remove**: the NPC is taken out of the game at that moment (`npc kill`), and nothing after it moves it
   - **Record**: act it out yourself after a 3-2-1, moving, jumping, swinging your saber, using the force, and press *F10* (or `cl_cinRecordKey`) to stop: they do exactly that from where they are at that moment, up to 30 s. While you record someone else you see through their eyes, where they are and the way they face, wherever you stand and face yourself, moving as you move, and the rest of the cinematic plays along in time, other recordings included, so you can fight or talk with them; you still bump into the walls where you really are, so act it out in the open
 - Blades that meet anywhere along them while a cinematic plays clash, sparks and a ring, fast swings too; a blade through someone else cuts them, sparks and a hiss
 - A recording keeps what you are heard doing: saber swings, igniting it, jumps, rolls
@@ -321,8 +334,8 @@ Make a whole cut scene on one timeline, the camera's shots and what the players 
 - Preview it on your own screen, from the start or the moment picked
 - **Play for everyone** sends it whole (a part a second), then it plays on every screen with this client at the same time; **End for everyone** stops it. NPCs are brought on the server to where their moves end, so players without this client see them there too
 - Cinematics are saved by name and played with the Storyteller's Play cinematic step, or `/cinematicmanager send <name>`. Camera shots made before open as a cinematic of one shot
-- **Depth of field**: sharp at the distance you set, on whatever the camera looks at, or on a player or NPC as they move, or on a moving spot, blurred in front and behind; each shot keeps its own, and each spot can change it. A moving spot is a circle in the view as wide as what stays sharp: drag it onto what is to be in focus, then at another moment of the timeline drag it again for another key, and the focus goes from key to key; the wheel on it makes it deeper or shallower, and its keys drag along the timeline. *Needs the rd-vanilla_x86.dll from the release.*
-- **Filters** for each shot: black and white, noir, sepia, old film, night vision, thermal, security camera, VHS tape, hologram, warm, cold, faded or negative. *Needs the rd-vanilla_x86.dll from the release.*
+- **Depth of field**: sharp at the distance you set, on whatever the camera looks at, or on a player or NPC as they move, or on a moving spot, blurred in front and behind; each shot keeps its own, and each spot can change it. A moving spot is a circle in the view as wide as what stays sharp: drag it onto what is to be in focus, then at another moment of the timeline drag it again for another key, and the focus goes from key to key; the wheel on it makes it deeper or shallower, and its keys drag along the timeline. *Needs the rd-vanilla_x86.dll from the release, or the Vulkan renderer with `r_fbo 1`.*
+- **Filters** for each shot: black and white, noir, sepia, old film, night vision, thermal, security camera, VHS tape, hologram, warm, cold, faded or negative. *Needs the rd-vanilla_x86.dll from the release, or the Vulkan renderer with `r_fbo 1`.*
 - **Transitions** in and out of each shot: a fade, or a wipe from the left, the right, the top or the bottom, in black or any color, as long as you like
 - Players moved or animated, you too, are only seen that way by those with this client, and go back where they were when it ends
 - With the HUD hidden, the chat box is hidden too, so chat shows as subtitles at the bottom of the screen: NPC talk, and the players' chat your `rpc_chatRange_*` settings would show, green like the chat box unless the line has its own colors
@@ -347,7 +360,7 @@ Edit the map on your own screen: move or hide any part of it, place models, ligh
 - **Hold use**: a use trigger can be held, in milliseconds as JKA's `usetime`: it's only used once the use key has been held on it that long, a bar showing how far along, while the character works the console (`emconsole`) and stops when it's done or let go
 - **Sounds**: speakers that play any music or sound, heard near them or everywhere, looping
 - **Styles**: give the map's switchable lights a new pattern (flicker, pulse, strobe...) and color, change its existing light styles, or the lighting of the whole map
-- **Fog**: the color and thickness of each of the map's fogs, `No fog` to take one away, or fog volumes of your own. *Needs the rd-vanilla_x86.dll from the release.*
+- **Fog**: the color and thickness of each of the map's fogs, `No fog` to take one away, or fog volumes of your own. *Needs the release's renderer, OpenGL (rd-vanilla_x86.dll) or Vulkan (rd-vulkan_x86.dll); with Vulkan's own fog (`r_drawfog 2`, its default) up to 16 fogs in all.*
 - **Locks**: every door and trigger_multiple in the map with its lock. Lock one to a rank (*-1* for no one) with a name shown to whoever it refuses, change it or unlock it, or remove every lock, through RPMod's `rplock`; locked ones are drawn in red. These are the server's, so everyone is held by them
 - A map always starts without edits: they show when you load one of its layouts, or when someone shares theirs, so no one's edits load against anyone else's (`rpc_mapEdits 0` only shows them in the editor)
 - They're saved as entities a server could spawn, ready for when RPMod supports it
@@ -430,6 +443,43 @@ Choose which styles your style key cycles through, or jump straight to one.
 - The server only knows "next style", so the client cycles for you until you're there; the styles in between show for a moment
 - Dual sabers and the staff are left as they are
 
+## Animation Manager *(custom emotes are experimental)*
+
+Every animation in the game, emotes made of emotes, and emotes of your own. `/animationmanager` opens it (bind it to a key).
+
+- **Animations**: every animation of every skeleton loaded, the base game's and custom pk3s', with a search; each plays on your own model (other skeletons on theirs), drag it to turn it. Pause it, step it a frame at a time, drag the bar through it, change its speed. **Play on me** plays it on your character, on your screen only, until you move
+  - Each says where it comes from: the base game, or the pk3 that **added** it (green) or **changed** it (blue, with the base game's frames and speed beside), found by comparing the animation list in use with the base game's own copy. **All / Base / Custom** shows only those
+- **Emote chains**: one command for several emotes: `/emgreet` does `/emsalute`, then `/emyes` once its animation is over. Pick the emotes from the list (or type any command), set a step's seconds or leave it to its animation's length, reorder them. They're the server's own emotes, so everyone sees them. Moving stops the chain
+- **Custom emotes** *(experimental)*: an animation, played whole or from one frame to another, at a speed, once or looping, ending with it or held until you move; then bones of it following another animation (the arm waving while the rest sits), turned (pitch, yaw, roll) or moved (X, Y, Z), picked from the skeleton's bones; tags move with their bones. The picked bone has rings and arrows on the model: drag a ring to turn it, an arrow to move it, or type the numbers. **Reset this bone** takes it back. An admin's, with **TOGGLE EXPERIMENTAL** on, show for everyone with this client; anyone else's on their own screen only. **Under it** plays an RPMod emote with it, so players without this client see something too
+- Chains and custom emotes are commands of their own, named `em...` like the server's, saved in `emotes/`
+- `cl_customEmotes 0` hides the custom emotes admins share
+
+## Presets
+
+Characters saved, and swapped to in one click: for missions, or anyone you play.
+
+- **PRESETS** in the in-game menu (between Profile and Controls), or `/presets`
+- **Save who I am now** keeps your name, model and skin, its colours, and your sabers and their colours, with the date
+- Each preset is a card: the name in its colours (RPMod's too), the character standing with its hilts in hand, the skin, the sabers and when it was saved
+- Click a card to become that character at once; **Update** saves who you are now over it, **Delete** (twice) takes it out
+- Kept in `presets.txt`
+
+## Discord Status
+
+Your Discord profile shows what you're playing: "Playing ::JEDI::", the server ("On JEDI Temple"), "Playing as" your character, the players there, the time since you joined, the map's picture (Temple, Grounds, Region and Galaxy's maps; the logo on any other), and a **Join JEDI** button.
+
+- Spoken straight to the Discord app on your computer: nothing to install, and nothing happens when Discord isn't running
+- Off until you turn it on: **Setup > Game Options > Discord Status**, or `cl_discord 1`; `cl_discordPrivate 1` leaves out the server and your character's name
+
+## In-game Menu and Camera Settings
+
+- The in-game menu (Esc) has no Vote, Call Vote or Add Bot, and a **PRESETS** button between Profile and Controls
+- **QUICK CONNECT** before Exit: JEDI Temple, Grounds, Region and Galaxy, each with its address and its map and players as the server says now (asked when it opens, or **Refresh**); click one, or its **Connect**, to go there
+- **Admin flags**: when noclip, nodraw, nonsolid or notarget is turned on for you, a small line at the bottom says which are on (green) and off (red), until they're all off. They're read from the commands' replies (noclip from the game too); `cl_adminFlags 0` hides it, `/adminflags` lists them, `/adminflags reset` takes them all as off
+- **Setup > Game Options > Camera Settings** on shows the third person camera's settings beside the in-game menu: third person on or off, distance, angle around you, height, side, tilt, how closely it follows your aim, see-through, field of view and the HUD, and **Defaults**. While it's on, the camera keeps right behind you (`cg_thirdPersonCameraDamp 1`), so it never swings round as you turn. They're the game's own settings (`cg_thirdPerson...`, `cg_fov`)
+- **Camera presets**: type a name under the settings and **Save** them as it; **<** and **>** go through the saved ones, each loaded as it comes up; **Delete** takes the one named out. Kept in `camerapresets.txt`, also `/campreset`
+- Nothing is shipped for it: the menus, RPMod's or the base game's, are changed as the game reads them
+
 ## Emote Preview
 
 See an emote before you do it, right in the Help menu.
@@ -503,6 +553,13 @@ Lightsabers light up what's around them in their own color, pulsing as they hum.
 - It takes the place of the game's own steady saber light
 - On your screen only, nothing is sent: you see everyone's blades light up, whatever client they use
 - Needs dynamic lights on (`r_dynamiclight 1`)
+
+## NPC Names
+
+Put the crosshair on an NPC and its name shows, as a player's does, in the same place and lettering.
+
+- `cl_npcNames 1` shows the targetname of the NPC under the crosshair (the default); NPCs without one show nothing; *0* off
+- Only RPMod's `npc list` says who's who, and it's for admins: an admin with this client and **TOGGLE EXPERIMENTAL** on reads it quietly as soon as an NPC spawns near them, and every 30 seconds, and shares the names with everyone with this client, and again for each player who joins, once they're in. With no such admin on the map, players see no names
 
 ## RPMod Colors in the Console
 
@@ -613,12 +670,34 @@ Don't get disconnected by a model the game can't draw.
 
 Know when there's a newer OpenJK-rpmod.
 
-- As the game starts, at most once a day, it asks GitHub for the newest release, without holding the game up
+- Each time the game starts, it asks GitHub for the newest release, without holding the game up
 - When yours is older, the console says so and the main menu shows it at the bottom
 - `/version` shows your version and the newest, with the link to download a newer one; `/version check` asks again now
 - `/cl_updateCheck 0` never asks
 - A build made between releases is named after the next one (`v0.7.4-dev-g5cc1ce8`), and is out of date once that one is out
 - On Linux and macOS it needs libcurl, which macOS always has and most Linux systems do; without it the game runs as ever, only without the check
+
+## Vulkan Renderer *(experimental)*
+
+[TaystJK](https://github.com/taysta/TaystJK)'s Vulkan renderer comes with the game, next to the usual OpenGL one, which stays the default.
+
+- Setup's RENDERER page (under DEFAULTS, in the main menu and in game) picks it and sets what's below; Apply restarts the video with them. The rows for Vulkan's own settings show once Vulkan is picked, and *More Settings >* at the bottom goes to a second page of them
+- Or by hand: `/cl_renderer rd-vulkan` then `/vid_restart` switches to it, without leaving the server; `/cl_renderer rd-vanilla` and `/vid_restart` switch back
+- Anti-aliasing (`r_ext_multisample 2`, 4 or 8), bloom (`r_bloom 1`), HDR (`r_hdr`), dithering (`r_dither 1`) and a render resolution of its own (`r_renderScale`, `r_renderWidth`, `r_renderHeight`); most of them need `r_fbo 1`
+- `r_vbo 1` and `r_vbo_models 1` keep the map's and the models' surfaces on the graphics card, for more frames per second
+- `r_device` picks the graphics card when there's more than one
+- **Supersampling** (`r_ext_supersample 1`, needs `r_fbo 1`): the picture drawn at twice the width and height and scaled down to the window, smoothing every edge, for about four times the drawing. Screenshots come out at the larger size
+- Effects of its own, each off until turned on, all needing `r_fbo 1`; all but colour grading are on the RENDERER page too:
+  - **Ambient occlusion** (`r_ssao 1`): corners, creases and the ground under things darkened. `r_ssaoRadius` is how far it reaches (48 units), `r_ssaoIntensity` how dark (1)
+  - **Soft particles** (`r_softParticles 1`): smoke, fire, sprites and other effects fade where they meet walls and floors instead of cutting into them with a hard line; `r_softParticlesDepth` is how far in front of a wall they start to fade (24). In fog too; not on the map's own surfaces
+  - **FXAA** (`r_fxaa 1`): smooths edges over the finished picture, the edges of grass and fences too, which anti-aliasing misses
+  - **Sharpening** (`r_sharpen`, 0 to 1): crisper detail, against the softness of FXAA or a lower `r_renderScale`
+  - **Sun shafts** (`r_sunShafts 1`): beams of light from the sun through gaps, on maps whose sky has a sun; `r_sunShaftsIntensity` how bright (1)
+  - **Tone mapping** (`r_tonemap 1`): bright light rolls off along a film-like curve instead of clipping to white
+  - **Colour grading**: `r_exposure` (1), `r_saturation` (1), `r_contrast` (1), `r_warmth` (-1 cold to 1 warm). A map can bring its own look in `maps/<map>.grade`, lines like `saturation 0.9` or `warmth 0.3` (and `exposure`, `contrast`, `tonemap 1`), used in place of yours while it's loaded unless `r_mapGrades 0`
+  - **Motion blur** (`r_motionBlur`, 0 to 1): the picture smears when the camera moves or turns, as long a smear whatever the frame rate; cuts and teleports don't blur
+- Every tool works with it; the cinematic camera's depth of field and filters need `r_fbo 1`. Its depth of field blurs bright points into round discs (bokeh, `r_dofBokeh`, 0 to 1; 0 is OpenGL's look)
+- On macOS it needs MoltenVK, which macOS doesn't come with
 
 ## Experimental features
 
@@ -641,6 +720,11 @@ Features not listed here are not experimental.
 - **Storyteller**
   - Client required (Experimental): the steps Say as a player, NPC talk, Walk a route, Objective, Sky look and Play cinematic; seeing players out of sight walk into a watched area
   - Not required (everyone): every other step, condition and timer
+- **NPC Names**
+  - Client required (Experimental): an admin sharing the names; seeing them needs this client, not the toggle
+- **Animation Manager**
+  - Client required (Experimental): a custom emote shared by an admin; seeing it needs this client, not the toggle. The Custom emotes tab itself is experimental
+  - Not required (everyone): previewing animations, emote chains, a custom emote on your own screen
 - **Objectives**
   - Client required (Experimental): changing them for everyone with `/objective`
   - Not required (everyone): `/objective list`

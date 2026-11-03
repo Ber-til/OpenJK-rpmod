@@ -139,6 +139,7 @@ The console commands, keys and settings this client adds. What each feature does
 - `Ctrl+click / Shift+click` pick several; `Ctrl+C, Ctrl+X, Ctrl+V` copy, cut, paste; `Ctrl+A` pick all
 - `Del` delete them, `Tab` next box
 - `Esc` back / close
+- In the diagram: the wheel, `Up/Down`, `Left/Right` and `PgUp/PgDn` scroll, `Home` back to the top, `Esc` back
 
 ## Cinematic Manager (playing it for others is experimental)
 
@@ -204,6 +205,22 @@ The console commands, keys and settings this client adds. What each feature does
 - `/radialsettings` makes menus, fills them and binds keys to them
 - While a menu is open: `1-9, 0` run that item, `left click` runs the one pointed at, `right click / Esc` close
 
+## Animation Manager
+
+- `/animationmanager` opens or closes it (bind it to a key)
+- `/animationmanager anim <ANIMATION>` opens it on that animation; `/animationmanager chains [name]`, `/animationmanager custom [name]` on those tabs
+- `/animationmanager stop` stops the chain and the custom emote playing; `/animationmanager list` lists them; `/animationmanager reload` reads the animations again and lists each skeleton, the pk3 its animations come from, and how many it added or changed
+- `/em<name>` does a chain or plays a custom emote made in it; again stops it
+- In it: `Up/Down` the next animation, step or bone, `Space` pause, `Esc` back / close
+
+## Presets
+
+- `/presets` opens or closes them (the in-game menu's PRESETS)
+- `/presets save` saves who you are now as a preset; `/presets list` lists them, numbered; `/presets <number>` makes you that one
+- `/quickconnect connect <1-4>` goes to JEDI Temple, Grounds, Region or Galaxy; `/quickconnect refresh` asks them for their map and players; `/quickconnect` lists them
+- `/adminflags` noclip, nodraw, nonsolid and notarget as known for you; `/adminflags reset` all taken as off
+- `/campreset save|load|delete [name]` the camera settings saved or loaded by name (the camera panel's box when none is given); `/campreset next|prev` loads the next saved one or the one before; `/campreset list`
+
 ## Saber Styles
 
 - `/saberstyles <style> <style> ...` sets the styles saberAttackCycle goes through: fast, medium, strong, desann, tavion
@@ -232,6 +249,8 @@ The console commands, keys and settings this client adds. What each feature does
 - `rpc_removeExtraColorsInConsole 0` shows RPMod's extra colors in the console
 - `rpc_chatRangeConsole_mode <0-3>`, `rpc_chatRangeConsole_min`, `rpc_chatRangeConsole_max`, `rpc_chatRangeConsole_alpha` set the chat range in the console
 - `cl_updateCheck 0` never asks GitHub whether there's a newer OpenJK-rpmod
+- `renderersettings sync` / `apply`: what Setup's RENDERER page uses to show the renderer settings and to set them at the next `vid_restart`
+- `cl_renderer rd-vulkan` then `vid_restart` draws the game with the Vulkan renderer *(experimental)*, `cl_renderer rd-vanilla` with the usual one; the Vulkan one's own settings (`r_fbo`, `r_bloom`, `r_ext_multisample`, `r_vbo`, `r_ext_supersample`, `r_ssao`, `r_softParticles`, `r_fxaa`, `r_sharpen`, `r_sunShafts`, `r_tonemap`, `r_motionBlur` and more) are in [FEATURES.md](FEATURES.md#vulkan-renderer-experimental)
 - `cl_whisper 1` shows whispers (chat in ^k) only to those close by, `cl_whisperHear` and `cl_whisperNotice` set how close
 - `cl_shaderCrosshair 1` names the shader under your crosshair
 - `cl_fighterTakeoffGuard 0` turns the fighter takeoff guard off
@@ -243,6 +262,11 @@ The console commands, keys and settings this client adds. What each feature does
 - `rpc_mapEdits 0` only shows your map edits inside the editor
 - `rpc_mapShare 0` ignores map edits other players share
 - `cl_storyMarkers 0` hides where the armed stories wait
+- `cl_npcNames 0` hides the NPC names under the crosshair
+- `cl_customEmotes 0` hides the custom emotes admins share
+- `cl_discord 1` your Discord profile shows what you're playing (off by default); `cl_discordPrivate 1` your Discord status leaves out the server and your character's name
+- `cl_adminFlags 0` hides the noclip, nodraw, nonsolid and notarget line
+- `ui_cameraSettings 1` shows the camera settings beside the in-game menu (Setup > Game Options > Camera Settings)
 - `cl_modelFollowFront 1` keeps what's in the modelmanager's hand in front of you; `cl_modelHoldDistance` how far (128)
 - `cl_wallStick 1` keeps you on a wall you grabbed until you press jump again (`/cl_wallstick`)
 - `cl_cinRecordKey F10` the key that ends a recording in the cinematic manager

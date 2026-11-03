@@ -598,6 +598,10 @@ rescan:
 		return qtrue;
 	}
 
+	// noclip, nodraw, nonsolid and notarget turned on or off for us
+	if ( !strcmp( cmd, "print" ) )
+		CL_AdminFlags_ServerPrint( Cmd_Argv( 1 ) );
+
 	// and the sound manager with "rpsound list"
 	if ( !strcmp( cmd, "print" ) && CL_SoundManager_ServerPrint( Cmd_Argv( 1 ) ) ) {
 		Cmd_TokenizeString( "print \"\"" );
@@ -706,6 +710,8 @@ void CL_ShutdownCGame( void ) {
 	CL_MapEditor_Shutdown();
 	CL_Storyteller_Shutdown();
 	CL_SoundManager_Shutdown();
+	CL_AnimManager_Shutdown();
+	CL_Presets_Shutdown();
 	CL_RadialMenu_Shutdown();
 	CL_Languages_Shutdown();
 	CL_EmotePreview_Shutdown();

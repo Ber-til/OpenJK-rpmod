@@ -1657,6 +1657,14 @@ void CL_KeyDownEvent( int key, unsigned time )
 			CL_SoundManager_Escape();
 			return;
 		}
+		if ( ( Key_GetCatcher() & KEYCATCH_ANIMMANAGER ) && !( Key_GetCatcher() & KEYCATCH_UI ) ) {
+			CL_AnimManager_Escape();
+			return;
+		}
+		if ( ( Key_GetCatcher() & KEYCATCH_PRESETS ) && !( Key_GetCatcher() & KEYCATCH_UI ) ) {
+			CL_Presets_Escape();
+			return;
+		}
 		if ( ( Key_GetCatcher() & KEYCATCH_CINEDITOR ) && !( Key_GetCatcher() & KEYCATCH_UI ) ) {
 			CL_RpCinematic_EditorEscape();
 			return;
@@ -1750,6 +1758,14 @@ void CL_KeyDownEvent( int key, unsigned time )
 	else if ( Key_GetCatcher() & KEYCATCH_SOUNDMANAGER ) {
 		CL_SoundManager_KeyEvent( key, qtrue );
 	}
+	// animation manager
+	else if ( Key_GetCatcher() & KEYCATCH_ANIMMANAGER ) {
+		CL_AnimManager_KeyEvent( key, qtrue );
+	}
+	// presets
+	else if ( Key_GetCatcher() & KEYCATCH_PRESETS ) {
+		CL_Presets_KeyEvent( key, qtrue );
+	}
 	// camera editor
 	else if ( Key_GetCatcher() & KEYCATCH_CINEDITOR ) {
 		CL_RpCinematic_EditorKeyEvent( key, qtrue );
@@ -1816,6 +1832,7 @@ void CL_KeyUpEvent( int key, unsigned time )
 	CL_MapEditor_KeyEvent( key, qfalse );
 	CL_Storyteller_KeyEvent( key, qfalse );
 	CL_SoundManager_KeyEvent( key, qfalse );
+	CL_AnimManager_KeyEvent( key, qfalse );
 	CL_RpCinematic_EditorKeyEvent( key, qfalse );
 	CL_RadialMenu_KeyEvent( key, qfalse );
 	CL_Languages_KeyEvent( key, qfalse );
@@ -1863,6 +1880,7 @@ void CL_CharEvent( int key ) {
 	else if ( Key_GetCatcher() & KEYCATCH_MAPEDITOR )	CL_MapEditor_CharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_STORYTELLER )	CL_Storyteller_CharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_SOUNDMANAGER )	CL_SoundManager_CharEvent( key );
+	else if ( Key_GetCatcher() & KEYCATCH_ANIMMANAGER )	CL_AnimManager_CharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_CINEDITOR )	CL_RpCinematic_EditorCharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_RADIALMENU )	CL_RadialMenu_CharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_LANGUAGES )	CL_Languages_CharEvent( key );

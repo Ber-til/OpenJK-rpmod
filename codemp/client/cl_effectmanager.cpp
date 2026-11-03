@@ -3539,6 +3539,8 @@ static void EM_Open( void ) {
 	CL_Storyteller_Close();
 	CL_RpCinematic_EditorClose();
 	CL_SoundManager_Close();
+	CL_AnimManager_Close();
+	CL_Presets_Close();
 	EM_CheckMap();
 	EM_ListConstructs();
 	if ( !em.indexed ) {

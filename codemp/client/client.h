@@ -685,7 +685,9 @@ void CL_ModelManager_Draw( void );
 #define KEYCATCH_RADIALMENU		0x1000	// engine only, the radial menus' settings own keyboard and mouse
 #define KEYCATCH_LANGUAGES		0x2000	// engine only, the languages window owns keyboard and mouse
 #define KEYCATCH_CONSETTINGS	0x4000	// engine only, the console settings window owns keyboard and mouse
-#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELMANAGER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER | KEYCATCH_MAPEDITOR | KEYCATCH_STORYTELLER | KEYCATCH_CINEDITOR | KEYCATCH_SOUNDMANAGER | KEYCATCH_RADIALMENU | KEYCATCH_LANGUAGES | KEYCATCH_CONSETTINGS )	// mods never see or clear these
+#define KEYCATCH_ANIMMANAGER	0x8000	// engine only, the animation manager owns keyboard and mouse
+#define KEYCATCH_PRESETS		0x10000	// engine only, the presets own keyboard and mouse
+#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELMANAGER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER | KEYCATCH_MAPEDITOR | KEYCATCH_STORYTELLER | KEYCATCH_CINEDITOR | KEYCATCH_SOUNDMANAGER | KEYCATCH_RADIALMENU | KEYCATCH_LANGUAGES | KEYCATCH_CONSETTINGS | KEYCATCH_ANIMMANAGER | KEYCATCH_PRESETS )	// mods never see or clear these
 
 void CL_NpcManager_Init( void );
 void CL_NpcManager_Shutdown( void );
@@ -855,6 +857,7 @@ qboolean CL_Storyteller_ChatLine( void );
 qboolean CL_Storyteller_ServerPrint( const char *text );
 void CL_Storyteller_Hook( char **argv, int argc, const char *message );
 void CL_Storyteller_TriggerUsed( const char *name );
+int CL_Storyteller_UseLock( const char *name, const char **text );
 const char *CL_MapEditor_AimedUseTrigger( void );
 void CL_MapEditor_PickForStory( int kind );
 void CL_Storyteller_TriggerPicked( const char *value );
@@ -909,6 +912,52 @@ qboolean CL_RpCinematic_Hide2D( float x, float y, float w, float h );
 qboolean CL_RpCinematic_RenderScene( const refdef_t *fd );
 qboolean CL_RpCinematic_Camera( vec3_t origin, vec3_t angles );
 const refEntity_t *CL_RpCinematic_Entity( const refEntity_t *ent, refEntity_t *copy );
+void CL_RpCinematic_RestartAnim( int num );
+
+// cl_animmanager.cpp
+void CL_AnimManager_Init( void );
+void CL_AnimManager_Shutdown( void );
+void CL_AnimManager_f( void );
+qboolean CL_AnimManager_Active( void );
+void CL_AnimManager_Close( void );
+void CL_AnimManager_KeyEvent( int key, qboolean down );
+void CL_AnimManager_CharEvent( int ch );
+void CL_AnimManager_MouseEvent( int dx, int dy );
+void CL_AnimManager_Escape( void );
+void CL_AnimManager_Frame( void );
+void CL_AnimManager_Draw( void );
+void CL_AnimManager_Entity( const refEntity_t *ent );
+void CL_AnimManager_Hook( char **argv, int argc, const char *message );
+
+// cl_rendermenu.cpp: the camera follows right behind with the camera settings on
+void CL_CameraSettings_Frame( void );
+
+// cl_adminflags.cpp
+void CL_AdminFlags_Init( void );
+void CL_AdminFlags_Reset( void );
+void CL_AdminFlags_Command( void );
+void CL_AdminFlags_ServerPrint( const char *text );
+void CL_AdminFlags_Draw( void );
+
+// cl_discord.cpp
+void CL_StripAllColors( char *text );
+void CL_Discord_Init( void );
+void CL_Discord_Frame( void );
+void CL_Discord_Shutdown( void );
+
+// cl_quickconnect.cpp
+void CL_QuickConnect_Init( void );
+void CL_QuickConnect_Frame( void );
+qboolean CL_QuickConnect_InfoResponse( const netadr_t *from, const char *info );
+
+// cl_presets.cpp
+void CL_Presets_Init( void );
+void CL_Presets_Shutdown( void );
+void CL_Presets_Close( void );
+void CL_Presets_KeyEvent( int key, qboolean down );
+void CL_Presets_MouseEvent( int dx, int dy );
+void CL_Presets_Escape( void );
+void CL_Presets_Draw( void );
 void CL_RpCinematic_Draw( void );
 void CL_RpCinematic_Frame( void );
 qboolean CL_RpCinematic_ShotHook( const char *name, char *hook, int size, int *ms );
@@ -996,6 +1045,13 @@ qboolean CL_ChatCaps_Forward( char *out, int size );
 //
 // cl_saberlight.cpp
 //
+void CL_NpcNames_Init( void );
+void CL_NpcNames_Disconnect( void );
+void CL_NpcNames_Frame( void );
+void CL_NpcNames_Draw( void );
+void CL_NpcNames_View( const refdef_t *fd );
+void CL_NpcNames_Hook( char **argv, int argc, const char *message );
+
 void CL_SaberLight_Init( void );
 void CL_SaberLight_Shutdown( void );
 void CL_SaberLight_RendererRestarted( void );
@@ -1025,11 +1081,16 @@ void CL_RpAdmin_Init( void );
 void CL_RpAdmin_Disconnect( void );
 qboolean CL_RpAdmin_Allow( const char *tool, const char *command );
 qboolean CL_RpAdmin_ServerPrint( const char *text );
+qboolean CL_RpAdmin_IsAdmin( void );
+void CL_RpAdmin_AskQuietly( void );
 void CL_RpAdmin_Frame( void );
 
 // cl_update.cpp
 void CL_Update_Init( void );
 void CL_Update_Shutdown( void );
+// cl_rendermenu.cpp: the RENDERER page in the Setup menu
+void CL_RenderMenu_Init( void );
+void CL_RenderMenu_Shutdown( void );
 void CL_Update_Frame( void );
 void CL_Update_Draw( void );
 

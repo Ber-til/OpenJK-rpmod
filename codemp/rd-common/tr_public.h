@@ -297,6 +297,11 @@ typedef struct refexport_s {
 		// that couldn't be found are looked for again the next time they're asked for; what was
 		// handed out for them before stays as it was. How many were forgotten
 		int					(*ForgetMissing)						( const char **shaderFiles, int numShaderFiles );
+		// the animation manager: a bone turned as G2API_SetBoneAngles does, and moved by offset too,
+		// in the model's space
+		qboolean			(*G2API_SetBoneAnglesOffset)			( CGhoul2Info_v &ghoul2, const int modelIndex, const char *boneName, const vec3_t angles,
+																	  const vec3_t offset, const int flags, const Eorientations up, const Eorientations left,
+																	  const Eorientations forward, int blendTime, int currentTime );
 	} ext;
 
 } refexport_t;
@@ -400,6 +405,12 @@ typedef struct refimport_s {
 	// Persistent data store
 	bool			(*PD_Store)							( const char *name, const void *data, size_t size );
 	const void *	(*PD_Load)							( const char *name, size_t *size );
+
+	// rd-vulkan: its window's surface and library
+	qboolean		(*VK_IsMinimized)					( void );
+	void			*(*VK_GetInstanceProcAddress)		( void );
+	qboolean		(*VK_createSurfaceImpl)				( VkInstance instance, VkSurfaceKHR *surface );
+	void			(*VK_destroyWindow)					( void );
 } refimport_t;
 
 // this is the only function actually exported at the linker level

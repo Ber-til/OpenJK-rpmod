@@ -849,6 +849,8 @@ void CL_Disconnect( qboolean showMainMenu ) {
 	CL_ClearState ();
 	CL_RpHooks_Disconnect();
 	CL_RpAdmin_Disconnect();
+	CL_NpcNames_Disconnect();
+	CL_AdminFlags_Reset();
 	CL_RpCinematic_Reset();
 	CL_NpcWalk_Reset();
 
@@ -899,6 +901,9 @@ void CL_ForwardCommandToServer( const char *string ) {
 		Com_Printf ("Unknown command \"%s" S_COLOR_WHITE "\"\n", cmd);
 		return;
 	}
+
+	// noclip, nodraw, nonsolid and notarget at ourselves, for their replies
+	CL_AdminFlags_Command();
 
 	// a chat given its capitals, then, too long for the server, in parts
 	if ( CL_ChatCaps_Forward( capped, sizeof( capped ) ) ) {
@@ -2387,6 +2392,8 @@ void CL_Frame ( int msec ) {
 	CL_ChatSplit_Frame();
 	CL_LoadPk3_Frame();
 	CL_Update_Frame();
+	// what you're playing, on your Discord profile
+	CL_Discord_Frame();
 
 	// send intentions now
 	CL_SendCmd();
@@ -2678,6 +2685,12 @@ void CL_InitRef( void ) {
 	ri.PD_Store = PD_Store;
 	ri.PD_Load = PD_Load;
 
+	// rd-vulkan
+	ri.VK_IsMinimized = WIN_VK_IsMinimized;
+	ri.VK_GetInstanceProcAddress = WIN_VK_GetInstanceProcAddress;
+	ri.VK_createSurfaceImpl = WIN_VK_createSurfaceImpl;
+	ri.VK_destroyWindow = WIN_VK_destroyWindow;
+
 	ret = GetRefAPI( REF_API_VERSION, &ri );
 
 //	Com_Printf( "-------------------------------\n");
@@ -2894,15 +2907,22 @@ void CL_Init( void ) {
 	CL_RpHooks_Init ();
 	CL_RpAdmin_Init ();
 	CL_Update_Init ();
+	CL_RenderMenu_Init();
+	CL_Discord_Init();
 	cl_ratioFix = Cvar_Get( "cl_ratioFix", "0", CVAR_ARCHIVE_ND, "Widescreen: text, and the engine's own, as on a 4:3 screen instead of stretched" );
 	cls.widthRatioCoef = 1.0f;
 	CL_RadialMenu_Init ();
 	CL_Languages_Init ();
 	CL_ChatSplit_Init ();
 	CL_SaberLight_Init ();
+	CL_NpcNames_Init ();
 	CL_ConSettings_Init ();
 	CL_SaberStyle_Init ();
 	CL_EmotePreview_Init ();
+	CL_AnimManager_Init ();
+	CL_Presets_Init ();
+	CL_AdminFlags_Init ();
+	CL_QuickConnect_Init ();
 	CL_RpCinematic_Init ();
 
 	CL_FighterAssist_Init ();
@@ -3138,6 +3158,8 @@ void CL_Shutdown( void ) {
 	CL_RpHooks_Shutdown();
 	Cmd_RemoveCommand( "toolaccess" );
 	CL_Update_Shutdown();
+	CL_RenderMenu_Shutdown();
+	CL_Discord_Shutdown();
 	Cmd_RemoveCommand( "+radial" );
 	Cmd_RemoveCommand( "-radial" );
 	Cmd_RemoveCommand( "radial" );
@@ -3249,6 +3271,10 @@ void CL_ServerInfoPacket( const netadr_t *from, msg_t *msg ) {
 	int		prot;
 
 	infoString = MSG_ReadString( msg );
+
+	// one of the quick connect servers answering
+	if ( CL_QuickConnect_InfoResponse( from, infoString ) )
+		return;
 
 	// if this isn't the correct protocol version, ignore it
 	prot = atoi( Info_ValueForKey( infoString, "protocol" ) );

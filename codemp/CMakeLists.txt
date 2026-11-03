@@ -43,6 +43,11 @@ if(BuildMPRdVanilla)
 	add_subdirectory("${MPDir}/rd-vanilla")
 endif(BuildMPRdVanilla)
 
+#	 Add Vulkan JKA Renderer Project (from TaystJK)
+if(BuildMPRdVulkan)
+	add_subdirectory("${MPDir}/rd-vulkan")
+endif(BuildMPRdVulkan)
+
 #	Add rend2 JKA Renderer Project
 if(BuildMPRend2)
 	add_subdirectory("${MPDir}/rd-rend2")
@@ -460,6 +465,7 @@ if(BuildMPEngine)
 		"${MPDir}/client/cl_whisper.cpp"
 		"${MPDir}/client/cl_loadpk3.cpp"
 		"${MPDir}/client/cl_update.cpp"
+		"${MPDir}/client/cl_rendermenu.cpp"
 		"${MPDir}/client/cl_input.cpp"
 		"${MPDir}/client/cl_keys.cpp"
 		"${MPDir}/client/cl_lan.cpp"
@@ -490,6 +496,12 @@ if(BuildMPEngine)
 		"${MPDir}/client/cl_widgets.cpp"
 		"${MPDir}/client/cl_chatsplit.cpp"
 		"${MPDir}/client/cl_saberlight.cpp"
+		"${MPDir}/client/cl_npcnames.cpp"
+		"${MPDir}/client/cl_animmanager.cpp"
+		"${MPDir}/client/cl_presets.cpp"
+		"${MPDir}/client/cl_adminflags.cpp"
+		"${MPDir}/client/cl_quickconnect.cpp"
+		"${MPDir}/client/cl_discord.cpp"
 		"${MPDir}/client/cl_consettings.cpp"
 		"${MPDir}/client/cl_gizmo.h"
 		"${MPDir}/client/cl_widgets.h"
@@ -622,6 +634,14 @@ if(BuildMPEngine)
 
 	if(WIN32)
 		add_executable(${MPEngine} WIN32 ${MPEngineFiles})
+		# OpenJK-rpmod: let the 32-bit client use 4 GB on 64-bit Windows instead of 2 GB
+		if(CMAKE_SIZEOF_VOID_P EQUAL 4)
+			if(MSVC)
+				target_link_options(${MPEngine} PRIVATE "/LARGEADDRESSAWARE")
+			else()
+				target_link_options(${MPEngine} PRIVATE "-Wl,--large-address-aware")
+			endif()
+		endif()
 		if(UseInternalSDL2)
 			if(CMAKE_SIZEOF_VOID_P EQUAL 4)
 				set(MPEngineExtraInstallFiles
