@@ -21,25 +21,21 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 // cl_npcnames.cpp -- an NPC's name under the crosshair, as the game shows a player's
 //
 // cl_npcNames 1 (the default) shows the targetname of the NPC the crosshair is on, nothing for one
-// without. Only RPMod's "npc list" says who's who, and only admins may ask for it, so an admin
-// with this client and experimental on reads it quietly every so often while NPCs are about, and
-// shares the names with everyone with this client:
+// without. Only RPMod's "npc list" says who's who, and only admins may ask for it. Nothing is
+// read or shown until an admin with this client and experimental on runs /npcnames: the list is
+// read then, once, and the names go to everyone with this client, the admin too. Names not made
+// for roleplay stay out of the way until an admin wants them. /npcnames clear takes them back:
 //
 //   rpnotify -1 1 cmd:npcnames/<part>/<parts>: <entity number>=<name>|<entity number>=<name>...
 //
-// Part 1 starts the list over. Players see the names whenever an admin is on the map. Someone
-// joining gets them too: the admin's client sends them again a few times after a player appears,
-// as one still loading can't take them yet.
+// Part 1 starts the list over; part 1 of 1 with nothing clears it.
 
 #include "client.h"
 #include "qcommon/cm_public.h"
 
 #define NN_NAME_LEN			48
-#define NN_ASK_MS			30000	// the list read this often while NPCs are about
 #define NN_SHARE_SETTLE_MS	400		// the names shared once the list's lines stop coming this long
-#define NN_NEW_ASK_MS		2000	// a new NPC asks for the list again no sooner than this
-#define NN_NEW_ASKS			2		// nor more often than this for one NPC
-#define NN_RESEND_MS		120000	// the same names sent again this often, for who joined since
+#define NN_SHARE_WAIT_MS	5000	// /npcnames shares what's known if no fresh list came by then
 #define NN_PART_LEN			700		// of the names in one rpnotify
 #define NN_MAX_PARTS		8
 #define NN_RANGE			8192.0f
@@ -54,35 +50,23 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define NN_NAME_GAP			0.0f
 #define NN_NAME_Y			170
 #define NN_NAME_ALPHA		0.7f
-#define NN_JOIN_SENDS		3		// after someone joins, the names sent again at these times
-static const int nnJoinMs[NN_JOIN_SENDS] = { 8000, 25000, 60000 };
 
 static cvar_t *cl_npcNames;
 
 static struct {
-	char		names[MAX_GENTITIES][NN_NAME_LEN];	// by entity number, "" none known
+	char		names[MAX_GENTITIES][NN_NAME_LEN];	// shown, by entity number, "" none known
 
 	// the main view, as the scene was last drawn
 	qboolean	haveView;
 	vec3_t		viewOrg, viewFwd;
 
-	// the admin's side
-	int			askTime;			// the list last asked for
-	int			readList;			// the NPC manager's list read into names, by its time
+	// the admin's side: the list read for /npcnames, shown only once it's shared
+	char		read[MAX_GENTITIES][NN_NAME_LEN];
+	int			readList;			// the NPC manager's list read into read, by its time
 	int			readCount;			// and how many were in it then
-	int			changedTime;		// the names changed then, to be shared
-	qboolean	shareDue;
-	qboolean	listed[MAX_GENTITIES];	// in the last list read, named or not
-	byte		newAsks[MAX_GENTITIES];	// lists asked for because of this new NPC
-	qboolean	wasNear[MAX_GENTITIES];	// an NPC close by last snapshot
-	int			nearSnap;				// the snapshot that was
-	qboolean	rankAsked;
-	char		sent[NN_PART_LEN * NN_MAX_PARTS];
-	int			sentTime;
-	qboolean	present[MAX_CLIENTS];	// who's on the server, to see someone join
-	qboolean	presentRead;
-	int			joinTime;				// someone joined then, 0 none since
-	int			joinSends;				// of nnJoinMs, sent since
+	int			changedTime;		// the list's lines last came then
+	int			shareAsked;			// /npcnames asked then, 0 not waiting to share
+	int			shareFromList;		// the list read when it did
 
 	// the name shown
 	int			shownNum, shownTime;
@@ -96,14 +80,6 @@ static qboolean NN_On( void ) {
 
 static const entityState_t *NN_Ent( int i ) {
 	return &cl.parseEntities[( cl.snap.parseEntitiesNum + i ) & ( MAX_PARSE_ENTITIES - 1 )];
-}
-
-static qboolean NN_NpcsAbout( void ) {
-	for ( int i = 0; i < cl.snap.numEntities; i++ ) {
-		if ( NN_Ent( i )->eType == ET_NPC )
-			return qtrue;
-	}
-	return qfalse;
 }
 
 // no separators in what's sent, nor what would break the command
@@ -135,162 +111,67 @@ static qboolean NN_ReadList( void ) {
 		return qfalse;
 	nn.readList = listTime;
 	nn.readCount = count;
-	memset( nn.names, 0, sizeof( nn.names ) );
-	memset( nn.listed, 0, sizeof( nn.listed ) );
+	memset( nn.read, 0, sizeof( nn.read ) );
 	for ( int i = 0; i < count; i++ ) {
 		const char *type, *name;
 		int num;
 
 		if ( !CL_NpcManager_GetNpc( i, &num, &type, &name ) || num < 0 || num >= MAX_GENTITIES )
 			continue;
-		nn.listed[num] = qtrue;
 		if ( name && name[0] )
-			NN_CleanName( name, nn.names[num], NN_NAME_LEN );
+			NN_CleanName( name, nn.read[num], NN_NAME_LEN );
 	}
 	return qtrue;
 }
 
-#define NN_GONE_NEAR		600.0f	// an NPC gone from this close was removed, not just out of sight
-
-// an NPC that vanished close by was removed: the next one spawned may get its number, so it's
-// asked about again instead of taking its name
-static void NN_WatchGone( void ) {
-	qboolean near[MAX_GENTITIES];
-
-	if ( cl.snap.serverTime == nn.nearSnap )
-		return;
-	nn.nearSnap = cl.snap.serverTime;
-	memset( near, 0, sizeof( near ) );
-	for ( int i = 0; i < cl.snap.numEntities; i++ ) {
-		const entityState_t *es = NN_Ent( i );
-
-		if ( es->eType == ET_NPC && es->number >= 0 && es->number < MAX_GENTITIES
-			&& Distance( es->pos.trBase, cl.snap.ps.origin ) < NN_GONE_NEAR )
-			near[es->number] = qtrue;
-	}
-	for ( int num = 0; num < MAX_GENTITIES; num++ ) {
-		if ( nn.wasNear[num] && !near[num] && !NN_InSnapshot( num ) ) {
-			nn.listed[num] = qfalse;
-			nn.newAsks[num] = 0;
-			nn.names[num][0] = '\0';
-		}
-	}
-	memcpy( nn.wasNear, near, sizeof( near ) );
-}
-
-// an NPC near us that the last list didn't have: just spawned, most likely
-static qboolean NN_NewNpc( void ) {
-	qboolean found = qfalse;
-
-	for ( int i = 0; i < cl.snap.numEntities; i++ ) {
-		const entityState_t *es = NN_Ent( i );
-
-		if ( es->eType != ET_NPC || es->number < 0 || es->number >= MAX_GENTITIES || nn.listed[es->number]
-			|| nn.newAsks[es->number] >= NN_NEW_ASKS )
-			continue;
-		nn.newAsks[es->number]++;
-		found = qtrue;
-	}
-	return found;
-}
-
-// the names to everyone with this client, in parts, when they changed or a while after they went
-static void NN_Share( qboolean again ) {
-	char text[NN_PART_LEN * NN_MAX_PARTS];
+// the names read to everyone with this client, in parts, and shown here as they are there
+static void NN_Share( void ) {
 	char parts[NN_MAX_PARTS][NN_PART_LEN + 1];
-	int numParts = 1, len = 0;
+	int numParts = 1, len = 0, named = 0;
 
-	text[0] = '\0';
 	parts[0][0] = '\0';
 	for ( int num = 0; num < MAX_GENTITIES; num++ ) {
 		const char *entry;
 		int entryLen;
 
-		if ( !nn.names[num][0] )
+		if ( !nn.read[num][0] )
 			continue;
-		entry = va( "%s%i=%s", parts[numParts - 1][0] ? "|" : "", num, nn.names[num] );
+		entry = va( "%s%i=%s", parts[numParts - 1][0] ? "|" : "", num, nn.read[num] );
 		entryLen = strlen( entry );
 		if ( len + entryLen > NN_PART_LEN ) {
 			if ( numParts == NN_MAX_PARTS )
 				break;
 			parts[numParts++][0] = '\0';
 			len = 0;
-			entry = va( "%i=%s", num, nn.names[num] );
+			entry = va( "%i=%s", num, nn.read[num] );
 			entryLen = strlen( entry );
 		}
 		Q_strcat( parts[numParts - 1], sizeof( parts[0] ), entry );
 		len += entryLen;
-		Q_strcat( text, sizeof( text ), va( "%i=%s|", num, nn.names[num] ) );
+		named++;
 	}
-	if ( !again && !strcmp( text, nn.sent ) && cls.realtime - nn.sentTime < NN_RESEND_MS )
+	if ( !named ) {
+		Com_Printf( "npcnames: no NPC on the map has a name to share\n" );
 		return;
-	// nothing named, ever: nothing to say
-	if ( !text[0] && !nn.sent[0] && !nn.sentTime )
-		return;
-	Q_strncpyz( nn.sent, text, sizeof( nn.sent ) );
-	nn.sentTime = cls.realtime;
+	}
 	for ( int i = 0; i < numParts; i++ ) {
 		CL_AddReliableCommand( parts[i][0] ? va( "rpnotify -1 1 cmd:npcnames/%i/%i: %s", i + 1, numParts, parts[i] )
 			: va( "rpnotify -1 1 cmd:npcnames/%i/%i", i + 1, numParts ), qfalse );
 	}
+	memcpy( nn.names, nn.read, sizeof( nn.names ) );
+	Com_Printf( "npcnames: %i NPC name%s shared with everyone with this client\n", named, named == 1 ? "" : "s" );
 }
 
-static qboolean NN_Present( int c ) {
-	const int ofs = cl.gameState.stringOffsets[CS_PLAYERS + c];
-
-	return (qboolean)( ofs && cl.gameState.stringData[ofs] );
-}
-
-// someone new on the server: the names go again for them, once they're likely in
-static void NN_WatchJoins( void ) {
-	for ( int c = 0; c < MAX_CLIENTS; c++ ) {
-		const qboolean here = NN_Present( c );
-
-		if ( here && !nn.present[c] && nn.presentRead && c != clc.clientNum ) {
-			nn.joinTime = cls.realtime;
-			nn.joinSends = 0;
-		}
-		nn.present[c] = here;
-	}
-	nn.presentRead = qtrue;
-}
-
+// /npcnames waiting: shared once the fresh list's lines stop coming, or with what's known if none came
 static void NN_AdminFrame( void ) {
-	NN_WatchJoins();
-	// RPMod's commands aren't on a server of this computer's, and hidden ones need experimental
-	if ( com_sv_running->integer || !CL_RpHooks_Experimental() )
+	if ( !nn.shareAsked )
 		return;
-	if ( !CL_RpAdmin_IsAdmin() ) {
-		// asked once, quietly
-		if ( !nn.rankAsked ) {
-			nn.rankAsked = qtrue;
-			CL_RpAdmin_AskQuietly();
-		}
-		return;
-	}
-	NN_WatchGone();
-	// shown here at once, shared once the lines stop coming
-	if ( NN_ReadList() ) {
+	if ( NN_ReadList() )
 		nn.changedTime = cls.realtime;
-		nn.shareDue = qtrue;
-	}
-	if ( nn.shareDue && cls.realtime - nn.changedTime >= NN_SHARE_SETTLE_MS ) {
-		nn.shareDue = qfalse;
-		NN_Share( qfalse );
-	}
-	if ( nn.joinTime && nn.readList && cls.realtime - nn.joinTime >= nnJoinMs[nn.joinSends] ) {
-		NN_Share( qtrue );
-		if ( ++nn.joinSends >= NN_JOIN_SENDS )
-			nn.joinTime = 0;
-	}
-	// NPCs anywhere on the map, not only near: whoever joins may be by them. One just spawned
-	// near us asks at once
-	if ( CL_NpcManager_Waiting() )
-		return;
-	if ( ( !nn.askTime || cls.realtime - nn.askTime >= NN_ASK_MS )
-		|| ( cls.realtime - nn.askTime >= NN_NEW_ASK_MS && NN_NewNpc() ) ) {
-		nn.askTime = cls.realtime;
-		CL_NpcManager_RequestList();
+	if ( ( nn.readList != nn.shareFromList && cls.realtime - nn.changedTime >= NN_SHARE_SETTLE_MS )
+		|| cls.realtime - nn.shareAsked >= NN_SHARE_WAIT_MS ) {
+		nn.shareAsked = 0;
+		NN_Share();
 	}
 }
 
@@ -308,9 +189,6 @@ void CL_NpcNames_Hook( char **argv, int argc, const char *message ) {
 	char *entry, *next;
 
 	if ( argc < 1 )
-		return;
-	// an admin's own list is already in
-	if ( CL_RpAdmin_IsAdmin() && CL_RpHooks_Experimental() && nn.readList )
 		return;
 	if ( atoi( argv[0] ) == 1 )
 		memset( nn.names, 0, sizeof( nn.names ) );
@@ -481,9 +359,40 @@ void CL_NpcNames_Draw( void ) {
 }
 
 void CL_NpcNames_Frame( void ) {
-	if ( !NN_On() )
-		return;
 	NN_AdminFrame();
+}
+
+// npcnames [clear]: an admin shares the NPC names with everyone with this client, or takes them back
+static void NN_Cmd_f( void ) {
+	const qboolean clear = (qboolean)!Q_stricmp( Cmd_Argv( 1 ), "clear" );
+
+	if ( Cmd_Argc() > 1 && !clear ) {
+		Com_Printf( "npcnames: shares the NPC names with everyone with this client; npcnames clear takes them back\n" );
+		return;
+	}
+	if ( cls.state != CA_ACTIVE || com_sv_running->integer ) {
+		Com_Printf( "npcnames: only on an RPMod server\n" );
+		return;
+	}
+	if ( !CL_RpHooks_Experimental() ) {
+		Com_Printf( "npcnames: needs experimental on (/rpexperimental on)\n" );
+		return;
+	}
+	if ( !CL_RpAdmin_Allow( "npcnames", "npcnames" ) )
+		return;
+	if ( clear ) {
+		nn.shareAsked = 0;
+		memset( nn.names, 0, sizeof( nn.names ) );
+		CL_AddReliableCommand( "rpnotify -1 1 cmd:npcnames/1/1", qfalse );
+		Com_Printf( "npcnames: NPC names taken back from everyone with this client\n" );
+		return;
+	}
+	// the list read again first, so the names are as they are now
+	nn.shareAsked = cls.realtime;
+	nn.shareFromList = nn.readList;
+	if ( !CL_NpcManager_Waiting() )
+		CL_NpcManager_RequestList();
+	Com_Printf( "npcnames: reading the NPC list to share it...\n" );
 }
 
 void CL_NpcNames_Disconnect( void ) {
@@ -493,5 +402,6 @@ void CL_NpcNames_Disconnect( void ) {
 
 void CL_NpcNames_Init( void ) {
 	cl_npcNames = Cvar_Get( "cl_npcNames", "1", CVAR_ARCHIVE_ND, "Show an NPC's name when the crosshair is on it" );
+	Cmd_AddCommand( "npcnames", NN_Cmd_f, "Admins: share the NPC names with everyone with this client; npcnames clear takes them back" );
 	CL_NpcNames_Disconnect();
 }

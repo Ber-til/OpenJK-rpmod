@@ -827,6 +827,7 @@ static void IM_SetRect( std::string &item, float x, float y, float w, float h ) 
 #define QC_W		242.0f
 #define QC_ENTRY	54.0f
 #define QC_SERVERS	4
+#define QC_OPEN_CVAR	"ui_qcOpen"	// 1 while the panel is out: Esc closes it first (see cl_quickconnect.cpp)
 
 // the quick connect panel under its button: each server, its address, map and players (ui_qc<n>_*,
 // see cl_quickconnect.cpp), clicked to connect
@@ -843,7 +844,7 @@ static std::string IM_QuickConnectPanel( void ) {
 		"visible 0\naction { play \"sound/interface/button1.wav\" ; exec \"quickconnect refresh\" }\n}\n", QC_X + 6, QC_Y + 5 );
 	out += va( "itemDef {\nname quickconnect_close\ngroup quickconnect\nstyle WINDOW_STYLE_FILLED\ntype ITEM_TYPE_BUTTON\ntext \"Close\"\n"
 		"rect %g %g 50 13\nfont 4\ntextscale .85\ntextalign ITEM_ALIGN_CENTER\ntextalignx 25\nbackcolor .15 .15 .25 .8\nforecolor 1 .682 0 1\n"
-		"visible 0\naction { play \"sound/interface/button1.wav\" ; hide quickconnect ; show camerapanel }\n}\n", QC_X + QC_W - 56, QC_Y + 5 );
+		"visible 0\naction { play \"sound/interface/button1.wav\" ; hide quickconnect ; show camerapanel ; setcvar " QC_OPEN_CVAR " 0 }\n}\n", QC_X + QC_W - 56, QC_Y + 5 );
 	for ( int i = 0; i < QC_SERVERS; i++ ) {
 		const float y = QC_Y + 24.0f + QC_ENTRY * i;
 
@@ -921,17 +922,36 @@ static const char *IM_Patch( const char *filename, const char *text, int *length
 		RM_ReplaceWord( button, "controlsButton", "quickconnectButton" );
 		RM_SetValue( button, "name", "quickconnectmenu" );
 		RM_SetValue( button, "text", RM_Quote( "Quick Connect" ) );
-		RM_SetValue( button, "textalignx", "70" );
+		RM_SetValue( button, "textalignx", "42.5" );
 		RM_RemoveValue( button, "cvarTest" );
 		RM_ReplaceBlock( button, "hideCvar", "" );
 		RM_ReplaceBlock( button, "showCvar", "" );
-		RM_ReplaceBlock( button, "action", "action { play \"sound/interface/button1.wav\" ; hide camerapanel ; show quickconnect ; exec \"quickconnect refresh\" }" );
+		RM_ReplaceBlock( button, "action", "action { play \"sound/interface/button1.wav\" ; hide camerapanel ; show quickconnect ; setcvar " QC_OPEN_CVAR " 1 ; exec \"quickconnect refresh\" }" );
 		RM_SetValue( frame, "name", "quickconnectButton" );
-		IM_SetRect( button, 425, 0, 140, 32 );
-		IM_SetRect( frame, 425, 0, 140, 32 );
+		IM_SetRect( button, 425, 0, 85, 32 );
+		IM_SetRect( frame, 425, 0, 85, 32 );
 		add += "\n" + frame + "\n" + button + "\n";
 	}
 	add += IM_QuickConnectPanel();
+
+	// FEEDBACK: between Quick Connect and Exit, which is made narrower for it
+	{
+		std::string button = s.substr( controls->start, controls->end - controls->start );
+		std::string frame = s.substr( controlsButton->start, controlsButton->end - controlsButton->start );
+
+		RM_ReplaceWord( button, "controlsButton", "feedbackButton" );
+		RM_SetValue( button, "name", "feedbackmenu" );
+		RM_SetValue( button, "text", RM_Quote( "Feedback" ) );
+		RM_SetValue( button, "textalignx", "31" );
+		RM_RemoveValue( button, "cvarTest" );
+		RM_ReplaceBlock( button, "hideCvar", "" );
+		RM_ReplaceBlock( button, "showCvar", "" );
+		RM_ReplaceBlock( button, "action", "action { play \"sound/interface/button1.wav\" ; uiScript closeingame ; exec \"feedback\" }" );
+		RM_SetValue( frame, "name", "feedbackButton" );
+		IM_SetRect( button, 510, 0, 62, 32 );
+		IM_SetRect( frame, 510, 0, 62, 32 );
+		add += "\n" + frame + "\n" + button + "\n";
+	}
 
 	// the ones that go, last first so the places stay right
 	for ( int i = (int)items.size() - 1; i >= 0; i-- ) {
@@ -943,6 +963,38 @@ static const char *IM_Patch( const char *filename, const char *text, int *length
 		}
 	}
 
+	// Exit and its frame narrower, at the end, past FEEDBACK
+	{
+		std::vector<rmItem_t> now;
+		const rmItem_t *leave, *leaveButton;
+
+		RM_Items( s, now );
+		leave = RM_Item( now, "leave" );
+		leaveButton = RM_Item( now, "leaveButton" );
+		if ( leave && leaveButton ) {
+			// the later one first, so the earlier one's place stays right
+			const rmItem_t *order[2] = { leave->start > leaveButton->start ? leave : leaveButton,
+				leave->start > leaveButton->start ? leaveButton : leave };
+
+			for ( int k = 0; k < 2; k++ ) {
+				std::string text = s.substr( order[k]->start, order[k]->end - order[k]->start );
+
+				IM_SetRect( text, 572, 0, 63, 32 );
+				if ( order[k] == leave )
+					RM_SetValue( text, "textalignx", "31.5" );
+				s.replace( order[k]->start, order[k]->end - order[k]->start, text );
+			}
+		}
+	}
+
+	// the menu's own buttons (Setup, Profile...) leave the panel behind: Esc there is theirs again
+	for ( size_t at = RM_FindWord( s, "action", 0 ); at != RM_NONE; at = RM_FindWord( s, "action", at + 1 ) ) {
+		const size_t open = RM_SkipSpace( s, at + 6 );
+
+		if ( open < s.size() && s[open] == '{' )
+			s.insert( open + 1, " setcvar " QC_OPEN_CVAR " 0 ;" );
+	}
+
 	menu = RM_FindWord( s, "menuDef", 0 );
 	if ( menu == RM_NONE )
 		return NULL;
@@ -950,6 +1002,19 @@ static const char *IM_Patch( const char *filename, const char *text, int *length
 	if ( menuOpen >= s.size() || s[menuOpen] != '{' || ( menuEnd = RM_BlockEnd( s, menuOpen ) ) == RM_NONE )
 		return NULL;
 	s.insert( menuEnd - 1, add );
+
+	// the menu opens with the quick connect panel put away, the camera panel back
+	{
+		static const char *reset = " hide quickconnect ; show camerapanel ; setcvar " QC_OPEN_CVAR " 0 ;";
+		const size_t firstItem = RM_FindWord( s, "itemDef", menuOpen );
+		const size_t onOpen = RM_FindWord( s, "onOpen", menuOpen, firstItem );
+		const size_t open = onOpen != RM_NONE ? RM_SkipSpace( s, onOpen + 6 ) : RM_NONE;
+
+		if ( open != RM_NONE && open < s.size() && s[open] == '{' )
+			s.insert( open + 1, reset );
+		else
+			s.insert( menuOpen + 1, va( "\nonOpen {%s }\n", reset ) );
+	}
 
 	imPatched.swap( s );
 	*length = (int)imPatched.size();
@@ -978,6 +1043,7 @@ void CL_RenderMenu_Init( void ) {
 	}
 	Cmd_AddCommand( "renderersettings", RM_Settings_f, "The Setup menu's RENDERER page: sync or apply" );
 	Cvar_Get( "ui_cameraSettings", "0", CVAR_ARCHIVE_ND, "The in-game menu shows the third person camera's settings" );
+	Cvar_Get( QC_OPEN_CVAR, "0", 0, "The in-game menu's quick connect panel is out: Esc closes it first" );
 	Cvar_Get( CP_NAME_CVAR, "", CVAR_ARCHIVE_ND, "The camera panel's preset name" );
 	Cmd_AddCommand( "campreset", CP_Cmd_f, "Camera settings saved and loaded by name" );
 	LoadScriptFile_Patch = MP_Patch;

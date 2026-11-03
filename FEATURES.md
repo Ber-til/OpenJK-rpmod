@@ -40,6 +40,7 @@ Some features reach other players through workarounds only this client understan
 - [Console Settings](#console-settings)
 - [Model Safeguards](#model-safeguards)
 - [Update Check](#update-check)
+- [Feedback](#feedback)
 - [Vulkan Renderer](#vulkan-renderer-experimental)
 - [Experimental features](#experimental-features)
 
@@ -447,7 +448,7 @@ Choose which styles your style key cycles through, or jump straight to one.
 
 Every animation in the game, emotes made of emotes, and emotes of your own. `/animationmanager` opens it (bind it to a key).
 
-- **Animations**: every animation of every skeleton loaded, the base game's and custom pk3s', with a search; each plays on your own model (other skeletons on theirs), drag it to turn it. Pause it, step it a frame at a time, drag the bar through it, change its speed. **Play on me** plays it on your character, on your screen only, until you move
+- **Animations**: every animation of every skeleton loaded, the base game's and custom pk3s', with a search; each plays on your own model (other skeletons on theirs), drag it to turn it. The skeleton's button goes to the next one, a right click back one, its arrow lists them all to pick from. Pause it, step it a frame at a time, drag the bar through it, change its speed. **Play on me** plays it on your character, on your screen only, until you move
   - Each says where it comes from: the base game, or the pk3 that **added** it (green) or **changed** it (blue, with the base game's frames and speed beside), found by comparing the animation list in use with the base game's own copy. **All / Base / Custom** shows only those
 - **Emote chains**: one command for several emotes: `/emgreet` does `/emsalute`, then `/emyes` once its animation is over. Pick the emotes from the list (or type any command), set a step's seconds or leave it to its animation's length, reorder them. They're the server's own emotes, so everyone sees them. Moving stops the chain
 - **Custom emotes** *(experimental)*: an animation, played whole or from one frame to another, at a speed, once or looping, ending with it or held until you move; then bones of it following another animation (the arm waving while the rest sits), turned (pitch, yaw, roll) or moved (X, Y, Z), picked from the skeleton's bones; tags move with their bones. The picked bone has rings and arrows on the model: drag a ring to turn it, an arrow to move it, or type the numbers. **Reset this bone** takes it back. An admin's, with **TOGGLE EXPERIMENTAL** on, show for everyone with this client; anyone else's on their own screen only. **Under it** plays an RPMod emote with it, so players without this client see something too
@@ -474,8 +475,9 @@ Your Discord profile shows what you're playing: "Playing ::JEDI::", the server (
 ## In-game Menu and Camera Settings
 
 - The in-game menu (Esc) has no Vote, Call Vote or Add Bot, and a **PRESETS** button between Profile and Controls
-- **QUICK CONNECT** before Exit: JEDI Temple, Grounds, Region and Galaxy, each with its address and its map and players as the server says now (asked when it opens, or **Refresh**); click one, or its **Connect**, to go there
-- **Admin flags**: when noclip, nodraw, nonsolid or notarget is turned on for you, a small line at the bottom says which are on (green) and off (red), until they're all off. They're read from the commands' replies (noclip from the game too); `cl_adminFlags 0` hides it, `/adminflags` lists them, `/adminflags reset` takes them all as off
+- **FEEDBACK** between Quick Connect and Exit opens [Feedback](#feedback)
+- **QUICK CONNECT** after Setup: JEDI Temple, Grounds, Region and Galaxy, each with its address and its map and players as the server says now (asked when it opens, or **Refresh**); click one, or its **Connect**, to go there
+- **Admin flags**: when noclip, nodraw, nonsolid or notarget is turned on for you, a small line at the bottom says which are on (green) and off (red), until they're all off. They're read from the commands' replies (noclip from the game too); it hides with the HUD (`cg_draw2D 0`, `cg_drawStatus 0`); `cl_adminFlags 0` hides it, `/adminflags` lists them, `/adminflags reset` takes them all as off
 - **Setup > Game Options > Camera Settings** on shows the third person camera's settings beside the in-game menu: third person on or off, distance, angle around you, height, side, tilt, how closely it follows your aim, see-through, field of view and the HUD, and **Defaults**. While it's on, the camera keeps right behind you (`cg_thirdPersonCameraDamp 1`), so it never swings round as you turn. They're the game's own settings (`cg_thirdPerson...`, `cg_fov`)
 - **Camera presets**: type a name under the settings and **Save** them as it; **<** and **>** go through the saved ones, each loaded as it comes up; **Delete** takes the one named out. Kept in `camerapresets.txt`, also `/campreset`
 - Nothing is shipped for it: the menus, RPMod's or the base game's, are changed as the game reads them
@@ -559,7 +561,8 @@ Lightsabers light up what's around them in their own color, pulsing as they hum.
 Put the crosshair on an NPC and its name shows, as a player's does, in the same place and lettering.
 
 - `cl_npcNames 1` shows the targetname of the NPC under the crosshair (the default); NPCs without one show nothing; *0* off
-- Only RPMod's `npc list` says who's who, and it's for admins: an admin with this client and **TOGGLE EXPERIMENTAL** on reads it quietly as soon as an NPC spawns near them, and every 30 seconds, and shares the names with everyone with this client, and again for each player who joins, once they're in. With no such admin on the map, players see no names
+- Only RPMod's `npc list` says who's who, and it's for admins, so nothing shows until an admin with this client and **TOGGLE EXPERIMENTAL** on runs `/npcnames`: it reads the list quietly and sends the names as they are then to everyone with this client, the admin included. Names not made for roleplay stay out of the way until an admin wants them
+- NPCs spawned and players who joined after that need another `/npcnames`. `/npcnames clear` takes them back from everyone
 
 ## RPMod Colors in the Console
 
@@ -676,6 +679,20 @@ Know when there's a newer OpenJK-rpmod.
 - `/cl_updateCheck 0` never asks
 - A build made between releases is named after the next one (`v0.7.4-dev-g5cc1ce8`), and is out of date once that one is out
 - On Linux and macOS it needs libcurl, which macOS always has and most Linux systems do; without it the game runs as ever, only without the check
+
+## Feedback
+
+Send a bug or an idea for the OpenJK-RPMod project, and read the answers, without leaving the game. Not every idea will be in RPMod itself.
+
+- **FEEDBACK** in the in-game menu (Esc), between Quick Connect and Exit, or `/feedback`, opens the window; `/feedback` works from the main menu too
+- **New report**: a bug or an idea, a title, and what happened (what you did, what happened and what you expected) or what the idea is. The game's version, renderer, map and server go with it, shown under the text before you send
+- A report goes with your RPMod account, read from `rpinfo` without showing it in the console: you send it from an RPMod server, logged in. Logged out, or from the main menu, the window says so and nothing is sent
+- It's answered on the project's Discord, and marked planned or fixed, or closed
+- **My reports** lists what you've sent, with its status: open, planned, fixed or closed. Pick one to read what you wrote and its answers, and answer them; a closed one can't be answered any more. My reports works from the main menu too
+- The game asks for news when it starts and every few minutes after (every 30 seconds while My reports is open). A report with news has a yellow mark, the tab says how many, and the console says what's new: an answer, a new status, or both. `/feedback` then opens on it
+- Reading the answers needs no login: your game makes a private key the first time you send a report, kept in `feedback.key` in your game's home folder, and only that key sees your reports. Another computer, or the file deleted, doesn't see them
+- One bug or idea a report, please: each is answered on its own. A few reports an hour at most
+- On Linux and macOS it needs libcurl, as the update check does
 
 ## Vulkan Renderer *(experimental)*
 
