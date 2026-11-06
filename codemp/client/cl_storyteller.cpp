@@ -41,8 +41,12 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 // it shows them a message instead of being used (its step's Too early), until the story gets there.
 //
 // An If can ask who set off the When it's under, by name; a Play story step plays another saved
-// story alongside. Diagram shows the story as blocks: its Whens, its Ifs branching and joining,
-// the stories it plays, which open in it when clicked.
+// story alongside. A Go back step plays again from an earlier step: the When before it, which
+// waits again, the start, or a Mark by its name, so an Else can send a story back to wait.
+// A When or an If can count only the players on one team, red or blue, as the server has them. Diagram shows the story as blocks: its Whens, its Ifs branching and joining,
+// the stories it plays, which open in it when clicked. Its Panel shows the actions to drag into it,
+// where the step goes marked as it's dragged, and the picked step's settings; blocks are dragged to
+// move them, an If with all of it.
 //
 // Several stories can be open at once, each in a numbered tab, and steps copied between
 // them: Ctrl+click and Shift+click pick several, Ctrl+C, Ctrl+X, Ctrl+V and Del act on
@@ -72,6 +76,9 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define ST_DOUBLECLICK_MS	400
 #define ST_TRACE_DIST		8192.0f
 #define ST_GROUND_HEIGHT	25.0f	// NPC origins sit this far above the floor
+#define ST_MAX_JUMPS		16		// Go backs a story takes in a frame: one going round with nothing to wait on goes on next frame
+#define ST_TEAM_RED			1		// a player's team, as the server's player info has it ("t")
+#define ST_TEAM_BLUE		2
 
 // layout, in 640x480
 #define ST_ROW_H			13.0f
@@ -111,6 +118,8 @@ typedef enum {
 	ST_A_IF,
 	ST_A_ELSE,
 	ST_A_ENDIF,
+	ST_A_GOBACK,		// plays again from an earlier step
+	ST_A_MARK,			// where a Go back can go, by its name
 	ST_A_COMMAND,
 	ST_A_SAY,
 	ST_A_CENTER,
@@ -158,10 +167,10 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ "Seconds", ST_K_NUMBER, "2", NULL } } },
 	{ "pause", "Wait for me", "Flow", "Stops until you press Continue, or run /storyteller continue (bind it to a key). The note shows while it waits.", -1, -1, 1, {
 		{ "Note", ST_K_TEXT, "", NULL } } },
-	{ "trigger", "When someone comes", "Flow", "Waits until someone comes into a map trigger or near a spot or an effect, a door moves, someone says one of the words (| between them), or someone uses one of the map editor's use triggers (by its name). With For, they have to stay in that many seconds. A story starting with it can be armed. Players out of sight are found too: those with this client say where they are (with experimental on), the others are asked for with rporigin.", 5, -1, 11, {
+	{ "trigger", "When someone comes", "Flow", "Waits until someone comes into a map trigger or near a spot or an effect, a door moves, someone says one of the words (| between them), or someone uses one of the map editor's use triggers (by its name). Who can be a team's players only, red or blue. With For, they have to stay in that many seconds. A story starting with it can be armed. Players out of sight are found too: those with this client say where they are (with experimental on), the others are asked for with rporigin.", 5, -1, 11, {
 		{ "Where", ST_K_CHOICE, "map trigger", "map trigger|near a spot|near an effect|door|someone says|someone uses" },
 		{ "Which", ST_K_TEXT, "", NULL },
-		{ "Who", ST_K_CHOICE, "any player", "any player|any NPC|anyone|me|named" },
+		{ "Who", ST_K_CHOICE, "any player", "any player|any NPC|anyone|me|named|red team|blue team" },
 		{ "Name", ST_K_TEXT, "", NULL },
 		{ "Radius", ST_K_NUMBER, "96", NULL },
 		{ "X", ST_K_NUMBER, "", NULL },
@@ -173,7 +182,7 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 	{ "if", "If", "Flow", "Goes under a When step, and looks once, when the story gets to it: how many are in a map trigger or near a spot or an effect, or whether someone has said one of the words (| between them), or used the use trigger by that name, since the story began, or whether who set off the When above it has that name. True, the steps after it play; false, the ones after its Else, or after its End if.", 5, -1, 10, {
 		{ "Where", ST_K_CHOICE, "map trigger", "map trigger|near a spot|near an effect|someone says|someone uses|who set it off" },
 		{ "Which", ST_K_TEXT, "", NULL },
-		{ "Who", ST_K_CHOICE, "any player", "any player|any NPC|anyone|me|named" },
+		{ "Who", ST_K_CHOICE, "any player", "any player|any NPC|anyone|me|named|red team|blue team" },
 		{ "Name", ST_K_TEXT, "", NULL },
 		{ "Radius", ST_K_NUMBER, "96", NULL },
 		{ "X", ST_K_NUMBER, "", NULL },
@@ -183,16 +192,26 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ "Count", ST_K_NUMBER, "1", NULL } } },
 	{ "else", "Else", "Flow", "The steps after it play when the If before it was false, up to its End if.", -1, -1, 0, { } },
 	{ "endif", "End if", "Flow", "Where an If's steps end: the story goes on from here either way.", -1, -1, 0, { } },
+	{ "goback", "Go back", "Flow", "Plays again from an earlier step: the When before it, which waits again, the start of the story, or a Mark by its name. Under an Else it sends a wrong answer back to wait: When someone uses the console, If who set it off is Rex, open the door, Else, Go back. Words said and triggers used count again from when it went back.", -1, -1, 2, {
+		{ "To", ST_K_CHOICE, "the When before it", "the When before it|the start|a mark" },
+		{ "Mark", ST_K_TEXT, "", NULL } } },
+	{ "mark", "Mark", "Flow", "A place in the story a Go back can go back to, by this name.", -1, -1, 1, {
+		{ "Name", ST_K_TEXT, "", NULL } } },
 	{ "command", "Run a command", "Flow", "Runs it as if typed in the console, e.g. rpcinematic intro, or exec mission.cfg. Separate several with ;", -1, -1, 1, {
 		{ "Command", ST_K_TEXT, "", NULL } } },
 	{ "say", "Say", "Speech", "Says this in chat, as you, or as one of the players on the server: by their number or a part of their name. As a player it shows in chat as theirs for everyone with this client (sent hidden in an rpnotify; others see the raw line in their console).", -1, -1, 3, {
 		{ "Text", ST_K_TEXT, "", NULL },
 		{ "As", ST_K_CHOICE, "me", "me|a player" },
 		{ "Player", ST_K_TEXT, "", NULL } } },
-	{ "center", "Center message", "Speech", "Shows the text in the middle of the screen with rpcentersay, for everyone (all), or one player. 0 seconds keeps each player's own setting.", -1, -1, 3, {
+	{ "center", "Center message", "Speech", "Shows the text in the middle of the screen with rpcentersay, for everyone (all), or one player. 0 seconds keeps each player's own setting. Place moves it down: to the bottom of the screen, or a number of lines. Typewriter shows it a letter at a time, each with the sound, this many ms apart.", -1, -1, 8, {
 		{ "Who", ST_K_TEXT, "all", NULL },
 		{ "Seconds", ST_K_NUMBER, "3", NULL },
-		{ "Text", ST_K_TEXT, "", NULL } } },
+		{ "Text", ST_K_TEXT, "", NULL },
+		{ "Place", ST_K_CHOICE, "as it is", "as it is|bottom|lines down" },
+		{ "Lines", ST_K_NUMBER, "8", NULL },
+		{ "Typewriter", ST_K_CHOICE, "no", "no|yes" },
+		{ "Letter ms", ST_K_NUMBER, "100", NULL },
+		{ "Sound", ST_K_TEXT, "sound/interface/sub_select", NULL } } },
 	{ "notify", "Notification", "Speech", "Shows the text in the top left corner with rpnotify, for everyone (all) or one player, this many seconds. A countdown is a live count of the seconds left (rpnotify's <timer>), on each player's screen; or type <timer> in the text where it goes.", -1, -1, 4, {
 		{ "Who", ST_K_TEXT, "all", NULL },
 		{ "Seconds", ST_K_NUMBER, "10", NULL },
@@ -364,6 +383,12 @@ typedef struct {
 	int			since[ST_MAX_PEOPLE];	// when each one inside came in, to stay a while
 	int			chatFrom;				// the chat heard since then counts
 	int			started;				// cls.realtime the story began, for an If's chat
+
+	// a typewriter centre message: the letters shown, whether the next one's sound is out, and
+	// when the next one goes
+	int			typed;
+	qboolean	typeSounded;
+	int			typeNext;
 } stRun_t;
 
 typedef enum {
@@ -378,7 +403,8 @@ typedef enum {
 	ST_PICK_SOUND,
 	ST_PICK_MUSIC,
 	ST_PICK_LOCK,
-	ST_PICK_TRIGGER		// a map trigger, a door or a use trigger, clicked in the map editor
+	ST_PICK_TRIGGER,	// a map trigger, a door or a use trigger, clicked in the map editor
+	ST_PICK_CENTER_SOUND	// a typewriter centre message's sound
 } stPick_t;
 
 #define ST_MAX_PICKED	64
@@ -429,6 +455,12 @@ static struct {
 	int			dgNumSteps;
 	char		dgName[MAX_QPATH];
 	char		dgHover[MAX_STRING_CHARS];
+	qboolean	dgPanel;			// the actions and the picked step's settings beside it
+	int			dgDrag;				// what's held down on: 0 nothing, 1 an action, 2 blocks
+	int			dgDragRow;			// the action's row, or the block's step
+	float		dgPressX, dgPressY;
+	qboolean	dgDragging;			// moved far enough to be a drag
+	qboolean	dgClearOnUp;		// a plain click on one of several picked: just it, once let go
 	int			font;
 
 	// input; clicks and the wheel are handled where the control under them is drawn
@@ -710,6 +742,8 @@ static int ST_ModelNum( const char *which ) {
 	return ( m > 0 && m < CM_NumInlineModels() ) ? m : 0;
 }
 
+static qboolean ST_Typewriter( const stStep_t *s );
+
 // a "when someone comes" step shows only what its kind of trigger uses
 static qboolean ST_FieldShown( const stStep_t *s, int field ) {
 	if ( s->action == ST_A_SOUND ) {
@@ -721,6 +755,15 @@ static qboolean ST_FieldShown( const stStep_t *s, int field ) {
 	}
 	if ( s->action == ST_A_MUSIC )
 		return (qboolean)( field != 1 || !Q_stricmp( s->values[0], "play" ) );
+	if ( s->action == ST_A_GOBACK )
+		return (qboolean)( field != 1 || !Q_stricmp( s->values[0], "a mark" ) );
+	if ( s->action == ST_A_CENTER ) {
+		if ( field == 4 )
+			return (qboolean)!Q_stricmp( s->values[3], "lines down" );
+		if ( field >= 6 )
+			return ST_Typewriter( s );
+		return qtrue;
+	}
 	if ( s->action == ST_A_SAY )
 		return (qboolean)( field != 2 || !Q_stricmp( s->values[1], "a player" ) );
 	if ( s->action == ST_A_OVERLAY )
@@ -826,6 +869,70 @@ static const char *ST_CenterText( const char *in ) {
 		}
 		out[len++] = *in;
 		run++;
+	}
+	out[len] = '\0';
+	return out;
+}
+
+#define ST_BOTTOM_LINES		15	// a centre message this many lines down is at the bottom of the screen
+#define ST_LINES_A_WORD		15	// \n's in one word, the rest after a space
+
+static qboolean ST_Typewriter( const stStep_t *s ) {
+	return (qboolean)( s->action == ST_A_CENTER && !Q_stricmp( s->values[5], "yes" ) );
+}
+
+// how many lines down a centre message starts
+static int ST_CenterLines( const stStep_t *s ) {
+	if ( !Q_stricmp( s->values[3], "bottom" ) )
+		return ST_BOTTOM_LINES;
+	if ( !Q_stricmp( s->values[3], "lines down" ) )
+		return Com_Clampi( 0, 40, ST_Round( ST_Number( s, 4 ) ) );
+	return 0;
+}
+
+// the rpcentersay for a centre message showing text: its lines down first, as \n's
+static const char *ST_CenterCommand( const stStep_t *s, const char *text ) {
+	static char cmd[MAX_STRING_CHARS];
+	char lines[160] = "";
+	const int n = ST_CenterLines( s );
+
+	for ( int i = 0; i < n; i++ ) {
+		if ( i && !( i % ST_LINES_A_WORD ) )
+			Q_strcat( lines, sizeof( lines ), " " );
+		Q_strcat( lines, sizeof( lines ), "\\n" );
+	}
+	Com_sprintf( cmd, sizeof( cmd ), "rpcentersay %s %i %s%s%s", s->values[0][0] ? s->values[0] : "all", ST_Round( ST_Number( s, 1 ) ), lines,
+		lines[0] ? " " : "", ST_CenterText( text ) );
+	return cmd;
+}
+
+// the text up to its n-th letter, for a typewriter: colours and \n's go with the letter after
+// them; *total how many letters it has, spaces left out
+static const char *ST_TypedText( const char *in, int n, int *total ) {
+	static char out[ST_VALUE_LEN * 2];
+	int len = 0, count = 0;
+
+	*total = 0;
+	for ( const char *p = in; *p; ) {
+		if ( Q_IsColorString( p ) || ( p[0] == '\\' && p[1] == 'n' ) ) {
+			p += 2;
+			continue;
+		}
+		if ( *p++ != ' ' )
+			( *total )++;
+	}
+	for ( const char *p = in; *p && len < (int)sizeof( out ) - 3; ) {
+		if ( Q_IsColorString( p ) || ( p[0] == '\\' && p[1] == 'n' ) ) {
+			out[len++] = *p++;
+			out[len++] = *p++;
+			continue;
+		}
+		if ( *p != ' ' ) {
+			if ( count == n )
+				break;
+			count++;
+		}
+		out[len++] = *p++;
 	}
 	out[len] = '\0';
 	return out;
@@ -969,6 +1076,12 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 
 	case ST_A_ELSE:
 	case ST_A_ENDIF:
+	case ST_A_MARK:
+		return NULL;
+
+	case ST_A_GOBACK:
+		if ( !Q_stricmp( v[0], "a mark" ) && !v[1][0] )
+			*error = "Type the name of the Mark to go back to";
 		return NULL;
 
 	case ST_A_PLAYSTORY:
@@ -1066,8 +1179,7 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 			*error = "Type the text to show";
 			return NULL;
 		}
-		Com_sprintf( cmd, sizeof( cmd ), "rpcentersay %s %i %s", v[0][0] ? v[0] : "all", ST_Round( ST_Number( s, 1 ) ), ST_CenterText( v[2] ) );
-		return cmd;
+		return ST_CenterCommand( s, v[2] );
 
 	case ST_A_NPC_TALK:
 		if ( !v[0][0] ) {
@@ -1478,8 +1590,45 @@ static const char *ST_EntLabel( const char *which ) {
 	return va( "%s%s%s (*%i)", e->classname, e->targetname[0] ? " " : "", e->targetname, e->model );
 }
 
+// the team a Who counts, -1 for none
+static int ST_WhoTeam( const char *who ) {
+	if ( !Q_stricmp( who, "red team" ) )
+		return ST_TEAM_RED;
+	if ( !Q_stricmp( who, "blue team" ) )
+		return ST_TEAM_BLUE;
+	return -1;
+}
+
+// a player's team as the server has it, -1 for no one there
+static int ST_ClientTeam( int c ) {
+	int ofs;
+
+	if ( c < 0 || c >= MAX_CLIENTS || !( ofs = cl.gameState.stringOffsets[CS_PLAYERS + c] ) )
+		return -1;
+	return atoi( Info_ValueForKey( cl.gameState.stringData + ofs, "t" ) );
+}
+
+// the team of the player by that name (colours left out), -1 if there's none
+static int ST_NameTeam( const char *name ) {
+	for ( int c = 0; c < MAX_CLIENTS; c++ ) {
+		const int ofs = cl.gameState.stringOffsets[CS_PLAYERS + c];
+		char n[MAX_QPATH];
+
+		if ( !ofs )
+			continue;
+		Q_strncpyz( n, Info_ValueForKey( cl.gameState.stringData + ofs, "n" ), sizeof( n ) );
+		Q_StripColor( n );
+		if ( n[0] && !Q_stricmp( n, name ) )
+			return ST_ClientTeam( c );
+	}
+	return -1;
+}
+
 static const char *ST_WhoText( const stStep_t *s ) {
 	const char *who = s->values[2];
+
+	if ( ST_WhoTeam( who ) == ST_TEAM_RED )		return "a red team player";
+	if ( ST_WhoTeam( who ) == ST_TEAM_BLUE )	return "a blue team player";
 
 	if ( !Q_stricmp( who, "any NPC" ) )		return "an NPC";
 	if ( !Q_stricmp( who, "anyone" ) )		return "anyone";
@@ -1491,6 +1640,9 @@ static const char *ST_WhoText( const stStep_t *s ) {
 // more than one of who's counted
 static const char *ST_WhoPlural( const stStep_t *s ) {
 	const char *who = s->values[2];
+
+	if ( ST_WhoTeam( who ) == ST_TEAM_RED )		return "red team players";
+	if ( ST_WhoTeam( who ) == ST_TEAM_BLUE )	return "blue team players";
 
 	if ( !Q_stricmp( who, "any NPC" ) )		return "NPCs";
 	if ( !Q_stricmp( who, "anyone" ) )		return "people";
@@ -1690,6 +1842,7 @@ static qboolean ST_Counts( const stStep_t *s, const stPerson_t *p ) {
 	if ( !Q_stricmp( who, "anyone" ) )		return qtrue;
 	if ( !Q_stricmp( who, "me" ) )			return (qboolean)( !p->npc && p->num == cl.snap.ps.clientNum );
 	if ( !Q_stricmp( who, "named" ) )		return ST_NameIs( p, s->values[3] );
+	if ( ST_WhoTeam( who ) >= 0 )			return (qboolean)( !p->npc && ST_ClientTeam( p->num ) == ST_WhoTeam( who ) );
 	return (qboolean)!p->npc;
 }
 
@@ -1841,6 +1994,26 @@ static qboolean ST_IfTrue( const stRun_t *r, const stStep_t *s ) {
 	return (qboolean)( count >= want );
 }
 
+// where a Go back at pc goes: the When before it, the start, or the Mark by its name; -1 none
+static int ST_GoBackTo( const stStep_t *steps, int numSteps, int pc ) {
+	const stStep_t *s = &steps[pc];
+
+	if ( !Q_stricmp( s->values[0], "the start" ) )
+		return 0;
+	if ( !Q_stricmp( s->values[0], "a mark" ) ) {
+		for ( int i = 0; i < numSteps; i++ ) {
+			if ( steps[i].enabled && steps[i].action == ST_A_MARK && s->values[1][0] && !Q_stricmp( steps[i].values[0], s->values[1] ) )
+				return i;
+		}
+		return -1;
+	}
+	for ( int i = pc - 1; i >= 0; i-- ) {
+		if ( steps[i].enabled && steps[i].action == ST_A_TRIGGER )
+			return i;
+	}
+	return -1;
+}
+
 // from an If or an Else, the step after its Else (toElse) or its End if, Ifs inside it skipped
 // whole; the end of the story when there's none
 static int ST_SkipBranch( const stStep_t *steps, int numSteps, int pc, qboolean toElse ) {
@@ -1906,6 +2079,13 @@ static const char *ST_StepSummary( const stStep_t *s ) {
 	case ST_A_ENDIF:
 		Q_strncpyz( buf, "End if", sizeof( buf ) );
 		break;
+	case ST_A_GOBACK:
+		Com_sprintf( buf, sizeof( buf ), "Go back to %s", !Q_stricmp( s->values[0], "a mark" ) ? va( "mark %s", s->values[1][0] ? s->values[1] : "?" )
+			: !Q_stricmp( s->values[0], "the start" ) ? "the start" : "the When before" );
+		break;
+	case ST_A_MARK:
+		Com_sprintf( buf, sizeof( buf ), "Mark %s", s->values[0][0] ? s->values[0] : "?" );
+		break;
 	case ST_A_NOTIFY:
 		Com_sprintf( buf, sizeof( buf ), "Notify %s, %s s%s: %s", s->values[0][0] ? s->values[0] : "all", s->values[1],
 			Q_stricmp( s->values[3], "no" ) || Q_stristr( s->values[2], "<timer>" ) ? ", counting down" : "", s->values[2] );
@@ -1952,7 +2132,8 @@ static const char *ST_StepSummary( const stStep_t *s ) {
 		Com_sprintf( buf, sizeof( buf ), "Black bars %s", s->values[0] );
 		break;
 	case ST_A_CENTER:
-		Com_sprintf( buf, sizeof( buf ), "Center: %s", s->values[2] );
+		Com_sprintf( buf, sizeof( buf ), "Center%s%s: %s", ST_Typewriter( s ) ? ", typed" : "", ST_CenterLines( s ) == ST_BOTTOM_LINES ? ", bottom"
+			: ST_CenterLines( s ) ? va( ", %i down", ST_CenterLines( s ) ) : "", s->values[2] );
 		break;
 	case ST_A_EFFECT:
 		Com_sprintf( buf, sizeof( buf ), "Effect %s (%s)", s->values[0][0] ? s->values[0] : "?", s->values[1] );
@@ -2049,16 +2230,15 @@ static int ST_InsertAt( void ) {
 	return ( st.stepList.sel >= 0 && st.stepList.sel < st.numSteps ) ? st.stepList.sel + 1 : st.numSteps;
 }
 
-// a new step of this action, after the selected one
-static void ST_AddStep( stAction_t action ) {
-	int at;
+// a new step of this action, at that place in the story
+static void ST_AddStepAt( stAction_t action, int at ) {
 	stStep_t *s;
 
 	if ( st.numSteps >= ST_MAX_STEPS ) {
 		ST_Message( S_COLOR_RED "The story is full" );
 		return;
 	}
-	at = ST_InsertAt();
+	at = Com_Clampi( 0, st.numSteps, at );
 	if ( ST_IsCondition( action ) && !ST_UnderWhen( st.steps, at ) ) {
 		ST_Message( S_COLOR_YELLOW "An If, Else or End if goes under a When step: add the When first, then select it" );
 		return;
@@ -2078,15 +2258,24 @@ static void ST_AddStep( stAction_t action ) {
 	ST_Changed();
 }
 
-// a row of the actions list put in the story: a "when" of its kind
-static void ST_AddRow( const stActionRow_t *r ) {
+// a new step of this action, after the selected one
+static void ST_AddStep( stAction_t action ) {
+	ST_AddStepAt( action, ST_InsertAt() );
+}
+
+// a row of the actions list put in the story at that place: a "when" of its kind
+static void ST_AddRowAt( const stActionRow_t *r, int at ) {
 	const int before = st.numSteps;
 
-	ST_AddStep( r->action );
+	ST_AddStepAt( r->action, at );
 	if ( r->kind >= 0 && st.numSteps > before && st.stepList.sel >= 0 ) {
 		Q_strncpyz( st.steps[st.stepList.sel].values[0], stWhenKinds[r->kind].where, ST_VALUE_LEN );
 		ST_FillHere( &st.steps[st.stepList.sel] );
 	}
+}
+
+static void ST_AddRow( const stActionRow_t *r ) {
+	ST_AddRowAt( r, ST_InsertAt() );
 }
 
 // the steps picked, in order: the marked ones, or the selected one; how many
@@ -2301,6 +2490,7 @@ static qboolean ST_Play( stRun_t *r, stStep_t *steps, int numSteps, const char *
 	const char *cmd, *error;
 	qboolean local;
 	stStep_t *s;
+	int jumps = 0;
 
 	if ( armed )
 		Com_sprintf( prefix, sizeof( prefix ), "Storyteller (%s): ", armed );
@@ -2322,6 +2512,42 @@ static qboolean ST_Play( stRun_t *r, stStep_t *steps, int numSteps, const char *
 			Com_Printf( S_COLOR_YELLOW "%sstep %i: an If, Else or End if goes under a When step; the story stops here\n", prefix, r->pc + 1 );
 			r->pc = numSteps;
 			return qtrue;
+		}
+
+		// a typewriter: a letter at a time, its sound first, then the text a letter longer
+		if ( ST_Typewriter( s ) ) {
+			int total;
+
+			ST_StepCommand( s, &local, &error );
+			if ( error ) {
+				Com_Printf( S_COLOR_YELLOW "%sstep %i skipped: %s\n", prefix, r->pc + 1, error );
+				r->pc++;
+				continue;
+			}
+			if ( cls.realtime < r->typeNext || cls.realtime < st.nextSend || cls.realtime - CL_LastCommandTime() < ST_CommandGap() )
+				return qfalse;
+			ST_TypedText( s->values[2], 0, &total );
+			if ( s->values[7][0] && !r->typeSounded && total ) {
+				CL_AddReliableCommand( va( "rpsound once %s all", s->values[7] ), qfalse );
+				r->sent++;
+				r->typeSounded = qtrue;
+				st.nextSend = cls.realtime + ST_CommandGap();
+				return qfalse;
+			}
+			cmd = ST_CenterCommand( s, ST_TypedText( s->values[2], ++r->typed, &total ) );
+			if ( r->typed == 1 )
+				Com_Printf( S_COLOR_GREEN "%s" S_COLOR_WHITE "typing %s\n", prefix, s->values[2] );
+			CL_AddReliableCommand( cmd, qfalse );
+			r->sent++;
+			st.nextSend = cls.realtime + ST_CommandGap();
+			r->typeSounded = qfalse;
+			r->typeNext = cls.realtime + Q_max( 0, ST_Round( ST_Number( s, 6 ) ) );
+			if ( r->typed >= total ) {
+				r->typed = 0;
+				r->typeNext = 0;
+				r->pc++;
+			}
+			return qfalse;
 		}
 
 		switch ( s->action ) {
@@ -2380,8 +2606,32 @@ static qboolean ST_Play( stRun_t *r, stStep_t *steps, int numSteps, const char *
 			continue;
 
 		case ST_A_ENDIF:
+		case ST_A_MARK:
 			r->pc++;
 			continue;
+
+		case ST_A_GOBACK: {
+			const int to = ST_GoBackTo( steps, numSteps, r->pc );
+
+			if ( to < 0 ) {
+				Com_Printf( S_COLOR_YELLOW "%sstep %i: %s to go back to; it goes on\n", prefix, r->pc + 1,
+					!Q_stricmp( s->values[0], "a mark" ) ? va( "no Mark %s", s->values[1] ) : "no When before it" );
+				r->pc++;
+				continue;
+			}
+			// round and round with nothing to wait on: the rest of it next frame
+			if ( ++jumps > ST_MAX_JUMPS )
+				return qfalse;
+			Com_Printf( S_COLOR_GREEN "%s" S_COLOR_WHITE "step %i: back to step %i\n", prefix, r->pc + 1, to + 1 );
+			// a When there waits again for someone new, and what's said or used counts from now
+			r->pc = to;
+			r->watching = qfalse;
+			r->numInside = 0;
+			r->stepStart = 0;
+			r->by[0] = '\0';
+			r->started = cls.realtime;
+			continue;
+		}
 
 		default:
 			// the server's flood protection: any command this client sent counts, an NPC
@@ -3015,6 +3265,7 @@ static struct {
 	int		time;					// cls.realtime it came
 	char	name[MAX_QPATH];		// without colours
 	char	text[MAX_STRING_CHARS / 2];
+	int		team;					// theirs when they said it, -1 not known
 } stChat[ST_MAX_CHAT];
 static int stChatNext;
 
@@ -3050,6 +3301,7 @@ qboolean CL_Storyteller_ChatLine( void ) {
 	stChat[stChatNext].time = cls.realtime;
 	Q_strncpyz( stChat[stChatNext].name, name, sizeof( stChat[0].name ) );
 	Q_strncpyz( stChat[stChatNext].text, text, sizeof( stChat[0].text ) );
+	stChat[stChatNext].team = ST_NameTeam( name );
 	stChatNext = ( stChatNext + 1 ) % ST_MAX_CHAT;
 	return qfalse;
 }
@@ -3087,6 +3339,9 @@ static qboolean ST_ChatSaid( const stStep_t *s, int since, char *by, int bySize 
 		if ( !stChat[i].time || stChat[i].time < since )
 			continue;
 		if ( !Q_stricmp( who, "me" ) && Q_stricmp( stChat[i].name, mine ) )
+			continue;
+		// the team they were on when they said it
+		if ( ST_WhoTeam( who ) >= 0 && stChat[i].team != ST_WhoTeam( who ) )
 			continue;
 		if ( !Q_stricmp( who, "named" ) ) {
 			char typed[MAX_QPATH];
@@ -3184,6 +3439,7 @@ static struct {
 	int		time;
 	char	name[48];
 	char	by[MAX_QPATH];
+	int		team;					// theirs when they used it, -1 not known
 } stUses[ST_MAX_USES];
 static int stUseNext;
 
@@ -3496,6 +3752,7 @@ static void ST_LogUse( const char *name, const char *by ) {
 	stUses[stUseNext].time = cls.realtime;
 	Q_strncpyz( stUses[stUseNext].name, name, sizeof( stUses[0].name ) );
 	Q_strncpyz( stUses[stUseNext].by, by, sizeof( stUses[0].by ) );
+	stUses[stUseNext].team = ST_NameTeam( by );
 	stUseNext = ( stUseNext + 1 ) % ST_MAX_USES;
 }
 
@@ -3519,6 +3776,8 @@ static qboolean ST_UsedSince( const stStep_t *s, int since, char *by, int bySize
 		if ( !Q_stricmp( who, "any NPC" ) )
 			continue;
 		if ( !Q_stricmp( who, "me" ) && Q_stricmp( stUses[i].by, ST_ClientName( clc.clientNum ) ) )
+			continue;
+		if ( ST_WhoTeam( who ) >= 0 && stUses[i].team != ST_WhoTeam( who ) )
 			continue;
 		if ( !Q_stricmp( who, "named" ) ) {
 			char typed[MAX_QPATH];
@@ -3779,7 +4038,7 @@ static void ST_StartPick( stPick_t pick ) {
 		CL_EffectManager_OpenForStory();
 	else if ( pick == ST_PICK_SHADER || pick == ST_PICK_OVERLAY || pick == ST_PICK_SKY )
 		CL_ShaderManager_OpenForStory( pick == ST_PICK_OVERLAY ? 2 : pick == ST_PICK_SKY ? 3 : 0 );
-	else if ( pick == ST_PICK_SOUND )
+	else if ( pick == ST_PICK_SOUND || pick == ST_PICK_CENTER_SOUND )
 		CL_SoundManager_OpenForStory();
 	else if ( pick == ST_PICK_MUSIC )
 		CL_MusicManager_OpenForStory();
@@ -3798,7 +4057,8 @@ static qboolean ST_PickOpen( void ) {
 	case ST_PICK_SKY:		return CL_ShaderManager_Active();
 	case ST_PICK_NPC_SPAWN:
 	case ST_PICK_NPC_MANAGE:	return CL_NpcManager_Active();
-	case ST_PICK_SOUND:		return CL_SoundManager_Active();
+	case ST_PICK_SOUND:
+	case ST_PICK_CENTER_SOUND:	return CL_SoundManager_Active();
 	case ST_PICK_MUSIC:		return CL_MusicManager_Active();
 	case ST_PICK_LOCK:
 	case ST_PICK_TRIGGER:	return CL_MapEditor_Active();
@@ -4231,6 +4491,23 @@ static void ST_PickFrame( void ) {
 		st.numPicked = 0;
 		return;
 	}
+	// a typewriter's sound: only the sound, into the centre message
+	if ( st.pick == ST_PICK_CENTER_SOUND ) {
+		st.pick = ST_PICK_NONE;
+		if ( ST_Open() && st.numPicked && st.pickStep >= 0 && st.pickStep < st.numSteps && st.steps[st.pickStep].action == ST_A_CENTER ) {
+			stStep_t step;
+
+			ST_StepFromCommand( st.picked[0], &step );
+			ST_SelectStep( st.pickStep );
+			if ( step.action == ST_A_SOUND ) {
+				Q_strncpyz( st.steps[st.pickStep].values[7], step.values[0], ST_VALUE_LEN );
+				ST_Changed();
+				ST_Message( va( S_COLOR_GREEN "Typewriter sound: %s", step.values[0] ) );
+			}
+		}
+		st.numPicked = 0;
+		return;
+	}
 	st.pick = ST_PICK_NONE;
 	// another tool opened from it stays
 	if ( !( Key_GetCatcher() & KEYCATCH_ENGINETOOLS ) && ST_Open() && st.numPicked )
@@ -4487,20 +4764,6 @@ void CL_Storyteller_KeyEvent( int key, qboolean down ) {
 		break;
 	}
 
-	// the diagram scrolls with the arrows, as with the wheel
-	if ( st.diagram && st.popup == ST_POPUP_NONE ) {
-		switch ( key ) {
-		case A_CURSOR_UP:		st.dgScrollY -= 40.0f; return;
-		case A_CURSOR_DOWN:		st.dgScrollY += 40.0f; return;
-		case A_CURSOR_LEFT:		st.dgScrollX -= 60.0f; return;
-		case A_CURSOR_RIGHT:	st.dgScrollX += 60.0f; return;
-		case A_PAGE_UP:			st.dgScrollY -= 300.0f; return;
-		case A_PAGE_DOWN:		st.dgScrollY += 300.0f; return;
-		case A_HOME:			st.dgScrollX = st.dgScrollY = 0.0f; return;
-		default:				return;
-		}
-	}
-
 	text = ST_FocusText( &size, &kind );
 	if ( text ) {
 		const int edit = WG_EditKey( text, size, key, ST_AllowChar );
@@ -4547,6 +4810,24 @@ void CL_Storyteller_KeyEvent( int key, qboolean down ) {
 	}
 	if ( st.popup != ST_POPUP_NONE )
 		return;
+
+	// the diagram scrolls with the arrows, as with the wheel; its steps are copied, cut, pasted
+	// and deleted as the list's are, only the one shown
+	if ( st.diagram ) {
+		switch ( key ) {
+		case A_CURSOR_UP:		st.dgScrollY -= 40.0f; return;
+		case A_CURSOR_DOWN:		st.dgScrollY += 40.0f; return;
+		case A_CURSOR_LEFT:		st.dgScrollX -= 60.0f; return;
+		case A_CURSOR_RIGHT:	st.dgScrollX += 60.0f; return;
+		case A_PAGE_UP:			st.dgScrollY -= 300.0f; return;
+		case A_PAGE_DOWN:		st.dgScrollY += 300.0f; return;
+		case A_HOME:			st.dgScrollX = st.dgScrollY = 0.0f; return;
+		default:
+			if ( st.dgSteps )
+				return;
+			break;
+		}
+	}
 
 	switch ( key ) {
 	case A_CURSOR_UP:
@@ -4622,6 +4903,10 @@ void CL_Storyteller_MouseEvent( int dx, int dy ) {
 static void ST_DiagramBack( void );
 
 void CL_Storyteller_Escape( void ) {
+	if ( st.diagram && st.popup == ST_POPUP_NONE && st.focus != ST_F_NONE ) {
+		st.focus = ST_F_NONE;
+		return;
+	}
 	if ( st.diagram && st.popup == ST_POPUP_NONE ) {
 		ST_DiagramBack();
 		return;
@@ -4902,7 +5187,8 @@ static void ST_DrawStepRow( int row, float x, float y, float w ) {
 		return;
 	}
 	ST_TextClipped( x + indent, y, w - indent, s->enabled ? summary : va( "(off) %s", summary ),
-		s->enabled && ( s->action == ST_A_IF || s->action == ST_A_ELSE || s->action == ST_A_ENDIF ) && ST_StepUsable( s ) ? stAccent : color );
+		s->enabled && ( s->action == ST_A_IF || s->action == ST_A_ELSE || s->action == ST_A_ENDIF || s->action == ST_A_GOBACK
+		|| s->action == ST_A_MARK ) && ST_StepUsable( s ) ? stAccent : color );
 }
 
 static const float *ST_StepFill( int row ) {
@@ -5129,6 +5415,14 @@ static void ST_DrawEdit( void ) {
 	if ( s->action == ST_A_LOCK ) {
 		if ( ST_Button( ST_EDIT_X, y, ST_EDIT_W, "Pick it in the map editor's Locks tab", qfalse, qtrue ) ) {
 			ST_StartPick( ST_PICK_LOCK );
+			return;
+		}
+		y += ST_CTRL_H + 6;
+	}
+
+	if ( ST_Typewriter( s ) ) {
+		if ( ST_Button( ST_EDIT_X, y, ST_EDIT_W, "Pick its sound in the sound manager", qfalse, qtrue ) ) {
+			ST_StartPick( ST_PICK_CENTER_SOUND );
 			return;
 		}
 		y += ST_CTRL_H + 6;
@@ -5827,7 +6121,8 @@ side by side and joining again at its End if, a Play story as a link to the stor
 ===============================================================================
 */
 
-#define ST_DG_W			150.0f		// a block
+static float stDgW = 150.0f;		// a block's width: narrower beside the panel, so an If's two sides fit between
+#define ST_DG_W			stDgW
 #define ST_DG_H			18.0f
 #define ST_DG_GAP		10.0f		// the line between two
 #define ST_DG_SIDE		16.0f		// between an If's two sides
@@ -5844,6 +6139,30 @@ static vec4_t stDgEnds		= { 0.08f, 0.08f, 0.08f, 0.95f };
 static vec4_t stDgLine		= { 0.7f, 0.7f, 0.7f, 0.9f };
 static vec4_t stDgYes		= { 0.45f, 0.9f, 0.5f, 1.0f };
 static vec4_t stDgNo		= { 1.0f, 0.55f, 0.45f, 1.0f };
+
+#define ST_DG_DRAG_PX	4.0f		// held down and moved this far, it's a drag
+#define ST_DG_DROP_PX	36.0f		// a place to drop is found this near
+#define ST_MAX_SLOTS	( ST_MAX_STEPS * 2 + 8 )
+
+// the places a step can be dropped, between the blocks as they're drawn: where in the story, and
+// for an If's empty no side, the Else it needs first (-1 none)
+static struct {
+	float	x, y;
+	int		at, elseAt;
+} stSlots[ST_MAX_SLOTS];
+static int stNumSlots;
+
+// the part of the screen the diagram shows in: between the panel's two sides when it's up
+static float stDgLeft = 16.0f, stDgRight = SCREEN_WIDTH - 16.0f;
+
+static void ST_DgSlot( float x, float y, int at, int elseAt ) {
+	if ( stNumSlots >= ST_MAX_SLOTS )
+		return;
+	stSlots[stNumSlots].x = x;
+	stSlots[stNumSlots].y = y;
+	stSlots[stNumSlots].at = at;
+	stSlots[stNumSlots++].elseAt = elseAt;
+}
 
 // a rect, cut to the diagram's part of the screen
 static void ST_DgFill( float x, float y, float w, float h, const float *color ) {
@@ -5956,10 +6275,13 @@ static void ST_DgBlock( const stStep_t *steps, int i, float cx, float y, qboolea
 	ST_TextClipped( x + 6, y + 3, ST_DG_W - ( s->action == ST_A_PLAYSTORY ? 40 : 10 ), va( "%s%s", s->enabled ? "" : S_COLOR_GREY, text ), stWhite );
 	if ( s->action == ST_A_PLAYSTORY )
 		ST_Text( x + ST_DG_W - 30, y + 3, S_COLOR_YELLOW "open", stWhite );
-	if ( ST_InRect( x, y, ST_DG_W, ST_DG_H ) )
+	if ( ST_InRect( x, y, ST_DG_W, ST_DG_H ) && st.cursorX >= stDgLeft && st.cursorX <= stDgRight )
 		Q_strncpyz( st.dgHover, va( "%i  %s", i + 1, text ), sizeof( st.dgHover ) );
+	if ( own && st.marked[i] && !picked )
+		ST_Fill( x + 2, y + 2, ST_DG_W - 4, ST_DG_H - 4, stMarked );
 	if ( ST_Clicked( x, y, ST_DG_W, ST_DG_H ) ) {
-		if ( s->action == ST_A_PLAYSTORY && s->values[0][0] ) {
+		// a Play story's "open", or anywhere on one shown from it
+		if ( s->action == ST_A_PLAYSTORY && s->values[0][0] && ( !own || st.clickX >= x + ST_DG_W - 34 ) ) {
 			stStep_t *read = (stStep_t *)Z_Malloc( ST_MAX_STEPS * sizeof( stStep_t ), TAG_GENERAL, qfalse );
 			int skipped;
 			const int count = ST_ReadStory( s->values[0], read, ST_MAX_STEPS, &skipped );
@@ -5976,13 +6298,45 @@ static void ST_DgBlock( const stStep_t *steps, int i, float cx, float y, qboolea
 				st.dgScrollX = st.dgScrollY = 0.0f;
 			}
 		} else if ( own ) {
+			// as in the list: Ctrl one more or one less, Shift all from the last one clicked; held
+			// and moved, it's dragged
+			const qboolean ctrl = (qboolean)( Key_IsDown( A_CTRL ) != 0 ), shift = (qboolean)( Key_IsDown( A_SHIFT ) != 0 );
+
+			if ( ctrl ) {
+				if ( st.stepList.sel >= 0 && st.stepList.sel < st.numSteps && st.stepList.sel != i ) {
+					qboolean any = qfalse;
+
+					for ( int k = 0; k < st.numSteps && !any; k++ )
+						any = (qboolean)( st.marked[k] != 0 );
+					if ( !any )
+						st.marked[st.stepList.sel] = 1;
+				}
+				st.marked[i] = (byte)!st.marked[i];
+			} else if ( shift ) {
+				ST_ClearMarks();
+				for ( int k = Q_min( st.anchor, i ); k <= Q_max( st.anchor, i ) && k < st.numSteps; k++ )
+					st.marked[k] = 1;
+			} else {
+				st.dgClearOnUp = (qboolean)( st.marked[i] != 0 );
+				if ( !st.marked[i] )
+					ST_ClearMarks();
+				st.anchor = i;
+				st.dgDrag = 2;
+				st.dgDragRow = i;
+				st.dgPressX = st.clickX;
+				st.dgPressY = st.clickY;
+				st.dgDragging = qfalse;
+			}
 			ST_SelectStep( i );
 		}
 	}
 }
 
-// from..to drawn down from y, around cx; where it ends
-static float ST_DgDraw( const stStep_t *steps, int from, int to, float cx, float y, qboolean own ) {
+// from..to drawn down from y, around cx; where it ends. An If's no side with no Else has elseAt,
+// where the Else for it goes
+static float ST_DgDraw( const stStep_t *steps, int from, int to, float cx, float y, qboolean own, int elseAt0 ) {
+	if ( own )
+		ST_DgSlot( cx, y - ST_DG_GAP * 0.5f, from, elseAt0 );
 	for ( int i = from; i < to; i++ ) {
 		if ( ST_DgJoint( &steps[i] ) )
 			continue;
@@ -6011,8 +6365,8 @@ static float ST_DgDraw( const stStep_t *steps, int from, int to, float cx, float
 				ST_Text( rx + 3, y + ST_DG_GAP - 1, elseAt >= 0 ? "no" : "no: on", stDgNo );
 			}
 			top = y + ST_DG_GAP * 2;
-			yEnd = ST_DgDraw( steps, i + 1, elseAt >= 0 ? elseAt : endAt, lx, top, own );
-			nEnd = ST_DgDraw( steps, elseAt >= 0 ? elseAt + 1 : endAt, endAt, rx, top, own );
+			yEnd = ST_DgDraw( steps, i + 1, elseAt >= 0 ? elseAt : endAt, lx, top, own, -1 );
+			nEnd = ST_DgDraw( steps, elseAt >= 0 ? elseAt + 1 : endAt, endAt, rx, top, own, elseAt >= 0 ? -1 : endAt );
 			merge = top + Q_max( hy, hn );
 			// each side down to where they join, and on
 			ST_DgFill( lx, yEnd, 1, merge - yEnd + 1, stDgLine );
@@ -6020,14 +6374,185 @@ static float ST_DgDraw( const stStep_t *steps, int from, int to, float cx, float
 			ST_DgFill( lx, merge, rx - lx + 1, 1, stDgLine );
 			ST_DgFill( cx, merge, 1, ST_DG_GAP, stDgLine );
 			y = merge + ST_DG_GAP;
+			if ( own )
+				ST_DgSlot( cx, y - ST_DG_GAP * 0.5f, Q_min( endAt + 1, st.numSteps ), -1 );
 			i = endAt;
 			continue;
 		}
 		ST_DgBlock( steps, i, cx, y, own );
 		ST_DgFill( cx, y + ST_DG_H, 1, ST_DG_GAP, stDgLine );
 		y += ST_DG_H + ST_DG_GAP;
+		if ( own )
+			ST_DgSlot( cx, y - ST_DG_GAP * 0.5f, i + 1, -1 );
 	}
 	return y;
+}
+
+// the steps a block dragged takes: the picked ones when it's one of them, an If with all of it to
+// its End if, else it alone; how many
+static int ST_DgDragged( int i, int *rows ) {
+	int count = 0;
+
+	if ( st.marked[i] ) {
+		for ( int k = 0; k < st.numSteps; k++ ) {
+			if ( st.marked[k] )
+				rows[count++] = k;
+		}
+		return count;
+	}
+	if ( st.steps[i].enabled && st.steps[i].action == ST_A_IF ) {
+		int elseAt, endAt;
+
+		ST_DgBranch( st.steps, st.numSteps, i, &elseAt, &endAt );
+		endAt = Q_min( endAt, st.numSteps - 1 );
+		for ( int k = i; k <= endAt; k++ )
+			rows[count++] = k;
+		return count;
+	}
+	rows[0] = i;
+	return 1;
+}
+
+// steps moved to a place in the story, an Else put there first when it needs one
+static void ST_DgMove( const int *rows, int count, int at, int elseAt ) {
+	static stStep_t moved[ST_MAX_STEPS];	// too big for the stack
+	qboolean inside = qtrue;
+
+	if ( st.run.running && st.runTab == stActiveTab ) {
+		ST_Message( S_COLOR_YELLOW "Stop the story to move its steps" );
+		return;
+	}
+	// dropped by where they are: nothing to do
+	for ( int k = 1; k < count; k++ ) {
+		if ( rows[k] != rows[k - 1] + 1 )
+			inside = qfalse;
+	}
+	if ( inside && at >= rows[0] && at <= rows[count - 1] + 1 && elseAt < 0 )
+		return;
+	if ( elseAt >= rows[0] && elseAt <= rows[count - 1] ) {
+		ST_Message( S_COLOR_YELLOW "That's inside what's moved" );
+		return;
+	}
+	for ( int k = 0; k < count; k++ )
+		moved[k] = st.steps[rows[k]];
+	for ( int k = count - 1; k >= 0; k-- ) {
+		memmove( &st.steps[rows[k]], &st.steps[rows[k] + 1], ( st.numSteps - rows[k] - 1 ) * sizeof( st.steps[0] ) );
+		st.numSteps--;
+		if ( rows[k] < at )
+			at--;
+		if ( elseAt >= 0 && rows[k] < elseAt )
+			elseAt--;
+	}
+	if ( elseAt >= 0 ) {
+		memmove( &st.steps[elseAt + 1], &st.steps[elseAt], ( st.numSteps - elseAt ) * sizeof( st.steps[0] ) );
+		memset( &st.steps[elseAt], 0, sizeof( st.steps[0] ) );
+		st.steps[elseAt].action = ST_A_ELSE;
+		st.steps[elseAt].enabled = qtrue;
+		st.numSteps++;
+		at = elseAt + 1;
+	}
+	at = Com_Clampi( 0, st.numSteps, at );
+	memmove( &st.steps[at + count], &st.steps[at], ( st.numSteps - at ) * sizeof( st.steps[0] ) );
+	memcpy( &st.steps[at], moved, count * sizeof( st.steps[0] ) );
+	st.numSteps += count;
+	ST_ClearMarks();
+	if ( count > 1 ) {
+		for ( int k = 0; k < count; k++ )
+			st.marked[at + k] = 1;
+	}
+	ST_SelectStep( at + count - 1 );
+	st.anchor = at;
+	ST_Changed();
+}
+
+// the drop place nearest the mouse, -1 none near enough
+static int ST_DgNearestSlot( void ) {
+	float best = ST_DG_DROP_PX * ST_DG_DROP_PX;
+	int found = -1;
+
+	if ( st.cursorX < stDgLeft || st.cursorX > stDgRight || st.cursorY < ST_DG_TOP || st.cursorY > ST_DG_BOTTOM )
+		return -1;
+	for ( int k = 0; k < stNumSlots; k++ ) {
+		const float dx = ( st.cursorX - stSlots[k].x ) * 0.5f, dy = st.cursorY - stSlots[k].y;
+
+		if ( dx * dx + dy * dy < best ) {
+			best = dx * dx + dy * dy;
+			found = k;
+		}
+	}
+	return found;
+}
+
+// what's held: moved far enough it's dragged, the place it would go marked; let go, it goes there
+static void ST_DgDragFrame( void ) {
+	int slot;
+
+	if ( !st.dgDrag )
+		return;
+	if ( !st.dgDragging && ( fabsf( st.cursorX - st.dgPressX ) > ST_DG_DRAG_PX || fabsf( st.cursorY - st.dgPressY ) > ST_DG_DRAG_PX ) )
+		st.dgDragging = qtrue;
+	slot = st.dgDragging ? ST_DgNearestSlot() : -1;
+	if ( Key_IsDown( A_MOUSE1 ) ) {
+		if ( slot >= 0 ) {
+			const float sx = stSlots[slot].x, sy = stSlots[slot].y;
+
+			ST_Fill( sx - 50, sy - 1.5f, 100, 3, stAccent );
+			if ( stSlots[slot].elseAt >= 0 )
+				ST_Text( sx + 54, sy - 6, S_COLOR_YELLOW "the no side: an Else goes in", stWhite );
+		}
+		if ( st.dgDragging ) {
+			const char *what = st.dgDrag == 1 ? ST_RowName( &st.actionRows[st.dgDragRow] ) : ST_StepSummary( &st.steps[st.dgDragRow] );
+
+			ST_Box( st.cursorX + 10, st.cursorY + 6, 140, ST_DG_H, stDgStep );
+			ST_TextClipped( st.cursorX + 14, st.cursorY + 9, 132, what, stWhite );
+		}
+		return;
+	}
+	// let go
+	if ( st.dgDragging && slot >= 0 ) {
+		if ( st.dgDrag == 1 && st.dgDragRow >= 0 && st.dgDragRow < st.numActionRows ) {
+			int at = stSlots[slot].at;
+
+			ST_ClearMarks();
+			if ( stSlots[slot].elseAt >= 0 ) {
+				ST_AddStepAt( ST_A_ELSE, stSlots[slot].elseAt );
+				at = stSlots[slot].elseAt + 1;
+			}
+			ST_AddRowAt( &st.actionRows[st.dgDragRow], at );
+		} else if ( st.dgDrag == 2 && st.dgDragRow >= 0 && st.dgDragRow < st.numSteps ) {
+			int rows[ST_MAX_STEPS];
+			const int count = ST_DgDragged( st.dgDragRow, rows );
+
+			ST_DgMove( rows, count, stSlots[slot].at, stSlots[slot].elseAt );
+		}
+	} else if ( !st.dgDragging && st.dgDrag == 2 && st.dgClearOnUp ) {
+		ST_ClearMarks();
+	}
+	st.dgDrag = 0;
+	st.dgDragging = qfalse;
+	st.dgClearOnUp = qfalse;
+}
+
+// beside the diagram: the actions to drag in, and the picked step's settings; their own clicks
+static void ST_DrawDgPanel( void ) {
+	const float listX = ST_ACTIONS_X, listY = ST_TOP_Y + 14;
+
+	ST_Fill( 0, ST_DG_TOP - 24, stDgLeft - 4, ST_DG_BOTTOM - ST_DG_TOP + 26, stPanelOpaque );
+	ST_Fill( stDgRight + 4, ST_DG_TOP - 24, SCREEN_WIDTH - stDgRight - 4, ST_DG_BOTTOM - ST_DG_TOP + 26, stPanelOpaque );
+	// a press on an action: dragged into the diagram, or clicked as ever
+	if ( st.click && ST_InRect( listX, listY, ST_ACTIONS_W - ( st.numActionRows > (int)( ST_ACTIONS_H / ST_ROW_H ) ? WG_SCROLL_W + 1 : 0 ), ST_ACTIONS_H ) ) {
+		const int row = st.actionList.scroll + (int)( ( st.clickY - listY ) / ST_ROW_H );
+
+		if ( row >= 0 && row < st.numActionRows && !st.actionRows[row].header && ST_CanAdd( st.actionRows[row].action ) ) {
+			st.dgDrag = 1;
+			st.dgDragRow = row;
+			st.dgPressX = st.clickX;
+			st.dgPressY = st.clickY;
+			st.dgDragging = qfalse;
+		}
+	}
+	ST_DrawActions();
+	ST_DrawEdit();
 }
 
 static void ST_DiagramClose( void ) {
@@ -6054,18 +6579,44 @@ static void ST_DiagramBack( void ) {
 
 static void ST_DrawDiagram( void ) {
 	const qboolean own = (qboolean)( st.dgSteps == NULL );
+	const qboolean panel = (qboolean)( own && st.dgPanel );
 	const stStep_t *steps = own ? st.steps : st.dgSteps;
 	const int numSteps = own ? st.numSteps : st.dgNumSteps;
-	const float viewW = SCREEN_WIDTH - 32.0f, viewH = ST_DG_BOTTOM - ST_DG_TOP;
-	float w, h, cx, y;
+	const float viewH = ST_DG_BOTTOM - ST_DG_TOP;
+	const qboolean click = st.click;
+	const int wheel = st.wheel;
+	float w, h, cx, y, viewW;
+
+	stDgLeft = panel ? ST_ACTIONS_X + ST_ACTIONS_W + 6 : 16.0f;
+	stDgW = panel ? 104.0f : 150.0f;
+	stDgRight = panel ? ST_EDIT_X - 6 : SCREEN_WIDTH - 16.0f;
+	viewW = stDgRight - stDgLeft;
+	stNumSlots = 0;
+	// the panel's clicks and wheel are its own
+	if ( panel && ( st.cursorX < stDgLeft || st.cursorX > stDgRight ) )
+		st.wheel = 0;
+	if ( panel && click && ( st.clickX < stDgLeft || st.clickX > stDgRight ) )
+		st.click = qfalse;
 
 	st.dgHover[0] = '\0';
 	ST_Fill( 0, ST_DG_TOP - 24, SCREEN_WIDTH, ST_DG_BOTTOM - ST_DG_TOP + 26, stPanelOpaque );
-	ST_TextClipped( ST_ACTIONS_X, ST_DG_TOP - 20, 200, own ? va( "Diagram of %s", st.name[0] ? st.name : "the story shown" )
-		: va( "Diagram of %s" S_COLOR_GREY ", played by %s", st.dgName, st.name[0] ? st.name : "the story shown" ), stWhite );
-	if ( ST_Button( SCREEN_WIDTH - 16 - 90, ST_DG_TOP - 22, 90, own ? "Back to steps" : "Back", qfalse, qtrue ) ) {
-		ST_DiagramBack();
-		return;
+	if ( panel ) {
+		ST_TextClipped( stDgLeft, ST_DG_TOP - 20, viewW - 104, va( "Diagram of %s", st.name[0] ? st.name : "the story shown" ), stWhite );
+		if ( ST_Button( stDgRight - 98, ST_DG_TOP - 22, 46, "Panel", qtrue, qtrue ) )
+			st.dgPanel = qfalse;
+		if ( ST_Button( stDgRight - 48, ST_DG_TOP - 22, 48, "Back", qfalse, qtrue ) ) {
+			ST_DiagramBack();
+			return;
+		}
+	} else {
+		ST_TextClipped( ST_ACTIONS_X, ST_DG_TOP - 20, 200, own ? va( "Diagram of %s", st.name[0] ? st.name : "the story shown" )
+			: va( "Diagram of %s" S_COLOR_GREY ", played by %s", st.dgName, st.name[0] ? st.name : "the story shown" ), stWhite );
+		if ( own && ST_Button( SCREEN_WIDTH - 16 - 90 - 54, ST_DG_TOP - 22, 50, "Panel", qfalse, qtrue ) )
+			st.dgPanel = qtrue;
+		if ( ST_Button( SCREEN_WIDTH - 16 - 90, ST_DG_TOP - 22, 90, own ? "Back to steps" : "Back", qfalse, qtrue ) ) {
+			ST_DiagramBack();
+			return;
+		}
 	}
 
 	ST_DgMeasure( steps, 0, numSteps, &w, &h );
@@ -6077,7 +6628,7 @@ static void ST_DrawDiagram( void ) {
 	}
 	st.dgScrollX = Com_Clamp( 0.0f, Q_max( 0.0f, w - viewW ), st.dgScrollX );
 	st.dgScrollY = Com_Clamp( 0.0f, Q_max( 0.0f, h - viewH + 20.0f ), st.dgScrollY );
-	cx = w <= viewW ? SCREEN_WIDTH * 0.5f : 16.0f + w * 0.5f - st.dgScrollX;
+	cx = w <= viewW ? ( stDgLeft + stDgRight ) * 0.5f : stDgLeft + w * 0.5f - st.dgScrollX;
 	y = ST_DG_TOP + 6.0f - st.dgScrollY;
 
 	// its start: how it begins, armed or played
@@ -6089,18 +6640,32 @@ static void ST_DrawDiagram( void ) {
 	y += ST_DG_H + ST_DG_GAP;
 	if ( !numSteps && ST_DgShown( y, ST_DG_H ) )
 		ST_Text( cx - 60, y + 3, S_COLOR_GREY "No steps yet", stWhite );
-	y = ST_DgDraw( steps, 0, numSteps, cx, y, own );
+	y = ST_DgDraw( steps, 0, numSteps, cx, y, own, -1 );
 	if ( ST_DgShown( y, ST_DG_H ) ) {
 		ST_Box( cx - 60, y, 120, ST_DG_H, stDgEnds );
 		ST_Text( cx - ST_TextWidth( "End" ) * 0.5f, y + 3, "End", stWhite );
 	}
 
-	// what's under the mouse, whole, and how to get about, on the title's row
-	if ( st.dgHover[0] )
-		ST_TextClipped( ST_ACTIONS_X + 210, ST_DG_TOP - 20, SCREEN_WIDTH - 16 - 96 - ST_ACTIONS_X - 210, st.dgHover, stWhite );
-	else
-		ST_TextClipped( ST_ACTIONS_X + 210, ST_DG_TOP - 20, SCREEN_WIDTH - 16 - 96 - ST_ACTIONS_X - 210, S_COLOR_GREY "Wheel or arrows to scroll, Home back to the top. "
-			"Click a step to pick it, a Play story to open its story. Esc goes back.", stWhite );
+	// what's under the mouse, whole, and how to get about: on the title's row, or with the panel
+	// up, under the diagram
+	{
+		const char *help = own ? S_COLOR_GREY "Wheel or arrows scroll. Click a step to pick it, Ctrl/Shift+click several, drag to move it (an If with all of it); "
+			"Panel drags actions in. Ctrl+C/X/V, Del. Esc goes back." : S_COLOR_GREY "Wheel or arrows to scroll. Click a Play story to open its story. Esc goes back.";
+
+		if ( panel )
+			ST_TextClipped( stDgLeft, ST_DG_BOTTOM + 2, viewW, st.dgHover[0] ? st.dgHover : help, stWhite );
+		else
+			ST_TextClipped( ST_ACTIONS_X + 210, ST_DG_TOP - 20, SCREEN_WIDTH - 16 - 150 - ST_ACTIONS_X - 210, st.dgHover[0] ? st.dgHover : help, stWhite );
+	}
+
+	st.click = (qboolean)( click && st.click );
+	if ( panel && click && ( st.clickX < stDgLeft || st.clickX > stDgRight ) )
+		st.click = qtrue;
+	if ( panel && wheel && ( st.cursorX < stDgLeft || st.cursorX > stDgRight ) )
+		st.wheel = wheel;
+	if ( panel )
+		ST_DrawDgPanel();
+	ST_DgDragFrame();
 }
 
 void CL_Storyteller_Draw( void ) {

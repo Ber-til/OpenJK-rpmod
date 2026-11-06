@@ -52,6 +52,10 @@ cvar_t	*rconAddress;
 
 cvar_t	*cl_timeout;
 cvar_t	*cl_maxpackets;
+static cvar_t	*s_backgroundAudio;	// OpenJK-rpmod: the sound plays on with the window out of focus
+
+// shared/sdl/sdl_sound.cpp: the sound kept playing whatever the window's focus
+void SNDDMA_KeepActive( qboolean keep );
 cvar_t	*cl_packetdup;
 cvar_t	*cl_timeNudge;
 cvar_t	*cl_showTimeDelta;
@@ -2395,6 +2399,12 @@ void CL_Frame ( int msec ) {
 	CL_Update_Frame();
 	// /feedback's answers in
 	CL_Feedback_Frame();
+	CL_AssetManager_Frame();
+	// the RENDERER page's effects, shown with Post Effects on
+	CL_RenderMenu_Frame();
+	// the sound on with the window out of focus: when asked, and always while a cinematic plays,
+	// or its sound would fall behind its picture
+	SNDDMA_KeepActive( (qboolean)( s_backgroundAudio->integer || CIN_PlayingWithSound() ) );
 	// what you're playing, on your Discord profile
 	CL_Discord_Frame();
 
@@ -2564,7 +2574,7 @@ static void *CM_GetCachedMapDiskImage( void ) { return gpvCachedMapDiskImage; }
 static void CM_SetCachedMapDiskImage( void *ptr ) { gpvCachedMapDiskImage = ptr; }
 static void CM_SetUsingCache( qboolean usingCache ) { gbUsingCachedMapDataRightNow = usingCache; }
 
-#define G2_VERT_SPACE_SERVER_SIZE 256
+#define G2_VERT_SPACE_SERVER_SIZE 2048	// KB; 256 in JKA, too small for high-poly custom models
 IHeapAllocator *G2VertSpaceServer = NULL;
 CMiniHeap IHeapAllocator_singleton(G2_VERT_SPACE_SERVER_SIZE * 1024);
 
@@ -2837,7 +2847,7 @@ static void CL_AddFavorite_f( void ) {
 	}
 }
 
-#define G2_VERT_SPACE_CLIENT_SIZE 256
+#define G2_VERT_SPACE_CLIENT_SIZE 2048	// KB; 256 in JKA, too small for high-poly custom models
 
 /*
 ===============
@@ -2926,6 +2936,7 @@ void CL_Init( void ) {
 	CL_EmotePreview_Init ();
 	CL_AnimManager_Init ();
 	CL_Presets_Init ();
+	CL_AssetManager_Init ();
 	CL_AdminFlags_Init ();
 	CL_QuickConnect_Init ();
 	CL_RpCinematic_Init ();
@@ -2968,6 +2979,7 @@ void CL_Init( void ) {
 	cl_anglespeedkey = Cvar_Get ("cl_anglespeedkey", "1.5", CVAR_ARCHIVE_ND );
 
 	cl_maxpackets = Cvar_Get ("cl_maxpackets", "63", CVAR_ARCHIVE );
+	s_backgroundAudio = Cvar_Get( "s_backgroundAudio", "0", CVAR_ARCHIVE_ND, "Sound keeps playing when the game is minimized or another window is in front; it always does while a cinematic plays" );
 	cl_packetdup = Cvar_Get ("cl_packetdup", "1", CVAR_ARCHIVE_ND );
 
 	cl_run = Cvar_Get ("cl_run", "1", CVAR_ARCHIVE_ND, "Always run");

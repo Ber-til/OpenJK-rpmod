@@ -19,6 +19,8 @@ Some features reach other players through workarounds only this client understan
 - [Emote Preview](#emote-preview)
 - [Animation Manager](#animation-manager-custom-emotes-are-experimental)
 - [Presets](#presets)
+- [Skin Select](#skin-select)
+- [Asset Manager](#asset-manager)
 - [Discord Status](#discord-status)
 - [In-game Menu and Camera Settings](#in-game-menu-and-camera-settings)
 - [Widescreen Text](#widescreen-text)
@@ -37,6 +39,7 @@ Some features reach other players through workarounds only this client understan
 - [Fighter Takeoff Guard](#fighter-takeoff-guard)
 - [Toggle Crouch](#toggle-crouch)
 - [Wall Stick](#wall-stick)
+- [Background Audio](#background-audio)
 - [Console Settings](#console-settings)
 - [Model Safeguards](#model-safeguards)
 - [Update Check](#update-check)
@@ -265,7 +268,7 @@ Assemble a mission out of steps, then play it: NPCs, models, effects, sounds, mu
 
 ![](https://i.ibb.co/cc1QJSmd/openjk-x86-2026-10-14-20-17-25-677.png)
 
-- **Flow**: wait a number of seconds, "wait for me" until you press Continue (or `/storyteller continue`), a "when" for each kind of trigger (someone enters a map trigger, comes near a spot or an effect, a door moves, someone says something or uses a use trigger), If / Else / End if under a "when", play another saved story alongside (**Play story**), and run any console command
+- **Flow**: wait a number of seconds, "wait for me" until you press Continue (or `/storyteller continue`), a "when" for each kind of trigger (someone enters a map trigger, comes near a spot or an effect, a door moves, someone says something or uses a use trigger), If / Else / End if under a "when", **Go back** and **Mark**, play another saved story alongside (**Play story**), and run any console command
 - **Speech**: say a line in chat, as you or as one of the players on the server *(experimental)*, a center message for everyone or one player, a notification with a countdown, NPC talk and objectives *(experimental)*
 - **NPCs**: spawn an NPC, teleport NPCs, walk them along a route *(experimental)*, and any `npc` command on them
 - **World**: place a model, play an effect, a screen effect (fade, shake...), remap a shader, a screen overlay, the sky's look *(experimental)*, lock or unlock a door, play a sound, change the music
@@ -279,10 +282,15 @@ Assemble a mission out of steps, then play it: NPCs, models, effects, sounds, mu
 
 - **If** goes under a "when" step and looks once, when the story gets to it: how many players, NPCs or people are in a map trigger or near a spot or an effect (at least, at most or exactly so many), whether someone has said one of the words you give since the story began, or **who set off** the "when" above it, by name (the whole of it, or a part of three letters or more). True, the steps after it play; false, the ones after its **Else**. **End if** closes it, and Ifs can sit inside Ifs. If, Else and End if are greyed out until there's a "when" above where they'd go; one left above every "when" shows in red, and the story stops there
 - A "when" on an area can wait for them to **stay** in it a number of seconds; "When someone says" waits for one of the words you give (`|` between them)
+- **Teams**: a "when" or an If's **Who** can be **red team** or **blue team**: only that team's players set it off or count, by the team the server has them on (when they said it or used it, for words and use triggers). Only one team can move the story on, siege style
+- **Go back** plays the story again from an earlier step: the "when" before it, which waits again for someone new, the start, or a **Mark** step by its name. Under an Else it makes a console reusable and only right for some: "When someone uses console", "If who set it off is Rex", open the door, "Else", "Go back". Words said and triggers used count again from when it went back
 - "When someone uses a trigger" waits for one of the Map Editor's use triggers, the one you look at or pick in a free camera (a held one once it's been held long enough); If can ask whether someone used it too
 - Its **Too early** keeps the story in order: while the story is at an earlier step (or waits armed for its first), the use trigger is hidden from the players, or shows them its message instead of being used, until the story gets there. Dinner after breakfast: one story, "When someone uses breakfast", then "When someone uses dinner" with Too early set. For players with this client, while the storyteller is on the map
 - **Play story** plays a saved story alongside the one playing, which goes on: from its start, or once its own first "when" is set off. "When someone uses lever", then "Play story Story2", and the lever starts Story2
-- **Diagram** shows the story as a flowchart: the "whens", each If splitting into a yes and a no side that join again at its End if, and the stories it plays; click a step to pick it, or a Play story to open that story's diagram. The wheel or the arrows scroll, Esc goes back
+- **Diagram** shows the story as a flowchart: the "whens", each If splitting into a yes and a no side that join again at its End if, and the stories it plays; click a step to pick it, or a Play story's *open* to open that story's diagram. The wheel or the arrows scroll, Esc goes back
+  - It's edited there too: drag a block to move it (an If with all of it, to its End if; several picked, all of them), Ctrl+click and Shift+click pick several, and Ctrl+C, Ctrl+X, Ctrl+V, Ctrl+A and Del work as in the list
+  - **Panel** brings up the actions on the left, to drag into the diagram where it shows the step would go (on an If's empty no side an Else goes in with it), and the picked step's settings on the right
+- **Center message** can start lower down: at the **bottom** of the screen, or a number of **lines down**. **Typewriter** shows it a letter at a time, with a sound before each (picked in the sound manager, *sound/interface/sub_select* to start with), this many ms apart; like every step, its commands are paced by the server's flood protection
 - Map triggers and doors are picked where you stand or aim, in a free camera, or from a list
 - The **Notification** step shows a line in the top left corner with `rpnotify`, for everyone or one player; give it a countdown and it shows the seconds left, live (`<timer>`)
 - The **Lock** step locks a door or a trigger to a rank with `rplock`, or unlocks it, picked in the Map Editor's Locks tab
@@ -345,7 +353,7 @@ Make a whole cut scene on one timeline, the camera's shots and what the players 
 
 ## Map Editor
 
-Edit the map on your own screen: move or hide any part of it, place models, lights and fog, change its lighting, and share it all with the people on the map.
+Edit the map on your own screen: move or hide any part of it, place models, lights and fog, change its lighting and textures, and share it all with the people on the map.
 
 ### Editing
 
@@ -362,6 +370,7 @@ Edit the map on your own screen: move or hide any part of it, place models, ligh
 - **Sounds**: speakers that play any music or sound, heard near them or everywhere, looping
 - **Styles**: give the map's switchable lights a new pattern (flicker, pulse, strobe...) and color, change its existing light styles, or the lighting of the whole map
 - **Fog**: the color and thickness of each of the map's fogs, `No fog` to take one away, or fog volumes of your own. *Needs the release's renderer, OpenGL (rd-vanilla_x86.dll) or Vulkan (rd-vulkan_x86.dll); with Vulkan's own fog (`r_drawfog 2`, its default) up to 16 fogs in all.*
+- **Textures**: give the map's surfaces another texture, only where you want it, e.g. snow on the ground outside while the same stone inside stays as it is. Pointing at the map outlines in blue what a click would pick and names its texture: the surface, the ones of its texture joined to it (**Joined**), or every surface of its texture (**All of it**). Shift+click adds more or takes some off; what's picked is outlined in pink, over the grass and bushes a surface grows too. Search a texture: the one pointed at in the list, or the one chosen, shows on the picked surfaces straight away, and **Keep it on the picked** keeps it; **Put back** returns them to the map's. Tall grass, bushes and flowers grow from a shader, not an image: the ones marked **grows** in the list (e.g. *textures/yavin/ground_grasssprite*) grow them on what they're given to. To grow a sprite image of your choice, such as *gfx/sprites/y_grass_tall*, on any ground, pick it under **Grows on it**: it grows on the texture chosen under **Texture**, or with that left empty on each surface's own ground, as it looks now. **Width**, **Height** and **Apart** set the sprites' size and how far apart they grow. The new texture keeps the surface's own light and shadows. **Given** lists the textures given and how many surfaces each, a click picking them again. Saved in layouts and shared with the rest. *Needs the release's renderer, OpenGL (rd-vanilla_x86.dll) or Vulkan (rd-vulkan_x86.dll).*
 - **Locks**: every door and trigger_multiple in the map with its lock. Lock one to a rank (*-1* for no one) with a name shown to whoever it refuses, change it or unlock it, or remove every lock, through RPMod's `rplock`; locked ones are drawn in red. These are the server's, so everyone is held by them
 - A map always starts without edits: they show when you load one of its layouts, or when someone shares theirs, so no one's edits load against anyone else's (`rpc_mapEdits 0` only shows them in the editor)
 - They're saved as entities a server could spawn, ready for when RPMod supports it
@@ -412,7 +421,7 @@ Your characters speak the galaxy's languages, and only understand the ones they 
 
 ## HD Video Cinematics
 
-`/rpcinematic` is no longer limited to RoQ files: it can play real videos, sound included.
+`/rpcinematic` is no longer limited to RoQ files: it can play real videos, sound included, with OpenGL or Vulkan.
 
 - Plays `video/<name>.mp4`, *.webm*, *.mkv* or *.mov* when one exists, and falls back to `<name>.roq` otherwise; the command doesn't change
 - Any resolution up to 2048 pixels wide, 1920x1080 included
@@ -448,10 +457,12 @@ Choose which styles your style key cycles through, or jump straight to one.
 
 Every animation in the game, emotes made of emotes, and emotes of your own. `/animationmanager` opens it (bind it to a key).
 
-- **Animations**: every animation of every skeleton loaded, the base game's and custom pk3s', with a search; each plays on your own model (other skeletons on theirs), drag it to turn it. The skeleton's button goes to the next one, a right click back one, its arrow lists them all to pick from. Pause it, step it a frame at a time, drag the bar through it, change its speed. **Play on me** plays it on your character, on your screen only, until you move
+- **Animations**: every animation of every skeleton loaded, the base game's and custom pk3s', with a search; each plays on your own model (other skeletons on theirs, or, with no model of their own, copied onto yours as **Copy this pose** would make it), drag it to turn it. The skeleton's button goes to the next one, a right click back one, its arrow lists them all to pick from. Pause it, step it a frame at a time, drag the bar through it, change its speed. **Play on me** plays it on your character, on your screen only, until you move
   - Each says where it comes from: the base game, or the pk3 that **added** it (green) or **changed** it (blue, with the base game's frames and speed beside), found by comparing the animation list in use with the base game's own copy. **All / Base / Custom** shows only those
 - **Emote chains**: one command for several emotes: `/emgreet` does `/emsalute`, then `/emyes` once its animation is over. Pick the emotes from the list (or type any command), set a step's seconds or leave it to its animation's length, reorder them. They're the server's own emotes, so everyone sees them. Moving stops the chain
 - **Custom emotes** *(experimental)*: an animation, played whole or from one frame to another, at a speed, once or looping, ending with it or held until you move; then bones of it following another animation (the arm waving while the rest sits), turned (pitch, yaw, roll) or moved (X, Y, Z), picked from the skeleton's bones; tags move with their bones. The picked bone has rings and arrows on the model: drag a ring to turn it, an arrow to move it, or type the numbers. **Reset this bone** takes it back. An admin's, with **TOGGLE EXPERIMENTAL** on, show for everyone with this client; anyone else's on their own screen only. **Under it** plays an RPMod emote with it, so players without this client see something too
+  - **Copy this pose to it** (on the Animations tab): the frame shown, of any skeleton's animation, a mod's .gla on the humanoid's bones too, copied into the custom emote as up to 32 bones turned and moved on its animation (Stand when it has none), held on that frame. Players with this client but without that .gla then see the pose. It's one pose, not the moving animation; bones the humanoid doesn't have are left out
+  - **Keys**: **Add key** poses the bones again at a later time, up to 10 keys, and the emote goes smoothly from each key's pose to the next (eased in and out, turns the short way round). Click a key's number to pose it (the preview holds on it), type its time in seconds, **Remove** it; the preview's < and > step through the keys and the bar marks them. With keys, **Copy this pose to it** goes into the picked key: copy a frame into each key to play a mod's animation back for players without its .gla. A looping one goes back to the first key after the last. Shared emotes carry about 3,900 characters, so many keys on many bones can be too much: the last keys are left out and it says so. A client without keys shows the first key's pose
 - Chains and custom emotes are commands of their own, named `em...` like the server's, saved in `emotes/`
 - `cl_customEmotes 0` hides the custom emotes admins share
 
@@ -463,7 +474,27 @@ Characters saved, and swapped to in one click: for missions, or anyone you play.
 - **Save who I am now** keeps your name, model and skin, its colours, and your sabers and their colours, with the date
 - Each preset is a card: the name in its colours (RPMod's too), the character standing with its hilts in hand, the skin, the sabers and when it was saved
 - Click a card to become that character at once; **Update** saves who you are now over it, **Delete** (twice) takes it out
+- The **\*** in a card's corner makes it a **favorite**; **Favorites** shows only those
+- **Search** finds them by name, model, skin or saber
+- Up to 256, eight a page: **<<**, **<**, **>**, **>>**, the wheel, the arrows, Home and End go through the pages
 - Kept in `presets.txt`
+
+## Skin Select
+
+Every skin of your model, and every model you have, worn in one click.
+
+- `/skinselect` shows the skins of the model you are: each `model_<skin>.skin` as a card, the character wearing it; click one to wear it. The one worn now is outlined
+- A model made of parts (`head_`, `torso_` and `lower_` skins, as the base game's Jedi are) has a **Put together** card first: step through the heads, torsos and legs with **<** and **>**, see them together, click it to wear that combination
+- **All models** shows every model installed, as it is: **Wear it**, or click it for its skins. **Back to all models** goes back
+- The same window as the presets, with their **Presets** tab, its search and its pages; `/skinselect <model>` opens on that model's skins, `/skinselect models` on all of them
+
+## Asset Manager
+
+What's been put on the map, where each comes from, and all of it packed into a pk3 of its own.
+
+- `/assetmanager` asks the server what's on the map, a list after the other: the rpmodels, the rpeffects, the looping rpsounds, the overlays, and the shaders remapped
+- Each shows the pk3 it's from: green from a custom pk3, grey the base game's, red not found here. **Custom only** hides the base game's
+- **Build it** packs the custom ones checked into `assetpacks/<name>.pk3` in the game folder, with what they need that's custom too: a model's shaders and textures and its other LODs, a Ghoul2 model's skins and skeleton, an effect's models, sounds and shaders, a shader's `.shader` file and images. The game doesn't load what's in `assetpacks/`: move the pk3 into the game folder, or hand it to the server, for it to be used
 
 ## Discord Status
 
@@ -475,9 +506,9 @@ Your Discord profile shows what you're playing: "Playing ::JEDI::", the server (
 ## In-game Menu and Camera Settings
 
 - The in-game menu (Esc) has no Vote, Call Vote or Add Bot, and a **PRESETS** button between Profile and Controls
-- **FEEDBACK** between Quick Connect and Exit opens [Feedback](#feedback)
+- **TOOLS** between Quick Connect and Exit opens a panel of every tool this client adds, in the menu's own look, five a page with **Back** and **Next**: the Model, NPC, Effect, Shader, Sound, Music, Animation and Asset managers, the Map Editor, the Storyteller, the Cinematic Manager, Presets, Skin Select, Languages, Radial Menus, Console Settings and [Feedback](#feedback). Each says what it does and its command; clicked, the menu closes and the tool opens. Esc puts the panel away
 - **QUICK CONNECT** after Setup: JEDI Temple, Grounds, Region and Galaxy, each with its address and its map and players as the server says now (asked when it opens, or **Refresh**); click one, or its **Connect**, to go there
-- **Admin flags**: when noclip, nodraw, nonsolid or notarget is turned on for you, a small line at the bottom says which are on (green) and off (red), until they're all off. They're read from the commands' replies (noclip from the game too); it hides with the HUD (`cg_draw2D 0`, `cg_drawStatus 0`); `cl_adminFlags 0` hides it, `/adminflags` lists them, `/adminflags reset` takes them all as off
+- **Admin flags** (`cl_adminFlags 1`, off by default): when noclip, nodraw, nonsolid or notarget is turned on for you, a small line at the bottom says which are on (green) and off (red), until they're all off. They're read from the commands' replies (noclip from the game too); it hides with the HUD (`cg_draw2D 0`, `cg_drawStatus 0`), `/adminflags` lists them, `/adminflags reset` takes them all as off
 - **Setup > Game Options > Camera Settings** on shows the third person camera's settings beside the in-game menu: third person on or off, distance, angle around you, height, side, tilt, how closely it follows your aim, see-through, field of view and the HUD, and **Defaults**. While it's on, the camera keeps right behind you (`cg_thirdPersonCameraDamp 1`), so it never swings round as you turn. They're the game's own settings (`cg_thirdPerson...`, `cg_fov`)
 - **Camera presets**: type a name under the settings and **Save** them as it; **<** and **>** go through the saved ones, each loaded as it comes up; **Delete** takes the one named out. Kept in `camerapresets.txt`, also `/campreset`
 - Nothing is shipped for it: the menus, RPMod's or the base game's, are changed as the game reads them
@@ -645,6 +676,14 @@ Stay on a wall you grabbed while you chat.
 - `/cl_wallstick` turns it on or off; grab a wall holding jump as usual and you stay on it
 - Chatting, typing in the console or opening a menu no longer drops you; press jump again to push off
 
+## Background Audio
+
+Keep hearing the game with it minimized or another window in front.
+
+- JKA turns its sound off while its window isn't the one in front, until you come back to it
+- **Background Audio** in Setup > Sound, under EAX, or `/s_backgroundAudio 1`, keeps it playing (off by default; the row hides while EAX is on)
+- While a cinematic with sound plays (`/rpcinematic`, a RoQ or an HD video), the sound always keeps playing, the setting on or off: paused, it fell behind the picture and beeped once you came back
+
 ## Console Settings
 
 Make the console look the way you like.
@@ -684,7 +723,7 @@ Know when there's a newer OpenJK-rpmod.
 
 Send a bug or an idea for the OpenJK-RPMod project, and read the answers, without leaving the game. Not every idea will be in RPMod itself.
 
-- **FEEDBACK** in the in-game menu (Esc), between Quick Connect and Exit, or `/feedback`, opens the window; `/feedback` works from the main menu too
+- **Feedback** in the in-game menu's **TOOLS** (Esc), or `/feedback`, opens the window; `/feedback` works from the main menu too
 - **New report**: a bug or an idea, a title, and what happened (what you did, what happened and what you expected) or what the idea is. The game's version, renderer, map and server go with it, shown under the text before you send
 - A report goes with your RPMod account, read from `rpinfo` without showing it in the console: you send it from an RPMod server, logged in. Logged out, or from the main menu, the window says so and nothing is sent
 - It's answered on the project's Discord, and marked planned or fixed, or closed
@@ -698,20 +737,20 @@ Send a bug or an idea for the OpenJK-RPMod project, and read the answers, withou
 
 [TaystJK](https://github.com/taysta/TaystJK)'s Vulkan renderer comes with the game, next to the usual OpenGL one, which stays the default.
 
-- Setup's RENDERER page (under DEFAULTS, in the main menu and in game) picks it and sets what's below; Apply restarts the video with them. The rows for Vulkan's own settings show once Vulkan is picked, and *More Settings >* at the bottom goes to a second page of them
+- Setup's RENDERER page (under DEFAULTS, in the main menu and in game) picks it and sets what's below; Apply restarts the video with them. The rows for Vulkan's own settings show once Vulkan is picked; the effects that need **Post Effects** (`r_fbo`) show under it once it's on, and *More Settings >* at the bottom goes to a second page of them
 - Or by hand: `/cl_renderer rd-vulkan` then `/vid_restart` switches to it, without leaving the server; `/cl_renderer rd-vanilla` and `/vid_restart` switch back
 - Anti-aliasing (`r_ext_multisample 2`, 4 or 8), bloom (`r_bloom 1`), HDR (`r_hdr`), dithering (`r_dither 1`) and a render resolution of its own (`r_renderScale`, `r_renderWidth`, `r_renderHeight`); most of them need `r_fbo 1`
 - `r_vbo 1` and `r_vbo_models 1` keep the map's and the models' surfaces on the graphics card, for more frames per second
 - `r_device` picks the graphics card when there's more than one
 - **Supersampling** (`r_ext_supersample 1`, needs `r_fbo 1`): the picture drawn at twice the width and height and scaled down to the window, smoothing every edge, for about four times the drawing. Screenshots come out at the larger size
 - Effects of its own, each off until turned on, all needing `r_fbo 1`; all but colour grading are on the RENDERER page too:
-  - **Ambient occlusion** (`r_ssao 1`): corners, creases and the ground under things darkened. `r_ssaoRadius` is how far it reaches (48 units), `r_ssaoIntensity` how dark (1)
+  - **Ambient occlusion** (`r_ssao 1`): corners, creases and the ground under things darkened. `r_ssaoRadius` is how far it reaches (48 units), `r_ssaoIntensity` how dark (0.6); the RENDERER page's **AO Strength** under it sets that: Low (0.3), Medium (0.6, the default) or Strong (1)
   - **Soft particles** (`r_softParticles 1`): smoke, fire, sprites and other effects fade where they meet walls and floors instead of cutting into them with a hard line; `r_softParticlesDepth` is how far in front of a wall they start to fade (24). In fog too; not on the map's own surfaces
   - **FXAA** (`r_fxaa 1`): smooths edges over the finished picture, the edges of grass and fences too, which anti-aliasing misses
   - **Sharpening** (`r_sharpen`, 0 to 1): crisper detail, against the softness of FXAA or a lower `r_renderScale`
   - **Sun shafts** (`r_sunShafts 1`): beams of light from the sun through gaps, on maps whose sky has a sun; `r_sunShaftsIntensity` how bright (1)
-  - **Tone mapping** (`r_tonemap 1`): bright light rolls off along a film-like curve instead of clipping to white
-  - **Colour grading**: `r_exposure` (1), `r_saturation` (1), `r_contrast` (1), `r_warmth` (-1 cold to 1 warm). A map can bring its own look in `maps/<map>.grade`, lines like `saturation 0.9` or `warmth 0.3` (and `exposure`, `contrast`, `tonemap 1`), used in place of yours while it's loaded unless `r_mapGrades 0`
+  - **Tone mapping**: bright light rolls off instead of clipping to white. `r_tonemap 1` (**Soft**) leaves the rest of the picture as it is; `r_tonemap 2` (**Film**, ACES) is a film-like curve that also darkens the shadows, which on dim maps looks darker all over
+  - **Colour grading**: `r_exposure` (1), `r_saturation` (1), `r_contrast` (1), `r_warmth` (-1 cold to 1 warm). A map can bring its own look in `maps/<map>.grade`, lines like `saturation 0.9` or `warmth 0.3` (and `exposure`, `contrast`, `tonemap 1` or `2`), used in place of yours while it's loaded unless `r_mapGrades 0`
   - **Motion blur** (`r_motionBlur`, 0 to 1): the picture smears when the camera moves or turns, as long a smear whatever the frame rate; cuts and teleports don't blur
 - Every tool works with it; the cinematic camera's depth of field and filters need `r_fbo 1`. Its depth of field blurs bright points into round discs (bokeh, `r_dofBokeh`, 0 to 1; 0 is OpenGL's look)
 - On macOS it needs MoltenVK, which macOS doesn't come with

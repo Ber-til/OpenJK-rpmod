@@ -808,7 +808,7 @@ void vk_clean_staging_buffer( void )
 static qboolean vk_wait_staging_buffer( void )
 {
 	if ( vk.aux_fence_wait ) {
-		VkResult res = qvkWaitForFences( vk.device, 1, &vk.aux_fence, VK_TRUE, 5 * 1000000000ULL );
+		VkResult res = vk_wait_fence( vk.aux_fence, __func__ ); // OpenJK-rpmod: a busy card waited for
 
 		if ( res != VK_SUCCESS ) {
 			ri.Error( ERR_FATAL, "vkWaitForFences() failed with %s at %s", vk_result_string( res ), __func__ );
@@ -875,7 +875,7 @@ void vk_flush_staging_buffer( qboolean final )
 		submit_info.signalSemaphoreCount = 0;
 		submit_info.pSignalSemaphores = NULL;
 		VK_CHECK( qvkQueueSubmit( vk.queue, 1, &submit_info, vk.aux_fence ) );
-		res = qvkWaitForFences( vk.device, 1, &vk.aux_fence, VK_TRUE, 5 * 1000000000ULL );
+		res = vk_wait_fence( vk.aux_fence, __func__ ); // OpenJK-rpmod: a busy card waited for
 		if ( res != VK_SUCCESS ) {
 			ri.Error( ERR_FATAL, "vkWaitForFences() failed with %s at %s", vk_result_string( res ), __func__ );
 		}
@@ -1530,6 +1530,10 @@ void RE_UploadCinematic( int cols, int rows, const byte *data, int client, qbool
 
     // if the scratchImage isn't in the format we want, specify it as a new texture
     if ( cols != image->width || rows != image->height )  {
+		// OpenJK-rpmod: the frames still drawing use the old image, which is destroyed here: a video
+		// of another size (a 1920x1080 mp4 after the 256x256 one made for it) could crash the driver
+		vk_wait_idle();
+
 		image->width = image->uploadWidth = cols;
 		image->height = image->uploadHeight = rows;
 

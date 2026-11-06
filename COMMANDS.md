@@ -217,7 +217,9 @@ The console commands, keys and settings this client adds. What each feature does
 ## Presets
 
 - `/presets` opens or closes them (the in-game menu's PRESETS)
-- `/presets save` saves who you are now as a preset; `/presets list` lists them, numbered; `/presets <number>` makes you that one
+- `/presets save` saves who you are now as a preset; `/presets list` lists them, numbered (`*` a favorite); `/presets <number>` makes you that one
+- `/skinselect` the skins of your model, to wear in a click; `/skinselect <model>` another model's; `/skinselect models` every model installed
+- `/assetmanager` what's on the map and the pk3 each is from; `/assetmanager scan` asks the server again; `/assetmanager list` prints it; `/assetmanager build [name]` packs the custom ones checked into `assetpacks/<name>.pk3`
 - `/quickconnect connect <1-4>` goes to JEDI Temple, Grounds, Region or Galaxy; `/quickconnect refresh` asks them for their map and players; `/quickconnect` lists them
 - `/adminflags` noclip, nodraw, nonsolid and notarget as known for you; `/adminflags reset` all taken as off
 - `/campreset save|load|delete [name]` the camera settings saved or loaded by name (the camera panel's box when none is given); `/campreset next|prev` loads the next saved one or the one before; `/campreset list`
@@ -259,6 +261,7 @@ The console commands, keys and settings this client adds. What each feature does
 - `cl_fighterTakeoffGuard 0` turns the fighter takeoff guard off
 - `+vehboost` fires a fighter's boost on its own key
 - `cl_crouch 1` keeps you crouched while on foot
+- `s_backgroundAudio 1` the sound keeps playing with the game minimized or another window in front (Setup > Sound > Background Audio); during a cinematic it always does
 - `cl_ratioFix 1` turns the widescreen text fix on
 - `cl_saberStyles` holds the styles set with `/saberstyles`
 - `rpc_cinematics 0` keeps cinematics sent through RPMod from taking your camera
@@ -268,7 +271,7 @@ The console commands, keys and settings this client adds. What each feature does
 - `cl_npcNames 0` hides the NPC names under the crosshair
 - `cl_customEmotes 0` hides the custom emotes admins share
 - `cl_discord 1` your Discord profile shows what you're playing (off by default); `cl_discordPrivate 1` your Discord status leaves out the server and your character's name
-- `cl_adminFlags 0` hides the noclip, nodraw, nonsolid and notarget line
+- `cl_adminFlags 1` shows the noclip, nodraw, nonsolid and notarget line (*0* by default)
 - `ui_cameraSettings 1` shows the camera settings beside the in-game menu (Setup > Game Options > Camera Settings)
 - `cl_modelFollowFront 1` keeps what's in the modelmanager's hand in front of you; `cl_modelHoldDistance` how far (128)
 - `cl_wallStick 1` keeps you on a wall you grabbed until you press jump again (`/cl_wallstick`)

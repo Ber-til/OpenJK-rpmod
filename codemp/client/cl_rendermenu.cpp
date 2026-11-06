@@ -25,6 +25,8 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 // QUALITY row, so they look as the rest of it does whoever made it; a menu without those is left be.
 //
 // Two pages: JKA's Setup menu has room for 15 rows, and a button at the end of each goes to the other.
+// With Vulkan, the effects that need Post Effects (r_fbo) show only once it's on, under it, and the
+// second page with them: a row shows for one cvar only, so ui_rd_postfx says both are so.
 //
 // The camera panel's settings can be saved by name and loaded again (campreset, camerapresets.txt):
 // a name box, < and > going through the saved ones and loading each, Save and Delete.
@@ -32,7 +34,8 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 // Setup's Game Options get a Camera Settings row (ui_cameraSettings), and the in-game menu, the bar
 // Esc opens: no Vote, Call Vote or Add Bot, a PRESETS button between Profile and Controls (see
 // cl_presets.cpp), and with Camera Settings on a panel of the third person camera's settings, the
-// game's own cg_thirdPerson* and cg_fov.
+// game's own cg_thirdPerson* and cg_fov. QUICK CONNECT and TOOLS open panels under the bar: the
+// servers, and every tool this client adds (Feedback with them), five a page.
 //
 // The page's rows are ui_rd_* copies of the settings: most of them only take with a vid_restart, and
 // a latched cvar reads as it was until then. "renderersettings sync" fills the copies as the page
@@ -50,6 +53,13 @@ extern const char *( *LoadScriptFile_Patch )( const char *filename, const char *
 #define RM_BUTTON		"renderermenubutton"
 #define RM_GLOW			"rendererbutton_glow"
 #define RM_VULKAN		"rd-vulkan"
+#define RM_POSTFX		"ui_rd_postfx"	// 1 while the page has Vulkan picked and Post Effects on
+
+typedef enum {
+	RM_SHOW_ALWAYS,
+	RM_SHOW_VULKAN,		// when Vulkan is picked
+	RM_SHOW_POSTFX		// when Vulkan is picked and Post Effects on
+} rmShow_t;
 
 typedef struct {
 	const char	*ui;			// the page's copy; NULL for the button to the other page
@@ -58,72 +68,76 @@ typedef struct {
 	const char	*label;
 	const char	*desc;
 	const char	*list;			// cvarStrList (commas between) or cvarFloatList (none), braces and all
-	qboolean	vulkanOnly;		// shown when Vulkan is picked
+	rmShow_t	show;
 	int			page;			// 0 or 1
 } rmRow_t;
 
 static const rmRow_t rmRows[] = {
 	{ "ui_rd_renderer", "cl_renderer", "rd-vanilla", "Renderer:",
 		"OpenGL is the usual one; Vulkan is TaystJK's, with more effects (experimental)",
-		"cvarStrList { \"OpenGL\" , \"rd-vanilla\" , \"Vulkan\" , \"rd-vulkan\" }", qfalse, 0 },
+		"cvarStrList { \"OpenGL\" , \"rd-vanilla\" , \"Vulkan\" , \"rd-vulkan\" }", RM_SHOW_ALWAYS, 0 },
 	{ "ui_rd_msaa", "r_ext_multisample", "0", "Anti-aliasing:",
 		"Smooths jagged edges; more costs more frames",
-		"cvarFloatList { \"Off\" 0 \"2x\" 2 \"4x\" 4 \"8x\" 8 }", qfalse, 0 },
+		"cvarFloatList { \"Off\" 0 \"2x\" 2 \"4x\" 4 \"8x\" 8 }", RM_SHOW_ALWAYS, 0 },
 	{ "ui_rd_glow", "r_DynamicGlow", "0", "Dynamic Glow:",
 		"Glowing lights and sabers; with Vulkan it needs Post Effects",
-		"cvarFloatList { \"Off\" 0 \"On\" 1 }", qfalse, 0 },
-	{ "ui_rd_fbo", "r_fbo", "0", "Post Effects:",
-		"Draws to a picture first: needed for bloom, HDR, dithering, glow and the effects on the next page",
-		"cvarFloatList { \"Off\" 0 \"On\" 1 }", qtrue, 0 },
-	{ "ui_rd_bloom", "r_bloom", "0", "Bloom:",
-		"Bright light bleeds into its surroundings; needs Post Effects",
-		"cvarFloatList { \"Off\" 0 \"On\" 1 }", qtrue, 0 },
-	{ "ui_rd_hdr", "r_hdr", "1", "HDR:",
-		"More colour depth in the picture, less banding; needs Post Effects",
-		"cvarFloatList { \"Off\" 0 \"On\" 1 }", qtrue, 0 },
-	{ "ui_rd_dither", "r_dither", "0", "Dithering:",
-		"Hides banding in smooth gradients; needs Post Effects",
-		"cvarFloatList { \"Off\" 0 \"On\" 1 }", qtrue, 0 },
+		"cvarFloatList { \"Off\" 0 \"On\" 1 }", RM_SHOW_ALWAYS, 0 },
 	{ "ui_rd_vbo", "r_vbo", "0", "World Caching:",
 		"Keeps the map on the graphics card: more frames per second",
-		"cvarFloatList { \"Off\" 0 \"On\" 1 }", qtrue, 0 },
+		"cvarFloatList { \"Off\" 0 \"On\" 1 }", RM_SHOW_VULKAN, 0 },
 	{ "ui_rd_vbomodels", "r_vbo_models", "0", "Model Caching:",
 		"Keeps models on the graphics card: more frames per second",
-		"cvarFloatList { \"Off\" 0 \"On\" 1 }", qtrue, 0 },
+		"cvarFloatList { \"Off\" 0 \"On\" 1 }", RM_SHOW_VULKAN, 0 },
+	{ "ui_rd_fbo", "r_fbo", "0", "Post Effects:",
+		"Draws to a picture first: on, it shows bloom, HDR, glow and the rest of the effects here",
+		"cvarFloatList { \"Off\" 0 \"On\" 1 }", RM_SHOW_VULKAN, 0 },
+	// what needs Post Effects, under it
+	{ "ui_rd_bloom", "r_bloom", "0", "Bloom:",
+		"Bright light bleeds into its surroundings",
+		"cvarFloatList { \"Off\" 0 \"On\" 1 }", RM_SHOW_POSTFX, 0 },
+	{ "ui_rd_hdr", "r_hdr", "1", "HDR:",
+		"More colour depth in the picture, less banding",
+		"cvarFloatList { \"Off\" 0 \"On\" 1 }", RM_SHOW_POSTFX, 0 },
+	{ "ui_rd_dither", "r_dither", "0", "Dithering:",
+		"Hides banding in smooth gradients",
+		"cvarFloatList { \"Off\" 0 \"On\" 1 }", RM_SHOW_POSTFX, 0 },
 	{ "ui_rd_ssao", "r_ssao", "0", "Ambient Occlusion:",
-		"Darkens corners, creases and the ground under things; needs Post Effects",
-		"cvarFloatList { \"Off\" 0 \"On\" 1 }", qtrue, 0 },
+		"Darkens corners, creases and the ground under things",
+		"cvarFloatList { \"Off\" 0 \"On\" 1 }", RM_SHOW_POSTFX, 0 },
+	{ "ui_rd_ssaostrength", "r_ssaoIntensity", "0.6", "AO Strength:",
+		"How dark ambient occlusion makes corners and creases; lower it if the picture looks too dark",
+		"cvarFloatList { \"Low\" 0.3 \"Medium\" 0.6 \"Strong\" 1 }", RM_SHOW_POSTFX, 0 },
 	{ NULL, NULL, NULL, "More Settings >",
 		"Supersampling, soft particles, FXAA, sharpening, sun shafts, tone mapping, motion blur",
-		NULL, qtrue, 0 },
+		NULL, RM_SHOW_POSTFX, 0 },
 	// the second page: Vulkan's own additions (rd-vulkan's vk_rpmod_post.cpp)
 	{ "ui_rd_ssaa", "r_ext_supersample", "0", "Supersampling:",
-		"Draws the picture at twice the size and scales it down: smooths every edge, costs about four times the drawing; needs Post Effects",
-		"cvarFloatList { \"Off\" 0 \"On\" 1 }", qtrue, 1 },
+		"Draws the picture at twice the size and scales it down: smooths every edge, costs about four times the drawing",
+		"cvarFloatList { \"Off\" 0 \"On\" 1 }", RM_SHOW_POSTFX, 1 },
 	{ "ui_rd_soft", "r_softParticles", "0", "Soft Particles:",
-		"Smoke and fire fade where they meet walls instead of cutting into them; needs Post Effects",
-		"cvarFloatList { \"Off\" 0 \"On\" 1 }", qtrue, 1 },
+		"Smoke and fire fade where they meet walls instead of cutting into them",
+		"cvarFloatList { \"Off\" 0 \"On\" 1 }", RM_SHOW_POSTFX, 1 },
 	{ "ui_rd_fxaa", "r_fxaa", "0", "FXAA:",
-		"Smooths edges over the finished picture, grass and fences too; needs Post Effects",
-		"cvarFloatList { \"Off\" 0 \"On\" 1 }", qtrue, 1 },
+		"Smooths edges over the finished picture, grass and fences too",
+		"cvarFloatList { \"Off\" 0 \"On\" 1 }", RM_SHOW_POSTFX, 1 },
 	{ "ui_rd_sharpen", "r_sharpen", "0", "Sharpening:",
-		"Crisper detail, against the softness of FXAA or supersampling; needs Post Effects",
-		"cvarFloatList { \"Off\" 0 \"Low\" 0.4 \"High\" 0.8 }", qtrue, 1 },
+		"Crisper detail, against the softness of FXAA or supersampling",
+		"cvarFloatList { \"Off\" 0 \"Low\" 0.4 \"High\" 0.8 }", RM_SHOW_POSTFX, 1 },
 	{ "ui_rd_shafts", "r_sunShafts", "0", "Sun Shafts:",
-		"Beams of light from the sun through gaps, on maps with a sun; needs Post Effects",
-		"cvarFloatList { \"Off\" 0 \"On\" 1 }", qtrue, 1 },
+		"Beams of light from the sun through gaps, on maps with a sun",
+		"cvarFloatList { \"Off\" 0 \"On\" 1 }", RM_SHOW_POSTFX, 1 },
 	{ "ui_rd_shaftsstrength", "r_sunShaftsIntensity", "1", "Sun Shaft Strength:",
 		"How bright the sun shafts are",
-		"cvarFloatList { \"Low\" 0.5 \"Medium\" 1 \"High\" 2 \"Very High\" 3 }", qtrue, 1 },
+		"cvarFloatList { \"Low\" 0.5 \"Medium\" 1 \"High\" 2 \"Very High\" 3 }", RM_SHOW_POSTFX, 1 },
 	{ "ui_rd_tonemap", "r_tonemap", "0", "Tone Mapping:",
-		"Bright light rolls off like film instead of clipping to white; needs Post Effects",
-		"cvarFloatList { \"Off\" 0 \"On\" 1 }", qtrue, 1 },
+		"Bright light rolls off instead of clipping to white; Film (ACES) darkens the shadows too",
+		"cvarFloatList { \"Off\" 0 \"Soft\" 1 \"Film\" 2 }", RM_SHOW_POSTFX, 1 },
 	{ "ui_rd_mblur", "r_motionBlur", "0", "Motion Blur:",
-		"The picture smears as the camera moves or turns; needs Post Effects",
-		"cvarFloatList { \"Off\" 0 \"Low\" 0.3 \"Medium\" 0.6 \"High\" 1 }", qtrue, 1 },
+		"The picture smears as the camera moves or turns",
+		"cvarFloatList { \"Off\" 0 \"Low\" 0.3 \"Medium\" 0.6 \"High\" 1 }", RM_SHOW_POSTFX, 1 },
 	{ NULL, NULL, NULL, "< Back",
 		"The renderer, anti-aliasing, glow, post effects and the rest",
-		NULL, qtrue, 1 },
+		NULL, RM_SHOW_POSTFX, 1 },
 };
 static const int rmNumRows = (int)ARRAY_LEN( rmRows );
 
@@ -477,8 +491,10 @@ static const char *RM_Patch( const char *filename, const char *text, int *length
 			RM_ReplaceBlock( item, "action", "action { play \"sound/interface/button1\" show applyChanges }" );
 			item.insert( item.rfind( '}' ), std::string( rr->list ) + "\n" );
 		}
-		if ( rr->vulkanOnly )
+		if ( rr->show == RM_SHOW_VULKAN )
 			item.insert( item.rfind( '}' ), "cvarTest \"ui_rd_renderer\" showCvar { \"" RM_VULKAN "\" }\n" );
+		else if ( rr->show == RM_SHOW_POSTFX )
+			item.insert( item.rfind( '}' ), "cvarTest \"" RM_POSTFX "\" showCvar { \"1\" }\n" );
 		add += item + "\n";
 	}
 
@@ -512,6 +528,35 @@ static const char *RM_Patch( const char *filename, const char *text, int *length
 			RM_SetRectY( item, crossY + rowStep * ( at + 1 ) );
 			RM_ReplaceWord( item, "highlight1", va( "highlight%i", at + 2 ) );
 			add += "\n" + item + "\n";
+		}
+	}
+
+	// Sound: Background Audio, the row under EAX, a copy of it; hidden while EAX is on, where the
+	// EAX picture goes
+	{
+		const rmItem_t *eax = RM_Item( items, "eax" );
+		const rmItem_t *quality = RM_Item( items, "sound_quality" );
+
+		if ( eax && quality ) {
+			std::string item = s.substr( eax->start, eax->end - eax->start );
+			const float eaxY = RM_RectY( item );
+			const float step = eaxY - RM_RectY( s.substr( quality->start, quality->end - quality->start ) );
+			const size_t hl = item.find( "highlight" );
+
+			if ( step > 0.0f && hl != std::string::npos ) {
+				const int high = atoi( item.c_str() + hl + 9 );
+
+				RM_SetValue( item, "name", "backgroundaudio" );
+				RM_SetValue( item, "text", RM_Quote( "Background Audio:" ) );
+				RM_SetValue( item, "cvar", RM_Quote( "s_backgroundAudio" ) );
+				RM_SetValue( item, "descText", RM_Quote( "Sound keeps playing with the game minimized or another window in front; cinematics always do" ) );
+				RM_ReplaceBlock( item, "cvarFloatList", "cvarFloatList { \"Off\" 0 \"On\" 1 }" );
+				RM_ReplaceBlock( item, "action", "action { play \"sound/interface/button1.wav\" }" );
+				RM_SetRectY( item, eaxY + step );
+				RM_ReplaceWord( item, va( "highlight%i", high ), va( "highlight%i", high + (int)( step / rowStep + 0.5f ) ) );
+				item.insert( item.rfind( '}' ), "cvarTest \"s_UseOpenAL\" hideCvar { 1 }\n" );
+				add += "\n" + item + "\n";
+			}
 		}
 	}
 
@@ -584,7 +629,12 @@ static const imCamRow_t imCamRows[] = {
 #define IM_CAM_W		198.0f
 #define IM_CAM_ROW		17.0f
 #define IM_CAM_LABEL	518.0f		// where the labels end and the sliders start
-#define IM_CAM_SHOW		"cvarTest \"ui_cameraSettings\" showCvar { \"1\" }\n"
+// the camera panel shows with its setting on and nothing over it, Exit's menu (ingame_leave) or the
+// quick connect or tools panel (ui_qcOpen): ui_camPanel is them together, kept by CL_RenderMenu_Frame,
+// as an item tests one cvar only
+#define IM_CAM_CVAR		"ui_camPanel"
+#define IM_LEAVE_CVAR	"ui_leaveOpen"	// Exit's menu is open, set by its own onOpen and onClose
+#define IM_CAM_SHOW		"cvarTest \"" IM_CAM_CVAR "\" showCvar { \"1\" }\n"
 
 /*
 ================================================================================
@@ -829,6 +879,90 @@ static void IM_SetRect( std::string &item, float x, float y, float w, float h ) 
 #define QC_SERVERS	4
 #define QC_OPEN_CVAR	"ui_qcOpen"	// 1 while the panel is out: Esc closes it first (see cl_quickconnect.cpp)
 
+// TOOLS: every tool, its command run as the menu closes, five a page
+#define TL_X		392.0f
+#define TL_Y		34.0f
+#define TL_W		242.0f
+#define TL_ENTRY	30.0f
+#define TL_PER_PAGE	5
+
+static const struct {
+	const char	*name;
+	const char	*command;
+	const char	*desc;
+} imTools[] = {
+	{ "Model Manager",		"modelmanager",		"Place models, move the map's (rpmodel)" },
+	{ "NPC Manager",		"npcmanager",		"Spawn NPCs and command them" },
+	{ "Effect Manager",		"effectmanager",	"Preview effects and play them (rpeffect)" },
+	{ "Shader Manager",		"shadermanager",	"Remap shaders, overlays, the sky" },
+	{ "Map Editor",			"mapedit",			"Move, hide and retexture the map; lights, fog" },
+	{ "Storyteller",		"storyteller",		"Missions out of steps, played for everyone" },
+	{ "Cinematic Manager",	"cinematicmanager",	"Camera shots and what everyone does in them" },
+	{ "Sound Manager",		"soundmanager",		"Hear sounds and play them (rpsound)" },
+	{ "Music Manager",		"musicmanager",		"Hear music and play it for everyone" },
+	{ "Animation Manager",	"animationmanager",	"Every animation; emote chains, custom emotes" },
+	{ "Asset Manager",		"assetmanager",		"What's on the map, its pk3s, packed in one" },
+	{ "Presets",			"presets",			"Characters saved, swapped to in a click" },
+	{ "Skin Select",		"skinselect",		"Every skin and model, worn in a click" },
+	{ "Languages",			"languages",		"Your characters' languages" },
+	{ "Radial Menus",		"radialsettings",	"Make radial menus and bind keys to them" },
+	{ "Console Settings",	"consolesettings",	"How the console looks" },
+	{ "Feedback",			"feedback",			"Report a bug or send an idea" },
+};
+#define TL_NUM		( (int)ARRAY_LEN( imTools ) )
+#define TL_PAGES	( ( TL_NUM + TL_PER_PAGE - 1 ) / TL_PER_PAGE )
+
+// every part of the tools panel put away
+static const char *IM_ToolsHide( void ) {
+	static char out[256];
+
+	Q_strncpyz( out, "hide tools ;", sizeof( out ) );
+	for ( int p = 0; p < TL_PAGES; p++ )
+		Q_strcat( out, sizeof( out ), va( " hide tools_p%i ;", p ) );
+	return out;
+}
+
+static std::string IM_ToolsPanel( void ) {
+	const float h = 24.0f + TL_ENTRY * TL_PER_PAGE + 4.0f;
+	std::string out, hide = IM_ToolsHide();
+
+	out += va( "itemDef {\nname tools_bg\ngroup tools\nstyle WINDOW_STYLE_FILLED\nrect %g %g %g %g\nborder 1\n"
+		"bordercolor .5 .5 .7 1\nbackcolor 0 0 .08 .85\nforecolor 1 1 1 1\nvisible 0\ndecoration\n}\n", TL_X, TL_Y, TL_W, h );
+	out += va( "itemDef {\nname tools_close\ngroup tools\nstyle WINDOW_STYLE_FILLED\ntype ITEM_TYPE_BUTTON\ntext \"Close\"\n"
+		"rect %g %g 50 13\nfont 4\ntextscale .85\ntextalign ITEM_ALIGN_CENTER\ntextalignx 25\nbackcolor .15 .15 .25 .8\nforecolor 1 .682 0 1\n"
+		"visible 0\naction { play \"sound/interface/button1.wav\" ; %s show camerapanel ; setcvar " QC_OPEN_CVAR " 0 }\n}\n", TL_X + TL_W - 56, TL_Y + 5, hide.c_str() );
+	for ( int p = 0; p < TL_PAGES; p++ ) {
+		// the page: where it is, and the way to the ones either side
+		out += va( "itemDef {\nname tools_page%i\ngroup tools_p%i\nstyle WINDOW_STYLE_EMPTY\ntext \"Tools  %i/%i\"\n"
+			"rect %g %g 80 13\nfont 4\ntextscale .85\ntextalign ITEM_ALIGN_LEFT\ntextalignx 0\nforecolor .8 .8 .8 1\nvisible 0\ndecoration\n}\n",
+			p, p, p + 1, TL_PAGES, TL_X + 8, TL_Y + 5 );
+		if ( p > 0 )
+			out += va( "itemDef {\nname tools_back%i\ngroup tools_p%i\nstyle WINDOW_STYLE_FILLED\ntype ITEM_TYPE_BUTTON\ntext \"Back\"\n"
+				"rect %g %g 44 13\nfont 4\ntextscale .85\ntextalign ITEM_ALIGN_CENTER\ntextalignx 22\nbackcolor .15 .15 .25 .8\nforecolor 1 .682 0 1\n"
+				"visible 0\naction { play \"sound/interface/button1.wav\" ; hide tools_p%i ; show tools_p%i }\n}\n", p, p, TL_X + 84, TL_Y + 5, p, p - 1 );
+		if ( p < TL_PAGES - 1 )
+			out += va( "itemDef {\nname tools_next%i\ngroup tools_p%i\nstyle WINDOW_STYLE_FILLED\ntype ITEM_TYPE_BUTTON\ntext \"Next\"\n"
+				"rect %g %g 44 13\nfont 4\ntextscale .85\ntextalign ITEM_ALIGN_CENTER\ntextalignx 22\nbackcolor .15 .15 .25 .8\nforecolor 1 .682 0 1\n"
+				"visible 0\naction { play \"sound/interface/button1.wav\" ; hide tools_p%i ; show tools_p%i }\n}\n", p, p, TL_X + 132, TL_Y + 5, p, p + 1 );
+		for ( int k = 0; k < TL_PER_PAGE; k++ ) {
+			const int i = p * TL_PER_PAGE + k;
+			const float y = TL_Y + 24.0f + TL_ENTRY * k;
+
+			if ( i >= TL_NUM )
+				break;
+			// its name, clicked to open it, and what it does under it
+			out += va( "itemDef {\nname tools_name%i\ngroup tools_p%i\nstyle WINDOW_STYLE_EMPTY\ntype ITEM_TYPE_BUTTON\ntext \"%s\"\n"
+				"rect %g %g %g 14\nfont 2\ntextscale .7\ntextalign ITEM_ALIGN_LEFT\ntextalignx 0\nforecolor 1 .682 0 1\nvisible 0\n"
+				"descText \"Open the %s (/%s)\"\naction { play \"sound/interface/button1.wav\" ; setcvar " QC_OPEN_CVAR " 0 ; uiScript closeingame ; exec \"%s\" }\n}\n",
+				i, p, imTools[i].name, TL_X + 8, y, TL_W - 16, imTools[i].name, imTools[i].command, imTools[i].command );
+			out += va( "itemDef {\nname tools_desc%i\ngroup tools_p%i\nstyle WINDOW_STYLE_EMPTY\ntext \"%s   /%s\"\n"
+				"rect %g %g %g 11\nfont 4\ntextscale .75\ntextalign ITEM_ALIGN_LEFT\ntextalignx 0\nforecolor .8 .8 .8 1\nvisible 0\ndecoration\n}\n",
+				i, p, imTools[i].desc, imTools[i].command, TL_X + 14, y + 15, TL_W - 20 );
+		}
+	}
+	return out;
+}
+
 // the quick connect panel under its button: each server, its address, map and players (ui_qc<n>_*,
 // see cl_quickconnect.cpp), clicked to connect
 static std::string IM_QuickConnectPanel( void ) {
@@ -926,7 +1060,7 @@ static const char *IM_Patch( const char *filename, const char *text, int *length
 		RM_RemoveValue( button, "cvarTest" );
 		RM_ReplaceBlock( button, "hideCvar", "" );
 		RM_ReplaceBlock( button, "showCvar", "" );
-		RM_ReplaceBlock( button, "action", "action { play \"sound/interface/button1.wav\" ; hide camerapanel ; show quickconnect ; setcvar " QC_OPEN_CVAR " 1 ; exec \"quickconnect refresh\" }" );
+		RM_ReplaceBlock( button, "action", va( "action { play \"sound/interface/button1.wav\" ; %s hide camerapanel ; show quickconnect ; setcvar " QC_OPEN_CVAR " 1 ; exec \"quickconnect refresh\" }", IM_ToolsHide() ) );
 		RM_SetValue( frame, "name", "quickconnectButton" );
 		IM_SetRect( button, 425, 0, 85, 32 );
 		IM_SetRect( frame, 425, 0, 85, 32 );
@@ -934,24 +1068,27 @@ static const char *IM_Patch( const char *filename, const char *text, int *length
 	}
 	add += IM_QuickConnectPanel();
 
-	// FEEDBACK: between Quick Connect and Exit, which is made narrower for it
+	// TOOLS: between Quick Connect and Exit, which is made narrower for it; its panel under it, in
+	// Quick Connect's place, Esc putting it away the same way
 	{
 		std::string button = s.substr( controls->start, controls->end - controls->start );
 		std::string frame = s.substr( controlsButton->start, controlsButton->end - controlsButton->start );
 
-		RM_ReplaceWord( button, "controlsButton", "feedbackButton" );
-		RM_SetValue( button, "name", "feedbackmenu" );
-		RM_SetValue( button, "text", RM_Quote( "Feedback" ) );
+		RM_ReplaceWord( button, "controlsButton", "toolsButton" );
+		RM_SetValue( button, "name", "toolsmenu" );
+		RM_SetValue( button, "text", RM_Quote( "Tools" ) );
 		RM_SetValue( button, "textalignx", "31" );
 		RM_RemoveValue( button, "cvarTest" );
 		RM_ReplaceBlock( button, "hideCvar", "" );
 		RM_ReplaceBlock( button, "showCvar", "" );
-		RM_ReplaceBlock( button, "action", "action { play \"sound/interface/button1.wav\" ; uiScript closeingame ; exec \"feedback\" }" );
-		RM_SetValue( frame, "name", "feedbackButton" );
+		RM_ReplaceBlock( button, "action", va( "action { play \"sound/interface/button1.wav\" ; hide quickconnect ; hide camerapanel ; %s show tools ; "
+			"show tools_p0 ; setcvar " QC_OPEN_CVAR " 1 }", IM_ToolsHide() ) );
+		RM_SetValue( frame, "name", "toolsButton" );
 		IM_SetRect( button, 510, 0, 62, 32 );
 		IM_SetRect( frame, 510, 0, 62, 32 );
 		add += "\n" + frame + "\n" + button + "\n";
 	}
+	add += IM_ToolsPanel();
 
 	// the ones that go, last first so the places stay right
 	for ( int i = (int)items.size() - 1; i >= 0; i-- ) {
@@ -963,7 +1100,7 @@ static const char *IM_Patch( const char *filename, const char *text, int *length
 		}
 	}
 
-	// Exit and its frame narrower, at the end, past FEEDBACK
+	// Exit and its frame narrower, at the end, past TOOLS
 	{
 		std::vector<rmItem_t> now;
 		const rmItem_t *leave, *leaveButton;
@@ -987,12 +1124,17 @@ static const char *IM_Patch( const char *filename, const char *text, int *length
 		}
 	}
 
-	// the menu's own buttons (Setup, Profile...) leave the panel behind: Esc there is theirs again
-	for ( size_t at = RM_FindWord( s, "action", 0 ); at != RM_NONE; at = RM_FindWord( s, "action", at + 1 ) ) {
-		const size_t open = RM_SkipSpace( s, at + 6 );
+	// the menu's own buttons (Setup, Profile, Exit...) put the quick connect and tools panels away: Exit's
+	// menu opens where they are, and Esc there is theirs again
+	{
+		const std::string putAway = va( " hide quickconnect ; %s setcvar " QC_OPEN_CVAR " 0 ;", IM_ToolsHide() );
 
-		if ( open < s.size() && s[open] == '{' )
-			s.insert( open + 1, " setcvar " QC_OPEN_CVAR " 0 ;" );
+		for ( size_t at = RM_FindWord( s, "action", 0 ); at != RM_NONE; at = RM_FindWord( s, "action", at + 1 ) ) {
+			const size_t open = RM_SkipSpace( s, at + 6 );
+
+			if ( open < s.size() && s[open] == '{' )
+				s.insert( open + 1, putAway );
+		}
 	}
 
 	menu = RM_FindWord( s, "menuDef", 0 );
@@ -1003,9 +1145,10 @@ static const char *IM_Patch( const char *filename, const char *text, int *length
 		return NULL;
 	s.insert( menuEnd - 1, add );
 
-	// the menu opens with the quick connect panel put away, the camera panel back
+	// the menu opens with the quick connect and tools panels put away, the camera panel back
 	{
-		static const char *reset = " hide quickconnect ; show camerapanel ; setcvar " QC_OPEN_CVAR " 0 ;";
+		const std::string resetText = va( " hide quickconnect ; %s show camerapanel ; setcvar " QC_OPEN_CVAR " 0 ;", IM_ToolsHide() );
+		const char *reset = resetText.c_str();
 		const size_t firstItem = RM_FindWord( s, "itemDef", menuOpen );
 		const size_t onOpen = RM_FindWord( s, "onOpen", menuOpen, firstItem );
 		const size_t open = onOpen != RM_NONE ? RM_SkipSpace( s, onOpen + 6 ) : RM_NONE;
@@ -1021,12 +1164,47 @@ static const char *IM_Patch( const char *filename, const char *text, int *length
 	return imPatched.c_str();
 }
 
-// every menu read goes by here: the in-game menu, or the Setup menus
+// Exit's menu says when it's open, so the camera panel under it gets out of the way
+static const char *LV_Patch( const char *filename, const char *text, int *length ) {
+	static std::string patched;
+	std::string s( text, *length );
+	size_t menu, menuOpen, firstItem, at;
+
+	if ( RM_FindWord( s, IM_LEAVE_CVAR, 0 ) != RM_NONE )
+		return NULL;	// done already
+	menu = RM_FindWord( s, "menuDef", 0 );
+	if ( menu == RM_NONE )
+		return NULL;
+	menuOpen = RM_SkipSpace( s, menu + 7 );
+	if ( menuOpen >= s.size() || s[menuOpen] != '{' )
+		return NULL;
+	firstItem = RM_FindWord( s, "itemDef", menuOpen );
+	// onClose first, so onOpen's place stays right whichever comes first
+	at = RM_FindWord( s, "onClose", menuOpen, firstItem );
+	if ( at != RM_NONE && ( at = RM_SkipSpace( s, at + 7 ) ) < s.size() && s[at] == '{' )
+		s.insert( at + 1, " setcvar " IM_LEAVE_CVAR " 0 ;" );
+	else
+		s.insert( menuOpen + 1, "\nonClose { setcvar " IM_LEAVE_CVAR " 0 }\n" );
+	firstItem = RM_FindWord( s, "itemDef", menuOpen );
+	at = RM_FindWord( s, "onOpen", menuOpen, firstItem );
+	if ( at != RM_NONE && ( at = RM_SkipSpace( s, at + 6 ) ) < s.size() && s[at] == '{' )
+		s.insert( at + 1, " setcvar " IM_LEAVE_CVAR " 1 ;" );
+	else
+		s.insert( menuOpen + 1, "\nonOpen { setcvar " IM_LEAVE_CVAR " 1 }\n" );
+	Com_DPrintf( "%s: tells the camera panel when it's open\n", filename );
+	patched.swap( s );
+	*length = (int)patched.size();
+	return patched.c_str();
+}
+
+// every menu read goes by here: the in-game menu, Exit's, or the Setup menus
 static const char *MP_Patch( const char *filename, const char *text, int *length ) {
 	const char *base = COM_SkipPath( (char *)filename );
 
 	if ( !Q_stricmp( base, "ingame.menu" ) && Q_stristr( filename, "jamp" ) )
 		return IM_Patch( filename, text, length );
+	if ( !Q_stricmp( base, "ingame_leave.menu" ) && Q_stristr( filename, "jamp" ) )
+		return LV_Patch( filename, text, length );
 	return RM_Patch( filename, text, length );
 }
 
@@ -1036,14 +1214,40 @@ init
 ================================================================================
 */
 
+static cvar_t *rmRenderer, *rmFbo, *rmPostfx;
+
+// the page's Vulkan and Post Effects rows, as they are picked on it
+void CL_RenderMenu_Frame( void ) {
+	qboolean on;
+
+	if ( !rmPostfx )
+		return;
+	// the camera panel: its setting on, and nothing over it: Exit's menu (gone with the menus), or the
+	// quick connect or tools panel
+	if ( !( Key_GetCatcher() & KEYCATCH_UI ) && Cvar_VariableIntegerValue( IM_LEAVE_CVAR ) )
+		Cvar_Set( IM_LEAVE_CVAR, "0" );
+	on = (qboolean)( Cvar_VariableIntegerValue( "ui_cameraSettings" ) == 1 && !Cvar_VariableIntegerValue( IM_LEAVE_CVAR )
+		&& !Cvar_VariableIntegerValue( QC_OPEN_CVAR ) );
+	if ( Cvar_VariableIntegerValue( IM_CAM_CVAR ) != on )
+		Cvar_Set( IM_CAM_CVAR, on ? "1" : "0" );
+	on = (qboolean)( !Q_stricmp( rmRenderer->string, RM_VULKAN ) && rmFbo->integer );
+	if ( rmPostfx->integer != on )
+		Cvar_Set( RM_POSTFX, on ? "1" : "0" );
+}
+
 void CL_RenderMenu_Init( void ) {
 	for ( int i = 0; i < rmNumRows; i++ ) {
 		if ( rmRows[i].ui )
 			Cvar_Get( rmRows[i].ui, rmRows[i].def, 0, "The Setup menu's RENDERER page: renderersettings apply sets it" );
 	}
 	Cmd_AddCommand( "renderersettings", RM_Settings_f, "The Setup menu's RENDERER page: sync or apply" );
+	rmRenderer = Cvar_Get( "ui_rd_renderer", "rd-vanilla", 0 );
+	rmFbo = Cvar_Get( "ui_rd_fbo", "0", 0 );
+	rmPostfx = Cvar_Get( RM_POSTFX, "0", CVAR_ROM, "The Setup menu's RENDERER page has Vulkan and Post Effects on: their effects show" );
 	Cvar_Get( "ui_cameraSettings", "0", CVAR_ARCHIVE_ND, "The in-game menu shows the third person camera's settings" );
 	Cvar_Get( QC_OPEN_CVAR, "0", 0, "The in-game menu's quick connect panel is out: Esc closes it first" );
+	Cvar_Get( IM_LEAVE_CVAR, "0", 0, "The in-game menu's Exit menu is open: the camera panel steps out of its way" );
+	Cvar_Get( IM_CAM_CVAR, "0", 0, "The in-game menu's camera panel shows: ui_cameraSettings on, and Exit's menu not open" );
 	Cvar_Get( CP_NAME_CVAR, "", CVAR_ARCHIVE_ND, "The camera panel's preset name" );
 	Cmd_AddCommand( "campreset", CP_Cmd_f, "Camera settings saved and loaded by name" );
 	LoadScriptFile_Patch = MP_Patch;
