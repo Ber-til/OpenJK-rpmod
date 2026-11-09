@@ -3202,6 +3202,7 @@ static qboolean ST_Open( void ) {
 	CL_Inventory_Close();
 	CL_Inspect_Close();
 	CL_Holster_Close();
+	CL_Characters_Close();
 	CL_MapEditor_Close();
 
 	st.font = re->RegisterFont( "arialnb" );
@@ -4487,6 +4488,7 @@ static void ST_PickFrame( void ) {
 	CL_Inventory_Close();
 	CL_Inspect_Close();
 	CL_Holster_Close();
+	CL_Characters_Close();
 	if ( st.pick == ST_PICK_LOCK || st.pick == ST_PICK_TRIGGER )
 		CL_MapEditor_Close();
 	// a trigger clicked: the step's

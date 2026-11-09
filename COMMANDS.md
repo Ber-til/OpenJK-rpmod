@@ -246,6 +246,7 @@ The console commands, keys and settings this client adds. What each feature does
 - `/escmenu [modern|kotor|classic] [category]` opens the Esc menu in that style, on that category or tab (`/escmenu kotor options`); `cl_escMenu` picks what Esc opens: 0 the game's own (default), 1 Modern, 2 KOTOR
 - `/chatlog` opens or closes the chat log window; `/chatlog start` and `/chatlog stop` record or stop on this server; `/chatlog open` opens today's page in your browser, `/chatlog folder` the folder
 - `/inspect` shows the player you aim at, or yourself; `/inspect me` your own (Edit there), `/inspect <client number|name>` a player by number or name; `cl_inspectHint 0` hides the name under the crosshair
+- `/characters` opens your characters; `/characters list` lists them; `/characters play <name>` plays one (its look, settings, inventory, panel and holster)
 - `/holster` opens the holster editor (models worn on your character); `/holster live` opens it as a small panel, what you edit worn on you in the world; `/holster list` lists who wears something here; `/holster debug` says why someone's aren't drawn; `cl_holster 0` draws no one's
 - `/inventory` opens what your RPMod account carries, or closes it (`/inventory staff` on its staff page, for RPMod admins); `/inventory list` prints your items as last asked, `/inventory give <item> [client]` gives one to the player you aim at (or that client number), `/inventory show|hide <item>` shows it on Inspect or not
 - `/datapad` opens your datapad in the bottom right corner, or puts it away; `/datapad open`, `/datapad close` and `/datapad settings` go straight there. Its Settings set the keys that open and close it; Esc puts it away
@@ -261,6 +262,7 @@ The console commands, keys and settings this client adds. What each feature does
 - `/c1b3r link` links this game, logged in to your RPMod account: your browser opens, you log in with Discord there, and staff approve it. Then you send what the tools share. The code it shows also works as `/link <code>` in Discord
 - `/c1b3r discord` opens the page to add C1B3R to your Discord account, so `/link` works in a DM without being in the project's Discord
 - `/c1b3r unlink` ends the link
+- `/c1b3r state` (RPMod admins) lists what's shared on this server for everyone who joins later, who shared it and when; `/c1b3r state clear` takes it all back for everyone
 - `/clientusers` shows who on this server has this client, who's linked and who sends: the players the tools' hooks go to
 - `/version` shows your OpenJK-rpmod version and whether it's the newest, with the link to a newer one; `/version check` asks GitHub again
 - `/rpexperimental [on|off]` turns the experimental features on or off, and keeps them so every time the game starts; on Temple only for Department Head, Council and God, and turned off for anyone else

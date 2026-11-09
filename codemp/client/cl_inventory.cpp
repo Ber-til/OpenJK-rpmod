@@ -868,6 +868,7 @@ static void INV_Open( void ) {
 	CL_ChatLog_Close();
 	CL_Inspect_Close();
 	CL_Holster_Close();
+	CL_Characters_Close();
 	CL_Datapad_Close();
 
 	inv.font = re->RegisterFont( "arialnb" );

@@ -2414,6 +2414,7 @@ static qboolean MM_Open( void ) {
 	CL_Inventory_Close();
 	CL_Inspect_Close();
 	CL_Holster_Close();
+	CL_Characters_Close();
 
 	mm.font = re->RegisterFont( "arialnb" );
 	if ( !mm.font )

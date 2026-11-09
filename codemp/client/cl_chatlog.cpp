@@ -472,6 +472,7 @@ static void CW_Open( void ) {
 	CL_Inventory_Close();
 	CL_Inspect_Close();
 	CL_Holster_Close();
+	CL_Characters_Close();
 	CL_AssetManager_Close();
 	CL_RadialMenu_CloseSettings();
 	CL_Languages_Close();

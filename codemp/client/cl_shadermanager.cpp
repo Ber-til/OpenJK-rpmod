@@ -105,7 +105,6 @@ extern IHeapAllocator *G2VertSpaceClient;
 #define SM_SHARE_WORD		32		// longer words go in pieces
 #define SM_SHARE_GAP_MS		400		// between hooks, for the server's flood protection
 #define SM_SHARE_START_MS	5000	// shared this long into a map
-#define SM_SHARE_JOIN_MS	4000	// and this long after someone joins
 #define SM_MAX_SHARED		64		// player shaders taken from one player
 
 typedef enum {
@@ -780,8 +779,7 @@ static void SM_MineFrame( void ) {
 			SM_RebuildMapped();
 		}
 	}
-	if ( players > sm.sharePlayers && sm.sharePlayers && !sm.mineFrom.empty() )
-		sm.shareAt = cls.realtime + SM_SHARE_JOIN_MS;
+	// someone joining later gets them from C1B3R, which keeps the server's state (serverstate.py)
 	sm.sharePlayers = players;
 
 	if ( sm.shareAt && cls.realtime >= sm.shareAt ) {
@@ -2279,6 +2277,7 @@ static void SM_Open( void ) {
 	CL_Inventory_Close();
 	CL_Inspect_Close();
 	CL_Holster_Close();
+	CL_Characters_Close();
 
 	sm.font = re->RegisterFont( "arialnb" );
 	if ( !sm.font )
@@ -4149,6 +4148,46 @@ static void SM_MineClearAll( void ) {
 		sm.shareAt = cls.realtime;
 	SM_RebuildMineView();
 	SM_SetStatus( "Every player shader back to the standard" );
+}
+
+// for Characters (cl_characters.cpp): your player shaders as pairs, and a whole set put in their place
+int CL_ShaderManager_MineCount( void ) {
+	if ( !sm.mineLoaded )
+		SM_LoadMine();
+	return (int)sm.mineFrom.size();
+}
+
+qboolean CL_ShaderManager_MineGet( int i, const char **from, const char **to ) {
+	if ( i < 0 || i >= CL_ShaderManager_MineCount() )
+		return qfalse;
+	*from = sm.mineFrom[i].c_str();
+	*to = sm.mineTo[i].c_str();
+	return qtrue;
+}
+
+void CL_ShaderManager_MineReplace( const char **from, const char **to, int num ) {
+	char f[MAX_QPATH], t[MAX_QPATH];
+
+	if ( !sm.mineLoaded )
+		SM_LoadMine();
+	sm.mineFrom.clear();
+	sm.mineTo.clear();
+	for ( int i = 0; i < num; i++ ) {
+		SM_ShaderKey( from[i], f, sizeof( f ) );
+		SM_ShaderKey( to[i], t, sizeof( t ) );
+		if ( f[0] && t[0] && strcmp( f, t ) && SM_MineIndex( f ) < 0 ) {
+			sm.mineFrom.push_back( f );
+			sm.mineTo.push_back( t );
+		}
+	}
+	if ( sm.mineApplied )
+		SM_BuildMineHandles();
+	else
+		sm.mineHandles.clear();
+	SM_SaveMine();
+	if ( SM_ShareOn() )
+		sm.shareAt = cls.realtime + 1;
+	SM_RebuildMineView();
 }
 
 static void SM_MineEnter( void ) {

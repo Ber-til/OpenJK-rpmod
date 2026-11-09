@@ -502,8 +502,6 @@ static struct {
 
 	// how big the form's effect goes down, 1 as made (experimental: for everyone with this client)
 	float		scale;
-	int			sharePlayers;		// players on the server, to see someone join
-	int			shareAt;			// the sizes this client set go out again then, 0 not
 	qboolean	shareWarned;
 
 	// the move arrows in the free camera: the mouse a cursor, an arrow dragged moves along it
@@ -1762,7 +1760,6 @@ They're kept until the map changes, and sent again a little after someone joins.
 #define EM_SCALE_MAX		8.0f
 #define EM_SCALE_STEP		1.25f
 #define EM_SCALE_ONCE_MS	4000		// a one-off effect's size lasts this long
-#define EM_SCALE_JOIN_MS	4000
 #define EM_SCALE_WORD		30			// RPMod chokes on long words: a space every so often
 
 typedef struct {
@@ -1933,32 +1930,6 @@ void CL_EffectManager_ScaleHook( char **argv, int argc, const char *message ) {
 	if ( !path[0] )
 		return;
 	EM_StoreScale( path, org, (float)atof( argv[1] ), (qboolean)( argc > 2 && !Q_stricmp( argv[2], "once" ) ), qfalse );
-}
-
-// someone joining gets the sizes set here a little later
-static void EM_ScaleShareFrame( void ) {
-	int players = 0, mine = 0;
-
-	if ( cls.state != CA_ACTIVE )
-		return;
-	for ( int c = 0; c < MAX_CLIENTS; c++ ) {
-		if ( cl.gameState.stringData[cl.gameState.stringOffsets[CS_PLAYERS + c]] )
-			players++;
-	}
-	for ( int i = 0; i < emNumScaled; i++ ) {
-		if ( emScaled[i].mine && !emScaled[i].until )
-			mine++;
-	}
-	if ( players > em.sharePlayers && em.sharePlayers && mine )
-		em.shareAt = cls.realtime + EM_SCALE_JOIN_MS;
-	em.sharePlayers = players;
-	if ( em.shareAt && cls.realtime >= em.shareAt ) {
-		em.shareAt = 0;
-		for ( int i = 0; i < emNumScaled; i++ ) {
-			if ( emScaled[i].mine && !emScaled[i].until )
-				EM_ShareScale( emScaled[i].key, emScaled[i].org, emScaled[i].scale, qfalse );
-		}
-	}
 }
 
 // the effect the form describes, where it would go now; qfalse if something is missing
@@ -3563,6 +3534,7 @@ static void EM_OpenAs( qboolean mineOnly ) {
 	CL_Inventory_Close();
 	CL_Inspect_Close();
 	CL_Holster_Close();
+	CL_Characters_Close();
 	EM_CheckMap();
 	EM_ListConstructs();
 	if ( !em.indexed ) {
@@ -4608,7 +4580,6 @@ void CL_EffectManager_Frame( void ) {
 	// queued commands go out, and lists are read, even with the manager closed
 	EM_RunQueue();
 	EM_ExpireModels();
-	EM_ScaleShareFrame();
 
 	// a list read whole
 	if ( em.listLineTime && cls.realtime - em.listLineTime >= EM_LIST_LINE_GAP ) {

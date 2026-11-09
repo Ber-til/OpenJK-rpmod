@@ -503,6 +503,7 @@ void SCR_DrawScreenField( stereoFrame_t stereoFrame ) {
 			CL_Inventory_Draw();
 			CL_Inspect_Draw();
 			CL_Holster_Draw();
+			CL_Characters_Draw();
 			CL_Datapad_Draw();
 			CL_AssetManager_Draw();
 			CL_RadialMenu_DrawSettings();

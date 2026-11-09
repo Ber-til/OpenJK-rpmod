@@ -735,6 +735,7 @@ void CL_ShutdownCGame( void ) {
 	CL_Inventory_Shutdown();
 	CL_Inspect_Shutdown();
 	CL_Holster_Shutdown();
+	CL_Characters_Shutdown();
 	CL_AssetManager_Shutdown();
 	CL_RadialMenu_Shutdown();
 	CL_Languages_Shutdown();

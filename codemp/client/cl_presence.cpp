@@ -67,6 +67,7 @@ typedef struct {
 typedef struct {
 	std::string	text;
 	int			to;					// a player, -1 everyone
+	int			serverId;			// the load of the map it was made in (C1B3R's server state follows it)
 } psHook_t;
 
 static struct {
@@ -109,7 +110,7 @@ static struct {
 } psa;
 
 static std::deque<psHook_t>		psRelayOut;	// hooks going to C1B3R, one at a time
-static httpRequest_t			psListHttp, psHelloHttp, psPollHttp, psHookHttp, psLinkHttp, psWaitHttp, psByeHttp;
+static httpRequest_t			psListHttp, psHelloHttp, psPollHttp, psHookHttp, psLinkHttp, psWaitHttp, psByeHttp, psStateHttp;
 static cvar_t					*cl_presenceUrl, *cl_presenceLocal, *cl_c1b3rToken;
 
 /*
@@ -349,6 +350,8 @@ static const char *PS_Rank( void ) {
 }
 
 // a session for where we are: made when there's none, or the server, number, name, account, rank or link changed
+static void PS_MapFields( std::string &body, int serverId );
+
 static void PS_Hello( void ) {
 	char key[512];
 	std::string body;
@@ -378,12 +381,24 @@ static void PS_Hello( void ) {
 	// the saber carried: the inventory's hilt is it (C1B3R's characters.py)
 	body += ",\"saber\":";
 	PS_Json( body, Cvar_VariableString( "saber1" ) );
+	PS_MapFields( body, cl.serverId );
 	body += "}";
 	if ( !PS_Send( &psHelloHttp, "/v2/hello", body ) ) {
 		psv.helloNext = cls.realtime + PS_HELLO_RETRY_MS;
 		return;
 	}
 	Q_strncpyz( psv.asked, key, sizeof( psv.asked ) );
+}
+
+// which map, and which load of it, this game is in: C1B3R clears the server's state when it's
+// another (serverstate.py)
+static void PS_MapFields( std::string &body, int serverId ) {
+	const char *info = cl.gameState.stringData + cl.gameState.stringOffsets[CS_SERVERINFO];
+
+	if ( !serverId )
+		return;
+	body += va( ",\"serverId\":\"%i\",\"map\":", serverId );
+	PS_Json( body, Info_ValueForKey( info, "mapname" ) );
 }
 
 // the poll kept open: C1B3R answers it when there's a hook for us, or after a while with none
@@ -393,7 +408,9 @@ static void PS_Poll( void ) {
 	if ( !psv.on || psPollHttp.state == HTTP_BUSY || cls.realtime < psv.pollNext )
 		return;
 	PS_Json( body, psv.id );
-	body += va( ",\"after\":%i}", psv.seq );
+	body += va( ",\"after\":%i", psv.seq );
+	PS_MapFields( body, cl.serverId );
+	body += "}";
 	psPollHttp.waitMs = PS_POLL_WAIT_MS;
 	if ( !PS_Send( &psPollHttp, "/v2/poll", body ) )
 		psv.pollNext = cls.realtime + PS_POLL_RETRY_MS;
@@ -430,6 +447,14 @@ static void PS_ReadPoll( const char *answer ) {
 			Q_strncpyz( buf, line.c_str(), sizeof( buf ) );
 			if ( PS_Fields( buf, field, 4 ) == 4 )
 				PS_SetState( field[1], field[2], field[3] );
+			continue;
+		}
+		// someone new on the server: its state, as C1B3R keeps it (serverstate.py), before the hooks
+		if ( !line.compare( 0, 7, "replay\t" ) ) {
+			const size_t a = line.find( '\t', 7 );
+
+			if ( a != std::string::npos )
+				CL_RpHooks_Deliver( PS_Unfield( line.c_str() + a + 1 ).c_str() );
 			continue;
 		}
 		if ( !line.compare( 0, 5, "hook\t" ) ) {
@@ -566,6 +591,7 @@ static void PS_RelayFrame( void ) {
 	PS_Json( body, h.text.c_str() );
 	if ( h.to >= 0 )
 		body += va( ",\"to\":[%i]", h.to );
+	PS_MapFields( body, h.serverId );
 	body += "}";
 	if ( PS_Send( &psHookHttp, "/v2/hook", body ) )
 		psRelayOut.pop_front();
@@ -654,7 +680,7 @@ qboolean CL_Presence_Outgoing( const char *cmd ) {
 		PS_Note( "not sent: too many waiting to go to C1B3R" );
 		return qtrue;
 	}
-	psRelayOut.push_back( psHook_t{ text, to } );
+	psRelayOut.push_back( psHook_t{ text, to, cl.serverId } );
 	return qtrue;
 }
 
@@ -781,12 +807,53 @@ static void PS_Reset( void ) {
 	psa.account[0] = '\0';
 }
 
+// /c1b3r state's answer: what C1B3R keeps of this server, and who changed it
+static void PS_StateAnswer( void ) {
+	std::string all;
+	size_t at = 0;
+	int n = 0;
+
+	if ( !HTTP_Poll( &psStateHttp ) )
+		return;
+	if ( psStateHttp.status != 200 ) {
+		Com_Printf( "C1B3R: %s", psStateHttp.answer[0] ? psStateHttp.answer : "no answer\n" );
+		return;
+	}
+	all = psStateHttp.answer;
+	if ( !all.compare( 0, 3, "ok\t" ) ) {
+		Com_Printf( "C1B3R: the server's shared state is cleared (%s kinds taken back for everyone)\n", all.c_str() + 3 );
+		return;
+	}
+	while ( at < all.size() ) {
+		size_t end = all.find( '\n', at );
+		char line[1024], *f[6];
+
+		if ( end == std::string::npos )
+			end = all.size();
+		Q_strncpyz( line, all.substr( at, end - at ).c_str(), sizeof( line ) );
+		at = end + 1;
+		if ( strncmp( line, "entry\t", 6 ) || PS_Fields( line, f, 6 ) < 6 )
+			continue;
+		{
+			const time_t when = (time_t)atoi( f[4] );
+			const struct tm *t = localtime( &when );
+
+			Com_Printf( "%02i:%02i  %-8s %s" S_COLOR_WHITE " (%s)  %s\n", t ? t->tm_hour : 0, t ? t->tm_min : 0, f[1],
+				PS_Unfield( f[3] ).c_str(), f[2], PS_Unfield( f[5] ).c_str() );
+		}
+		n++;
+	}
+	Com_Printf( n ? "C1B3R: %i shown to everyone with the client here, and to who joins later\n"
+		: "C1B3R: nothing shared on this server now\n", n );
+}
+
 void CL_Presence_Frame( void ) {
 	const char *server;
 
 	if ( !cl_presenceUrl )
 		return;
 	PS_PollRequests();
+	PS_StateAnswer();
 	if ( !PS_Active() ) {
 		if ( ps.server[0] )
 			PS_Reset();
@@ -859,6 +926,21 @@ static void PS_C1b3r_f( void ) {
 		PS_Unlink();
 		return;
 	}
+	// for RPMod admins: what C1B3R keeps of this server for who joins later, or all of it taken back
+	if ( !Q_stricmp( arg, "state" ) ) {
+		std::string body = "{\"session\":";
+
+		if ( !PS_Active() || !psv.on ) {
+			Com_Printf( "C1B3R: join a server first, connected to C1B3R\n" );
+			return;
+		}
+		if ( psStateHttp.state == HTTP_BUSY )
+			return;
+		PS_Json( body, psv.id );
+		body += "}";
+		PS_Send( &psStateHttp, !Q_stricmp( Cmd_Argv( 2 ), "clear" ) ? "/v2/state/clear" : "/v2/state/list", body );
+		return;
+	}
 	// Discord's page to add C1B3R to your account, so /link works in a DM without its server
 	if ( !Q_stricmp( arg, "discord" ) ) {
 		const char *url = PS_Url( "/discord" );
@@ -879,7 +961,8 @@ static void PS_C1b3r_f( void ) {
 	Com_Printf( "RPMod account: %s\n", !psa.known ? "not known yet" : psa.account[0] ? psa.account : "logged out" );
 	Com_Printf( "c1b3r link : link this game (logged in to your RPMod account), then /link <code> in Discord\n"
 		"c1b3r discord : add C1B3R to your Discord account, for /link in any DM\n"
-		"c1b3r unlink : end the link\n" );
+		"c1b3r unlink : end the link\n"
+		"c1b3r state [clear] : (RPMod admins) what's shared on this server for who joins later, and who did it; clear takes it back\n" );
 }
 
 void CL_Presence_Init( void ) {

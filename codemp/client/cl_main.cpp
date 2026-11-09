@@ -866,6 +866,7 @@ void CL_Disconnect( qboolean showMainMenu ) {
 	CL_Inventory_Disconnect();
 	CL_Inspect_Disconnect();
 	CL_Holster_Disconnect();
+	CL_Characters_Disconnect();
 	CL_Feedback_Disconnect();
 	CL_NpcNames_Disconnect();
 	CL_Aim_Disconnect();
@@ -2420,6 +2421,7 @@ void CL_Frame ( int msec ) {
 	CL_Inventory_Frame();
 	CL_Inspect_Frame();
 	CL_Holster_PollFrame();
+	CL_Characters_Frame();
 	CL_DatapadWeb_Frame();
 	CL_AssetManager_Frame();
 	// the RENDERER page's effects, shown with Post Effects on
@@ -2971,6 +2973,7 @@ void CL_Init( void ) {
 	CL_Inventory_Init();
 	CL_Inspect_Init();
 	CL_Holster_Init();
+	CL_Characters_Init();
 	CL_Datapad_Init ();
 	CL_EscMenu_Init ();
 	CL_AssetManager_Init ();

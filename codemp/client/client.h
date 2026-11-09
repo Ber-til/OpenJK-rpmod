@@ -697,7 +697,8 @@ void CL_ModelManager_Draw( void );
 #define KEYCATCH_INVENTORY		0x800000	// engine only, the inventory window owns keyboard and mouse
 #define KEYCATCH_INSPECT		0x1000000	// engine only, the inspect window owns keyboard and mouse
 #define KEYCATCH_HOLSTER		0x2000000	// engine only, the holster editor owns keyboard and mouse
-#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELMANAGER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER | KEYCATCH_MAPEDITOR | KEYCATCH_STORYTELLER | KEYCATCH_CINEDITOR | KEYCATCH_SOUNDMANAGER | KEYCATCH_RADIALMENU | KEYCATCH_LANGUAGES | KEYCATCH_CONSETTINGS | KEYCATCH_ANIMMANAGER | KEYCATCH_PRESETS | KEYCATCH_FEEDBACK | KEYCATCH_ASSETMANAGER | KEYCATCH_SPECIALMOVES | KEYCATCH_CHATLOG | KEYCATCH_DATAPAD | KEYCATCH_ESCMENU | KEYCATCH_INVENTORY | KEYCATCH_INSPECT | KEYCATCH_HOLSTER )	// mods never see or clear these
+#define KEYCATCH_CHARACTERS		0x4000000	// engine only, the characters window owns keyboard and mouse
+#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELMANAGER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER | KEYCATCH_MAPEDITOR | KEYCATCH_STORYTELLER | KEYCATCH_CINEDITOR | KEYCATCH_SOUNDMANAGER | KEYCATCH_RADIALMENU | KEYCATCH_LANGUAGES | KEYCATCH_CONSETTINGS | KEYCATCH_ANIMMANAGER | KEYCATCH_PRESETS | KEYCATCH_FEEDBACK | KEYCATCH_ASSETMANAGER | KEYCATCH_SPECIALMOVES | KEYCATCH_CHATLOG | KEYCATCH_DATAPAD | KEYCATCH_ESCMENU | KEYCATCH_INVENTORY | KEYCATCH_INSPECT | KEYCATCH_HOLSTER | KEYCATCH_CHARACTERS )	// mods never see or clear these
 
 void CL_NpcManager_Init( void );
 void CL_NpcManager_Shutdown( void );
@@ -1116,6 +1117,30 @@ void CL_Inspect_CharEvent( int ch );
 void CL_Inspect_MouseEvent( int dx, int dy );
 void CL_Inspect_Disconnect( void );
 void CL_Inspect_CharHook( char **argv, int argc );
+
+// cl_characters.cpp: /characters, the characters of your RPMod account
+void CL_Characters_Init( void );
+void CL_Characters_Shutdown( void );
+void CL_Characters_Frame( void );
+void CL_Characters_Draw( void );
+void CL_Characters_Close( void );
+void CL_Characters_Escape( void );
+void CL_Characters_KeyEvent( int key, qboolean down );
+void CL_Characters_CharEvent( int ch );
+void CL_Characters_MouseEvent( int dx, int dy );
+void CL_Characters_Disconnect( void );
+void CL_Characters_CharHook( char **argv, int argc );
+int CL_Characters_ActiveId( void );		// the character played (C1B3R's id), 0 none known
+int CL_Presets_Keys( const char ***keys );
+int CL_Presets_Count( void );
+const char *CL_Presets_Get( int i, int key, const char **date, qboolean *favorite, int *character );
+void CL_Presets_Import( int character, const char *date, const char **values, qboolean favorite );
+void CL_Presets_SetAppearance( const char **values );
+void CL_EffectSwap_Replace( const char **from, const char **to, int num );
+int CL_ShaderManager_MineCount( void );
+qboolean CL_ShaderManager_MineGet( int i, const char **from, const char **to );
+void CL_ShaderManager_MineReplace( const char **from, const char **to, int num );
+const char *CL_Languages_Character( void );
 
 // cl_holster.cpp: /holster, models worn on characters
 void CL_Holster_Init( void );

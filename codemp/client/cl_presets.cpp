@@ -70,6 +70,7 @@ typedef struct {
 	char		values[PR_NUM_KEYS][PR_VALUE_LEN];
 	char		date[32];
 	qboolean	favorite;
+	int			character;		// the C1B3R character it belongs to (cl_characters.cpp), 0 none
 } prPreset_t;
 
 enum { PR_MODE_PRESETS, PR_MODE_SKINS };
@@ -112,6 +113,7 @@ static struct {
 	char		search[48];
 	qboolean	typing;
 	qboolean	favOnly;
+	qboolean	allChars;		// every character's presets, not only the one played's
 	int			shown[PR_MAX_SKINS + PR_MAX + 1];	// what the pages show, filtered: presets, or skins (-1 the parts card)
 	int			numShown;
 	char		skinModel[MAX_QPATH];	// the model whose skins are shown
@@ -185,6 +187,11 @@ static void PR_Save( void ) {
 		}
 		if ( prPresets[i].favorite )
 			FS_Write( "\tfavorite \"1\"\n", (int)strlen( "\tfavorite \"1\"\n" ), f );
+		if ( prPresets[i].character ) {
+			const char *line = va( "\tcharacter \"%i\"\n", prPresets[i].character );
+
+			FS_Write( line, strlen( line ), f );
+		}
 		FS_Write( "}\n", 2, f );
 	}
 	FS_FCloseFile( f );
@@ -223,6 +230,8 @@ static void PR_Load( void ) {
 			token = COM_ParseExt( &p, qfalse );
 			if ( !Q_stricmp( key, "favorite" ) )
 				ps->favorite = (qboolean)( atoi( token ) != 0 );
+			if ( !Q_stricmp( key, "character" ) )
+				ps->character = atoi( token );
 			for ( int k = 0; k < PR_NUM_KEYS; k++ ) {
 				if ( !Q_stricmp( key, prKeys[k] ) )
 					Q_strncpyz( ps->values[k], token, PR_VALUE_LEN );
@@ -251,6 +260,7 @@ static void PR_FromCurrent( prPreset_t *ps ) {
 		Q_strncpyz( ps->values[k], Cvar_VariableString( prKeys[k] ), PR_VALUE_LEN );
 	Com_RealTime( &t );
 	Com_sprintf( ps->date, sizeof( ps->date ), "%04i-%02i-%02i %02i:%02i", t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min );
+	ps->character = CL_Characters_ActiveId();
 }
 
 static void PR_SaveCurrent( void ) {
@@ -280,6 +290,58 @@ static void PR_Delete( int i ) {
 	memmove( &prPresets[i], &prPresets[i + 1], ( prNumPresets - i - 1 ) * sizeof( prPresets[0] ) );
 	prNumPresets--;
 	PR_Save();
+}
+
+// for Characters (cl_characters.cpp): the keys a preset keeps, the presets, and one brought in
+int CL_Presets_Keys( const char ***keys ) {
+	*keys = prKeys;
+	return PR_NUM_KEYS;
+}
+
+int CL_Presets_Count( void ) {
+	if ( !pr.open )
+		PR_Load();
+	return prNumPresets;
+}
+
+// a preset's value for a key, its date, whether it's a favorite and whose it is
+const char *CL_Presets_Get( int i, int key, const char **date, qboolean *favorite, int *character ) {
+	if ( i < 0 || i >= prNumPresets || key < 0 || key >= PR_NUM_KEYS )
+		return "";
+	*date = prPresets[i].date;
+	*favorite = prPresets[i].favorite;
+	*character = prPresets[i].character;
+	return prPresets[i].values[key];
+}
+
+// a character's preset from C1B3R, kept here unless it is already (the same date and character)
+void CL_Presets_Import( int character, const char *date, const char **values, qboolean favorite ) {
+	prPreset_t *ps;
+
+	CL_Presets_Count();
+	for ( int i = 0; i < prNumPresets; i++ ) {
+		if ( prPresets[i].character == character && !Q_stricmp( prPresets[i].date, date ) )
+			return;
+	}
+	if ( prNumPresets >= PR_MAX || !values[PR_K_MODEL][0] )
+		return;
+	ps = &prPresets[prNumPresets++];
+	memset( ps, 0, sizeof( *ps ) );
+	for ( int k = 0; k < PR_NUM_KEYS; k++ )
+		Q_strncpyz( ps->values[k], values[k], PR_VALUE_LEN );
+	Q_strncpyz( ps->date, date, sizeof( ps->date ) );
+	ps->favorite = favorite;
+	ps->character = character;
+	PR_FreeViews();
+	PR_Save();
+}
+
+// your appearance as a preset has it (the keys in CL_Presets_Keys' order)
+void CL_Presets_SetAppearance( const char **values ) {
+	for ( int k = 0; k < PR_NUM_KEYS; k++ ) {
+		if ( values[k][0] && strcmp( Cvar_VariableString( prKeys[k] ), values[k] ) )
+			Cvar_Set( prKeys[k], values[k] );
+	}
 }
 
 /*
@@ -829,6 +891,7 @@ static qboolean PR_Open( int mode ) {
 		CL_Inventory_Close();
 		CL_Inspect_Close();
 		CL_Holster_Close();
+		CL_Characters_Close();
 
 		pr.font = re->RegisterFont( "arialnb" );
 		if ( !pr.font )
@@ -1120,6 +1183,8 @@ static qboolean PR_Matches( const prPreset_t *ps ) {
 
 	if ( pr.favOnly && !ps->favorite )
 		return qfalse;
+	if ( !pr.allChars && CL_Characters_ActiveId() && ps->character != CL_Characters_ActiveId() )
+		return qfalse;
 	if ( !pr.search[0] )
 		return qtrue;
 	Q_strncpyz( name, ps->values[PR_K_NAME], sizeof( name ) );
@@ -1164,9 +1229,11 @@ static void PR_DrawCard( int i, float x, float y ) {
 	// keeping it up to date, or out
 	if ( PR_Button( x + 4, bottom - PR_CTRL_H - 3, 66, "Update", prPanelLight ) ) {
 		const qboolean favorite = prPresets[i].favorite;
+		const int character = prPresets[i].character;
 
 		PR_FromCurrent( &prPresets[i] );
 		prPresets[i].favorite = favorite;
+		prPresets[i].character = character;
 		PR_Save();
 		PR_Message( va( "Updated %s" S_COLOR_WHITE " to who you are now", prPresets[i].values[PR_K_NAME] ) );
 		return;
@@ -1332,7 +1399,14 @@ void CL_Presets_Draw( void ) {
 			pr.favOnly = (qboolean)!pr.favOnly;
 			pr.page = 0;
 		}
-		PR_Text( 352, 36, SCREEN_WIDTH - 368, "Click a character to become it; * makes it a favorite", prDim, PR_TEXT_SCALE, qfalse );
+		// a character played (/characters): its own presets, or everyone's
+		if ( CL_Characters_ActiveId() ) {
+			if ( PR_Button( 348, 34, 110, pr.allChars ? "All characters" : "This character", pr.allChars ? prPanelLight : prAccentFill ) ) {
+				pr.allChars = (qboolean)!pr.allChars;
+				pr.page = 0;
+			}
+		}
+		PR_Text( CL_Characters_ActiveId() ? 466 : 352, 36, SCREEN_WIDTH - ( CL_Characters_ActiveId() ? 482 : 368 ), "Click a character to become it; * makes it a favorite", prDim, PR_TEXT_SCALE, qfalse );
 	} else if ( pr.mode == PR_MODE_SKINS ) {
 		PR_Text( 244, 36, SCREEN_WIDTH - 260, PR_HasParts() ? va( "%i skins and parts to put together: click one to wear it", prNumSkins )
 			: va( "%i skins: click one to wear it", prNumSkins ), prDim, PR_TEXT_SCALE, qfalse );
@@ -1342,7 +1416,9 @@ void CL_Presets_Draw( void ) {
 	pages = PR_Pages();
 	pr.page = Com_Clampi( 0, pages - 1, pr.page );
 	if ( !pr.numShown ) {
-		const char *none = pr.search[0] || pr.favOnly ? "None match" : pr.mode == PR_MODE_PRESETS
+		const char *none = pr.search[0] || pr.favOnly ? "None match"
+			: pr.mode == PR_MODE_PRESETS && !pr.allChars && CL_Characters_ActiveId() && prNumPresets
+			? "None for this character yet: Save who I am now, or All characters" : pr.mode == PR_MODE_PRESETS
 			? "No presets yet: Save who I am now keeps your name, model, skin and sabers as one" : "This model has no skins here";
 
 		PR_Text( 16, 200, SCREEN_WIDTH - 32, none, prDim, 1.0f, qtrue );
