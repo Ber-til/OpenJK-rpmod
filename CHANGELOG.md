@@ -4,6 +4,15 @@ What changed in OpenJK-rpmod from version to version, newest first. What each fe
 
 OpenJK-rpmod is built on [OpenJK](https://github.com/JACoders/OpenJK); for the changes OpenJK itself made, see [its changelog](https://github.com/JACoders/OpenJK/blob/master/CHANGELOG.md).
 
+## 0.9.1
+
+- [Added] `Effect Replacer: force lightning`. Force lightning, which RPMod draws as lightning shapes rather than an effect, can be swapped as `force/lightning`; `/effectreplacer log` lists the effects started near you, to find an effect's name.
+- [Changed] `HoloNet: JEDI's dates`. Each article shows its date as JEDI's YEAR.DAY (474.05 ABY) and its category; the author is no longer shown.
+- [Fixed] `Comport: replying`. A reply now goes through: the game sends the reply form as a browser does (the attachment button and the unticked boxes left out, which made phpBB treat it as adding a file), and takes phpBB's "posted successfully" page as done. When the forum still refuses one, its answer is said.
+- [Fixed] `Custom emotes: shared as soon as you're known to be an admin`. A saved emote played before any admin tool was opened on the server stayed on your screen, as the game didn't know your admin rank yet: it's asked for now, and the emote shared as soon as the answer's in. When one stays on your screen, the console says why.
+- [Fixed] `Custom emotes: the saber blade follows the pose`. The blade was drawn where your hand would be without the emote; it now comes out of the posed hand.
+- [Fixed] `Effect Replacer: sparks between players`. An effect on no one (sparks where two sabers meet) went to whoever was a little nearer, so a swap of it applied or not by chance. Now the nearest player within reach who swapped it has theirs: yours whenever you're in it.
+
 ## 0.9.0 - Nov 9th 2026
 
 - [Added] `HoloNet and Comport on the datapad`. The **HoloNet** reads JEDI's news from jediholo.net: the latest articles, each opened whole with its pictures. The **Comport** shows JEDI's forum as datapad pages: forums, topics, posts with quotes and pictures; log in with your Comport account to read everything and reply to topics. Your password goes only to the forum, over HTTPS, and is never kept; Stay logged in keeps only its cookies.

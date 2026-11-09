@@ -73,6 +73,7 @@ std::string	HTML_FormEncode( const std::string &in );
 
 typedef struct {
 	std::string	title, link, date, author, category, content;
+	long long	when;			// its publication, Unix seconds (0 not known)
 } rssItem_t;
 
 void		RSS_Items( const std::string &xml, std::vector<rssItem_t> &out );

@@ -476,6 +476,89 @@ static std::string CP_FormBody( const std::map<std::string, std::string> &fields
 	return body;
 }
 
+// an attribute that's there with no value, as checked or selected
+static qboolean CP_HasAttr( const std::string &attrs, const char *name ) {
+	const size_t len = strlen( name );
+
+	for ( size_t at = 0; at + len <= attrs.size(); at++ ) {
+		if ( Q_stricmpn( attrs.c_str() + at, name, (int)len ) )
+			continue;
+		if ( ( at == 0 || isspace( (unsigned char)attrs[at - 1] ) )
+			&& ( at + len == attrs.size() || isspace( (unsigned char)attrs[at + len] ) || attrs[at + len] == '=' || attrs[at + len] == '/' ) )
+			return qtrue;
+	}
+	return qfalse;
+}
+
+// what a browser sends of the form with this id: its text and hidden fields, the boxes ticked, the
+// options picked, its text areas; no button (the one pressed is added by the caller), no file
+static std::string CP_FormFields( const std::string &html, const char *id, std::map<std::string, std::string> &out ) {
+	htmlElement_t form, el;
+	size_t pos = 0;
+
+	out.clear();
+	for ( ;; ) {
+		if ( !HTML_Find( html, pos, "form", "", form ) )
+			return "";
+		pos = form.innerStart;
+		if ( HTML_Attr( form.attrs, "id" ) == id )
+			break;
+	}
+	for ( pos = form.innerStart; HTML_Find( html, pos, "input", "", el ) && el.start < form.innerEnd; pos = el.end ) {
+		const std::string name = HTML_Attr( el.attrs, "name" ), type = HTML_Attr( el.attrs, "type" );
+
+		if ( name.empty() || out.count( name ) )
+			continue;
+		if ( !Q_stricmp( type.c_str(), "checkbox" ) || !Q_stricmp( type.c_str(), "radio" ) ) {
+			if ( CP_HasAttr( el.attrs, "checked" ) ) {
+				const std::string value = HTML_Attr( el.attrs, "value" );
+
+				out[name] = value.empty() ? "on" : value;
+			}
+		} else if ( Q_stricmp( type.c_str(), "submit" ) && Q_stricmp( type.c_str(), "button" ) && Q_stricmp( type.c_str(), "image" )
+			&& Q_stricmp( type.c_str(), "reset" ) && Q_stricmp( type.c_str(), "file" ) ) {
+			out[name] = HTML_Attr( el.attrs, "value" );
+		}
+	}
+	for ( pos = form.innerStart; HTML_Find( html, pos, "textarea", "", el ) && el.start < form.innerEnd; pos = el.end ) {
+		const std::string name = HTML_Attr( el.attrs, "name" );
+
+		if ( !name.empty() && !out.count( name ) )
+			out[name] = HTML_Decode( HTML_Inner( html, el ) );
+	}
+	for ( pos = form.innerStart; HTML_Find( html, pos, "select", "", el ) && el.start < form.innerEnd; pos = el.end ) {
+		const std::string name = HTML_Attr( el.attrs, "name" );
+		htmlElement_t opt;
+		std::string first, picked;
+		qboolean any = qfalse;
+
+		for ( size_t o = el.innerStart; HTML_Find( html, o, "option", "", opt ) && opt.start < el.innerEnd; o = opt.innerStart ) {
+			const std::string value = CP_HasAttr( opt.attrs, "value" ) ? HTML_Attr( opt.attrs, "value" ) : HTML_Text( HTML_Inner( html, opt ) );
+
+			if ( !any ) {
+				first = value;
+				any = qtrue;
+			}
+			if ( CP_HasAttr( opt.attrs, "selected" ) ) {
+				picked = value;
+				break;
+			}
+		}
+		if ( !name.empty() && any && !out.count( name ) )
+			out[name] = picked.empty() ? first : picked;
+	}
+	return HTML_Url( CP_SITE, HTML_Attr( form.attrs, "action" ) );
+}
+
+// what a page is: its first heading, or its title
+static std::string CP_PageName( const std::string &html ) {
+	std::string name = CP_TextOf( html, 0, html.size(), "h2", "" );
+
+	if ( name.empty() )
+		name = CP_TextOf( html, 0, html.size(), "title", "" );
+	return name;
+}
+
 // a form's action, from the page
 static std::string CP_FormAction( const std::string &html, const char *id ) {
 	htmlElement_t form;
@@ -525,9 +608,6 @@ static void CP_SendReply( void ) {
 		CP_Message( "Type your reply first" );
 		return;
 	}
-	fields.erase( "preview" );
-	fields.erase( "save" );
-	fields.erase( "load" );
 	fields["message"] = message;
 	fields["post"] = "Submit";
 	if ( CP_Request( &cpActHttp, cp.formAction, CP_FormBody( fields ).c_str(), qtrue ) ) {
@@ -604,9 +684,7 @@ static void CP_ActAnswer( void ) {
 		break;
 	case CP_ACT_REPLY_FORM:
 		cp.act = CP_ACT_NONE;
-		cp.form.clear();
-		HTML_Inputs( html, cp.form );
-		cp.formAction = CP_FormAction( html, "postform" );
+		cp.formAction = CP_FormFields( html, "postform", cp.form );
 		cp.formTime = cls.realtime;
 		if ( cp.formAction.empty() ) {
 			const std::string why = CP_ErrorText( html );
@@ -617,8 +695,9 @@ static void CP_ActAnswer( void ) {
 		break;
 	case CP_ACT_REPLY:
 		cp.act = CP_ACT_NONE;
-		// the forum sends the new post's page: there
-		if ( cpActHttp.status == 302 || cpActHttp.status == 301 || cpActHttp.status == 303 ) {
+		// the forum sends the new post's page: there; or says it's posted, on a page that goes on to it
+		if ( cpActHttp.status == 302 || cpActHttp.status == 301 || cpActHttp.status == 303
+			|| ( cpActHttp.status == 200 && ( Q_stristr( html.c_str(), "posted successfully" ) || Q_stristr( html.c_str(), "http-equiv=\"refresh\"" ) ) ) ) {
 			const char *loc = Q_stristr( cpActHttp.respHeaders, "location:" );
 			std::string where = cp.url;
 
@@ -638,7 +717,11 @@ static void CP_ActAnswer( void ) {
 		} else {
 			const std::string why = CP_ErrorText( html );
 
-			CP_Message( why.empty() ? "The reply didn't go through" : why.c_str() );
+			// what the forum answered, to tell what went wrong
+			Com_Printf( "Comport: the reply got %i, \"%s\"%s%s\n", cpActHttp.status, CP_PageName( html ).c_str(),
+				why.empty() ? "" : ": ", why.c_str() );
+			CP_Message( why.empty() ? va( "The reply didn't go through: the forum answered \"%s\" (%i)", CP_PageName( html ).c_str(),
+				cpActHttp.status ) : why.c_str() );
 			// a fresh form for the next try
 			CP_StartReply();
 		}

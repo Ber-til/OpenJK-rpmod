@@ -92,6 +92,13 @@ void CL_HoloNet_Shown( qboolean shown ) {
 	hn.shown = shown;
 }
 
+// what's said under a title: JEDI's date and the category
+static const char *HN_Byline( const rssItem_t &it ) {
+	const char *when = it.when ? DP_JediDate( it.when ) : it.date.c_str();
+
+	return va( "%s%s%s", when, it.category.empty() ? "" : "   ", it.category.c_str() );
+}
+
 static void HN_Open( int i ) {
 	hn.open = i;
 	hn.scroll = 0;
@@ -123,8 +130,7 @@ static void HN_DrawList( const dpRect_t *s ) {
 
 		DP_Fill( x, y, w, HN_ROW_H - 3, hover ? dpButtonHover : dpTile );
 		DP_Text( x + DP_Wide( 4 ), y + 2, w - DP_Wide( 8 ), it.title.c_str(), hover ? dpWhite : dpText, DP_Font(), 0.62f, qfalse );
-		DP_Text( x + DP_Wide( 4 ), y + 15, w - DP_Wide( 8 ), va( "%s   %s%s%s", it.date.c_str(), it.author.c_str(),
-			it.category.empty() ? "" : "   ", it.category.c_str() ), dpDim, DP_Font(), 0.55f, qfalse );
+		DP_Text( x + DP_Wide( 4 ), y + 15, w - DP_Wide( 8 ), HN_Byline( it ), dpDim, DP_Font(), 0.55f, qfalse );
 		if ( DP_Clicked( x, y, w, HN_ROW_H - 3 ) )
 			HN_Open( hn.listScroll + r );
 		y += HN_ROW_H;
@@ -154,7 +160,7 @@ static void HN_DrawArticle( const dpRect_t *s ) {
 	b.text = it.title;
 	head.push_back( b );
 	b.kind = HB_QUOTE_HEAD;
-	b.text = it.date + "   " + it.author + ( it.category.empty() ? "" : "   " + it.category );
+	b.text = HN_Byline( it );
 	head.push_back( b );
 	b.kind = HB_RULE;
 	b.text.clear();

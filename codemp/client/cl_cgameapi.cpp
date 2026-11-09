@@ -364,19 +364,25 @@ static void CL_R_AddPolysToScene( qhandle_t hShader, int numVerts, const polyVer
 // than anyone else: force powers come out of the caster's hand
 static void CL_FX_PlayEffect( const char *file, vec3_t org, vec3_t fwd, int vol, int rad ) {
 	FX_SetOwner( CL_ShaderManager_Owner( org, -1 ) );
+	FX_SetOwnerByPlace( qtrue );
 	FX_PlayEffect( file, org, fwd, vol, rad );
+	FX_SetOwnerByPlace( qfalse );
 	FX_SetOwner( -1 );
 }
 
 static void CL_FX_PlayEffectID( int id, vec3_t org, vec3_t fwd, int vol, int rad, qboolean isPortal ) {
 	FX_SetOwner( CL_ShaderManager_Owner( org, -1 ) );
+	FX_SetOwnerByPlace( qtrue );
 	FX_PlayEffectID( id, org, fwd, vol, rad, isPortal );
+	FX_SetOwnerByPlace( qfalse );
 	FX_SetOwner( -1 );
 }
 
 static void CL_FX_PlayEntityEffectID( int id, vec3_t org, matrix3_t axis, const int boltInfo, const int entNum, int vol, int rad ) {
 	FX_SetOwner( CL_ShaderManager_Owner( org, entNum ) );
+	FX_SetOwnerByPlace( (qboolean)( entNum < 0 || entNum >= ENTITYNUM_WORLD ) );
 	FX_PlayEntityEffectID( id, org, axis, boltInfo, entNum, vol, rad );
+	FX_SetOwnerByPlace( qfalse );
 	FX_SetOwner( -1 );
 }
 
@@ -543,6 +549,12 @@ static void CGFX_AddSprite( addspriteArgStruct_t *s ) {
 }
 
 static void CGFX_AddElectricity( addElectricityArgStruct_t *p ) {
+	const int owner = CL_ShaderManager_Owner( p->start, -1 );
+
+	CL_EffectSwap_LogShape( "lightning", owner, p->start );
+	// a player's force lightning drawn this way, swapped in the effect manager's Mine tab
+	if ( CL_EffectSwap_Shape( owner, p->start, p->end ) )
+		return;
 	FX_AddElectricity( p->start, p->end, p->size1, p->size2, p->sizeParm, p->alpha1, p->alpha2, p->alphaParm, p->sRGB, p->eRGB, p->rgbParm, p->chaos, p->killTime,
 		CL_ShaderManager_MineFor( p->shader, p->start, -1 ), p->flags );
 }
@@ -645,17 +657,20 @@ static qboolean CL_G2API_HaveWeGhoul2Models( void *ghoul2) {
 
 static qboolean CL_G2API_GetBoltMatrix( void *ghoul2, const int modelIndex, const int boltIndex, mdxaBone_t *matrix, const vec3_t angles, const vec3_t position, const int frameNum, qhandle_t *modelList, vec3_t scale ) {
 	if ( !ghoul2 ) return qfalse;
+	ghoul2 = CL_AnimManager_BoltG2( ghoul2 );	// a body playing a custom emote: its copy's
 	return re->G2API_GetBoltMatrix( *((CGhoul2Info_v *)ghoul2), modelIndex, boltIndex, matrix, angles, position, frameNum, modelList, scale );
 }
 
 static qboolean CL_G2API_GetBoltMatrix_NoReconstruct( void *ghoul2, const int modelIndex, const int boltIndex, mdxaBone_t *matrix, const vec3_t angles, const vec3_t position, const int frameNum, qhandle_t *modelList, vec3_t scale ) {
 	if ( !ghoul2 ) return qfalse;
+	ghoul2 = CL_AnimManager_BoltG2( ghoul2 );	// a body playing a custom emote: its copy's
 	re->G2API_BoltMatrixReconstruction( qfalse );
 	return re->G2API_GetBoltMatrix( *((CGhoul2Info_v *)ghoul2), modelIndex, boltIndex, matrix, angles, position, frameNum, modelList, scale );
 }
 
 static qboolean CL_G2API_GetBoltMatrix_NoRecNoRot( void *ghoul2, const int modelIndex, const int boltIndex, mdxaBone_t *matrix, const vec3_t angles, const vec3_t position, const int frameNum, qhandle_t *modelList, vec3_t scale ) {
 	if ( !ghoul2 ) return qfalse;
+	ghoul2 = CL_AnimManager_BoltG2( ghoul2 );	// a body playing a custom emote: its copy's
 	// Intentionally not setting bolt matrix reconstruction state per original code comments
 	re->G2API_BoltMatrixSPMethod( qtrue );
 	return re->G2API_GetBoltMatrix( *((CGhoul2Info_v *)ghoul2), modelIndex, boltIndex, matrix, angles, position, frameNum, modelList, scale );

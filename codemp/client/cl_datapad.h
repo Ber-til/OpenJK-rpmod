@@ -44,6 +44,7 @@ int			DP_TitleFont( void );
 float		DP_CursorX( void );
 float		DP_CursorY( void );
 void		DP_PlaySound( sfxHandle_t sound );
+const char	*DP_JediDate( long long utc );		// a moment as JEDI's date: <year>.<day> ABY
 
 void		DP_Fill( float x, float y, float w, float h, const float *color );
 void		DP_Frame( float x, float y, float w, float h, const float *color );

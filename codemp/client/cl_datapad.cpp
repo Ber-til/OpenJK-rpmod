@@ -666,8 +666,7 @@ static int DP_Sunday( int y, int m, int n ) {
 
 // the time in New York now, whatever this computer's own zone: UTC-5, UTC-4 from the second Sunday
 // of March at 2:00 to the first Sunday of November at 2:00 (1:00 in standard time)
-static void DP_NewYork( struct tm *out ) {
-	const time_t utc = time( NULL );
+static void DP_NewYorkAt( time_t utc, struct tm *out ) {
 	time_t t = utc - 5 * 3600;
 	struct tm *st = gmtime( &t );
 	int start, end, mdhm;
@@ -691,13 +690,23 @@ static void DP_NewYork( struct tm *out ) {
 
 // JEDI's own time: <year>.<day> ABY - <hour><minute>/<seconds> GST, New York's time. The year goes
 // up one a month: 474 in November 2026; the day is the month's
+static int DP_JediYear( const struct tm *ny ) {
+	return 474 + ( ny->tm_year + 1900 - 2026 ) * 12 + ( ny->tm_mon + 1 - 11 );
+}
+
 static const char *DP_JediTime( void ) {
 	struct tm ny;
-	int year;
 
-	DP_NewYork( &ny );
-	year = 474 + ( ny.tm_year + 1900 - 2026 ) * 12 + ( ny.tm_mon + 1 - 11 );
-	return va( "%i.%02i ABY - %02i%02i/%02i GST", year, ny.tm_mday, ny.tm_hour, ny.tm_min, ny.tm_sec );
+	DP_NewYorkAt( time( NULL ), &ny );
+	return va( "%i.%02i ABY - %02i%02i/%02i GST", DP_JediYear( &ny ), ny.tm_mday, ny.tm_hour, ny.tm_min, ny.tm_sec );
+}
+
+// a moment (Unix seconds) as JEDI's date: <year>.<day> ABY
+const char *DP_JediDate( long long utc ) {
+	struct tm ny;
+
+	DP_NewYorkAt( (time_t)utc, &ny );
+	return va( "%i.%02i ABY", DP_JediYear( &ny ), ny.tm_mday );
 }
 
 static void DP_StatusBar( const dpRect_t *s, float scale ) {

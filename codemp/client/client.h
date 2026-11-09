@@ -1004,6 +1004,7 @@ void CL_AnimManager_Escape( void );
 void CL_AnimManager_Frame( void );
 void CL_AnimManager_Draw( void );
 const refEntity_t *CL_AnimManager_Entity( const refEntity_t *ent, refEntity_t *copy );
+void *CL_AnimManager_BoltG2( void *ghoul2 );	// a body's bolts asked: its emote copy's, if it plays one
 void CL_AnimManager_Hook( char **argv, int argc, const char *message );
 
 // cl_rendermenu.cpp: the camera follows right behind with the camera settings on
@@ -1045,7 +1046,15 @@ void CL_Presets_Draw( void );
 void CL_EffectSwap_Init( void );
 void CL_EffectSwap_Frame( void );
 void CL_EffectSwap_Reset( void );
-int CL_EffectSwap_Play( int owner, int id, const char *name );
+int CL_EffectSwap_Play( int owner, int id, const char *name, const vec3_t byPlace );
+// /effectreplacer log: for a while, the effects started near you said in the console, with whose they're
+// taken to be; and lightning drawn as a shape (not an effect), which can't be swapped
+void CL_EffectSwap_StartLog( int ms );
+void CL_EffectSwap_LogEffect( const char *name, int owner, const vec3_t org );
+void CL_EffectSwap_LogShape( const char *what, int owner, const vec3_t org );
+// lightning drawn as a shape, starting nearest owner: qtrue when it's swapped (played as the
+// replacement, the shape not drawn)
+qboolean CL_EffectSwap_Shape( int owner, const vec3_t start, const vec3_t end );
 void CL_EffectSwap_Hook( char **argv, int argc, const char *message );
 int CL_EffectSwap_Count( void );
 qboolean CL_EffectSwap_Get( int i, const char **from, const char **to );
@@ -1237,6 +1246,7 @@ qboolean CL_RpAdmin_Allow( const char *tool, const char *command );
 qboolean CL_RpAdmin_ServerPrint( const char *text );
 qboolean CL_RpAdmin_IsAdmin( void );
 void CL_RpAdmin_AskQuietly( void );
+qboolean CL_RpAdmin_RankKnown( void );	// the server has answered whether you're an admin
 void CL_RpAdmin_Frame( void );
 typedef enum {
 	RA_TEMPLE_UNKNOWN,	// being asked, or the server didn't answer

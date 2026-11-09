@@ -613,6 +613,44 @@ static std::string RSS_Field( const std::string &item, const char *tag, bool htm
 	return html ? v : HTML_Squeeze( HTML_Decode( v ) );
 }
 
+// an RSS date ("Thu, 05 Nov 2026 20:46:25 +0000", or GMT) as Unix seconds; 0 if it doesn't read
+static long long RSS_Time( const std::string &d ) {
+	static const char *months[12] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+	const size_t comma = d.find( ", " );
+	char mon[8] = "", zone[8] = "";
+	int day, year, h, m, sec, month = -1;
+	long long days;
+
+	if ( sscanf( d.c_str() + ( comma != std::string::npos ? comma + 2 : 0 ), "%d %7s %d %d:%d:%d %7s", &day, mon, &year, &h, &m, &sec, zone ) < 6 )
+		return 0;
+	for ( int i = 0; i < 12; i++ ) {
+		if ( !Q_stricmp( mon, months[i] ) )
+			month = i + 1;
+	}
+	if ( month < 0 || year < 1970 )
+		return 0;
+	// days since 1970 for that date (the civil calendar)
+	{
+		const int y = year - ( month <= 2 ? 1 : 0 );
+		const int era = y / 400, yoe = y - era * 400;
+		const int doy = ( 153 * ( month + ( month > 2 ? -3 : 9 ) ) + 2 ) / 5 + day - 1;
+		const int doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+
+		days = (long long)era * 146097 + doe - 719468;
+	}
+	{
+		long long t = days * 86400 + h * 3600 + m * 60 + sec;
+
+		// a +hhmm or -hhmm zone: back to UTC
+		if ( ( zone[0] == '+' || zone[0] == '-' ) && strlen( zone ) == 5 ) {
+			const int off = ( ( zone[1] - '0' ) * 10 + ( zone[2] - '0' ) ) * 3600 + ( ( zone[3] - '0' ) * 10 + ( zone[4] - '0' ) ) * 60;
+
+			t += zone[0] == '+' ? -off : off;
+		}
+		return t;
+	}
+}
+
 void RSS_Items( const std::string &xml, std::vector<rssItem_t> &out ) {
 	size_t pos = 0;
 
@@ -630,12 +668,13 @@ void RSS_Items( const std::string &xml, std::vector<rssItem_t> &out ) {
 		r.content = RSS_Field( item, "content:encoded", true );
 		if ( r.content.empty() )
 			r.content = RSS_Field( item, "description", true );
-		// "Thu, 05 Nov 2026 20:46:25 +0000": the day, month and year
+		// "Thu, 05 Nov 2026 20:46:25 +0000": the day, month and year, and the moment
 		{
 			const std::string d = RSS_Field( item, "pubDate", false );
 			const size_t comma = d.find( ", " );
 
 			r.date = comma != std::string::npos && d.size() >= comma + 13 ? d.substr( comma + 2, 11 ) : d;
+			r.when = RSS_Time( d );
 		}
 		if ( !r.title.empty() )
 			out.push_back( r );

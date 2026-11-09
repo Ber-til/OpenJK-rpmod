@@ -32,7 +32,8 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 //
 // Custom emotes (experimental): an animation, and bones of it following other animations, or
 // turned. The server knows nothing of them: they're drawn on the model by this client. An
-// admin's, with experimental on, go to everyone with this client hidden in an rpnotify:
+// admin's, with experimental on, go to everyone with this client through C1B3R (as an rpnotify hook,
+// taken by cl_presence.cpp; the game's link must be approved there):
 //
 //   rpnotify -1 1 cmd:emote/<client number>/<part>/<parts>: <the emote, see AM_Encode>
 //   rpnotify -1 1 cmd:emote/<client number>/stop
@@ -202,6 +203,7 @@ typedef struct {
 	qboolean	stopping;			// over: its bones let go the next time it's drawn
 	qboolean	own;				// ours, played here: moving ends it, and the end is sent
 	qboolean	shared;
+	qboolean	wantShare;			// ours, to be shared once the admin rank's known (asked as it started)
 	int			num;
 	int			start, stopTime;
 	amCustom_t	def;
@@ -1079,6 +1081,25 @@ static void AM_BodiesFrame( void ) {
 	amNumBodies = 0;
 }
 
+// the emote's copy of the body, made once a frame from it as the cgame has it now: drawn in its
+// place (twice, as with a shell around it, both the copy) and asked where its bolts are. NULL if
+// it can't be
+static CGhoul2Info_v *AM_CopyFor( amPlay_t *pick, CGhoul2Info_v &g2, int skel ) {
+	if ( !AM_FindAnim( skel, pick->def.anim ) )
+		return NULL;
+	if ( !pick->copy || pick->copyFrame != amFrameNum ) {
+		AM_FreeCopy( pick );
+		re->G2API_DuplicateGhoul2Instance( g2, &pick->copy );
+		if ( !pick->copy || !re->G2API_HaveWeGhoul2Models( *pick->copy ) ) {
+			AM_FreeCopy( pick );
+			return NULL;
+		}
+		pick->copyFrame = amFrameNum;
+		AM_ApplyCustom( *pick->copy, skel, &pick->def, (float)( cls.realtime - pick->start ) );
+	}
+	return pick->copy;
+}
+
 // a model on its way to the renderer: a body playing a custom emote is swapped for a copy of
 // itself playing it (into *copy); NULL when it's left as it is
 const refEntity_t *CL_AnimManager_Entity( const refEntity_t *ent, refEntity_t *copy ) {
@@ -1113,23 +1134,33 @@ const refEntity_t *CL_AnimManager_Entity( const refEntity_t *ent, refEntity_t *c
 		if ( p->active && !p->stopping && p->body == ent->ghoul2 )
 			pick = p;
 	}
-	if ( !pick || !AM_FindAnim( skel, pick->def.anim ) )
+	if ( !pick || !AM_CopyFor( pick, g2, skel ) )
 		return NULL;
-	// the copy, made once a frame from the body as the cgame has it now (drawn twice, as with a
-	// shell around it, both are the copy)
-	if ( !pick->copy || pick->copyFrame != amFrameNum ) {
-		AM_FreeCopy( pick );
-		re->G2API_DuplicateGhoul2Instance( g2, &pick->copy );
-		if ( !pick->copy || !re->G2API_HaveWeGhoul2Models( *pick->copy ) ) {
-			AM_FreeCopy( pick );
-			return NULL;
-		}
-		pick->copyFrame = amFrameNum;
-		AM_ApplyCustom( *pick->copy, skel, &pick->def, (float)( cls.realtime - pick->start ) );
-	}
 	*copy = *ent;
 	copy->ghoul2 = pick->copy;
 	return copy;
+}
+
+// asked by cgame where a bolt of a body is (a saber's blade, a hand): for a body playing a custom
+// emote, the copy's, so what's drawn at it (the blade) follows the emote's pose
+void *CL_AnimManager_BoltG2( void *ghoul2 ) {
+	amPlay_t *pick = NULL;
+	int skel;
+
+	if ( !ghoul2 )
+		return ghoul2;
+	for ( int i = 0; i < AM_MAX_PLAYING && !pick; i++ ) {
+		amPlay_t *p = &amPlaying[i];
+
+		if ( p->active && !p->stopping && p->body == ghoul2 )
+			pick = p;
+	}
+	if ( !pick )
+		return ghoul2;
+	CGhoul2Info_v &g2 = *(CGhoul2Info_v *)ghoul2;
+	if ( !re->G2API_HaveWeGhoul2Models( g2 ) || ( skel = AM_Skel( re->G2API_GetGLAName( g2, 0 ) ) ) < 0 )
+		return ghoul2;
+	return AM_CopyFor( pick, g2, skel ) ? (void *)pick->copy : ghoul2;
 }
 
 /*
@@ -1334,6 +1365,15 @@ static void AM_StopOwn( qboolean say ) {
 		Com_Printf( "Custom emote stopped\n" );
 }
 
+// said why a custom emote stays on your screen, so it isn't thought the others see it (C1B3R's own
+// reasons, link and account, are said when it's sent)
+static void AM_NotShared( const amCustom_t *c ) {
+	Com_Printf( S_COLOR_YELLOW "%s: on your screen only: %s\n", c->name[0] ? c->name : "Custom emote",
+		com_sv_running->integer ? "you're on a local server"
+		: !CL_RpHooks_Experimental() ? "experimental features are off (/rpexperimental to turn them on)"
+		: "custom emotes are shared by RPMod admins, and the server shows no admin rank for you" );
+}
+
 static void AM_PlayOwn( const amCustom_t *c, qboolean share ) {
 	amPlay_t *p;
 
@@ -1355,6 +1395,13 @@ static void AM_PlayOwn( const amCustom_t *c, qboolean share ) {
 			Com_Printf( S_COLOR_YELLOW "%s: its last %i key%s too much to send, the others see it without\n", c->name[0] ? c->name : "Custom emote",
 				left, left == 1 ? " is" : "s are" );
 		p->shared = qtrue;
+	} else if ( share && CL_RpHooks_Experimental() && !com_sv_running->integer && !CL_RpAdmin_RankKnown() ) {
+		// the admin rank isn't known yet (no admin tool opened on this server): asked, and shared
+		// as soon as the answer's in (AM_OwnFrame)
+		p->wantShare = qtrue;
+		CL_RpAdmin_AskQuietly();
+	} else if ( share ) {
+		AM_NotShared( c );
 	}
 	// what everyone else sees under it
 	if ( share && c->under[0] ) {
@@ -1370,6 +1417,16 @@ static void AM_OwnFrame( void ) {
 
 	if ( !p || !p->own )
 		return;
+	// the rank's in: shared now, from the start for the others
+	if ( p->wantShare && CL_RpAdmin_RankKnown() ) {
+		p->wantShare = qfalse;
+		if ( AM_CanShare() ) {
+			AM_Share( &p->def );
+			p->shared = qtrue;
+		} else {
+			AM_NotShared( &p->def );
+		}
+	}
 	ms = AM_CustomMs( &p->def );
 	if ( cls.realtime - p->start > AM_MOVE_GRACE_MS
 		&& sqrtf( cl.snap.ps.velocity[0] * cl.snap.ps.velocity[0] + cl.snap.ps.velocity[1] * cl.snap.ps.velocity[1] ) > AM_MOVE_SPEED ) {
