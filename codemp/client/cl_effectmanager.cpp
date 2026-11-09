@@ -3562,6 +3562,7 @@ static void EM_OpenAs( qboolean mineOnly ) {
 	CL_ChatLog_Close();
 	CL_Inventory_Close();
 	CL_Inspect_Close();
+	CL_Holster_Close();
 	EM_CheckMap();
 	EM_ListConstructs();
 	if ( !em.indexed ) {

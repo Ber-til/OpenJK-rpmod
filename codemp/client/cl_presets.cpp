@@ -477,7 +477,7 @@ static void PR_AddBlades( CGhoul2Info_v &g2, int index, const vec3_t angles, flo
 
 // the character drawn in the card, tinted as given (a skin that takes a tint)
 static void PR_RenderView( prView_t *v, const char *red, const char *green, const char *blue, float x, float y, float w, float h, float yaw,
-	const float *blade = NULL, const char *saber1 = NULL, const char *saber2 = NULL ) {
+	const float *blade = NULL, const char *saber1 = NULL, const char *saber2 = NULL, clBodyExtra_t extra = NULL, void *ctx = NULL ) {
 	const float xScale = cls.glconfig.vidWidth / (float)SCREEN_WIDTH, yScale = cls.glconfig.vidHeight / (float)SCREEN_HEIGHT;
 	refdef_t refdef;
 	refEntity_t ent;
@@ -522,6 +522,8 @@ static void PR_RenderView( prView_t *v, const char *red, const char *green, cons
 
 	re->ClearScene();
 	re->AddRefEntityToScene( &ent );
+	if ( extra )
+		extra( ctx, v->g2, &ent );
 	// the hilts' blades, lit: models 1 and 2 are the hilts (PR_BuildView)
 	if ( blade ) {
 		for ( int s = 0; s < 2; s++ ) {
@@ -628,7 +630,7 @@ static void PR_AddBlades( CGhoul2Info_v &g2, int index, const vec3_t angles, flo
 // legs, when given, play round and round; blade (0..1), when given, lights the hilts. Their colours
 // aren't sent by the game, so the model is drawn as it is
 void CL_Presets_DrawCharacter( const char *model, const char *saber1, const char *saber2, const char *torso, const char *legs,
-	const float *blade, float x, float y, float w, float h, float yaw ) {
+	const float *blade, float x, float y, float w, float h, float yaw, clBodyExtra_t extra, void *ctx ) {
 	char pose[sizeof( prOther.pose )];
 
 	if ( cls.state != CA_ACTIVE )
@@ -651,7 +653,7 @@ void CL_Presets_DrawCharacter( const char *model, const char *saber1, const char
 		}
 		prOther.measured = qfalse;
 	}
-	PR_RenderView( &prOther, "", "", "", x, y, w, h, yaw, blade, saber1, saber2 );
+	PR_RenderView( &prOther, "", "", "", x, y, w, h, yaw, blade, saber1, saber2, extra, ctx );
 }
 
 // why it couldn't be drawn, NULL if it was
@@ -826,6 +828,7 @@ static qboolean PR_Open( int mode ) {
 		CL_ChatLog_Close();
 		CL_Inventory_Close();
 		CL_Inspect_Close();
+		CL_Holster_Close();
 
 		pr.font = re->RegisterFont( "arialnb" );
 		if ( !pr.font )

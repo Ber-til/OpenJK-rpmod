@@ -26,6 +26,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #include "cl_http.h"
 
 const char	*CL_Presence_Session( void );		// the session's id, NULL while there's none
+qboolean	CL_Presence_Linked( int client );	// a player here whose game is linked, as C1B3R's list said
 qboolean	CL_Presence_Post( httpRequest_t *req, const char *path, const std::string &body );
 void		CL_Presence_Json( std::string &out, const char *s );	// a quoted JSON string
 std::string	CL_Presence_Unfield( const char *in );				// an answer's field as it was sent

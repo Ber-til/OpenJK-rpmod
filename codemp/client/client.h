@@ -696,7 +696,8 @@ void CL_ModelManager_Draw( void );
 #define KEYCATCH_ESCMENU		0x400000	// engine only, the Esc menu (Modern or KOTOR) owns keyboard and mouse
 #define KEYCATCH_INVENTORY		0x800000	// engine only, the inventory window owns keyboard and mouse
 #define KEYCATCH_INSPECT		0x1000000	// engine only, the inspect window owns keyboard and mouse
-#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELMANAGER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER | KEYCATCH_MAPEDITOR | KEYCATCH_STORYTELLER | KEYCATCH_CINEDITOR | KEYCATCH_SOUNDMANAGER | KEYCATCH_RADIALMENU | KEYCATCH_LANGUAGES | KEYCATCH_CONSETTINGS | KEYCATCH_ANIMMANAGER | KEYCATCH_PRESETS | KEYCATCH_FEEDBACK | KEYCATCH_ASSETMANAGER | KEYCATCH_SPECIALMOVES | KEYCATCH_CHATLOG | KEYCATCH_DATAPAD | KEYCATCH_ESCMENU | KEYCATCH_INVENTORY | KEYCATCH_INSPECT )	// mods never see or clear these
+#define KEYCATCH_HOLSTER		0x2000000	// engine only, the holster editor owns keyboard and mouse
+#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELMANAGER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER | KEYCATCH_MAPEDITOR | KEYCATCH_STORYTELLER | KEYCATCH_CINEDITOR | KEYCATCH_SOUNDMANAGER | KEYCATCH_RADIALMENU | KEYCATCH_LANGUAGES | KEYCATCH_CONSETTINGS | KEYCATCH_ANIMMANAGER | KEYCATCH_PRESETS | KEYCATCH_FEEDBACK | KEYCATCH_ASSETMANAGER | KEYCATCH_SPECIALMOVES | KEYCATCH_CHATLOG | KEYCATCH_DATAPAD | KEYCATCH_ESCMENU | KEYCATCH_INVENTORY | KEYCATCH_INSPECT | KEYCATCH_HOLSTER )	// mods never see or clear these
 
 void CL_NpcManager_Init( void );
 void CL_NpcManager_Shutdown( void );
@@ -1115,6 +1116,24 @@ void CL_Inspect_CharEvent( int ch );
 void CL_Inspect_MouseEvent( int dx, int dy );
 void CL_Inspect_Disconnect( void );
 void CL_Inspect_CharHook( char **argv, int argc );
+
+// cl_holster.cpp: /holster, models worn on characters
+void CL_Holster_Init( void );
+void CL_Holster_Shutdown( void );
+void CL_Holster_Frame( void );		// before the cgame draws: bodies paired with players
+void CL_Holster_PollFrame( void );
+void CL_Holster_Draw( void );
+void CL_Holster_Close( void );
+void CL_Holster_Escape( void );
+void CL_Holster_KeyEvent( int key, qboolean down );
+void CL_Holster_CharEvent( int ch );
+void CL_Holster_MouseEvent( int dx, int dy );
+void CL_Holster_Disconnect( void );
+void CL_Holster_RendererRestarted( void );
+void CL_Holster_CharHook( char **argv, int argc );
+void CL_Holster_Entity( const refEntity_t *ent, void *bodyGhoul2 );
+void CL_Holster_DrawOn( void *ctx, void *ghoul2, const refEntity_t *body );
+const char *CL_Holster_Missing( int client );
 void CL_DatapadWeb_Frame( void );	// cl_holonet.cpp: the HoloNet, the Comport and their pictures
 void CL_Datapad_Escape( void );
 void CL_Datapad_Draw( void );
@@ -1268,6 +1287,7 @@ void CL_EmotePreview_Command( const char *cmd );
 void CL_EmotePreview_Frame( void );
 void CL_EmotePreview_Draw( void );
 const char *CL_GlmBounds( const char *path, vec3_t mins, vec3_t maxs );
+int CL_GlmTags( const char *path, char tags[][MAX_QPATH], int max );	// cl_npcmanager.cpp: its *tags
 
 // cl_aim.cpp: what the crosshair is on
 void CL_Aim_View( const refdef_t *fd );
@@ -1326,8 +1346,9 @@ void CL_EscMenu_Escape( void );
 int CL_QuickConnect_Count( void );			// cl_quickconnect.cpp: JEDI's servers
 const char *CL_QuickConnect_Name( int i );
 void CL_Presets_DrawPortrait( float x, float y, float w, float h, float yaw );	// cl_presets.cpp: you, as you are
+typedef void ( *clBodyExtra_t )( void *ctx, void *ghoul2, const refEntity_t *body );	// more drawn on a body (holster)
 void CL_Presets_DrawCharacter( const char *model, const char *saber1, const char *saber2, const char *torso, const char *legs,
-	const float *blade, float x, float y, float w, float h, float yaw );
+	const float *blade, float x, float y, float w, float h, float yaw, clBodyExtra_t extra, void *ctx );
 const char *CL_Presets_CharacterError( void );
 void CL_Presets_FreeCharacter( void );
 void CL_Presets_RendererRestarted( void );

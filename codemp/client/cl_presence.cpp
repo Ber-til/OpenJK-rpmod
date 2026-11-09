@@ -602,6 +602,15 @@ static const char *PS_HookCommand( const char *cmd, int *to ) {
 }
 
 // for the datapad's apps (cl_pazaak.cpp): the session, and requests on it
+// a player on this server whose game is linked to C1B3R, as its list last said
+qboolean CL_Presence_Linked( int client ) {
+	for ( int i = 0; i < ps.numPlayers; i++ ) {
+		if ( ps.players[i].num == client )
+			return ps.players[i].linked;
+	}
+	return qfalse;
+}
+
 const char *CL_Presence_Session( void ) {
 	return psv.on && PS_Active() ? psv.id : NULL;
 }

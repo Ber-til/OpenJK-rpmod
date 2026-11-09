@@ -1645,6 +1645,36 @@ static int NM_PreviewScale( const nmType_t *t ) {
 	return (int)( f <= 10.0f ? f * 100.0f + 0.5f : f );
 }
 
+// the tags of a .glm (its surfaces named *...: *hip_r, *back...), at most max: how many
+int CL_GlmTags( const char *path, char tags[][MAX_QPATH], int max ) {
+	const mdxmHeader_t *header;
+	const mdxmHierarchyOffsets_t *offsets;
+	byte *buf;
+	int len, numSurfaces, n = 0;
+
+	len = FS_ReadFile( path, (void **)&buf );
+	if ( len <= 0 || !buf )
+		return 0;
+	header = (const mdxmHeader_t *)buf;
+	numSurfaces = len >= (int)sizeof( *header ) ? LittleLong( header->numSurfaces ) : 0;
+	if ( LittleLong( header->ident ) == MDXM_IDENT && numSurfaces > 0 && numSurfaces < len / 4
+		&& (int)sizeof( *header ) + numSurfaces * 4 <= len ) {
+		offsets = (const mdxmHierarchyOffsets_t *)( buf + sizeof( *header ) );
+		for ( int i = 0; i < numSurfaces && n < max; i++ ) {
+			const int ofs = (int)sizeof( *header ) + LittleLong( offsets->offsets[i] );
+			const mdxmSurfHierarchy_t *surf;
+
+			if ( ofs < 0 || ofs > len - (int)sizeof( mdxmSurfHierarchy_t ) )
+				break;
+			surf = (const mdxmSurfHierarchy_t *)( buf + ofs );
+			if ( surf->name[0] == '*' )
+				Q_strncpyz( tags[n++], va( "%.*s", MAX_QPATH - 1, surf->name ), MAX_QPATH );
+		}
+	}
+	FS_FreeFile( buf );
+	return n;
+}
+
 // the bind pose bounds of a .glm's first LOD, or why it can't be shown
 const char *CL_GlmBounds( const char *path, vec3_t mins, vec3_t maxs ) {
 	byte *buf;
@@ -2748,6 +2778,7 @@ static qboolean NM_Open( nmTab_t tab ) {
 	CL_ChatLog_Close();
 	CL_Inventory_Close();
 	CL_Inspect_Close();
+	CL_Holster_Close();
 	if ( !nm.indexed )
 		NM_BuildIndex();
 

@@ -245,6 +245,8 @@ The console commands, keys and settings this client adds. What each feature does
 
 - `/escmenu [modern|kotor|classic] [category]` opens the Esc menu in that style, on that category or tab (`/escmenu kotor options`); `cl_escMenu` picks what Esc opens: 0 the game's own (default), 1 Modern, 2 KOTOR
 - `/chatlog` opens or closes the chat log window; `/chatlog start` and `/chatlog stop` record or stop on this server; `/chatlog open` opens today's page in your browser, `/chatlog folder` the folder
+- `/inspect` shows the player you aim at, or yourself; `/inspect me` your own (Edit there), `/inspect <client number|name>` a player by number or name; `cl_inspectHint 0` hides the name under the crosshair
+- `/holster` opens the holster editor (models worn on your character); `/holster live` opens it as a small panel, what you edit worn on you in the world; `/holster list` lists who wears something here; `/holster debug` says why someone's aren't drawn; `cl_holster 0` draws no one's
 - `/inventory` opens what your RPMod account carries, or closes it (`/inventory staff` on its staff page, for RPMod admins); `/inventory list` prints your items as last asked, `/inventory give <item> [client]` gives one to the player you aim at (or that client number), `/inventory show|hide <item>` shows it on Inspect or not
 - `/datapad` opens your datapad in the bottom right corner, or puts it away; `/datapad open`, `/datapad close` and `/datapad settings` go straight there. Its Settings set the keys that open and close it; Esc puts it away
 - `/datapad holonet [n]` opens the HoloNet on it (the n-th article); `/datapad comport [guest|<forum number>]` the Comport (its forums, or that one)

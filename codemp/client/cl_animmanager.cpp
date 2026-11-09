@@ -1831,6 +1831,7 @@ static qboolean AM_Open( void ) {
 	CL_ChatLog_Close();
 	CL_Inventory_Close();
 	CL_Inspect_Close();
+	CL_Holster_Close();
 
 	am.font = re->RegisterFont( "arialnb" );
 	if ( !am.font )

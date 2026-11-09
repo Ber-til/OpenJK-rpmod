@@ -325,6 +325,7 @@ static void CL_R_AddRefEntityToScene( const refEntity_t *ent ) {
 	ent = CL_RpCinematic_Entity( ent, &copy );
 	if ( !ent )
 		return;
+	void *bodyGhoul2 = ent->ghoul2;	// the body as the cgame made it, before an emote's copy
 	// someone playing a custom emote: a copy of their body playing it, drawn in its place
 	{
 		static refEntity_t emoteCopy;
@@ -340,6 +341,8 @@ static void CL_R_AddRefEntityToScene( const refEntity_t *ent ) {
 	// a lightsaber's blade lights what's around it
 	CL_SaberLight_Entity( ent );
 	re->AddRefEntityToScene( ent );
+	// what they wear (/holster), on the body as it's drawn
+	CL_Holster_Entity( ent, bodyGhoul2 );
 }
 
 // cgame's lights wait for the scene, so the saber light can leave out the one it gives a blade

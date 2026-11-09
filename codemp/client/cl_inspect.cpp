@@ -113,7 +113,8 @@ typedef struct {
 // what the hint knows of each player: whether they've a character, and its name
 typedef struct {
 	int		state;				// 0 not asked, 1 asked, 2 has one, 3 none
-	char	slotName[MAX_NETNAME];	// the player it was for: another in the slot is asked again
+	char	slotName[MAX_INFO_VALUE];	// the player it was for (all of it: a coloured name is long), another in the slot asked again
+	qboolean	linked;			// as C1B3R's list said when it was asked: linked since, asked again
 	char	charName[64];
 } insHint_t;
 
@@ -264,10 +265,11 @@ The hint under the crosshair
 static insHint_t *INS_HintFor( int client ) {
 	insHint_t *h = &insHints[client];
 
-	// someone else in the slot now
-	if ( Q_stricmp( h->slotName, CL_PlayerSlotName( client ) ) ) {
+	// someone else in the slot now, or they've linked since
+	if ( Q_stricmp( h->slotName, CL_PlayerSlotName( client ) ) || h->linked != CL_Presence_Linked( client ) ) {
 		memset( h, 0, sizeof( *h ) );
 		Q_strncpyz( h->slotName, CL_PlayerSlotName( client ), sizeof( h->slotName ) );
+		h->linked = CL_Presence_Linked( client );
 	}
 	return h;
 }
@@ -587,6 +589,11 @@ static void INS_DrawPanel( void ) {
 		}
 		y += 6;
 	}
+	if ( CL_Holster_Missing( ins.client )[0] ) {
+		INS_Line( x, &y, w, "Worn, but you haven't the model", isDim, ins.font, IS_TEXT, 14, top, bottom );
+		INS_Para( x + 6, &y, w - 6, CL_Holster_Missing( ins.client ), isDim, top, bottom );
+		y += 8;
+	}
 	if ( ch->fields[IF_OOC][0] ) {
 		INS_Line( x, &y, w, "OOC", isDim, ins.font, IS_TEXT, 14, top, bottom );
 		INS_Para( x + 6, &y, w - 6, ch->fields[IF_OOC], isDim, top, bottom );
@@ -768,7 +775,7 @@ void CL_Inspect_Draw( void ) {
 		INS_PoseAnims( pose, torso, legs );
 		INS_Box( IS_MODEL_X, IS_TOP - 4, IS_MODEL_W, modelBottom - IS_TOP + 4, isField );
 		CL_Presets_DrawCharacter( model, saber1, saber2, torso, legs, lit ? rgb : NULL, IS_MODEL_X + 1, IS_TOP - 3, IS_MODEL_W - 2,
-			modelBottom - IS_TOP + 2, (float)( cls.realtime % 20000 ) * 0.018f );
+			modelBottom - IS_TOP + 2, (float)( cls.realtime % 20000 ) * 0.018f, CL_Holster_DrawOn, (void *)(intptr_t)ins.client );
 		if ( ( error = CL_Presets_CharacterError() ) != NULL )
 			INS_Text( IS_MODEL_X, ( IS_TOP + modelBottom ) * 0.5f, IS_MODEL_W, error, isDim, ins.font, IS_SMALL, qtrue );
 		if ( ins.editing )
@@ -835,6 +842,7 @@ static void INS_Open( int client ) {
 		CL_SpecialMoves_Close();
 		CL_ChatLog_Close();
 		CL_Inventory_Close();
+		CL_Holster_Close();
 		CL_Datapad_Close();
 
 		ins.font = re->RegisterFont( "arialnb" );
