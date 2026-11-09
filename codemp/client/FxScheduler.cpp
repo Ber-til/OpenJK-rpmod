@@ -47,6 +47,7 @@ CMediaHandles &CMediaHandles::operator=(const CMediaHandles &that )
 CFxScheduler::CFxScheduler()
 {
 	mOwner = -1;
+	mOwnerByPlace = false;
 	mNextFree2DEffect = 0;
 	mScale = mNextScale = 1.0f;
 	mInCreate = false;
@@ -836,10 +837,15 @@ void CFxScheduler::PlayEffect( int id, vec3_t origin, matrix3_t axis, const int 
 		return;
 	}
 
-	// a player's own, played as the effect they swapped it for (the effect manager's Mine tab)
-	if ( mOwner >= 0 && !mInCreate )
+	// /effectreplacer log
+	if ( !mInCreate )
+		CL_EffectSwap_LogEffect( mEffectTemplates[id].mEffectName, mOwner, origin );
+
+	// a player's own, played as the effect they swapped it for (the effect manager's Mine tab);
+	// started near several players, the nearest of them who swapped it
+	if ( ( mOwner >= 0 || mOwnerByPlace ) && !mInCreate )
 	{
-		const int swapped = CL_EffectSwap_Play( mOwner, id, mEffectTemplates[id].mEffectName );
+		const int swapped = CL_EffectSwap_Play( mOwner, id, mEffectTemplates[id].mEffectName, mOwnerByPlace ? origin : NULL );
 
 		if ( swapped != id && swapped > 0 && swapped < FX_MAX_EFFECTS && mEffectTemplates[swapped].mInUse )
 			id = swapped;
