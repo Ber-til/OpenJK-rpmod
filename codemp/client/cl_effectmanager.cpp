@@ -3683,6 +3683,10 @@ CONSOLE COMMAND
 
 // effectreplacer: the Mine tab, for anyone; again closes it
 void CL_EffectReplacer_f( void ) {
+	if ( !Q_stricmp( Cmd_Argv( 1 ), "log" ) ) {
+		CL_EffectSwap_StartLog( 15000 );
+		return;
+	}
 	if ( em.state != EM_OFF ) {
 		EM_Close();
 		return;

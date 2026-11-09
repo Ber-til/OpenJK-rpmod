@@ -93,6 +93,7 @@ The console commands, keys and settings this client adds. What each feature does
 - `/effectmanager <search>` opens the browser already filtered
 - `/effectmanager active | presets | mine` opens it on that tab
 - `/effectreplacer` opens the Mine tab by itself, for anyone: your own force powers', saber's and weapons' effects played as others
+- `/effectreplacer log`: for 15 seconds the console lists the effects started near you, with whose they're taken to be (yours, another player's, nobody's); lightning drawn as a shape rather than an effect is said too, as it can't be swapped
 - `/effectmanager place` places the selected effect in the world
 - `/effectmanager edit` selects and moves the map's effects, and the ones waiting
 - `/effectmanager bolt <tag>` bolts the selected effect to your own tag or bone

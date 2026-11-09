@@ -31,6 +31,7 @@ void FX_PlayEffectID( int id, vec3_t org, vec3_t fwd, int vol, int rad, qboolean
 void FX_PlayEntityEffectID( int id, vec3_t org, matrix3_t axis, const int boltInfo, const int entNum, int vol, int rad );
 void FX_PlayBoltedEffectID( int id, vec3_t org, const int boltInfo, CGhoul2Info_v *ghoul2, int iLooptime, qboolean isRelative );
 void FX_SetOwner( int owner );	// the effects played until changed are this player's own, -1 nobody's
+void FX_SetOwnerByPlace( qboolean byPlace );	// and that was worked out from where they start
 
 void FX_AddScheduledEffects( qboolean portal );
 void		FX_Draw2DEffects ( float screenXScale, float screenYScale );

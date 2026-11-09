@@ -649,6 +649,9 @@ public:
 	// the player whose own the effect being played or created is, -1 none: its pieces take
 	// that player's shader manager player shaders in place of the standard ones
 	int		mOwner;
+	// the owner was worked out from where the effect starts (nearest player), not an entity it's on:
+	// the Effect Replacer then looks at every player within reach (CL_EffectSwap_Play)
+	bool	mOwnerByPlace;
 
 	// how big the effect being played or created is drawn, 1 as it was made: its sizes, the
 	// distances its pieces start from the middle and the speeds they go out at, all times this.

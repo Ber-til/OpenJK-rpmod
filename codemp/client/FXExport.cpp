@@ -34,6 +34,11 @@ void FX_SetOwner( int owner )
 	theFxScheduler.mOwner = owner;
 }
 
+void FX_SetOwnerByPlace( qboolean byPlace )
+{
+	theFxScheduler.mOwnerByPlace = !!byPlace;
+}
+
 // the next effect played is drawn this big
 void FX_NextScale( float scale )
 {

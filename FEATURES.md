@@ -267,6 +267,9 @@ Browse every effect, watch it play live, put it exactly where you want (or on so
 ### Your own effects as others (Effect Replacer, Mine tab)
 
 - `/effectreplacer` (or the Mine tab in the manager) plays the effects of your own force powers, saber and weapons as any other effect you have, e.g. your Drain as a blue fire from a pk3
+- An effect that isn't on anyone (a power from your hand, sparks where two sabers meet) is yours when it starts within reach of you: of the players that near it, the nearest who swapped it has theirs, so your swap applies whenever you're in it, even with someone a little closer
+- **Force lightning** too: RPMod draws it as lightning shapes rather than an effect, so it's listed as `force/lightning`; swapped, the shapes are hidden and your effect plays from your hand toward where the lightning goes
+- `/effectreplacer log` lists for 15 seconds the effects started near you and whose they're taken to be, to find an effect's name
 - Only yours change: someone else using the same power keeps the standard effect. Anyone can use it, not only admins
 - Use a power or your saber, and **Played as yours lately** lists the effects that just came from you: click one, pick the replacement on the left (it plays live in the window), and **Swap it**
 - An effect is yours when it's bolted to you, or starts nearer you than anyone else, as force powers come out of your hand; an effect that lands on you (someone's drain hitting you) counts as yours too

@@ -20,8 +20,9 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 
 // cl_effectswap.cpp -- a player's own effects played as other ones: the effect manager's Mine tab
 //
-// An effect is a player's own when it's bolted to them, or starts nearer them than anyone else,
-// as force powers come out of the caster's hand (see CL_ShaderManager_NearestPlayer). Whatever
+// An effect is a player's own when it's bolted to them. One on no one (as force powers come out of
+// the caster's hand, or sparks where two sabers meet) is the nearest player's within reach who
+// swapped it: yours whenever you're in it, the same on every screen. Whatever
 // cgame plays as this player's own, and is swapped, plays as the effect they picked instead: on
 // this screen, and on the screens of everyone with this client when it's shared. Everyone else's
 // stays standard. Kept in effectmanager/mine.txt, an effect and its replacement a line, by their
@@ -39,8 +40,10 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #include "FxScheduler.h"
 
 #define ES_FILE				"effectmanager/mine.txt"
+#define ES_SHAPE_LIGHTNING	"force/lightning"	// lightning drawn as shapes is taken as this effect
 #define ES_MAX				64			// swaps a player
 #define ES_MAX_RECENT		24			// effects of this player's own played lately, listed
+#define ES_REACH			96.0f		// an effect not on anyone is theirs who's this near where it starts
 #define ES_SHARE_LEN		700			// a hook's swaps, well inside what RPMod passes on
 #define ES_SHARE_WORD		32			// longer words go in pieces
 #define ES_SHARE_GAP_MS		400			// between hooks, for the server's flood protection
@@ -63,6 +66,10 @@ static struct {
 	esSwaps_t		other[MAX_CLIENTS];
 	// the replacement's id by player and effect id, worked out once: 0 not yet, -1 none
 	short			cache[MAX_CLIENTS][FX_MAX_EFFECTS];
+	// lightning drawn as shapes (RPMod's cgame does): its replacement by player, 0 not yet, -1 none,
+	// and the frame it was last played in
+	short			shape[MAX_CLIENTS];
+	int				shapeFrame[MAX_CLIENTS];
 
 	esRecent_t		recent[ES_MAX_RECENT];
 	int				numRecent;
@@ -105,6 +112,7 @@ static qboolean ES_SafeName( const char *name ) {
 
 static void ES_Forget( void ) {
 	memset( es.cache, 0, sizeof( es.cache ) );
+	memset( es.shape, 0, sizeof( es.shape ) );
 }
 
 static void ES_Load( void ) {
@@ -158,56 +166,52 @@ PLAYING
 ===============================================================================
 */
 
-static void ES_NoteRecent( const char *key ) {
+static void ES_NoteIn( esRecent_t *recent, int *num, const char *key ) {
 	int i;
 
-	for ( i = 0; i < es.numRecent; i++ ) {
-		if ( !strcmp( es.recent[i].name, key ) )
+	for ( i = 0; i < *num; i++ ) {
+		if ( !strcmp( recent[i].name, key ) )
 			break;
 	}
-	if ( i == es.numRecent ) {
-		if ( es.numRecent < ES_MAX_RECENT )
-			es.numRecent++;
-		i = es.numRecent - 1;
-		Q_strncpyz( es.recent[i].name, key, sizeof( es.recent[i].name ) );
-		es.recent[i].count = 0;
+	if ( i == *num ) {
+		if ( *num < ES_MAX_RECENT )
+			( *num )++;
+		i = *num - 1;
+		Q_strncpyz( recent[i].name, key, sizeof( recent[i].name ) );
+		recent[i].count = 0;
 	}
-	es.recent[i].count++;
-	es.recent[i].time = cls.realtime;
+	recent[i].count++;
+	recent[i].time = cls.realtime;
 	// the newest first
-	for ( ; i > 0 && es.recent[i - 1].time < es.recent[i].time; i-- ) {
-		const esRecent_t t = es.recent[i - 1];
+	for ( ; i > 0 && recent[i - 1].time < recent[i].time; i-- ) {
+		const esRecent_t t = recent[i - 1];
 
-		es.recent[i - 1] = es.recent[i];
-		es.recent[i] = t;
+		recent[i - 1] = recent[i];
+		recent[i] = t;
 	}
 }
 
-// from the effects system as it plays an effect of a player's own: the effect to play instead
-int CL_EffectSwap_Play( int owner, int id, const char *name ) {
-	short *cached;
+static void ES_NoteRecent( const char *key ) {
+	ES_NoteIn( es.recent, &es.numRecent, key );
+}
+
+static int esLogUntil;
+
+// the effect a player plays this one as: their swap's, or id itself
+static int ES_Replacement( int owner, int id, const char *name ) {
+	short *cached = &es.cache[owner][id];
 	char key[MAX_QPATH];
 	const esSwaps_t *swaps;
 	int to = -1;
 	const char *toName = "";
 
-	if ( owner < 0 || owner >= MAX_CLIENTS || id < 1 || id >= FX_MAX_EFFECTS )
-		return id;
-	if ( !es.loaded )
-		ES_Load();
-	if ( owner == clc.clientNum ) {
-		ES_Key( name, key, sizeof( key ) );
-		ES_NoteRecent( key );
-	}
-	cached = &es.cache[owner][id];
 	if ( *cached > 0 )
 		return *cached;
 	if ( *cached < 0 )
 		return id;
 	swaps = owner == clc.clientNum ? &es.mine : &es.other[owner];
 	if ( !swaps->from.empty() ) {
-		if ( owner != clc.clientNum )
-			ES_Key( name, key, sizeof( key ) );
+		ES_Key( name, key, sizeof( key ) );
 		for ( size_t i = 0; i < swaps->from.size(); i++ ) {
 			if ( swaps->from[i] == key ) {
 				toName = swaps->to[i].c_str();
@@ -222,9 +226,202 @@ int CL_EffectSwap_Play( int owner, int id, const char *name ) {
 	return *cached > 0 ? *cached : id;
 }
 
+// the players within reach of org, nearest first: you where you are, the others in the snapshot
+static int ES_PlayersNear( const vec3_t org, int *out, int max ) {
+	float dist[MAX_CLIENTS];
+	int n = 0;
+
+	if ( !cl.snap.valid )
+		return 0;
+	for ( int i = -1; i < cl.snap.numEntities && n < max; i++ ) {
+		int num;
+		float d;
+
+		if ( i < 0 ) {
+			if ( cl.snap.ps.pm_type == PM_SPECTATOR )
+				continue;
+			num = cl.snap.ps.clientNum;
+			d = Distance( org, cl.snap.ps.origin );
+		} else {
+			const entityState_t *e = &cl.parseEntities[( cl.snap.parseEntitiesNum + i ) & ( MAX_PARSE_ENTITIES - 1 )];
+
+			if ( e->eType != ET_PLAYER || e->number >= MAX_CLIENTS || e->number == cl.snap.ps.clientNum )
+				continue;
+			num = e->number;
+			d = Distance( org, e->pos.trBase );
+		}
+		if ( d >= ES_REACH )
+			continue;
+		// in order as they go in
+		{
+			int k = n++;
+
+			for ( ; k > 0 && dist[k - 1] > d; k-- ) {
+				dist[k] = dist[k - 1];
+				out[k] = out[k - 1];
+			}
+			dist[k] = d;
+			out[k] = num;
+		}
+	}
+	return n;
+}
+
+// from the effects system as it plays an effect of a player's own: the effect to play instead. One
+// worked out from where it starts (byPlace: it isn't on an entity) is the nearest player's within
+// reach who swapped it, so it's yours whenever you're in it (sparks where two sabers meet), the same
+// on every screen; if none did, it's as it is
+int CL_EffectSwap_Play( int owner, int id, const char *name, const vec3_t byPlace ) {
+	if ( id < 1 || id >= FX_MAX_EFFECTS )
+		return id;
+	if ( !es.loaded )
+		ES_Load();
+	if ( byPlace ) {
+		int near[MAX_CLIENTS], n = ES_PlayersNear( byPlace, near, MAX_CLIENTS );
+		qboolean mineNear = qfalse;
+
+		for ( int i = 0; i < n; i++ )
+			mineNear = (qboolean)( mineNear || near[i] == clc.clientNum );
+		if ( mineNear ) {
+			char key[MAX_QPATH];
+
+			ES_Key( name, key, sizeof( key ) );
+			ES_NoteRecent( key );
+		}
+		for ( int i = 0; i < n; i++ ) {
+			const int to = ES_Replacement( near[i], id, name );
+
+			if ( to != id )
+				return to;
+		}
+		return id;
+	}
+	if ( owner < 0 || owner >= MAX_CLIENTS )
+		return id;
+	if ( owner == clc.clientNum ) {
+		char key[MAX_QPATH];
+
+		ES_Key( name, key, sizeof( key ) );
+		ES_NoteRecent( key );
+	}
+	return ES_Replacement( owner, id, name );
+}
+
+/*
+===============================================================================
+
+Lightning drawn as shapes
+
+RPMod's cgame draws a player's force lightning as lightning shapes, not as the force/lightning
+effect: shapes that start nearer a player than anyone else are their force/lightning, listed in the
+Mine tab as it is. Swapped, they're hidden and the replacement plays instead, from where they start
+toward where they go, once a frame, as JKA's own cgame plays force/lightning
+
+===============================================================================
+*/
+
+qboolean CL_EffectSwap_Shape( int owner, const vec3_t start, const vec3_t end ) {
+	short *rep;
+
+	if ( owner < 0 || owner >= MAX_CLIENTS )
+		return qfalse;
+	if ( !es.loaded )
+		ES_Load();
+	if ( owner == clc.clientNum )
+		ES_NoteRecent( ES_SHAPE_LIGHTNING );
+	rep = &es.shape[owner];
+	if ( !*rep ) {
+		const esSwaps_t *swaps = owner == clc.clientNum ? &es.mine : &es.other[owner];
+		int to = -1;
+
+		for ( size_t i = 0; i < swaps->from.size(); i++ ) {
+			if ( swaps->from[i] == ES_SHAPE_LIGHTNING ) {
+				to = FX_RegisterEffect( va( "effects/%s", swaps->to[i].c_str() ) );
+				break;
+			}
+		}
+		*rep = (short)( to > 0 && to < FX_MAX_EFFECTS ? to : -1 );
+	}
+	if ( *rep < 0 )
+		return qfalse;
+	if ( es.shapeFrame[owner] != cls.framecount ) {
+		vec3_t org, dir;
+
+		es.shapeFrame[owner] = cls.framecount;
+		VectorCopy( start, org );
+		VectorSubtract( end, start, dir );
+		if ( VectorNormalize( dir ) < 0.001f )
+			VectorSet( dir, 0, 0, 1 );
+		FX_PlayEffectID( *rep, org, dir, -1, -1, qfalse );
+	}
+	return qtrue;
+}
+
+/*
+===============================================================================
+
+/effectreplacer log
+
+===============================================================================
+*/
+
+#define ES_LOG_REACH		300.0f		// effects this near you are said
+#define ES_LOG_REPEAT_MS	700			// the same one said at most this often
+
+static std::map<std::string, int> esLogSaid;
+
+void CL_EffectSwap_StartLog( int ms ) {
+	esLogUntil = cls.realtime + ms;
+	esLogSaid.clear();
+	Com_Printf( "Effect replacer: for %i seconds, the effects started near you, and whose they're taken to be. "
+		"Use the power now\n", ms / 1000 );
+}
+
+static qboolean ES_LogNear( int owner, const vec3_t org, float *dist ) {
+	if ( !esLogUntil || cls.realtime > esLogUntil || !cl.snap.valid ) {
+		if ( esLogUntil && cls.realtime > esLogUntil ) {
+			esLogUntil = 0;
+			Com_Printf( "Effect replacer: log over\n" );
+		}
+		return qfalse;
+	}
+	*dist = org ? Distance( org, cl.snap.ps.origin ) : 0.0f;
+	return (qboolean)( owner == clc.clientNum || *dist < ES_LOG_REACH );
+}
+
+static void ES_LogLine( const char *what, int owner, float dist ) {
+	const std::string key = va( "%s|%i", what, owner );
+	auto it = esLogSaid.find( key );
+
+	if ( it != esLogSaid.end() && cls.realtime - it->second < ES_LOG_REPEAT_MS )
+		return;
+	esLogSaid[key] = cls.realtime;
+	Com_Printf( "  %s  " S_COLOR_GREY "%s, %i units from you\n", what,
+		owner == clc.clientNum ? S_COLOR_GREEN "yours" S_COLOR_GREY : owner >= 0 ? va( "player %i's", owner ) : "nobody's", (int)dist );
+}
+
+void CL_EffectSwap_LogEffect( const char *name, int owner, const vec3_t org ) {
+	float dist;
+	char key[MAX_QPATH];
+
+	if ( !ES_LogNear( owner, org, &dist ) )
+		return;
+	ES_Key( name, key, sizeof( key ) );
+	ES_LogLine( key, owner, dist );
+}
+
+void CL_EffectSwap_LogShape( const char *what, int owner, const vec3_t org ) {
+	float dist;
+
+	if ( !ES_LogNear( owner, org, &dist ) )
+		return;
+	ES_LogLine( va( S_COLOR_YELLOW "%s" S_COLOR_WHITE " (drawn as a shape, swapped as " ES_SHAPE_LIGHTNING ")", what ), owner, dist );
+}
+
 // the effects system cleared its effects: their ids mean other effects now
 void CL_EffectSwap_Reset( void ) {
 	memset( es.cache, 0, sizeof( es.cache ) );
+	memset( es.shape, 0, sizeof( es.shape ) );
 }
 
 /*
