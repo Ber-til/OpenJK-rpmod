@@ -120,9 +120,9 @@ int CL_AimedPlayer( float range ) {
 	return CL_Aim_Pick( AIM_Player, range );
 }
 
-// a player's name as the server has it, colours kept: "" for an empty slot
-const char *CL_PlayerSlotName( int client ) {
-	const char *info;
+// a key of a player's info as the server has it (n their name, model, st and st2 their sabers): ""
+// for an empty slot
+const char *CL_PlayerInfo( int client, const char *key ) {
 	int offset;
 
 	if ( client < 0 || client >= MAX_CLIENTS )
@@ -130,6 +130,10 @@ const char *CL_PlayerSlotName( int client ) {
 	offset = cl.gameState.stringOffsets[CS_PLAYERS + client];
 	if ( !offset )
 		return "";
-	info = cl.gameState.stringData + offset;
-	return Info_ValueForKey( info, "n" );
+	return Info_ValueForKey( cl.gameState.stringData + offset, key );
+}
+
+// a player's name as the server has it, colours kept: "" for an empty slot
+const char *CL_PlayerSlotName( int client ) {
+	return CL_PlayerInfo( client, "n" );
 }

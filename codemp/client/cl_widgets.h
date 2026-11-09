@@ -77,6 +77,11 @@ void		WG_TextBox( const wgStyle_t *style, float x, float y, float w, float h, ch
 int			WG_TextLines( const wgStyle_t *style, const char *text, float w );
 void		WG_DrawText( const wgStyle_t *style, float x, float y, float w, const char *text, int first, int count, const float *color );
 
+// one line with colour codes in it, RPMod's too (^a-^z, ^A-^Z, as the console shows them): each run
+// in its colour, at color's alpha; too long for w, cut with ... at the end. A player's name, say
+void		WG_TypedText( float x, float y, float w, const char *text, const float *color, int font, float scale,
+				qboolean centred, qboolean shadow );
+
 // the field typed in: its cursor and selection forgotten, as when another one is clicked
 void		WG_EditReset( void );
 

@@ -259,6 +259,7 @@ static void RM_Defaults( void ) {
 	RM_AddItem( m, "Meditate", "meditate" );
 	RM_AddItem( m, "Flourish", "flourish" );
 	RM_AddItem( m, "Gloat", "gloat" );
+	RM_AddItem( m, "Inspect", "inspect" );
 }
 
 static void RM_Save( void ) {
@@ -1096,6 +1097,7 @@ static void RS_Open( void ) {
 	CL_SpecialMoves_Close();
 	CL_ChatLog_Close();
 	CL_Inventory_Close();
+	CL_Inspect_Close();
 	RM_Close();
 	RM_Load();
 

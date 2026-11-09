@@ -511,6 +511,7 @@ static rhResult_t RH_Run( const char *text ) {
 	}
 	if ( !Q_stricmp( argv[0], "char" ) ) {
 		CL_Inventory_CharHook( argv + 1, argc - 1 );
+		CL_Inspect_CharHook( argv + 1, argc - 1 );
 		return RH_DROP;
 	}
 	if ( !Q_stricmp( argv[0], "story" ) ) {

@@ -3652,6 +3652,7 @@ void CL_MapEditor_Open( void ) {
 	CL_SpecialMoves_Close();
 	CL_ChatLog_Close();
 	CL_Inventory_Close();
+	CL_Inspect_Close();
 	ME_CheckMap();
 	if ( !me.indexed )
 		ME_IndexModels();

@@ -733,6 +733,7 @@ void CL_ShutdownCGame( void ) {
 	CL_EscMenu_Close();
 	CL_SpecialMoves_Shutdown();
 	CL_Inventory_Shutdown();
+	CL_Inspect_Shutdown();
 	CL_AssetManager_Shutdown();
 	CL_RadialMenu_Shutdown();
 	CL_Languages_Shutdown();

@@ -407,21 +407,9 @@ static void INV_Box( float x, float y, float w, float h, const float *fill ) {
 	INV_Fill( x + w - 1, y, 1, h, ivBorder );
 }
 
-// cut to fit w, centred in it when centred
+// one line, colour codes in it drawn as colours (RPMod's too); cut with ... to fit w
 static void INV_Text( float x, float y, float w, const char *text, const float *color, int font, float scale, qboolean centred ) {
-	char buf[MAX_STRING_CHARS];
-	int len;
-
-	Q_strncpyz( buf, text, sizeof( buf ) );
-	len = strlen( buf );
-	while ( len > 3 && re->Font_StrLenPixels( buf, font, scale ) > w ) {
-		len--;
-		buf[len - 3] = buf[len - 2] = buf[len - 1] = '.';
-		buf[len] = '\0';
-	}
-	if ( centred )
-		x += ( w - re->Font_StrLenPixels( buf, font, scale ) ) * 0.5f;
-	re->Font_DrawString( (int)x, (int)y, buf, color, font | STYLE_DROPSHADOW, -1, scale );
+	WG_TypedText( x, y, w, text, color, font, scale, centred, qtrue );
 }
 
 static qboolean INV_InRect( float x, float y, float w, float h ) {
@@ -479,7 +467,8 @@ static void INV_Field( float x, float y, float w, float h, char *buf, int which,
 		WG_TextBox( &style, x, y, w, h, buf, (qboolean)( inv.focus == which ), placeholder, inv.cursorX, inv.cursorY );
 	else
 		WG_Field( &style, x, y, w, h, buf, (qboolean)( inv.focus == which ), placeholder, inv.cursorX, inv.cursorY );
-	if ( INV_Clicked( x, y, w, WG_FieldHeight( &style, w, h, buf, (qboolean)( inv.focus == which ) ) ) ) {
+	// a field grows down while it's typed in; a box doesn't
+	if ( INV_Clicked( x, y, w, box ? h : WG_FieldHeight( &style, w, h, buf, (qboolean)( inv.focus == which ) ) ) ) {
 		if ( inv.focus != which )
 			WG_EditReset();
 		inv.focus = which;
@@ -877,6 +866,7 @@ static void INV_Open( void ) {
 	CL_Languages_Close();
 	CL_SpecialMoves_Close();
 	CL_ChatLog_Close();
+	CL_Inspect_Close();
 	CL_Datapad_Close();
 
 	inv.font = re->RegisterFont( "arialnb" );

@@ -2412,6 +2412,7 @@ static qboolean MM_Open( void ) {
 	CL_SpecialMoves_Close();
 	CL_ChatLog_Close();
 	CL_Inventory_Close();
+	CL_Inspect_Close();
 
 	mm.font = re->RegisterFont( "arialnb" );
 	if ( !mm.font )

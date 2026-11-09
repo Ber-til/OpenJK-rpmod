@@ -329,6 +329,7 @@ static void DP_Set( dpState_t state ) {
 		CL_AssetManager_Close();
 		CL_ChatLog_Close();
 		CL_Inventory_Close();
+		CL_Inspect_Close();
 		CL_RadialMenu_CloseSettings();
 		CL_Languages_Close();
 		DP_OpenRect( &r );

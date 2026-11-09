@@ -864,6 +864,7 @@ void CL_Disconnect( qboolean showMainMenu ) {
 	CL_ChatLog_Disconnect();
 	CL_Datapad_Disconnect();
 	CL_Inventory_Disconnect();
+	CL_Inspect_Disconnect();
 	CL_Feedback_Disconnect();
 	CL_NpcNames_Disconnect();
 	CL_Aim_Disconnect();
@@ -2416,6 +2417,7 @@ void CL_Frame ( int msec ) {
 	CL_EffectSwap_Frame();
 	CL_Pazaak_Frame();
 	CL_Inventory_Frame();
+	CL_Inspect_Frame();
 	CL_DatapadWeb_Frame();
 	CL_AssetManager_Frame();
 	// the RENDERER page's effects, shown with Post Effects on
@@ -2533,6 +2535,7 @@ void CL_InitRenderer( void ) {
 	CL_Feedback_RendererRestarted();
 	CL_SaberLight_RendererRestarted();
 	CL_Inventory_RendererRestarted();
+	CL_Presets_RendererRestarted();
 	g_console_field_width = cls.glconfig.vidWidth / SMALLCHAR_WIDTH - 2;
 	g_consoleField.widthInChars = g_console_field_width;
 
@@ -2963,6 +2966,7 @@ void CL_Init( void ) {
 	CL_EffectSwap_Init ();
 	CL_ChatLog_Init ();
 	CL_Inventory_Init();
+	CL_Inspect_Init();
 	CL_Datapad_Init ();
 	CL_EscMenu_Init ();
 	CL_AssetManager_Init ();

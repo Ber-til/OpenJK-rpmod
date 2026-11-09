@@ -506,6 +506,7 @@ if(BuildMPEngine)
 		"${MPDir}/client/cl_datapad.cpp"
 		"${MPDir}/client/cl_pazaak.cpp"
 		"${MPDir}/client/cl_inventory.cpp"
+		"${MPDir}/client/cl_inspect.cpp"
 		"${MPDir}/client/cl_aim.cpp"
 		"${MPDir}/client/cl_sabers.cpp"
 		"${MPDir}/client/cl_html.cpp"

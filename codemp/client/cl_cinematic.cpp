@@ -4202,6 +4202,7 @@ void CL_RpCinematic_Edit( const char *name, qboolean fromStoryteller ) {
 	CL_SpecialMoves_Close();
 	CL_ChatLog_Close();
 	CL_Inventory_Close();
+	CL_Inspect_Close();
 	CL_MapEditor_Close();
 
 	cm.font = re->RegisterFont( "arialnb" );
@@ -7255,6 +7256,7 @@ static void CM_PickSndFrame( void ) {
 	CL_SpecialMoves_Close();
 	CL_ChatLog_Close();
 	CL_Inventory_Close();
+	CL_Inspect_Close();
 	cm.keepCam = qtrue;
 	CL_RpCinematic_Edit( NULL, cm.fromStoryteller );
 	cm.tab = CM_TAB_SOUNDS;

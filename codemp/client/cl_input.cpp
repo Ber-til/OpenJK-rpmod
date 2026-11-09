@@ -1122,6 +1122,8 @@ void CL_MouseEvent( int dx, int dy, int time ) {
 		CL_ChatLog_MouseEvent( dx, dy );
 	} else if ( Key_GetCatcher( ) & KEYCATCH_INVENTORY ) {
 		CL_Inventory_MouseEvent( dx, dy );
+	} else if ( Key_GetCatcher( ) & KEYCATCH_INSPECT ) {
+		CL_Inspect_MouseEvent( dx, dy );
 	} else if ( Key_GetCatcher( ) & KEYCATCH_DATAPAD ) {
 		CL_Datapad_MouseEvent( dx, dy );
 	} else if ( Key_GetCatcher( ) & KEYCATCH_ASSETMANAGER ) {

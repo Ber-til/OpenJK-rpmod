@@ -830,3 +830,63 @@ qboolean WG_EditChar( char *buf, int size, int ch, wgAllow_t allow ) {
 	wg.blinkFrom = cls.realtime;
 	return WG_Insert( buf, size, &c, 1, allow );
 }
+
+#define WG_MAX_RUNS		32
+
+void WG_TypedText( float x, float y, float w, const char *text, const float *color, int font, float scale, qboolean centred, qboolean shadow ) {
+	static char runs[WG_MAX_RUNS][MAX_STRING_CHARS / 4];
+	float colors[WG_MAX_RUNS][4], total = 0;
+	int n = 0, len = 0;
+
+	memcpy( colors[0], color, sizeof( colors[0] ) );
+	runs[0][0] = '\0';
+	for ( const char *p = text; *p; p++ ) {
+		const float *c = p[0] == Q_COLOR_ESCAPE && p[1] ? Con_TypedColor( p ) : NULL;
+
+		if ( c ) {
+			// a new colour: a new run, unless this one's still empty
+			if ( len && n < WG_MAX_RUNS - 1 ) {
+				runs[n][len] = '\0';
+				n++;
+				len = 0;
+			}
+			memcpy( colors[n], c, sizeof( float ) * 3 );
+			colors[n][3] = color[3];
+			p++;
+			continue;
+		}
+		if ( len < (int)sizeof( runs[0] ) - 4 )
+			runs[n][len++] = *p;
+	}
+	runs[n][len] = '\0';
+	n++;
+
+	for ( int i = 0; i < n; i++ )
+		total += re->Font_StrLenPixels( runs[i], font, scale );
+	// too long: the end cut off, ... in its place
+	if ( total > w ) {
+		const float dots = re->Font_StrLenPixels( "...", font, scale );
+
+		while ( n > 0 && total + dots > w ) {
+			const int l = (int)strlen( runs[n - 1] );
+
+			if ( !l ) {
+				n--;
+				continue;
+			}
+			total -= re->Font_StrLenPixels( runs[n - 1], font, scale );
+			runs[n - 1][l - 1] = '\0';
+			total += re->Font_StrLenPixels( runs[n - 1], font, scale );
+		}
+		if ( n > 0 ) {
+			Q_strcat( runs[n - 1], sizeof( runs[0] ), "..." );
+			total += dots;
+		}
+	}
+	if ( centred )
+		x += ( w - total ) * 0.5f;
+	for ( int i = 0; i < n; i++ ) {
+		re->Font_DrawString( (int)x, (int)y, runs[i], colors[i], font | ( shadow ? STYLE_DROPSHADOW : 0 ), -1, scale );
+		x += re->Font_StrLenPixels( runs[i], font, scale );
+	}
+}

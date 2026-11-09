@@ -1687,6 +1687,10 @@ void CL_KeyDownEvent( int key, unsigned time )
 			CL_Inventory_Escape();
 			return;
 		}
+		if ( ( Key_GetCatcher() & KEYCATCH_INSPECT ) && !( Key_GetCatcher() & KEYCATCH_UI ) ) {
+			CL_Inspect_Escape();
+			return;
+		}
 		if ( ( Key_GetCatcher() & KEYCATCH_DATAPAD ) && !( Key_GetCatcher() & KEYCATCH_UI ) ) {
 			CL_Datapad_Escape();
 			return;
@@ -1820,6 +1824,10 @@ void CL_KeyDownEvent( int key, unsigned time )
 	else if ( Key_GetCatcher() & KEYCATCH_INVENTORY ) {
 		CL_Inventory_KeyEvent( key, qtrue );
 	}
+	// inspect
+	else if ( Key_GetCatcher() & KEYCATCH_INSPECT ) {
+		CL_Inspect_KeyEvent( key, qtrue );
+	}
 	// datapad, open
 	else if ( Key_GetCatcher() & KEYCATCH_DATAPAD ) {
 		CL_Datapad_KeyEvent( key, qtrue );
@@ -1951,6 +1959,7 @@ void CL_CharEvent( int key ) {
 	else if ( Key_GetCatcher() & KEYCATCH_RADIALMENU )	CL_RadialMenu_CharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_DATAPAD )		CL_Datapad_CharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_INVENTORY )	CL_Inventory_CharEvent( key );
+	else if ( Key_GetCatcher() & KEYCATCH_INSPECT )		CL_Inspect_CharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_LANGUAGES )	CL_Languages_CharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_CGAME )		CGVM_KeyEvent( key|K_CHAR_FLAG, qtrue );
 	else if ( Key_GetCatcher() & KEYCATCH_MESSAGE )		Field_CharEvent( &chatField, key );

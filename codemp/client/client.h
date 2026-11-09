@@ -695,7 +695,8 @@ void CL_ModelManager_Draw( void );
 #define KEYCATCH_DATAPAD		0x200000	// engine only, the datapad, open, owns keyboard and mouse
 #define KEYCATCH_ESCMENU		0x400000	// engine only, the Esc menu (Modern or KOTOR) owns keyboard and mouse
 #define KEYCATCH_INVENTORY		0x800000	// engine only, the inventory window owns keyboard and mouse
-#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELMANAGER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER | KEYCATCH_MAPEDITOR | KEYCATCH_STORYTELLER | KEYCATCH_CINEDITOR | KEYCATCH_SOUNDMANAGER | KEYCATCH_RADIALMENU | KEYCATCH_LANGUAGES | KEYCATCH_CONSETTINGS | KEYCATCH_ANIMMANAGER | KEYCATCH_PRESETS | KEYCATCH_FEEDBACK | KEYCATCH_ASSETMANAGER | KEYCATCH_SPECIALMOVES | KEYCATCH_CHATLOG | KEYCATCH_DATAPAD | KEYCATCH_ESCMENU | KEYCATCH_INVENTORY )	// mods never see or clear these
+#define KEYCATCH_INSPECT		0x1000000	// engine only, the inspect window owns keyboard and mouse
+#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELMANAGER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER | KEYCATCH_MAPEDITOR | KEYCATCH_STORYTELLER | KEYCATCH_CINEDITOR | KEYCATCH_SOUNDMANAGER | KEYCATCH_RADIALMENU | KEYCATCH_LANGUAGES | KEYCATCH_CONSETTINGS | KEYCATCH_ANIMMANAGER | KEYCATCH_PRESETS | KEYCATCH_FEEDBACK | KEYCATCH_ASSETMANAGER | KEYCATCH_SPECIALMOVES | KEYCATCH_CHATLOG | KEYCATCH_DATAPAD | KEYCATCH_ESCMENU | KEYCATCH_INVENTORY | KEYCATCH_INSPECT )	// mods never see or clear these
 
 void CL_NpcManager_Init( void );
 void CL_NpcManager_Shutdown( void );
@@ -786,6 +787,7 @@ int CL_NpcWalk_Tilts( vec3_t *pos, vec3_t *angles, int max );
 int CL_EmotePreview_Count( void );
 const char *CL_EmotePreview_Name( int index );
 const char *CL_EmotePreview_Anim( const char *emote );
+const char *CL_EmotePreview_Legs( const char *emote );
 qboolean CL_Cinematic_RecordKey( int key );
 qboolean CL_NpcManager_Active( void );
 void CL_NpcManager_Frame( void );
@@ -1099,6 +1101,20 @@ void CL_Inventory_MouseEvent( int dx, int dy );
 void CL_Inventory_Disconnect( void );
 void CL_Inventory_RendererRestarted( void );
 void CL_Inventory_CharHook( char **argv, int argc );
+
+// cl_inspect.cpp: /inspect, a player's character
+void CL_Inspect_Init( void );
+void CL_Inspect_Shutdown( void );
+void CL_Inspect_Frame( void );
+void CL_Inspect_Draw( void );
+void CL_Inspect_DrawHint( void );
+void CL_Inspect_Close( void );
+void CL_Inspect_Escape( void );
+void CL_Inspect_KeyEvent( int key, qboolean down );
+void CL_Inspect_CharEvent( int ch );
+void CL_Inspect_MouseEvent( int dx, int dy );
+void CL_Inspect_Disconnect( void );
+void CL_Inspect_CharHook( char **argv, int argc );
 void CL_DatapadWeb_Frame( void );	// cl_holonet.cpp: the HoloNet, the Comport and their pictures
 void CL_Datapad_Escape( void );
 void CL_Datapad_Draw( void );
@@ -1259,7 +1275,8 @@ void CL_Aim_Disconnect( void );
 float CL_Aim_RayBox( const vec3_t org, const vec3_t dir, const vec3_t mins, const vec3_t maxs, float range );
 int CL_Aim_Pick( qboolean ( *want )( const entityState_t *es, vec3_t org ), float range );
 int CL_AimedPlayer( float range );			// another player's client number, -1 none
-const char *CL_PlayerSlotName( int client );	// "" for an empty slot
+const char *CL_PlayerSlotName( int client );
+const char *CL_PlayerInfo( int client, const char *key );	// "" for an empty slot
 
 // cl_sabers.cpp: a saber's .sab block
 typedef struct {
@@ -1267,6 +1284,7 @@ typedef struct {
 	char	name[64];			// as shown
 	char	model[MAX_QPATH];	// its hilt
 	char	type[32];			// SABER_SINGLE, SABER_STAFF...
+	float	length;				// its blades', 0 when it doesn't say (the game's 40)
 } clSaber_t;
 qboolean CL_Saber_Find( const char *saber, clSaber_t *out );
 
@@ -1308,6 +1326,11 @@ void CL_EscMenu_Escape( void );
 int CL_QuickConnect_Count( void );			// cl_quickconnect.cpp: JEDI's servers
 const char *CL_QuickConnect_Name( int i );
 void CL_Presets_DrawPortrait( float x, float y, float w, float h, float yaw );	// cl_presets.cpp: you, as you are
+void CL_Presets_DrawCharacter( const char *model, const char *saber1, const char *saber2, const char *torso, const char *legs,
+	const float *blade, float x, float y, float w, float h, float yaw );
+const char *CL_Presets_CharacterError( void );
+void CL_Presets_FreeCharacter( void );
+void CL_Presets_RendererRestarted( void );
 void CL_RenderMenu_Shutdown( void );
 void CL_Update_Frame( void );
 void CL_Update_Draw( void );

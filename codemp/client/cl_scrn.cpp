@@ -485,6 +485,7 @@ void SCR_DrawScreenField( stereoFrame_t stereoFrame ) {
 			CL_CGameRendering( stereoFrame );
 			CL_RpCinematic_Draw();
 			CL_NpcNames_Draw();
+			CL_Inspect_DrawHint();
 			CL_AdminFlags_Draw();
 			SCR_DrawDemoRecording();
 			CL_ShaderManager_Draw();
@@ -499,6 +500,7 @@ void SCR_DrawScreenField( stereoFrame_t stereoFrame ) {
 			CL_SpecialMoves_Draw();
 			CL_ChatLog_Draw();
 			CL_Inventory_Draw();
+			CL_Inspect_Draw();
 			CL_Datapad_Draw();
 			CL_AssetManager_Draw();
 			CL_RadialMenu_DrawSettings();

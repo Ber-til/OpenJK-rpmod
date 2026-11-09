@@ -2747,6 +2747,7 @@ static qboolean NM_Open( nmTab_t tab ) {
 	CL_SpecialMoves_Close();
 	CL_ChatLog_Close();
 	CL_Inventory_Close();
+	CL_Inspect_Close();
 	if ( !nm.indexed )
 		NM_BuildIndex();
 

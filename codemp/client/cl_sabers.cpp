@@ -77,6 +77,8 @@ qboolean CL_Saber_Find( const char *saber, clSaber_t *out ) {
 					Q_strncpyz( out->name, token, sizeof( out->name ) );
 				else if ( !Q_stricmp( key, "saberType" ) && token[0] )
 					Q_strncpyz( out->type, token, sizeof( out->type ) );
+				else if ( !Q_stricmp( key, "saberLength" ) && token[0] )
+					out->length = (float)atof( token );
 				if ( token[0] )
 					SkipRestOfLine( &p );
 			}

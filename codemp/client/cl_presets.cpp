@@ -82,6 +82,7 @@ typedef struct {
 	qboolean		measured;		// from its head and its feet, posed
 	float			bottom, top;
 	const char		*error;
+	char			pose[MAX_QPATH * 2];	// the animations it plays, torso|legs ("" the stance)
 } prView_t;
 
 static prPreset_t	prPresets[PR_MAX];
@@ -89,6 +90,7 @@ static int			prNumPresets;
 static prView_t		prViews[PR_MAX];
 static prView_t		prSlotViews[8];		// a model's or a skin's card, by its place on the page
 static prView_t		prPortrait;			// you, for the Esc menu's KOTOR Character tab
+static prView_t		prOther;			// another player, for Inspect
 
 static char			prSkins[PR_MAX_SKINS][MAX_QPATH];	// a model's: model_<this>.skin
 static int			prNumSkins;
@@ -334,6 +336,57 @@ static void PR_Pose( CGhoul2Info_v &g2, const char *anim ) {
 	FS_FreeFile( buf );
 }
 
+// an animation's first frame, its frames and their speed, from the animation.cfg beside the model's
+// skeleton: qfalse if it hasn't it
+static qboolean PR_AnimInfo( CGhoul2Info_v &g2, const char *anim, int *first, int *frames, float *fps ) {
+	char path[MAX_QPATH], *buf, *slash;
+	const char *gla = re->G2API_GetGLAName( g2, 0 ), *p;
+	qboolean found = qfalse;
+
+	if ( !gla || !gla[0] || !anim || !anim[0] )
+		return qfalse;
+	Q_strncpyz( path, gla, sizeof( path ) );
+	if ( !( slash = strrchr( path, '/' ) ) )
+		return qfalse;
+	slash[1] = '\0';
+	Q_strcat( path, sizeof( path ), "animation.cfg" );
+	if ( FS_ReadFile( path, (void **)&buf ) <= 0 || !buf )
+		return qfalse;
+	p = buf;
+	COM_BeginParseSession( path );
+	while ( !found ) {
+		const char *token = COM_ParseExt( &p, qtrue );
+
+		if ( !token[0] )
+			break;
+		if ( Q_stricmp( token, anim ) ) {
+			SkipRestOfLine( &p );
+			continue;
+		}
+		*first = atoi( COM_ParseExt( &p, qfalse ) );
+		*frames = atoi( COM_ParseExt( &p, qfalse ) );
+		COM_ParseExt( &p, qfalse );		// its loop frames
+		*fps = (float)fabs( atof( COM_ParseExt( &p, qfalse ) ) );
+		found = qtrue;
+	}
+	FS_FreeFile( buf );
+	return (qboolean)( found && *frames > 0 );
+}
+
+// one animation playing round and round on a bone and what's below it
+static qboolean PR_Loop( CGhoul2Info_v &g2, const char *bone, const char *anim ) {
+	int first, frames;
+	float fps;
+
+	if ( !PR_AnimInfo( g2, anim, &first, &frames, &fps ) )
+		return qfalse;
+	if ( fps <= 0.0f )
+		fps = 20.0f;
+	re->G2API_SetBoneAnim( g2, 0, bone, first, first + frames, BONE_ANIM_OVERRIDE_LOOP, fps / 20.0f,
+		re->G2API_GetTime( cl.serverTime ), (float)first, 0 );
+	return qtrue;
+}
+
 // a card's model, (re)built when its character changed: a model and skin as the model cvar has
 // them ("name/skin", or "name/head|torso|lower"), with its sabers' hilts in its hands
 static void PR_BuildView( prView_t *v, const char *model, const char *saber1, const char *saber2 ) {
@@ -420,8 +473,11 @@ static void PR_Measure( prView_t *v ) {
 	}
 }
 
+static void PR_AddBlades( CGhoul2Info_v &g2, int index, const vec3_t angles, float length, const float *rgb );
+
 // the character drawn in the card, tinted as given (a skin that takes a tint)
-static void PR_RenderView( prView_t *v, const char *red, const char *green, const char *blue, float x, float y, float w, float h, float yaw ) {
+static void PR_RenderView( prView_t *v, const char *red, const char *green, const char *blue, float x, float y, float w, float h, float yaw,
+	const float *blade = NULL, const char *saber1 = NULL, const char *saber2 = NULL ) {
 	const float xScale = cls.glconfig.vidWidth / (float)SCREEN_WIDTH, yScale = cls.glconfig.vidHeight / (float)SCREEN_HEIGHT;
 	refdef_t refdef;
 	refEntity_t ent;
@@ -466,6 +522,17 @@ static void PR_RenderView( prView_t *v, const char *red, const char *green, cons
 
 	re->ClearScene();
 	re->AddRefEntityToScene( &ent );
+	// the hilts' blades, lit: models 1 and 2 are the hilts (PR_BuildView)
+	if ( blade ) {
+		for ( int s = 0; s < 2; s++ ) {
+			const char *saber = s ? saber2 : saber1;
+			clSaber_t info;
+
+			if ( !saber || !saber[0] || !Q_stricmp( saber, "none" ) || !re->G2API_HasGhoul2ModelOnIndex( &v->g2, s + 1 ) )
+				continue;
+			PR_AddBlades( *v->g2, s + 1, ent.angles, CL_Saber_Find( saber, &info ) ? info.length : 0.0f, blade );
+		}
+	}
 	re->RenderScene( &refdef );
 }
 
@@ -478,6 +545,130 @@ void CL_Presets_DrawPortrait( float x, float y, float w, float h, float yaw ) {
 	if ( prPortrait.g2 )
 		PR_RenderView( &prPortrait, Cvar_VariableString( "char_color_red" ), Cvar_VariableString( "char_color_green" ),
 			Cvar_VariableString( "char_color_blue" ), x, y, w, h, yaw );
+}
+
+// a hilt's blades, lit in rgb (0..1): every *bladeN tag of model index on it
+static void PR_AddBlades( CGhoul2Info_v &g2, int index, const vec3_t angles, float length, const float *rgb ) {
+	static qhandle_t rgbGlow, rgbCore, glows[6], cores[6];
+	static qboolean registered;
+	static const char *names[6] = { "red", "orange", "yellow", "green", "blue", "purple" };
+	static const float hues[6][3] = { { 1, 0.2f, 0.2f }, { 1, 0.5f, 0.1f }, { 1, 1, 0.2f }, { 0.2f, 1, 0.2f }, { 0.2f, 0.4f, 1 }, { 0.8f, 0.2f, 1 } };
+	qhandle_t glow, core;
+	byte color[4];
+
+	if ( !registered ) {
+		registered = qtrue;
+		rgbGlow = re->RegisterShader( "gfx/effects/sabers/rgb_glow" );
+		rgbCore = re->RegisterShader( "gfx/effects/sabers/rgb_core" );
+		for ( int i = 0; i < 6; i++ ) {
+			glows[i] = re->RegisterShader( va( "gfx/effects/sabers/%s_glow", names[i] ) );
+			cores[i] = re->RegisterShader( va( "gfx/effects/sabers/%s_line", names[i] ) );
+		}
+	}
+	// RPMod's blades of any colour; without them, the base game's nearest
+	if ( rgbGlow && rgbCore ) {
+		glow = rgbGlow;
+		core = rgbCore;
+		for ( int k = 0; k < 3; k++ )
+			color[k] = (byte)Com_Clampi( 0, 255, (int)( rgb[k] * 255.0f + 0.5f ) );
+	} else {
+		int best = 0;
+		float bestD = 99.0f;
+
+		for ( int i = 0; i < 6; i++ ) {
+			const float d = Square( hues[i][0] - rgb[0] ) + Square( hues[i][1] - rgb[1] ) + Square( hues[i][2] - rgb[2] );
+
+			if ( d < bestD ) {
+				bestD = d;
+				best = i;
+			}
+		}
+		glow = glows[best];
+		core = cores[best];
+		color[0] = color[1] = color[2] = 255;
+	}
+	color[3] = 255;
+	if ( length <= 0.0f )
+		length = 40.0f;		// the game's
+
+	for ( int n = 1; n <= 8; n++ ) {
+		const int bolt = re->G2API_AddBolt( g2, index, va( "*blade%i", n ) );
+		vec3_t zero = { 0, 0, 0 }, org, dir;
+		mdxaBone_t m;
+		refEntity_t blade;
+
+		if ( bolt < 0 || !re->G2API_GetBoltMatrix( g2, index, bolt, &m, angles, zero, cl.serverTime, NULL, zero ) )
+			break;
+		VectorSet( org, m.matrix[0][3], m.matrix[1][3], m.matrix[2][3] );
+		VectorSet( dir, -m.matrix[0][1], -m.matrix[1][1], -m.matrix[2][1] );	// the blade comes out along -Y
+		VectorNormalize( dir );
+
+		// its glow, then its hot core, as the game draws them
+		memset( &blade, 0, sizeof( blade ) );
+		blade.reType = RT_SABER_GLOW;
+		blade.customShader = glow;
+		VectorCopy( org, blade.origin );
+		VectorCopy( dir, blade.axis[0] );
+		blade.saberLength = length;
+		blade.radius = 3.0f;
+		memcpy( blade.shaderRGBA, color, 4 );
+		blade.renderfx = RF_NOSHADOW;
+		re->AddRefEntityToScene( &blade );
+
+		blade.reType = RT_LINE;
+		blade.customShader = core;
+		VectorMA( org, length, dir, blade.origin );
+		VectorMA( org, -1.0f, dir, blade.oldorigin );
+		blade.radius = 1.0f;
+		re->AddRefEntityToScene( &blade );
+	}
+}
+
+// a player as their info string has them (model, sabers), turned yaw, in the box: Inspect. torso and
+// legs, when given, play round and round; blade (0..1), when given, lights the hilts. Their colours
+// aren't sent by the game, so the model is drawn as it is
+void CL_Presets_DrawCharacter( const char *model, const char *saber1, const char *saber2, const char *torso, const char *legs,
+	const float *blade, float x, float y, float w, float h, float yaw ) {
+	char pose[sizeof( prOther.pose )];
+
+	if ( cls.state != CA_ACTIVE )
+		return;
+	// another pose: the model made again, in its stance, and played from the pose's start
+	Com_sprintf( pose, sizeof( pose ), "%s|%s", torso ? torso : "", legs ? legs : "" );
+	if ( strcmp( pose, prOther.pose ) )
+		prOther.key[0] = '\0';
+	PR_BuildView( &prOther, model, saber1, saber2 );
+	if ( !prOther.g2 )
+		return;
+	if ( strcmp( pose, prOther.pose ) ) {
+		Q_strncpyz( prOther.pose, pose, sizeof( prOther.pose ) );
+		if ( torso && torso[0] ) {
+			const char *lower = legs && legs[0] ? legs : torso;
+
+			PR_Loop( *prOther.g2, "model_root", lower );
+			if ( Q_stricmp( lower, torso ) )
+				PR_Loop( *prOther.g2, "lower_lumbar", torso );
+		}
+		prOther.measured = qfalse;
+	}
+	PR_RenderView( &prOther, "", "", "", x, y, w, h, yaw, blade, saber1, saber2 );
+}
+
+// why it couldn't be drawn, NULL if it was
+const char *CL_Presets_CharacterError( void ) {
+	return prOther.g2 ? NULL : prOther.error ? prOther.error : "No model";
+}
+
+void CL_Presets_FreeCharacter( void ) {
+	if ( prOther.g2 )
+		re->G2API_CleanGhoul2Models( &prOther.g2 );
+	memset( &prOther, 0, sizeof( prOther ) );
+}
+
+// the renderer's models are gone with it: dropped, not freed
+void CL_Presets_RendererRestarted( void ) {
+	memset( &prPortrait, 0, sizeof( prPortrait ) );
+	memset( &prOther, 0, sizeof( prOther ) );
 }
 
 /*
@@ -634,6 +825,7 @@ static qboolean PR_Open( int mode ) {
 		CL_SpecialMoves_Close();
 		CL_ChatLog_Close();
 		CL_Inventory_Close();
+		CL_Inspect_Close();
 
 		pr.font = re->RegisterFont( "arialnb" );
 		if ( !pr.font )
