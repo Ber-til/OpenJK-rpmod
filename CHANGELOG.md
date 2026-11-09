@@ -4,6 +4,11 @@ What changed in OpenJK-rpmod from version to version, newest first. What each fe
 
 OpenJK-rpmod is built on [OpenJK](https://github.com/JACoders/OpenJK); for the changes OpenJK itself made, see [its changelog](https://github.com/JACoders/OpenJK/blob/master/CHANGELOG.md).
 
+## 0.10.0 - in progress
+
+- [Added] `Inventory`. `/inventory` opens what your RPMod account carries, kept on C1B3R: a datapad, a commlink and the hilt of the saber you carry come with every account, and staff give more (in Discord with `/item`, or in game on the inventory's Staff page as an RPMod admin). The items are listed on the left; the one picked shows its model turning, its description, **Use** (the datapad opens), whether Inspect shows it, and **Give** to the player you aim at, or one picked from the server's list (their game must be linked too). Your game needs to be linked to C1B3R (`/c1b3r link`). The Esc menu has it under Character, and in KOTOR's Inventory tab.
+- [Changed] `Esc Menu: KOTOR's tools under Options`. KOTOR's Inventory tab now shows the inventory; the tools are listed under Options.
+
 ## 0.9.1 - Nov 9th 2026
 
 - [Added] `Effect Replacer: force lightning`. Force lightning, which RPMod draws as lightning shapes rather than an effect, can be swapped as `force/lightning`; `/effectreplacer log` lists the effects started near you, to find an effect's name.

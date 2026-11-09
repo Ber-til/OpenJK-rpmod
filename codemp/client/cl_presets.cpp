@@ -288,56 +288,13 @@ THE CHARACTER ON A CARD
 ===============================================================================
 */
 
-// a saber's hilt model, from the .sab file that has it
+// a saber's hilt model, from the .sab file that has it (cl_sabers.cpp)
 static qboolean PR_SaberModel( const char *saber, char *model, int size ) {
-	char **list;
-	int n;
-	qboolean found = qfalse;
+	clSaber_t info;
 
 	model[0] = '\0';
-	if ( !saber[0] || !Q_stricmp( saber, "none" ) )
-		return qfalse;
-	list = FS_ListFiles( "ext_data/sabers", ".sab", &n );
-	for ( int i = 0; i < n && !found; i++ ) {
-		char *buf;
-		const char *p;
-
-		if ( FS_ReadFile( va( "ext_data/sabers/%s", list[i] ), (void **)&buf ) <= 0 || !buf )
-			continue;
-		p = buf;
-		COM_BeginParseSession( list[i] );
-		while ( !found ) {
-			const char *token = COM_ParseExt( &p, qtrue );
-
-			if ( !token[0] )
-				break;
-			if ( Q_stricmp( token, saber ) ) {
-				if ( !strcmp( token, "{" ) )
-					SkipBracedSection( &p, 1 );
-				continue;
-			}
-			token = COM_ParseExt( &p, qtrue );
-			if ( strcmp( token, "{" ) )
-				continue;
-			// this one's block: its saberModel
-			while ( 1 ) {
-				token = COM_ParseExt( &p, qtrue );
-				if ( !token[0] || !strcmp( token, "}" ) )
-					break;
-				if ( !strcmp( token, "{" ) ) {
-					SkipBracedSection( &p, 1 );
-					continue;
-				}
-				if ( !Q_stricmp( token, "saberModel" ) ) {
-					Q_strncpyz( model, COM_ParseExt( &p, qfalse ), size );
-					break;
-				}
-			}
-			found = qtrue;
-		}
-		FS_FreeFile( buf );
-	}
-	FS_FreeFileList( list );
+	if ( CL_Saber_Find( saber, &info ) )
+		Q_strncpyz( model, info.model, size );
 	return (qboolean)( model[0] != '\0' );
 }
 
@@ -676,6 +633,7 @@ static qboolean PR_Open( int mode ) {
 		CL_AnimManager_Close();
 		CL_SpecialMoves_Close();
 		CL_ChatLog_Close();
+		CL_Inventory_Close();
 
 		pr.font = re->RegisterFont( "arialnb" );
 		if ( !pr.font )

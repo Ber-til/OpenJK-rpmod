@@ -355,7 +355,8 @@ static void PS_Hello( void ) {
 
 	if ( psHelloHttp.state == HTTP_BUSY || cls.realtime < psv.helloNext )
 		return;
-	Com_sprintf( key, sizeof( key ), "%s|%i|%s|%s|%s|%s", ps.server, clc.clientNum, PS_MyName(), PS_Token(), psa.account, PS_Rank() );
+	Com_sprintf( key, sizeof( key ), "%s|%i|%s|%s|%s|%s|%s", ps.server, clc.clientNum, PS_MyName(), PS_Token(), psa.account, PS_Rank(),
+		Cvar_VariableString( "saber1" ) );
 	if ( psv.on && !strcmp( key, psv.key ) )
 		return;
 	body = "{\"key\":";
@@ -374,6 +375,9 @@ static void PS_Hello( void ) {
 	PS_Json( body, psa.account );
 	body += ",\"rank\":";
 	PS_Json( body, PS_Rank() );
+	// the saber carried: the inventory's hilt is it (C1B3R's characters.py)
+	body += ",\"saber\":";
+	PS_Json( body, Cvar_VariableString( "saber1" ) );
 	body += "}";
 	if ( !PS_Send( &psHelloHttp, "/v2/hello", body ) ) {
 		psv.helloNext = cls.realtime + PS_HELLO_RETRY_MS;
@@ -670,7 +674,8 @@ static void PS_PollRequests( void ) {
 			if ( PS_Token()[0] && !psv.linked ) {
 				Com_Printf( S_COLOR_YELLOW "C1B3R: " S_COLOR_WHITE "this game's link was ended (denied, revoked or unlinked); /c1b3r link to link it again\n" );
 				Cvar_Set( "cl_c1b3rToken", "" );
-				Q_strncpyz( psv.asked, va( "%s|%i|%s||%s|%s", ps.server, clc.clientNum, PS_MyName(), psa.account, PS_Rank() ), sizeof( psv.asked ) );
+				Q_strncpyz( psv.asked, va( "%s|%i|%s||%s|%s|%s", ps.server, clc.clientNum, PS_MyName(), psa.account, PS_Rank(),
+					Cvar_VariableString( "saber1" ) ), sizeof( psv.asked ) );
 			}
 			Q_strncpyz( psv.key, psv.asked, sizeof( psv.key ) );
 			psv.pollNext = 0;

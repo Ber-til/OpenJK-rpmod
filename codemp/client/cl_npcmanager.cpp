@@ -1785,48 +1785,13 @@ static const struct {
 	{ "WP_DET_PACK",		"models/weapons2/detpack/det_pack_proj.glm" },
 };
 
-// a saber's hilt, from the first block with its name in ext_data/sabers/*.sab
+// a saber's hilt, from the first block with its name in ext_data/sabers/*.sab (cl_sabers.cpp)
 static void NM_SaberModel( const char *saber, char *out, int size ) {
-	char **files, *buf, name[MAX_QPATH], key[64];
-	const char *p, *token;
-	int numFiles;
-	qboolean found = qfalse;
+	clSaber_t info;
 
 	Q_strncpyz( out, "models/weapons2/saber/saber_w.glm", size );	// DEFAULT_SABER_MODEL
-	files = FS_ListFiles( "ext_data/sabers", ".sab", &numFiles );
-	for ( int i = 0; i < numFiles && !found; i++ ) {
-		const char *path = va( "ext_data/sabers/%s", files[i] );
-
-		if ( FS_ReadFile( path, (void **)&buf ) <= 0 || !buf )
-			continue;
-		p = buf;
-		COM_BeginParseSession( path );
-		while ( !found ) {
-			token = COM_ParseExt( &p, qtrue );
-			if ( !token[0] )
-				break;
-			Q_strncpyz( name, token, sizeof( name ) );
-			if ( Q_stricmp( COM_ParseExt( &p, qtrue ), "{" ) )
-				break;
-			if ( Q_stricmp( name, saber ) ) {
-				SkipBracedSection( &p, 1 );
-				continue;
-			}
-			found = qtrue;
-			while ( 1 ) {
-				token = COM_ParseExt( &p, qtrue );
-				if ( !token[0] || !Q_stricmp( token, "}" ) )
-					break;
-				Q_strncpyz( key, token, sizeof( key ) );
-				token = COM_ParseExt( &p, qfalse );
-				if ( !Q_stricmp( key, "saberModel" ) && token[0] )
-					Q_strncpyz( out, token, size );
-				SkipRestOfLine( &p );
-			}
-		}
-		FS_FreeFile( buf );
-	}
-	FS_FreeFileList( files );
+	if ( CL_Saber_Find( saber, &info ) && info.model[0] )
+		Q_strncpyz( out, info.model, size );
 }
 
 // puts a weapon model in the preview's slot 1 or 2, held by the given hand bolt
@@ -2781,6 +2746,7 @@ static qboolean NM_Open( nmTab_t tab ) {
 	CL_Presets_Close();
 	CL_SpecialMoves_Close();
 	CL_ChatLog_Close();
+	CL_Inventory_Close();
 	if ( !nm.indexed )
 		NM_BuildIndex();
 

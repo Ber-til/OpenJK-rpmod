@@ -223,66 +223,18 @@ void CL_NpcNames_View( const refdef_t *fd ) {
 	nn.haveView = qtrue;
 }
 
-// how far along the ray it enters the box, -1 if it misses
-static float NN_RayBox( const vec3_t org, const vec3_t dir, const vec3_t mins, const vec3_t maxs ) {
-	float tNear = 0.0f, tFar = NN_RANGE;
-
-	for ( int k = 0; k < 3; k++ ) {
-		if ( fabs( dir[k] ) < 0.00001f ) {
-			if ( org[k] < mins[k] || org[k] > maxs[k] )
-				return -1.0f;
-			continue;
-		}
-		float t1 = ( mins[k] - org[k] ) / dir[k];
-		float t2 = ( maxs[k] - org[k] ) / dir[k];
-		if ( t1 > t2 ) {
-			const float t = t1;
-			t1 = t2;
-			t2 = t;
-		}
-		tNear = Q_max( tNear, t1 );
-		tFar = Q_min( tFar, t2 );
-		if ( tNear > tFar )
-			return -1.0f;
-	}
-	return tNear;
+// a named NPC, where it walks to now
+static qboolean NN_Wanted( const entityState_t *es, vec3_t org ) {
+	if ( es->eType != ET_NPC || !nn.names[es->number][0] )
+		return qfalse;
+	if ( !CL_NpcWalk_PoseOf( es->number, org ) )
+		VectorCopy( es->pos.trBase, org );
+	return qtrue;
 }
 
-// the named NPC the crosshair is on, -1 none
+// the named NPC the crosshair is on, -1 none (cl_aim.cpp)
 static int NN_Aimed( void ) {
-	int best = -1;
-	float bestT = NN_RANGE;
-
-	for ( int i = 0; i < cl.snap.numEntities; i++ ) {
-		const entityState_t *es = NN_Ent( i );
-		vec3_t org, mins, maxs;
-		float t;
-
-		if ( es->eType != ET_NPC || ( es->eFlags & ( EF_DEAD | EF_NODRAW ) ) || es->number < 0 || es->number >= MAX_GENTITIES
-			|| !nn.names[es->number][0] )
-			continue;
-		if ( !CL_NpcWalk_PoseOf( es->number, org ) )
-			VectorCopy( es->pos.trBase, org );
-		// a person's box, a bit generous
-		VectorSet( mins, org[0] - 18.0f, org[1] - 18.0f, org[2] - 24.0f );
-		VectorSet( maxs, org[0] + 18.0f, org[1] + 18.0f, org[2] + 44.0f );
-		t = NN_RayBox( nn.viewOrg, nn.viewFwd, mins, maxs );
-		if ( t < 0.0f || t >= bestT )
-			continue;
-		best = es->number;
-		bestT = t;
-	}
-	if ( best >= 0 ) {
-		trace_t tr;
-		vec3_t end;
-
-		// a wall in between hides it
-		VectorMA( nn.viewOrg, bestT, nn.viewFwd, end );
-		CM_BoxTrace( &tr, nn.viewOrg, end, vec3_origin, vec3_origin, 0, CONTENTS_SOLID, qfalse );
-		if ( tr.fraction < 1.0f )
-			best = -1;
-	}
-	return best;
+	return CL_Aim_Pick( NN_Wanted, NN_RANGE );
 }
 
 static qboolean NN_InSnapshot( int num ) {

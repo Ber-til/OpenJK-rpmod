@@ -716,6 +716,7 @@ static void SM_Open( void ) {
 	CL_RadialMenu_CloseSettings();
 	CL_Languages_Close();
 	CL_ChatLog_Close();
+	CL_Inventory_Close();
 
 	sm.font = re->RegisterFont( "arialnb" );
 	if ( !sm.font )

@@ -944,6 +944,7 @@ static qboolean SM_Open( smOpen_t which ) {
 	CL_Presets_Close();
 	CL_SpecialMoves_Close();
 	CL_ChatLog_Close();
+	CL_Inventory_Close();
 
 	sm.font = re->RegisterFont( "arialnb" );
 	if ( !sm.font )

@@ -3560,6 +3560,7 @@ static void EM_OpenAs( qboolean mineOnly ) {
 	CL_Presets_Close();
 	CL_SpecialMoves_Close();
 	CL_ChatLog_Close();
+	CL_Inventory_Close();
 	EM_CheckMap();
 	EM_ListConstructs();
 	if ( !em.indexed ) {

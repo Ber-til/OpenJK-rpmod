@@ -98,6 +98,7 @@ static const emEntry_t emBase[] = {
 	{ "Skin Select",		"Every skin of your model, worn in a click",		"skinselect",		EA_CMD,		MC_CHARACTER,	KT_EQUIPMENT },
 	{ "Languages",			"Your characters' languages",						"languages",		EA_CMD,		MC_CHARACTER,	KT_CHARACTER },
 	{ "Effect Replacer",	"Your own powers' and saber's effects as others",	"effectreplacer",	EA_CMD,		MC_CHARACTER,	KT_EQUIPMENT },
+	{ "Inventory",			"What you carry: shown on Inspect, given to others", "inventory",		EA_CMD,		MC_CHARACTER,	KT_INVENTORY },
 	{ "Special Moves",		"Saber moves explained, played from a key",			"specialmoves",		EA_CMD,		MC_ABILITIES,	KT_ABILITIES },
 	{ "Animation Manager",	"Every animation; emote chains, custom emotes",		"animationmanager",	EA_CMD,		MC_ABILITIES,	KT_ABILITIES },
 	{ "Radial Menus",		"Make radial menus and bind keys to them",			"radialsettings",	EA_CMD,		MC_ABILITIES,	KT_ABILITIES },
@@ -135,6 +136,7 @@ const escTool_t escTools[] = {
 	{ "Special Moves",		"specialmoves",		"Saber moves explained, played from a key" },
 	{ "Chat Log",			"chatlog",			"The chat kept as text and a console-like page" },
 	{ "Datapad",			"datapad",			"Your datapad: in the corner, or open on the right" },
+	{ "Inventory",			"inventory",		"What you carry: shown on Inspect, given to others" },
 	{ "Languages",			"languages",		"Your characters' languages" },
 	{ "Radial Menus",		"radialsettings",	"Make radial menus and bind keys to them" },
 	{ "Console Settings",	"consolesettings",	"How the console looks" },
@@ -329,7 +331,7 @@ static void EM_BuildEntries( void ) {
 		e.arg = escTools[i].command;
 		e.kind = EA_CMD;
 		e.cat = MC_TOOLS;
-		e.tab = KT_INVENTORY;
+		e.tab = KT_OPTIONS;
 		emEntries.push_back( e );
 	}
 }

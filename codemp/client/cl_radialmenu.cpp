@@ -1095,6 +1095,7 @@ static void RS_Open( void ) {
 	CL_Presets_Close();
 	CL_SpecialMoves_Close();
 	CL_ChatLog_Close();
+	CL_Inventory_Close();
 	RM_Close();
 	RM_Load();
 
