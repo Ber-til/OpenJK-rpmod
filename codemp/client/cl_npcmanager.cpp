@@ -2779,6 +2779,8 @@ static qboolean NM_Open( nmTab_t tab ) {
 	CL_SoundManager_Close();
 	CL_AnimManager_Close();
 	CL_Presets_Close();
+	CL_SpecialMoves_Close();
+	CL_ChatLog_Close();
 	if ( !nm.indexed )
 		NM_BuildIndex();
 
@@ -4069,8 +4071,8 @@ static void NM_DrawExperimentalBox( void ) {
 		ly += 13;
 	}
 	if ( NM_Button( x + 8, y + h - 24, 80, "OK", qfalse, qtrue ) ) {
-		CL_RpHooks_SetExperimental( qtrue );
-		NM_Message( S_COLOR_YELLOW "Experimental features on, for this session" );
+		NM_Message( CL_RpHooks_SetExperimental( qtrue ) ? S_COLOR_YELLOW "Experimental features on, for this session"
+			: va( S_COLOR_YELLOW "%s", CL_RpHooks_ExperimentalBlocked() ) );
 		nm.experimentalBox = qfalse;
 		return;
 	}
@@ -4977,6 +4979,8 @@ void CL_NpcManager_Draw( void ) {
 		if ( CL_RpHooks_Experimental() ) {
 			CL_RpHooks_SetExperimental( qfalse );
 			NM_Message( "Experimental features off" );
+		} else if ( CL_RpHooks_ExperimentalBlocked() ) {
+			NM_Message( va( S_COLOR_YELLOW "%s", CL_RpHooks_ExperimentalBlocked() ) );
 		} else {
 			nm.experimentalBox = qtrue;
 			nm.focus = NM_F_NONE;

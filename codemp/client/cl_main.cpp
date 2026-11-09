@@ -184,6 +184,10 @@ int CL_LastCommandTime( void ) {
 void CL_AddReliableCommand( const char *cmd, qboolean isDisconnectCmd ) {
 	int unacknowledged = clc.reliableSequence - clc.reliableAcknowledge;
 
+	// the tools' hooks go only to the players with this client, and what follows them waits its turn
+	// (see cl_presence.cpp): sent from there later, through here again
+	if ( !isDisconnectCmd && CL_Presence_Outgoing( cmd ) )
+		return;
 	// your chat in the language your character speaks, then said by the NPC chosen with
 	// npcmanager select
 	if ( !isDisconnectCmd ) {
@@ -196,6 +200,7 @@ void CL_AddReliableCommand( const char *cmd, qboolean isDisconnectCmd ) {
 	// a /me of your own is known for yours when it comes back
 	if ( !isDisconnectCmd )
 		CL_ChatRange_OutgoingCommand( cmd );
+		CL_ChatLog_OutgoingCommand( cmd );
 	// an emote's animation is watched for, a Help click shows one
 	if ( !isDisconnectCmd )
 		CL_EmotePreview_Command( cmd );
@@ -811,6 +816,9 @@ void CL_Disconnect( qboolean showMainMenu ) {
 		return;
 	}
 
+	// the feedback bot told we're gone, hooks waiting to go out let go
+	CL_Presence_Disconnect();
+
 	// shutting down the client so enter full screen ui mode
 	Cvar_Set("r_uiFullScreen", "1");
 
@@ -853,6 +861,8 @@ void CL_Disconnect( qboolean showMainMenu ) {
 	CL_ClearState ();
 	CL_RpHooks_Disconnect();
 	CL_RpAdmin_Disconnect();
+	CL_ChatLog_Disconnect();
+	CL_Datapad_Disconnect();
 	CL_Feedback_Disconnect();
 	CL_NpcNames_Disconnect();
 	CL_AdminFlags_Reset();
@@ -2399,6 +2409,11 @@ void CL_Frame ( int msec ) {
 	CL_Update_Frame();
 	// /feedback's answers in
 	CL_Feedback_Frame();
+	// the hooks to the players with this client
+	CL_Presence_Frame();
+	CL_EffectSwap_Frame();
+	CL_Pazaak_Frame();
+	CL_DatapadWeb_Frame();
 	CL_AssetManager_Frame();
 	// the RENDERER page's effects, shown with Post Effects on
 	CL_RenderMenu_Frame();
@@ -2436,6 +2451,9 @@ void CL_Frame ( int msec ) {
 
 	cls.framecount++;
 
+	// a video stopped this frame: closed now the renderer's done with its last frame
+	if ( CL_CloseAVIDue( ) )
+		takeVideoFrame = qfalse;
 	if ( takeVideoFrame ) {
 		// save the current screen
 		CL_TakeVideoFrame( );
@@ -2818,7 +2836,7 @@ CL_StopVideo_f
 */
 void CL_StopVideo_f( void )
 {
-	CL_CloseAVI( );
+	CL_CloseAVILater( );
 }
 
 static void CL_AddFavorite_f( void ) {
@@ -2922,6 +2940,7 @@ void CL_Init( void ) {
 	CL_RpAdmin_Init ();
 	CL_Update_Init ();
 	CL_Feedback_Init ();
+	CL_Presence_Init();
 	CL_RenderMenu_Init();
 	CL_Discord_Init();
 	cl_ratioFix = Cvar_Get( "cl_ratioFix", "0", CVAR_ARCHIVE_ND, "Widescreen: text, and the engine's own, as on a 4:3 screen instead of stretched" );
@@ -2936,6 +2955,11 @@ void CL_Init( void ) {
 	CL_EmotePreview_Init ();
 	CL_AnimManager_Init ();
 	CL_Presets_Init ();
+	CL_SpecialMoves_Init ();
+	CL_EffectSwap_Init ();
+	CL_ChatLog_Init ();
+	CL_Datapad_Init ();
+	CL_EscMenu_Init ();
 	CL_AssetManager_Init ();
 	CL_AdminFlags_Init ();
 	CL_QuickConnect_Init ();
@@ -3087,6 +3111,7 @@ void CL_Init( void ) {
 	Cmd_AddCommand( "npcmanager", CL_NpcManager_f, "Spawn NPCs and manage the ones in the map with RPMod's npc command" );
 	Cmd_AddCommand( "shadermanager", CL_ShaderManager_f, "Find the shaders of what you look at" );
 	Cmd_AddCommand( "effectmanager", CL_EffectManager_f, "Preview effects and play them with RPMod's rpeffect command" );
+	Cmd_AddCommand( "effectreplacer", CL_EffectReplacer_f, "Play your own effects (force powers, saber, weapons) as other ones, shared with others who have this client" );
 	Cmd_AddCommand( "mapedit", CL_MapEditor_f, "Edit the map on this screen: its entities, models, lights, triggers and light styles" );
 	Cmd_AddCommand( "storyteller", CL_Storyteller_f, "Assemble a mission out of steps and play it" );
 	Cmd_AddCommand( "soundmanager", CL_SoundManager_f, "Hear sounds and play them with RPMod's rpsound command" );
@@ -3176,6 +3201,7 @@ void CL_Shutdown( void ) {
 	Cmd_RemoveCommand( "toolaccess" );
 	CL_Update_Shutdown();
 	CL_Feedback_Shutdown();
+	CL_Presence_Shutdown();
 	CL_RenderMenu_Shutdown();
 	CL_Discord_Shutdown();
 	Cmd_RemoveCommand( "+radial" );

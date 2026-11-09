@@ -1093,6 +1093,8 @@ static void RS_Open( void ) {
 	CL_SoundManager_Close();
 	CL_AnimManager_Close();
 	CL_Presets_Close();
+	CL_SpecialMoves_Close();
+	CL_ChatLog_Close();
 	RM_Close();
 	RM_Load();
 

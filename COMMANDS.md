@@ -18,6 +18,7 @@ The console commands, keys and settings this client adds. What each feature does
 - [Languages](#languages)
 - [Radial Menus](#radial-menus)
 - [Saber Styles](#saber-styles)
+- [Special Moves](#special-moves)
 - [Other tools](#other-tools)
 - [Console and scripts](#console-and-scripts)
 - [Settings](#settings)
@@ -90,7 +91,8 @@ The console commands, keys and settings this client adds. What each feature does
 
 - `/effectmanager` opens or closes the manager (I recommend binding it to a key)
 - `/effectmanager <search>` opens the browser already filtered
-- `/effectmanager active | presets` opens it on that tab
+- `/effectmanager active | presets | mine` opens it on that tab
+- `/effectreplacer` opens the Mine tab by itself, for anyone: your own force powers', saber's and weapons' effects played as others
 - `/effectmanager place` places the selected effect in the world
 - `/effectmanager edit` selects and moves the map's effects, and the ones waiting
 - `/effectmanager bolt <tag>` bolts the selected effect to your own tag or bone
@@ -146,7 +148,9 @@ The console commands, keys and settings this client adds. What each feature does
 
 - `/cinematicmanager [name]` opens the manager, on that cinematic or a new one by that name
 - `/cinematicmanager send <name>` plays a saved one for everyone; `/cinematicmanager play <name>` on your screen only, to try it
+- `/cinematicmanager video <name>` plays a saved one on your screen and records it to `videos/<name>-001.avi` in the game folder, at `cl_aviFrameRate` frames a second (25 unless you set it)
 - `/cinematicmanager stop` stops it on your screen, `/cinematicmanager stop all` for everyone
+- In the manager: **Ctrl+Z** undoes, **Ctrl+Y** (or Ctrl+Shift+Z) redoes, **Ctrl+C** copies what's picked, **Ctrl+V** pastes it at the moment picked
 - `/cincam play <shot>` plays a camera shot made before the manager
 - `/cincam here` prints the spot you look from, as x y z pitch yaw roll fov
 - `/cincam stop` leaves the cinematic, on your screen
@@ -218,7 +222,7 @@ The console commands, keys and settings this client adds. What each feature does
 
 - `/presets` opens or closes them (the in-game menu's PRESETS)
 - `/presets save` saves who you are now as a preset; `/presets list` lists them, numbered (`*` a favorite); `/presets <number>` makes you that one
-- `/skinselect` the skins of your model, to wear in a click; `/skinselect <model>` another model's; `/skinselect models` every model installed
+- `/skinselect` the skins of your model, to wear in a click; `/skinselect <model>` another model's
 - `/assetmanager` what's on the map and the pk3 each is from; `/assetmanager scan` asks the server again; `/assetmanager list` prints it; `/assetmanager build [name]` packs the custom ones checked into `assetpacks/<name>.pk3`
 - `/quickconnect connect <1-4>` goes to JEDI Temple, Grounds, Region or Galaxy; `/quickconnect refresh` asks them for their map and players; `/quickconnect` lists them
 - `/adminflags` noclip, nodraw, nonsolid and notarget as known for you; `/adminflags reset` all taken as off
@@ -230,12 +234,32 @@ The console commands, keys and settings this client adds. What each feature does
 - `/saberstyles all` goes back to the server's own cycle; `/saberstyles` alone shows the list
 - `/saberstyle <style>` switches straight to that style
 
+## Special Moves
+
+- `/specialmoves` opens or closes the special moves menu; `/specialmoves list` lists them in the console with how they're done
+- `/specialmove <name>` plays a move: its keys pressed for you for a moment. Bind keys to it, e.g. `bind k "specialmove kata"`. Names: `kata`, `lunge`, `spinattack`, `dfa`, `flipslash`, `staffleap`, `dualleap`, `stabdown`, `backattack`, `backattackcrouch`, `backflipattack`, `cartwheelleft`, `cartwheelright`, `butterflyleft`, `butterflyright`, `kickfront`, `kickback`, `kickleft`, `kickright`, `rollstab`, `rollforward`, `rollback`, `rollleft`, `rollright`, `backflip`, `flipforward`, `flipleft`, `flipright`, `wallrunleft`, `wallrunright`, `wallflipleft`, `wallflipright`, `wallrunup`, `wallgrab`
+- `cl_specialMovesDebug 1` prints each step of a move played and what the game shows
+
 ## Other tools
 
-- `/toolaccess` shows whether the admin tools open for you on this server; `/toolaccess check` asks again
+- `/escmenu [modern|kotor|classic] [category]` opens the Esc menu in that style, on that category or tab (`/escmenu kotor options`); `cl_escMenu` picks what Esc opens: 0 the game's own (default), 1 Modern, 2 KOTOR
+- `/chatlog` opens or closes the chat log window; `/chatlog start` and `/chatlog stop` record or stop on this server; `/chatlog open` opens today's page in your browser, `/chatlog folder` the folder
+- `/datapad` opens your datapad in the bottom right corner, or puts it away; `/datapad open`, `/datapad close` and `/datapad settings` go straight there. Its Settings set the keys that open and close it; Esc puts it away
+- `/datapad holonet [n]` opens the HoloNet on it (the n-th article); `/datapad comport [guest|<forum number>]` the Comport (its forums, or that one)
+- `/datapad pazaak` opens Pazaak on it; `/pazaak create [name]`, `/pazaak join <table>`, `/pazaak watch <table>`, `/pazaak end`, `/pazaak stand`, `/pazaak play <card 0-3> [1|-1] [1|2]` and `/pazaak leave` do what its buttons do, for binds; `cl_pazaakDeck` is the side deck you play with
+- `cl_datapadColor` (0-6) is its colour; `cl_datapadEmote 1` has your character hold a datapad (`/emlift`) while it's open
+- `/datapad pos <x> <y>` moves where it opens on the 640x480 screen (its top left; `cl_datapadX`, `cl_datapadY`); `/datapad pos` puts it back above the HUD
+- `cl_chatLog 1` records by itself on joining a server; `cl_chatLogTells`, `cl_chatLogTeam`, `cl_chatLogWhispers`, `cl_chatLogOOC`, `cl_chatLogEmotes`, `cl_chatLogAdmin` (1 or 0) keep those kinds of chat or not
+
+- `/toolaccess` shows whether the admin tools open for you on this server, and on Temple whether your rank may turn experimental features on; `/toolaccess check` asks again
 - `/feedback` sends a bug report or an idea for the OpenJK-RPMod project, with your RPMod account, and shows the answers; `/feedback mine` opens on your reports, `/feedback close` closes it
+- `/c1b3r` shows your link to C1B3R: connected, linked, approved by staff, and the RPMod account you're on
+- `/c1b3r link` links this game, logged in to your RPMod account: your browser opens, you log in with Discord there, and staff approve it. Then you send what the tools share. The code it shows also works as `/link <code>` in Discord
+- `/c1b3r discord` opens the page to add C1B3R to your Discord account, so `/link` works in a DM without being in the project's Discord
+- `/c1b3r unlink` ends the link
+- `/clientusers` shows who on this server has this client, who's linked and who sends: the players the tools' hooks go to
 - `/version` shows your OpenJK-rpmod version and whether it's the newest, with the link to a newer one; `/version check` asks GitHub again
-- `/rpexperimental [on|off]` turns the experimental features on or off, and keeps them so every time the game starts
+- `/rpexperimental [on|off]` turns the experimental features on or off, and keeps them so every time the game starts; on Temple only for Department Head, Council and God, and turned off for anyone else
 - `/emotepreview` lists the emotes the Help menu can preview; `/emotepreview forget <emote>` learns one again; `/emotepreview watch` prints your animation's changes after an emote
 
 ## Console and scripts
@@ -254,6 +278,8 @@ The console commands, keys and settings this client adds. What each feature does
 - `rpc_chatRangeConsole_mode <0-3>`, `rpc_chatRangeConsole_min`, `rpc_chatRangeConsole_max`, `rpc_chatRangeConsole_alpha` set the chat range in the console
 - `cl_updateCheck 0` never asks GitHub whether there's a newer OpenJK-rpmod
 - `cl_feedbackUrl` is where /feedback sends reports and asks for their answers
+- `cl_c1b3rToken` is this game's link, made by `/c1b3r link`: keep it to yourself
+- `cl_presenceUrl` is C1B3R's address: the link to everyone with this client, through which the tools' hooks go; empty, nothing is shared and hooks show on your screen only
 - `renderersettings sync` / `apply`: what Setup's RENDERER page uses to show the renderer settings and to set them at the next `vid_restart`
 - `cl_renderer rd-vulkan` then `vid_restart` draws the game with the Vulkan renderer *(experimental)*, `cl_renderer rd-vanilla` with the usual one; the Vulkan one's own settings (`r_fbo`, `r_bloom`, `r_ext_multisample`, `r_vbo`, `r_ext_supersample`, `r_ssao`, `r_softParticles`, `r_fxaa`, `r_sharpen`, `r_sunShafts`, `r_tonemap`, `r_motionBlur` and more) are in [FEATURES.md](FEATURES.md#vulkan-renderer-experimental)
 - `cl_whisper 1` shows whispers (chat in ^k) only to those close by, `cl_whisperHear` and `cl_whisperNotice` set how close
@@ -278,6 +304,7 @@ The console commands, keys and settings this client adds. What each feature does
 - `cl_cinRecordKey F10` the key that ends a recording in the cinematic manager
 - `cl_safeModels 1` shows map objects with too many verts as missing models; `cl_safePlayerModels 1` shows such player models as Kyle
 - `cl_shaderShareMine 1` shares your player shaders (the Mine tab's Shared)
+- `cl_effectShareMine 1` shares the effects you swapped in the Effect Replacer (its Shared, on by default)
 - `cl_rpExperimental 1` experimental features on as the game starts (`/rpexperimental`)
 - `con_modernInput 1` the console's line goes on to more rows, with word jumps, selection and copy and paste
 - `cl_chatSplit 1` a chat too long for the server is sent in parts; `cl_chatSplitLength`, `cl_chatSplitMark`, `cl_chatSplitDelay`, `cl_chatSplitCommands`

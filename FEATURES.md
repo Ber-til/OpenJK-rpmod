@@ -16,6 +16,7 @@ Some features reach other players through workarounds only this client understan
 - [HD Video Cinematics](#hd-video-cinematics)
 - [Radial Menus](#radial-menus)
 - [Saber Styles](#saber-styles)
+- [Special Moves](#special-moves)
 - [Emote Preview](#emote-preview)
 - [Animation Manager](#animation-manager-custom-emotes-are-experimental)
 - [Presets](#presets)
@@ -26,6 +27,8 @@ Some features reach other players through workarounds only this client understan
 - [Widescreen Text](#widescreen-text)
 - [Console Selection and Find](#console-selection-and-find)
 - [Lists and Text Boxes](#lists-and-text-boxes)
+- [Chat Log](#chat-log)
+- [Datapad](#datapad)
 - [Long Chat in Parts](#long-chat-in-parts)
 - [Chat Capitals](#chat-capitals)
 - [Console Key](#console-key)
@@ -44,6 +47,7 @@ Some features reach other players through workarounds only this client understan
 - [Model Safeguards](#model-safeguards)
 - [Update Check](#update-check)
 - [Feedback](#feedback)
+- [C1B3R: Everyone with the Client Connected](#c1b3r-everyone-with-the-client-connected)
 - [Vulkan Renderer](#vulkan-renderer-experimental)
 - [Experimental features](#experimental-features)
 
@@ -194,7 +198,7 @@ Click any surface, see what it's made of, and swap its texture for everyone on t
 - Only yours change: someone else using the same power keeps the standard look on your screen. No command is sent
 - Live shows the new one on your own as you pick it; they're kept for every map and server
 - Click a player effect in the free camera and *Only mine...* takes you there
-- **Shared** *(experimental)*: everyone with this client sees yours on you, sent as you change them, as a map starts and when someone joins. It uses `rpnotify`, so it needs an admin's rights
+- **Shared** *(experimental)*: everyone with this client sees yours on you, sent as you change them, as a map starts and when someone joins. It goes through C1B3R, so it needs a game linked in Discord and approved by staff (`/c1b3r link`)
 
 ## Effect Manager
 
@@ -216,7 +220,7 @@ Browse every effect, watch it play live, put it exactly where you want (or on so
 
 - Fly a free camera around the map while the effect plays where your crosshair points
 - Lock it in place, then fine-tune it with the arrow keys and Page Up/Down, or press J for move arrows and drag the X, Y or Z one with the mouse
-- **Size** *(experimental)*: [ and ] (or - and +) make the effect bigger or smaller before you send it, from 0.1x to 8x, also next to Once/Loop in the manager. Everyone with this client sees it that size (sent hidden in an rpnotify, again a little after someone joins); others see it as made
+- **Size** *(experimental)*: [ and ] (or - and +) make the effect bigger or smaller before you send it, from 0.1x to 8x, also next to Once/Loop in the manager. Everyone with this client sees it that size (sent through C1B3R, again a little after someone joins); others see it as made
 - Rotate it (pitch, yaw, roll), or let it face away from the wall or floor you aim at
 - Send each effect as you place it, or put down several and send them all together
 - Click and it's done: the manager sends the matching `rpeffect once/add` command for you, so your usual RPMod permissions apply
@@ -259,6 +263,15 @@ Browse every effect, watch it play live, put it exactly where you want (or on so
 - Remove every effect, or everything bolted to you, a player or an NPC
 - One-click presets: alarm, fade out / fade back in, and camera shake with intensity and duration
 - Several commands in a row are spaced out automatically, so the server's flood protection doesn't drop them
+
+### Your own effects as others (Effect Replacer, Mine tab)
+
+- `/effectreplacer` (or the Mine tab in the manager) plays the effects of your own force powers, saber and weapons as any other effect you have, e.g. your Drain as a blue fire from a pk3
+- Only yours change: someone else using the same power keeps the standard effect. Anyone can use it, not only admins
+- Use a power or your saber, and **Played as yours lately** lists the effects that just came from you: click one, pick the replacement on the left (it plays live in the window), and **Swap it**
+- An effect is yours when it's bolted to you, or starts nearer you than anyone else, as force powers come out of your hand; an effect that lands on you (someone's drain hitting you) counts as yours too
+- Kept in `effectmanager/mine.txt`, for every map and server, until removed
+- **Shared** *(experimental)*: everyone with this client sees yours on you, if they have the replacement in their own pk3s (if not, they see the standard one). Sent as you change them, as a map starts and when someone joins. It goes through C1B3R, so it needs a game linked in Discord and approved by staff (`/c1b3r link`)
 
 ## Storyteller
 
@@ -325,25 +338,48 @@ Make a whole cut scene on one timeline, the camera's shots and what the players 
 - `/cinematicmanager` (or `/cincam edit`) opens it: fly a free camera over the map, the panel on the right, the timeline under the view
 - **Camera tab**: the cinematic's shots, one after the other. A shot is a path through spots (smooth or steady, optionally always looking at a point), one spot held still, or an orbit round a point with zoom. Add spots where the camera is with Enter, look through each one, watch the trail between them
 - **Entities tab**: every player on the server, you included, and every NPC in the NPC list; pick one there or click them in the view, or type the targetname of an NPC that isn't here yet and press **+ To spawn**; then **+ Add action**:
+  - **+ Extra**: someone only this client draws, for a cast the server doesn't have to spawn: any player model and skin (**Mine** puts yours), with no saber, a saber, a staff or two sabers in a colour, standing where you put them and facing the way you set. An extra takes every action a player or NPC does (moving, positions, animations, emotes, recordings, looks, lines said as subtitles, appearing with **Spawn** and going with **Remove**), and the camera can keep one in frame. Nothing about an extra is sent to the server; players with this client see them when the cinematic is played for everyone
   - **Move**: aim at the floor and press Enter for each spot they walk or run through; click a spot in the view to pick it, drag it to move it, Del takes it off. A move starts from wherever they are then, a group of NPCs with the same name keeping their shape
   - **Animation**: JKA's own, a range of frames, one held, or played backwards, once or looping, at any speed, picked from the model's own list and shown on it as you make it
-  - **Say**: a line, as the Storyteller's Say and NPC talk do: a player's shows in chat as theirs for everyone with this client, yours you say in chat, an NPC's with the name you give it
+  - **Say**: their mouth moves while they say it; a line, as the Storyteller's Say and NPC talk do: a player's shows in chat as theirs for everyone with this client, yours you say in chat, an NPC's with the name you give it
   - **Emote**: one of RPMod's emotes at that moment, once or looping, for as long as you drag it; an NPC's, or yours, is done for real too when it's played for everyone
   - **Position**: put them anywhere, turned any way, X Y Z, yaw, pitch and roll, in keys along the timeline, smooth or straight from one to the next; pitch and roll tip the whole body, so with an emote you can have someone thrown across the room by an explosion and land on their back. Drag the keys in the view
   - **Teleport**: they're somewhere else at once, a spot and the way they face: where you aim, or dragged in the view. An NPC is teleported for real (`npc tele`) when it's played for everyone; a player is only seen there, on screens with this client, until it ends
   - **NPC command**: freeze or unfreeze, follow you or stop, a dialog or none, a hologram, a projector or none, or kill, at that moment, sent when it's played for everyone
   - **Spawn**: the NPC appears at that moment, of the type and team you pick, where you aim, with the row's targetname, so its moves and lines can follow; sent when it's played for everyone (the NPC manager's spawn)
+  - **Look**: how they look for as long as you drag it, their **face** (talking, smiling, frowning, alert, eyes closed), and what they hold: any model in the right or left hand (a blaster, a datapad, a cup), turned to sit right; **hidden**, their **size** from 25% to 400% (standing on the same floor, their saber still in hand), **drawn as** a hologram or cloaked, or with a shell over them (force glow, light side, dark side, electric, red or yellow glow, force protect), and their **saber**: off, another colour, its blades longer or shorter. Seen on screens with this client; a saber that's off can't be lit this way
+  - **Force**: a force power at someone else in it, for as long as you drag it: lightning (one hand or both), drain, grip, push, pull, heal or rage. Its effect plays from their hands to the one it's at, again and again while it lasts, and both of them act it if you like: the lightning pose and the one hit covering their ears, a grip and a choke. Only seen, on screens with this client; no one is hurt
   - **Remove**: the NPC is taken out of the game at that moment (`npc kill`), and nothing after it moves it
   - **Record**: act it out yourself after a 3-2-1, moving, jumping, swinging your saber, using the force, and press *F10* (or `cl_cinRecordKey`) to stop: they do exactly that from where they are at that moment, up to 30 s. While you record someone else you see through their eyes, where they are and the way they face, wherever you stand and face yourself, moving as you move, and the rest of the cinematic plays along in time, other recordings included, so you can fight or talk with them; you still bump into the walls where you really are, so act it out in the open
 - Blades that meet anywhere along them while a cinematic plays clash, sparks and a ring, fast swings too; a blade through someone else cuts them, sparks and a hiss
 - A recording keeps what you are heard doing: saber swings, igniting it, jumps, rolls
 - **Effects tab**: pick an effect in the effect manager, which opens on the world: where you put it down, turned and sized as you had it, it goes in the cinematic at the moment picked on the timeline instead of on the server. Then drag it over walls and floors in the view, or press J and drag its move arrows; set when it starts, whether it plays once or over and over for as long as you like, its size and which way it faces. Effects have their own row on the timeline, to drag them or their end
 - **Sounds tab**: pick a sound in the Sound Manager, which says **Add to cinematic** instead of Send: it goes in the cinematic at the moment picked on the timeline instead of to the server. Set when it starts, whether it plays once or over and over for as long as you like, and whether it's heard **everywhere** alike or **from a spot**, louder nearer it: drag the spot over walls and floors in the view, press J for its move arrows, or put it at the crosshair. **Listen** hears it on your side. Sounds have their own row on the timeline too. A sound playing once still plays to its end if the cinematic is stopped early
-- **Timeline** under the view: a row for the camera, two for each one in it, one for the effects and one for the sounds. A shot made longer or shorter takes what's in it along, stretched with it, and what comes after it moves by as much; adding or taking out a shot moves what follows too. Click or drag to any moment and see it then, through the cinematic's camera or your free camera, everyone where they'd be and on their animation's frame. Drag the bars to change when things start, an animation's end to change how long it lasts, a spot or a shot's end to change when the camera gets there
+- **Text tab**: words on the screen at any moment of the cinematic, for as long as you set: a line said on the **bottom bar**, with who says it before it (a player, an NPC or any name), a title on the **top bar** (*Mos Eisley, three days later*), a **center** message, or a **notification** in the top left. Every color works, RPMod's too; small, normal or large; **Typed out** shows it a letter at a time. Several at once go one under the other. They have their own row on the timeline, to drag them or their end, and show at the moment picked on the timeline as you write them. Seen by everyone with this client when it's played for everyone, over a fade to black too
+- **Record a shot: fly the camera** on the Camera tab keeps the free camera as you fly it, up to a minute, then Stop (or Enter) makes it a shot after the one shown, as fast as you flew it
+- **Bars** thin, normal or wide, for the shape of picture you want
+- **World tab**: **Time** plays stretches of it in slow motion, or faster: the camera, everyone the cinematic moves, its extras, props, lights and words go at that speed; what the server moves goes at its own
+- **Ctrl+click** bars on the timeline to pick several, outlined in cyan; dragging one moves them all together
+- **+1 s / -1 s** on the timeline put a second more in at the moment picked, or take one out from it: the shot there gets longer or shorter where the moment is, and everything after it moves along
+- **Loop**: Preview goes round and round between the marks either side of the moment picked (or the start and the end), to work on one beat
+- **Picture** saves the moment picked as the players will see it, through the cinematic's camera with its bars, texts and filters and nothing of the manager's, in `screenshots/`
+- **Marks**: **+ Mark** on the timeline marks the moment picked, a yellow line with its number; the moment, and every bar dragged, snaps to a mark when it comes near one. **Unmark** at a mark takes it away
+- **Seen: only those in it** hides everyone else while it plays, players and NPCs, you too if you're not in it, so a crowded server doesn't walk through the scene (on screens with this client)
+- **Music**: **+ Music** on the Sounds tab picks a track in the music manager; it plays at its moment in place of the map's music, for a while or on to the end, and the map's comes back after
+- **World tab**: **Map** changes the map's look for a while, faded in and out: the light of the whole map, darker or brighter and in a colour, the sky's colour, and fog over everything, how far you see through it and its colour. One over another blends into it: night falling, an alarm's red, a dust haze. A look can also show one of the map's **Map edits** layouts while it lasts, made in the Map Editor: its props hidden or moved, its textures changed, at that moment of the cinematic; what was shown before comes back after (others see it if they have the layout too, or you've shared it). **Game sounds** turns the game's own sounds down, or off, while the cinematic plays, its music as loud as it was; put back after, a crash too. *The sky and fog need the release's renderers.*
+- **World tab**: **Screen** puts something over the whole picture for a while: a flash dying away, a tint of any colour faded in and out (black at full strength: a fade out and back in), or the edges darkened
+- **World tab**: **Props** are models in the scene for as long as you set: pick one from every model your game has, then give it keys at moments of it, where it is and how it's turned (drag a key over walls and floors, or press J for its move arrows), and it goes from one to the next, smoothly or straight, at any size: a ship setting down, a speeder going by, a crate falling. **Lights** come on at their moment, at a spot or on someone, in any colour and reach: steady, flickering, pulsing, a strobe or a flash dying away, faded in and out. Seen on screens with this client; props aren't solid
+- **Timeline** under the view: a row for the camera, two for each one in it, and one each for the effects, the sounds, the text, the props and the lights. A shot made longer or shorter takes what's in it along, stretched with it, and what comes after it moves by as much; adding or taking out a shot moves what follows too. Click or drag to any moment and see it then, through the cinematic's camera or your free camera, everyone where they'd be and on their animation's frame. Drag the bars to change when things start, an animation's end to change how long it lasts, a spot or a shot's end to change when the camera gets there
 - Preview it on your own screen, from the start or the moment picked
+- **Video** records it from the start to `videos/<name>-001.avi` in the game folder, every frame at `cl_aviFrameRate` (25 unless you set it, 60 for smooth), whatever your frame rate, with nothing of the manager over it; or `/cinematicmanager video <name>`
+- **Undo and redo**: Ctrl+Z goes back a step, Ctrl+Y forward again; a drag or a run of clicks on one control goes back in one. **Copy and paste**: Ctrl+C copies what's picked (a shot, an action, an effect, a sound, a text, a prop or a light) and Ctrl+V puts it in at the moment picked on the timeline. An action goes to whoever is picked, so a move or a recording can be given to someone else; with nobody's action picked, Ctrl+C copies everything that person does
 - **Play for everyone** sends it whole (a part a second), then it plays on every screen with this client at the same time; **End for everyone** stops it. NPCs are brought on the server to where their moves end, so players without this client see them there too
 - Cinematics are saved by name and played with the Storyteller's Play cinematic step, or `/cinematicmanager send <name>`. Camera shots made before open as a cinematic of one shot
 - **Depth of field**: sharp at the distance you set, on whatever the camera looks at, or on a player or NPC as they move, or on a moving spot, blurred in front and behind; each shot keeps its own, and each spot can change it. A moving spot is a circle in the view as wide as what stays sharp: drag it onto what is to be in focus, then at another moment of the timeline drag it again for another key, and the focus goes from key to key; the wheel on it makes it deeper or shallower, and its keys drag along the timeline. *Needs the rd-vanilla_x86.dll from the release, or the Vulkan renderer with `r_fbo 1`.*
+- **Keep someone in frame** (the Camera tab's Track page): a player or NPC, typed or picked with **Aim**. A path keeps its spots and turns to them wherever they go; an orbit circles them as they move, and with **From yaw: the way they face** it stays where you put it round them, behind them (180), beside them (90) or in front (0), for a chase camera that turns with them. A camera circling someone keeps out of the walls round them, coming in nearer instead
+- **Stops here** on a path's spot: the camera slows to a stop at it and sets off slowly from it, as a real camera would, instead of going through it
+- **Dolly zoom** (Track page, on a path keeping someone in frame or looking at a point): the camera zooms as it moves so what it looks at stays the same size while everything behind stretches or closes in, the vertigo shot
+- **Shake**: **Handheld** sways the shot as if the camera were held by hand, light, medium or heavy; **+ Jolt** shakes it at a moment of the shot, from 1 to 10, dying away over the time you set: an explosion, a ship setting down, a door slamming
 - **Filters** for each shot: black and white, noir, sepia, old film, night vision, thermal, security camera, VHS tape, hologram, warm, cold, faded or negative. *Needs the rd-vanilla_x86.dll from the release, or the Vulkan renderer with `r_fbo 1`.*
 - **Transitions** in and out of each shot: a fade, or a wipe from the left, the right, the top or the bottom, in black or any color, as long as you like
 - Players moved or animated, you too, are only seen that way by those with this client, and go back where they were when it ends
@@ -361,7 +397,7 @@ Edit the map on your own screen: move or hide any part of it, place models, ligh
 
 - **Map**: every entity of the map, with all its keys; triggers boxed in orange and brush entities in blue
 - **Brushes**: any brush of the map, not only its props, moved with the X, Y and Z arrows, or hidden on your screen
-- **Models**: place models, carry them to the crosshair, turn and scale them. The map's own props can be lifted out too, to move or remove them
+- **Models**: place models, carry them to the crosshair, turn and scale them. The map's own props can be lifted out too, to move or remove them; or swapped for another model: pick it in the list and **Swap for ...** hides the prop and stands the model where it was, as big as fits in its place, ready to turn and scale. It takes the light around it rather than the light baked into the map
   - Other maps too, whole: type *map* in the list, pick one and Add puts it at the crosshair, its middle there and its lowest point on what you're looking at; move, turn and scale it like a model to fuse the two maps; it turns and scales around that spot, and its sky and fog are left out. It's drawn only: no one can walk on it, as the server only knows its own map. Others see it shared if they have that map too
 - **Lights**: dynamic lights with a color and reach, that can follow a light style
 - **Triggers**: boxes that run a console command when you walk in
@@ -453,6 +489,21 @@ Choose which styles your style key cycles through, or jump straight to one.
 - The server only knows "next style", so the client cycles for you until you're there; the styles in between show for a moment
 - Dual sabers and the staff are left as they are
 
+## Special Moves
+
+Every special move the saber has, what it does and how it's done, and a key to play it for you. `/specialmoves` opens it, or **TOOLS** in the in-game menu.
+
+- Moves in groups: **Katas**, **Forward**, **Back**, **Side**, **Kicks**, **Acrobatics**, **Automatic** (mirror attacks, saber throw, getting up, saber locks) and **.sab only**
+- Each one says how it's done by hand, the styles it's for, the force points and Force Jump level it takes, and whether you can do it now with the saber, style and force points you have (the ones you can't are grey)
+- **Bind a key** gives it a key; **Try it** plays it straight away. A bound key plays the move's keys for you for a moment (Attack and Alt Attack, the directions, jump and crouch), waiting for the swing before it to end, then gives the keys back; the mouse still turns you. The server sees an ordinary player doing the move
+  - Katas: Attack a moment before Alt Attack (Alt alone throws the saber), standing still
+  - Lunge (Fast), spin attack (Dual, Staff), death from above (Strong), flip-over slash (Medium), the staff's twirling leap, the dual double hop, stab down, back attacks, the staff's backflip attack, cartwheels and the staff's butterflies, the staff's kicks
+  - Rolls (forward, back, left, right), roll stab, back flip, flips, wall runs, wall flips, running up a wall and grabbing one
+- Moves that need someone there (back attack, stab down) or a wall (wall runs, flips and grabs) are played anyway: without them they're an ordinary swing or jump
+- A roll backwards needs Force Speed or Rage on: running backwards is a quarter slower, too slow to roll
+- **.sab only**: the moves a saber's `.sab` can put in place of the kata, the lunge or a jump attack (`kataMove`, `lungeAtkMove`, `jumpAtk...Move`), and those the game has but never starts in multiplayer. They're listed, not played: the server's copy of the `.sab` decides them
+- The moves are base Jedi Academy's, which RPMod keeps
+
 ## Animation Manager *(custom emotes are experimental)*
 
 Every animation in the game, emotes made of emotes, and emotes of your own. `/animationmanager` opens it (bind it to a key).
@@ -481,12 +532,11 @@ Characters saved, and swapped to in one click: for missions, or anyone you play.
 
 ## Skin Select
 
-Every skin of your model, and every model you have, worn in one click.
+Every skin of your model worn in one click.
 
 - `/skinselect` shows the skins of the model you are: each `model_<skin>.skin` as a card, the character wearing it; click one to wear it. The one worn now is outlined
 - A model made of parts (`head_`, `torso_` and `lower_` skins, as the base game's Jedi are) has a **Put together** card first: step through the heads, torsos and legs with **<** and **>**, see them together, click it to wear that combination
-- **All models** shows every model installed, as it is: **Wear it**, or click it for its skins. **Back to all models** goes back
-- The same window as the presets, with their **Presets** tab, its search and its pages; `/skinselect <model>` opens on that model's skins, `/skinselect models` on all of them
+- The same window as the presets, with their **Presets** tab, its search and its pages; `/skinselect <model>` opens on that model's skins
 
 ## Asset Manager
 
@@ -502,6 +552,16 @@ Your Discord profile shows what you're playing: "Playing ::JEDI::", the server (
 
 - Spoken straight to the Discord app on your computer: nothing to install, and nothing happens when Discord isn't running
 - Off until you turn it on: **Setup > Game Options > Discord Status**, or `cl_discord 1`; `cl_discordPrivate 1` leaves out the server and your character's name
+
+## Esc Menu
+
+A menu drawn by this client, with room for everything, in two looks: **Modern** or **KOTOR**. Esc still opens the game's own bar (below, **Classic**) until you pick one of them in **Setup > Game Options > Esc Menu** (or `cl_escMenu`); `/escmenu` opens it anytime.
+
+- **Modern:** the categories down the left (Game, Character, Abilities, Messages, Tools, Settings) and the picked one's entries as cards on the right, scrolled with the wheel or the bar. Type anywhere to search every entry; Esc clears the search. **Resume** and **Leave** stay at the bottom left
+- **KOTOR:** as KOTOR's in-game screens: a framed panel with tabs along the top (Character, Equipment, Inventory, Abilities, Messages, Journal, Map, Options), the tab's entries on the left and the picked one told about on the right, with **Open**. A click picks an entry, a second click (or Enter) opens it. The Character tab shows you, turning, with your name and model
+- **What's in it:** joining the game or spectating, JEDI's servers (their maps and players, **Connect**), Leave and Quit (each asks first), your Profile, Presets, Skin Select, Languages, the Effect Replacer, Special Moves, the Animation Manager, Radial Menus, the Chat Log, your datapad and its HoloNet, Comport and Pazaak, Feedback, every tool under Tools (Inventory in KOTOR), and Settings: Controls, Setup and the Renderer page (the game's own pages, opened straight there), the Camera (the same settings as the classic menu's camera panel, with **Back to defaults**), Console Settings and **Menu Style**
+- Keys: Up and Down pick, Enter opens, Tab or Left and Right change category or tab, Backspace leaves a panel, Esc closes (a panel first)
+- **Menu Style**, in its Settings or **Setup > Game Options > Esc Menu**, picks Modern, KOTOR or Classic (`cl_escMenu` 1, 2, 0). `/escmenu` opens it whichever is picked, so Classic players can still reach it
 
 ## In-game Menu and Camera Settings
 
@@ -548,6 +608,42 @@ The same lists and text boxes in every window.
 - In a text box, click to put the cursor anywhere, Home/End and the arrows move it, Ctrl+arrows jump a word, Ctrl+Backspace deletes one
 - Select with Shift or by dragging the mouse, double-click a word; Ctrl+A selects all, Ctrl+C, Ctrl+X and Ctrl+V copy, cut and paste
 - A text too long for its box goes on to the lines below while you type it, so long lines (Say, NPC talk, center messages...) can be read and fixed whole
+
+## Chat Log
+
+The chat kept in files as you play: plain text, and a page that looks like the console. `/chatlog` opens its window, or **TOOLS** in the in-game menu.
+
+- A day on a server is a pair of files in `chatlogs/` (in your `rpmod` folder): `2026-11-08 JEDI Temple.txt` and `.html`. Coming back the same day carries on in the same pair, with a line where you joined and left; a new day starts a new pair, at midnight too
+- The `.txt` is the chat with the colours left out, each line with its time. The `.html` opens in a browser looking like the console: dark, a console font, every colour the console shows, RPMod's `^a`-`^z` and `^A`-`^Z` too. A bar at its top shows or hides each kind of chat. It's written as you play, so reloading it shows the latest lines
+- **Start by itself**: recording begins on joining any server (`cl_chatLog 1`); otherwise **Start recording** does it for this server. Stopping keeps it off on this server until started again
+- Normal chat always goes in; each of these has a setting: **Tells** (yours say who they went to), **Team chat**, **Whispers and comms**, **OOC** `(( ))`, **Emotes** `/me`, **Admin chat** (`<Admin>`)
+- The chat is kept as it was shown: a language your character doesn't know as gibberish, NPC talk as chat. The storyteller's hidden messages and the tools' hooks never go in
+- **Open page** opens today's page in your browser, **Open folder** the folder
+
+## Datapad
+
+A datapad on your screen, used like a phone. `/datapad`, or **TOOLS** in the in-game menu.
+
+- `/datapad` opens it: it rises in the bottom right corner, from above the force and ammo HUD down to the screen's edge, and the mouse works on it at once. **Esc**, `/datapad` again or **Close** puts it away; **Home** goes back to its apps. An app that needs the room has it bigger, on the right side of the screen
+- On a wide screen with `cl_ratioFix 1` it keeps its shape, as the text does
+- Its top bar shows JEDI's time: `474.08 ABY - 1345/49 GST` (the year up one each month, 474 in November 2026; the day of the month; then the hour and minute, and the seconds, in New York's time), and the server's name. Names on it show RPMod's colours, as the console does
+- **Apps:** the home screen has the apps; one opens over it, and **< Back** or **Home** returns. The first is **Settings**:
+  - **Colour:** what it's lit in: cyan, blue, green, amber, red, violet or white
+  - **Keys:** click **Open it** or **Close it**, then press the key for it (Esc leaves it as it was). They work while you play and while it's open
+  - **Your character holds a datapad while it's open:** your character plays RPMod's `/emlift` as you open it, and it ends (a moment's crouch, as C does) as you fold or close it
+- **Pazaak:** KOTOR's card game, against another player on the same server, through C1B3R. The datapad grows to the right side of the screen for it
+  - **Play:** the server's tables, to **Join** one waiting for a player or **Watch** a match; or start one (a name, all cards or ± cards only, your deck) and wait for someone to sit down
+  - **The table:** each player's 3x3 table, total, sets won and turn; your hand of 4 (the other one face down). Click a card, then **Play it** (+ or − for ± cards, 1 or 2 for the 1±2), then **End turn** or **Stand**. A turn lasts 90 s. Leaving or **Forfeit** gives the match to the other player
+  - **Side decks:** build 10-card decks from every card, name them and **Save** them on C1B3R (they follow your game everywhere); **Play with it** picks the one you play with
+  - **Rules** on the datapad. C1B3R deals and checks every move: nobody sees your hand or plays a card they don't have
+  - The cards are the datapad's own; Jedi Academy's sounds. Art of your own in a pk3 is used instead: `pazaak/cards/main`, `plus`, `minus`, `either`, `special`, `back` (.png, .tga or .jpg) and `pazaak/sounds/click`, `deal`, `play`, `turn`, `stand`, `win`, `lose` (.wav)
+- **HoloNet:** JEDI's news from jediholo.net, read by your game straight from the site: the latest articles listed (title, date, author, category), one opened whole with its pictures, scrolled with the wheel, and **Open on the web**. Read again every 10 minutes, or with **Refresh**
+- **Comport:** JEDI's forum, as datapad pages: the forums by category, a forum's topics (pinned ones first, with their replies and views, page by page), a topic's posts with their quotes and pictures, and **On the web**
+  - **Log in** with your Comport name and password to read what needs an account, and to **Reply** to a topic (Enter starts a new paragraph; BBCode as on the site). The forum's own messages show if something's refused (posting too soon, too short...)
+  - Your password goes to the Comport alone, over HTTPS, and is never kept. **Stay logged in** keeps only the forum's cookies, in `datapad/comport.cookies` in your game folder (keep that file to yourself); **Log out** removes them. Without logging in, **Read as a guest** shows what the forum shows visitors
+- Pictures (HoloNet, Comport) are kept in `datapad/cache/`, emptied by itself past 64 MB. JPEG and PNG show; WebP pictures show as a placeholder
+- `/datapad open`, `/datapad close`, `/datapad settings`, `/datapad pazaak`, `/datapad holonet` and `/datapad comport` go straight there
+- `/datapad pos <x> <y>` opens it elsewhere, on the 640x480 screen; `/datapad pos` puts it back above the HUD
 
 ## Long Chat in Parts
 
@@ -733,6 +829,22 @@ Send a bug or an idea for the OpenJK-RPMod project, and read the answers, withou
 - One bug or idea a report, please: each is answered on its own. A few reports an hour at most
 - On Linux and macOS it needs libcurl, as the update check does
 
+## C1B3R: Everyone with the Client Connected
+
+The tools share what they do with everyone with this client ("hooks": NPC walks and talk, cinematics, objectives, map edits, the sky, emotes, shared shaders and effects...). They go through C1B3R, the project's service (the feedback bot made bigger), and never through the server: players without the client see nothing of them.
+
+- Once loaded into a server, your game opens a session with C1B3R and keeps a line open: what the others send reaches you as soon as it's sent. Everyone with the client is connected and receives, logged in or not
+- **Sending is for admins, and staff say who:** a hook you send goes to C1B3R once, and on to everyone with the client at the same moment, so a long cinematic or map edit reaches 20 players as fast as one. To send, link your game once:
+  1. In game, logged in to your RPMod account: `/c1b3r link`. Your browser opens C1B3R's page for it, showing your game and account
+  2. Press **Continue with Discord** and authorize on Discord's own page (it only tells C1B3R who you are). Staff are asked to approve it, with Approve and Deny buttons
+     - Or, without a browser, type `/link <code>` in Discord with the code the console shows (good for 10 minutes), in the project's server or in a DM with C1B3R; `/c1b3r discord` adds C1B3R to your Discord account for that if you're not in the server
+  3. Your game keeps a token from then on (`cl_c1b3rToken`, in your `.cfg`: keep it to yourself) and connects with it on every server. Once staff approve, it sends, while you're logged in to the RPMod account you linked; the console says when
+- On JEDI Temple, as for the experimental features, only Department Head, Council and God send, approved or not: your game tells C1B3R the rank `rpstatus` gives it, and C1B3R refuses the rest there. On the other servers an approved link is enough
+- Not linked, waiting for approval, or logged in to another account, your hooks show on your screen only, and the console says why. Staff can revoke a link with the button under it; `/unlink` in Discord or `/c1b3r unlink` in game ends it too. C1B3R keeps only the token's fingerprint, and the token works only with your game's own private key; it never shows your account to other players
+- Hooks don't go through `rpnotify` any more: a client from before, still using it, neither reaches this one nor hears from it
+- `/c1b3r` shows your link (connected, linked, approved, the RPMod account you're on); `/clientusers` shows who on the server has the client: linked, and who sends
+- `cl_presenceUrl` is C1B3R's address; empty, nothing is shared and hooks show on your screen only. On a server of your own (`/devmap`) hooks show on your screen only
+
 ## Vulkan Renderer *(experimental)*
 
 [TaystJK](https://github.com/taysta/TaystJK)'s Vulkan renderer comes with the game, next to the usual OpenGL one, which stays the default.
@@ -759,8 +871,10 @@ Send a bug or an idea for the OpenJK-RPMod project, and read the answers, withou
 
 Some features reach other players through workarounds that are only available to those that use this client. These 'workarounds' will eventually be removed in favor of server support.
 
-- Client required (Experimental): reaches other players hidden in an `rpnotify`, so only those with this client see it, and it needs **TOGGLE EXPERIMENTAL** on
+- Client required (Experimental): reaches other players through C1B3R, so only those with this client see it; it needs **TOGGLE EXPERIMENTAL** on, and a game linked in Discord and approved by staff to send it (`/c1b3r link`)
 - Not required (everyone): works with the toggle off
+
+On JEDI Temple only the admin ranks Department Head, Council and God may turn the toggle on. Your rank is asked with `rpstatus` a few seconds after you join; until it's in, the toggle stays off, and for any other rank it's turned off, `/rpexperimental` too. Seeing what others share doesn't need the toggle.
 
 Features not listed here are not experimental.
 
@@ -788,8 +902,8 @@ Features not listed here are not experimental.
   - Client required (Experimental): **Share with all** and **Reset for all** in the Sky tab, **Shared** in the Mine tab
   - Not required (everyone): finding and remapping shaders, overlays, the sky and your player shaders on your own screen
 - **Effect Manager**
-  - Client required (Experimental): sharing an effect's **Size** (with the toggle off it's drawn that size on your screen only)
-  - Not required (everyone): placing, bolting, moving and removing effects, sent with RPMod's own `rpeffect`
+  - Client required (Experimental): sharing an effect's **Size** (with the toggle off it's drawn that size on your screen only), **Shared** in the Mine tab (Effect Replacer)
+  - Not required (everyone): placing, bolting, moving and removing effects, sent with RPMod's own `rpeffect`; your own effects swapped on your screen
 - **Map Editor**
   - Client required (Experimental): **Share** and **Unshare** (`/mapedit share`, `/mapedit unshare`)
   - Not required (everyone): editing and layouts on your own screen

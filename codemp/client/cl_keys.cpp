@@ -1675,6 +1675,22 @@ void CL_KeyDownEvent( int key, unsigned time )
 			CL_Presets_Escape();
 			return;
 		}
+		if ( ( Key_GetCatcher() & KEYCATCH_SPECIALMOVES ) && !( Key_GetCatcher() & KEYCATCH_UI ) ) {
+			CL_SpecialMoves_Escape();
+			return;
+		}
+		if ( ( Key_GetCatcher() & KEYCATCH_CHATLOG ) && !( Key_GetCatcher() & KEYCATCH_UI ) ) {
+			CL_ChatLog_Escape();
+			return;
+		}
+		if ( ( Key_GetCatcher() & KEYCATCH_DATAPAD ) && !( Key_GetCatcher() & KEYCATCH_UI ) ) {
+			CL_Datapad_Escape();
+			return;
+		}
+		if ( ( Key_GetCatcher() & KEYCATCH_ESCMENU ) && !( Key_GetCatcher() & KEYCATCH_UI ) ) {
+			CL_EscMenu_Escape();
+			return;
+		}
 		if ( ( Key_GetCatcher() & KEYCATCH_CINEDITOR ) && !( Key_GetCatcher() & KEYCATCH_UI ) ) {
 			CL_RpCinematic_EditorEscape();
 			return;
@@ -1703,9 +1719,11 @@ void CL_KeyDownEvent( int key, unsigned time )
 		}
 
 		if ( !(Key_GetCatcher() & KEYCATCH_UI) ) {
-			if ( cls.state == CA_ACTIVE && !clc.demoplaying )
-				UIVM_SetActiveMenu( UIMENU_INGAME );
-			else {
+			if ( cls.state == CA_ACTIVE && !clc.demoplaying ) {
+				// the Esc menu, Modern or KOTOR; JKA's own when Classic is picked
+				if ( !CL_EscMenu_OpenFromEscape() )
+					UIVM_SetActiveMenu( UIMENU_INGAME );
+			} else {
 				CL_Disconnect_f();
 				S_StopAllSounds();
 				UIVM_SetActiveMenu( UIMENU_MAIN );
@@ -1781,6 +1799,22 @@ void CL_KeyDownEvent( int key, unsigned time )
 	// presets
 	else if ( Key_GetCatcher() & KEYCATCH_PRESETS ) {
 		CL_Presets_KeyEvent( key, qtrue );
+	}
+	// the Esc menu
+	else if ( Key_GetCatcher() & KEYCATCH_ESCMENU ) {
+		CL_EscMenu_KeyEvent( key, qtrue );
+	}
+	// special moves
+	else if ( Key_GetCatcher() & KEYCATCH_SPECIALMOVES ) {
+		CL_SpecialMoves_KeyEvent( key, qtrue );
+	}
+	// chat log
+	else if ( Key_GetCatcher() & KEYCATCH_CHATLOG ) {
+		CL_ChatLog_KeyEvent( key, qtrue );
+	}
+	// datapad, open
+	else if ( Key_GetCatcher() & KEYCATCH_DATAPAD ) {
+		CL_Datapad_KeyEvent( key, qtrue );
 	}
 	// asset manager
 	else if ( Key_GetCatcher() & KEYCATCH_ASSETMANAGER ) {
@@ -1903,9 +1937,11 @@ void CL_CharEvent( int key ) {
 	else if ( Key_GetCatcher() & KEYCATCH_SOUNDMANAGER )	CL_SoundManager_CharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_ANIMMANAGER )	CL_AnimManager_CharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_PRESETS )		CL_Presets_CharEvent( key );
+	else if ( Key_GetCatcher() & KEYCATCH_ESCMENU )		CL_EscMenu_CharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_ASSETMANAGER )	CL_AssetManager_CharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_CINEDITOR )	CL_RpCinematic_EditorCharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_RADIALMENU )	CL_RadialMenu_CharEvent( key );
+	else if ( Key_GetCatcher() & KEYCATCH_DATAPAD )		CL_Datapad_CharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_LANGUAGES )	CL_Languages_CharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_CGAME )		CGVM_KeyEvent( key|K_CHAR_FLAG, qtrue );
 	else if ( Key_GetCatcher() & KEYCATCH_MESSAGE )		Field_CharEvent( &chatField, key );

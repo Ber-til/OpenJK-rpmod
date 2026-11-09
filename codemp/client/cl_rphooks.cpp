@@ -18,14 +18,13 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 ===========================================================================
 */
 
-// cl_rphooks.cpp -- client hooks carried in RPMod's prints
+// cl_rphooks.cpp -- client hooks: what the tools share with everyone with this client
 //
-// Until the server can send them itself, an admin's
+// A hook is a line of text, cmd:<hook>/<args...>: <message>. The tools still make them as
 //   rpnotify -1 1 cmd:<hook>/<args...>: <message>
-// reaches clients as a "print" and an "info" (RPMod's banner) whose text starts with
-// "cmd:" (rpcentersay's "cp" works too, but the server crashes on its long words). These
-// are never shown, in the console, the banner or the middle of the screen: the first one
-// goes to the hook named instead.
+// but that never reaches the server: C1B3R carries it to everyone with this client on the server
+// (see cl_presence.cpp), and the sender runs it at once. Hooks the server sends in prints, from
+// clients from before that still use rpnotify, are hidden and not run.
 //
 //   cmd:npc/talk/<npc>/<display name>/<name colour>/<emote|none>: <message>
 //     (cmd:npc/<npc>/talk/... too, say for talk, and spaces around the parts)
@@ -58,6 +57,11 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 //     shells drawn with them on the screens of everyone with this client; sent as
 //     they change, as the map starts and as someone joins. cmd:mine/<client number>/clear
 //     drops them. See cl_shadermanager.cpp.
+//
+//   cmd:fxmine/<client number>/<part>/<parts>: <effect>><effect>|...
+//     a player's effects swapped in the effect manager's Mine tab: their own played as the
+//     others on the screens of everyone with this client who has those; cmd:fxmine/<client
+//     number>/clear drops them. See cl_effectswap.cpp.
 //
 //   cmd:fxscale/<x y z>/<size>[/once]: <effect>
 //     the effect playing there drawn that much bigger or smaller, 1 as made; see
@@ -191,24 +195,58 @@ static rhResult_t RH_Npc( char **argv, int argc, const char *message ) {
 static qboolean rhExperimental;
 static cvar_t *cl_rpExperimental;		// on as the game starts: rpexperimental
 
+#define RH_TEMPLE_RANKS		"Department Head, Council and God"
+
+// why experimental features can't be on here, or NULL: on Temple they're only for some ranks,
+// and off until the server has said the rank is one of them
+const char *CL_RpHooks_ExperimentalBlocked( void ) {
+	if ( !CL_RpAdmin_OnTemple() )
+		return NULL;
+	switch ( CL_RpAdmin_TempleRank() ) {
+	case RA_TEMPLE_YES:
+		return NULL;
+	case RA_TEMPLE_NO:
+		return "On Temple, experimental features are only for " RH_TEMPLE_RANKS;
+	default:
+		return "On Temple, experimental features are only for " RH_TEMPLE_RANKS ": checking your rank, try again in a moment";
+	}
+}
+
 qboolean CL_RpHooks_Experimental( void ) {
-	return rhExperimental;
+	return (qboolean)( rhExperimental && !CL_RpHooks_ExperimentalBlocked() );
+}
+
+// on Temple with a rank that may not have them: turned off, for good if they were kept on
+void CL_RpHooks_ExperimentalFrame( void ) {
+	if ( !rhExperimental && !cl_rpExperimental->integer )
+		return;
+	if ( !CL_RpAdmin_OnTemple() || CL_RpAdmin_TempleRank() != RA_TEMPLE_NO )
+		return;
+	rhExperimental = qfalse;
+	if ( cl_rpExperimental->integer )
+		Cvar_Set( "cl_rpExperimental", "0" );
+	Com_Printf( S_COLOR_YELLOW "Experimental features turned off: on Temple they're only for " RH_TEMPLE_RANKS "\n" );
 }
 
 // rpexperimental [on|off]: experimental features on or off now, and so every time the game starts.
 // A tool's TOGGLE EXPERIMENTAL is for the session only
 static void CL_RpExperimental_f( void ) {
 	const char *arg = Cmd_Argv( 1 );
+	const char *blocked;
 	qboolean on;
 
 	if ( !arg[0] )
-		on = (qboolean)!rhExperimental;
+		on = (qboolean)!CL_RpHooks_Experimental();
 	else if ( !Q_stricmp( arg, "on" ) || !Q_stricmp( arg, "1" ) )
 		on = qtrue;
 	else if ( !Q_stricmp( arg, "off" ) || !Q_stricmp( arg, "0" ) )
 		on = qfalse;
 	else {
 		Com_Printf( "usage: rpexperimental [on|off]   experimental features, kept for every time the game starts\n" );
+		return;
+	}
+	if ( on && ( blocked = CL_RpHooks_ExperimentalBlocked() ) != NULL ) {
+		Com_Printf( S_COLOR_YELLOW "%s\n", blocked );
 		return;
 	}
 	rhExperimental = on;
@@ -218,9 +256,17 @@ static void CL_RpExperimental_f( void ) {
 		Com_Printf( S_COLOR_YELLOW "%s\n", RP_EXPERIMENTAL_WARNING );
 }
 
-void CL_RpHooks_SetExperimental( qboolean on ) {
+// a tool's TOGGLE EXPERIMENTAL, for this session: qfalse if they can't be on here (said why)
+qboolean CL_RpHooks_SetExperimental( qboolean on ) {
+	const char *blocked;
+
+	if ( on && ( blocked = CL_RpHooks_ExperimentalBlocked() ) != NULL ) {
+		Com_Printf( S_COLOR_YELLOW "%s\n", blocked );
+		return qfalse;
+	}
 	rhExperimental = on;
 	Com_Printf( "Experimental features %s\n", on ? S_COLOR_YELLOW "on" S_COLOR_WHITE " for this session" : "off" );
+	return qtrue;
 }
 
 // a part of the hook: what would end it early, a / or the : before the message, goes as ~s and
@@ -455,6 +501,10 @@ static rhResult_t RH_Run( const char *text ) {
 		CL_ShaderManager_MineHook( argv + 1, argc - 1, message );
 		return RH_DROP;
 	}
+	if ( !Q_stricmp( argv[0], "fxmine" ) ) {
+		CL_EffectSwap_Hook( argv + 1, argc - 1, message );
+		return RH_DROP;
+	}
 	if ( !Q_stricmp( argv[0], "story" ) ) {
 		CL_Storyteller_Hook( argv + 1, argc - 1, message );
 		return RH_DROP;
@@ -676,6 +726,20 @@ static int RH_Font( void ) {
 	return font ? font : cls.menuFont;
 }
 
+// for the other tools: the font the subtitles use, and text in it with every colour, RPMod's
+// too, measured and drawn with a shadow
+int CL_RpHooks_Font( void ) {
+	return RH_Font();
+}
+
+int CL_RpHooks_TextWidth( const char *text, int font, float scale ) {
+	return RH_TextWidth( text, font, scale );
+}
+
+void CL_RpHooks_DrawText( float x, float y, const char *text, const float *color, int font, float scale ) {
+	RH_DrawText( x, y, text, color, font | STYLE_DROPSHADOW, scale );
+}
+
 // how RPMod's chat box shows chat from this far away (its rpc_chatRange_* cvars): qfalse
 // if it leaves it out, else how solid
 static qboolean RH_ChatRange( float distance, float *alpha ) {
@@ -867,22 +931,27 @@ void CL_RpHooks_Disconnect( void ) {
 	memset( &rhSubs, 0, sizeof( rhSubs ) );
 }
 
+// a hook come through C1B3R, or our own sent: run; one that hands the cgame another command (NPC
+// talk's chat) gives it to the cgame as if the server had sent it
+void CL_RpHooks_Deliver( const char *text ) {
+	if ( RH_Run( text ) == RH_REPLACED && cls.state == CA_ACTIVE )
+		CL_QueueCgameCommand( Cmd_Cmd() );
+}
+
 // the server command just tokenized: qfalse keeps it from the cgame
 qboolean CL_RpHooks_ServerCommand( qboolean *replaced ) {
 	const char *cmd = Cmd_Argv( 0 );
-	rhResult_t result;
 
 	*replaced = qfalse;
 	// rpnotify sends its text to the console (print) and to RPMod's banner (info), rpcentersay
 	// to the middle of the screen (cp); the first to arrive runs the hook, the copies are hidden
 	if ( strcmp( cmd, "print" ) && strcmp( cmd, "cp" ) && strcmp( cmd, "cps" ) && strcmp( cmd, "info" ) )
 		return qtrue;
+	// hooks come through C1B3R now: one the server brings, a client from before's rpnotify, is
+	// only hidden
 	for ( int i = 1; i < Cmd_Argc(); i++ ) {
-		if ( !RH_HookText( Cmd_Argv( i ) ) )
-			continue;
-		result = RH_Run( Cmd_Argv( i ) );
-		*replaced = (qboolean)( result == RH_REPLACED );
-		return (qboolean)( result != RH_DROP );
+		if ( RH_HookText( Cmd_Argv( i ) ) )
+			return qfalse;
 	}
 	return qtrue;
 }

@@ -28,7 +28,11 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 // the cinematic as it is then and the bars drag to retime things.
 //
 // Cinematics are saved in cinematics/<name>.cin, a line each:
-//   look <bars 0|1> <hud 0|1>
+//   look <bars 0|1> <hud 0|1> <only those in it seen 0|1> <bars 0 thin|1|2 wide> <the game's sounds %>
+//   mark <seconds in> <name|->                      a moment marked on the timeline
+//   speed <seconds in> <seconds> <percent>          slowed or sped up meanwhile
+//   maplook <seconds in> <seconds, 0 to the end> <fade seconds> <light %> <r g b> <sky r g b> <fog depth, 0 none> <fog r g b> <map editor layout|->
+//   force <ent> <seconds in> <seconds, 0 to the end> <cmForces> <at ent, -1 no one> <acted 0|1>
 //   shot <hold seconds> <hook>      a shot as the cin/path or cin/orbit hook has it (see
 //                                   cl_rpcinematic.cpp); a path of one spot is held that long
 //   ent <who>                       a player or an NPC: me, a number, a player's name, a targetname
@@ -42,6 +46,14 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 //   npccmd <ent> <seconds in> <command> [value]     an npc command, spaces in it as _
 //   spawn <ent> <seconds in> <x y z yaw> <team> <NPC type>   its targetname the ent's who
 //   remove <ent> <seconds in>                       taken out with npc kill
+//   appear <ent> <seconds in> <seconds, 0 to the end> <hidden 0|1> <size %> <cmShells> <cmSaberLooks> <blade %>
+//          <hand 0 right|1 left> <pitch yaw roll> <model held|-> <cmFaces>
+//   music <seconds in> <seconds, 0 to the end> <music/...>   a track in place of the map's
+//   prop <seconds in> <seconds, 0 to the end> <smooth 0|1> <scale> <ms,x,y,z,pitch,yaw,roll;...> <model>
+//   light <seconds in> <seconds, 0 to the end> <x y z> <radius> <r g b 0-1> <steady|flicker|pulse|strobe|flash 0-4> <fade seconds> <who|->
+//   screen <seconds in> <seconds> <0 flash|1 tint|2 dark edges> <r g b 0-1> <strength %> <fade seconds>
+//   txt <seconds in> <seconds> <where 0 bottom bar|1 top bar|2 center|3 notify> <size 0-2> <typed 0|1> <who>|<text>
+//   extra <ent> <x y z yaw> <saber 0 none|1|2 staff|3 two> <colour 0-5> <model[/skin]>   the ent "+name"
 //   rs <recording> <ms> <x y z> <pitch> <yaw> <legs> <torso> <flips> <holstered> <force powers> <saber move>
 // The shots of the camera editor from before (camshots/*.cam) open as a cinematic of one shot.
 //
@@ -62,6 +74,9 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #include "qcommon/cm_public.h"
 #include "cl_gizmo.h"
 #include "cl_widgets.h"
+#include <vector>
+#include <string>
+#include <algorithm>
 
 #define CM_DIR				"cinematics"	// in the game folder
 #define CM_EXT				".cin"
@@ -95,6 +110,28 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define CM_FX_ONCE_MS		600			// how long a one-off shows on the timeline
 #define CM_MAX_SND			24			// sounds in a cinematic
 #define CM_SND_MS			4000		// a new looping one plays this long
+#define CM_MAX_TXT			32			// texts in a cinematic
+#define CM_TXT_LEN			256
+#define CM_TXT_WHO_LEN		48
+#define CM_TXT_MS			3000		// a new one shows this long
+#define CM_TXT_FADE_MS		250
+#define CM_TXT_TYPE_MS		35			// typed out, a letter this often
+#define CM_TXT_MAX_LINES	8
+#define CM_MAX_PROPS		16			// props in a cinematic
+#define CM_PROP_KEYS		8
+#define CM_PROP_MS			4000		// a new one shows this long
+#define CM_MAX_LIGHTS		16
+#define CM_LIGHT_MS			3000
+#define CM_MAX_SCREENS		16
+#define CM_MAX_MARKS		16
+#define CM_MAX_MAPLOOKS		16
+#define CM_MAX_SPEEDS		16
+#define CM_SPEED_MS			2000
+#define CM_MAPLOOK_MS		4000
+#define CM_FOG_NONE			20000.0f	// fog this thin is none
+#define CM_CAMREC_MAX		600			// a camera flown and kept: a tenth of a second each, a minute
+#define CM_CAMREC_EVERY		100
+#define CM_SCREEN_MS		1500
 
 typedef enum {
 	CM_CLIP_MOVE,
@@ -106,8 +143,74 @@ typedef enum {
 	CM_CLIP_NPCCMD,		// an npc command at its moment: freeze, follow, dialog, hologram...
 	CM_CLIP_SPAWN,		// the NPC spawned at its moment, its targetname the ent's who
 	CM_CLIP_REMOVE,		// and taken out
+	CM_CLIP_LOOK,		// how they look meanwhile: hidden, their size, drawn as a hologram, their saber
+	CM_CLIP_FORCE,		// a force power at someone: its effect from their hands, and both of them acting it
 	CM_NUM_CLIPS
 } cmClipKind_t;
+
+// a force power: its effect, played again this often, from the hands to the one it's at or round
+// the one using it, and how each of them acts it
+typedef struct {
+	const char	*name;
+	const char	*effect;
+	int			every;				// ms
+	qboolean	atTarget;			// played on the one it's at, else from the hands toward them
+	qboolean	onSelf;				// played on the one using it
+	const char	*anim;				// the one using it
+	const char	*victim;			// the one it's at
+} cmForce_t;
+
+static const cmForce_t cmForces[] = {
+	{ "lightning", "force/lightning", 60, qfalse, qfalse, "BOTH_FORCELIGHTNING_HOLD", "BOTH_SONICPAIN_HOLD" },
+	{ "lightning, both hands", "force/lightningwide", 60, qfalse, qfalse, "BOTH_FORCE_2HANDEDLIGHTNING_HOLD", "BOTH_SONICPAIN_HOLD" },
+	{ "drain", "force/drain_hand", 80, qfalse, qfalse, "BOTH_FORCE_DRAIN_HOLD", "BOTH_SONICPAIN_HOLD" },
+	{ "grip", "force/force_touch", 400, qtrue, qfalse, "BOTH_FORCEGRIP_HOLD", "BOTH_CHOKE1" },
+	{ "push", "force/pushblur", 250, qfalse, qfalse, "BOTH_FORCEPUSH", NULL },
+	{ "pull", "force/pushblur", 250, qfalse, qfalse, "BOTH_FORCEPULL", NULL },
+	{ "heal", "force/heal", 1000, qfalse, qtrue, "BOTH_FORCEHEAL_START", NULL },
+	{ "rage", "force/rage2", 500, qfalse, qtrue, "BOTH_FORCE_RAGE", NULL }
+};
+#define CM_FORCE_MS			2000
+
+// what a look can draw someone as: in place of their body, or over it
+typedef struct {
+	const char	*name;
+	const char	*shader;
+	qboolean	over;
+} cmShell_t;
+
+static const cmShell_t cmShells[] = {
+	{ "as they are", NULL, qfalse },
+	{ "a hologram", "powerups/ysaliblueshell", qfalse },
+	{ "cloaked", "gfx/effects/cloakedShader", qfalse },
+	{ "force glow", "powerups/forceshell", qtrue },
+	{ "light side", "powerups/enlightenmentshell", qtrue },
+	{ "dark side", "powerups/endarkenmentshell", qtrue },
+	{ "electric", "gfx/effects/demp2shell", qtrue },
+	{ "red glow", "powerups/ysaliredshell", qtrue },
+	{ "yellow glow", "powerups/ysalimarishell", qtrue },
+	{ "force protect", "gfx/misc/forceprotect", qtrue }
+};
+
+// a look's face: as it is, talking, or one of the game's faces held
+static const struct {
+	const char	*name;
+	const char	*anim;
+} cmFaces[] = {
+	{ "as it is", NULL },
+	{ "talking", "FACE_TALK1" },
+	{ "smiling", "FACE_SMILE" },
+	{ "frowning", "FACE_FROWN" },
+	{ "alert", "FACE_ALERT" },
+	{ "eyes closed", "FACE_DEAD" }
+};
+#define CM_FACE_TALK		1
+
+// a look's saber: as it is, its blades off, or blades of a colour
+static const char *cmSaberLooks[] = { "as it is", "off", "red", "orange", "yellow", "green", "blue", "purple" };
+#define CM_SABER_OFF		1
+#define CM_SABER_COLORS		2		// the first of the colours
+#define CM_LOOK_UP			24.0f	// a player's origin is this far over their feet
 
 // what an NPC command can be
 static const char *cmNpcCmds[] = { "freeze", "unfreeze", "follow me", "stop following", "dialog", "no dialog",
@@ -187,11 +290,41 @@ typedef struct {
 	// a spawn: the NPC type and team, where in keys[0]
 	char		npcType[MAX_QPATH];
 	char		team[16];
+
+	// a look, for its a.ms (0 to the end): hidden, their size and blades' length in percent,
+	// cmShells, cmSaberLooks
+	qboolean	hidden;
+	int			size;
+	int			shell;
+	int			saber;
+	int			blade;
+	// and a model held: in the right hand or the left, turned in it
+	char		hold[MAX_QPATH];
+	int			holdHand;			// 0 right, 1 left
+	vec3_t		holdAng;
+	int			face;				// cmFaces
+
+	// a force power, for its a.ms (0 to the end): which (cmForces), at whom (an ent, -1 no one), and
+	// whether both act it
+	int			power;
+	int			target;
+	qboolean	forceAnims;
 } cmClip_t;
 
+// someone in it: a player or an NPC by who, or an extra, "+" and its name, that only screens
+// with this client draw, with its model, saber and spot
 typedef struct {
 	char		who[MAX_QPATH];
+	char		model[MAX_QPATH];	// an extra's: "model" or "model/skin"
+	int			saber;				// clExtraSaber_t
+	int			color;				// its blades', red to purple
+	vec3_t		home;				// where it stands until moved: an entity's origin, over the floor
+	float		yaw;
 } cmEnt_t;
+
+static qboolean CM_IsExtra( const char *who ) {
+	return (qboolean)( who[0] == '+' );
+}
 
 // an effect played at its moment: once, or again and again while it lasts
 typedef struct {
@@ -212,10 +345,118 @@ typedef struct {
 	char		path[MAX_QPATH];	// under sound/, as the sound manager has it
 	qboolean	spot;				// heard from org, else everywhere alike
 	vec3_t		org;
+	qboolean	music;				// a track: path under music/, in place of the map's, ms 0 to the end
 } cmSnd_t;
+
+// a text shown from its moment for as long as it lasts: on the bottom bar (a line said, who
+// says it before it), on the top bar, in the middle of the screen, or in the top left as a
+// notification; typed out a letter at a time or not. Drawn on the screens with this client
+typedef enum {
+	CM_TXT_BOTTOM,
+	CM_TXT_TOP,
+	CM_TXT_CENTER,
+	CM_TXT_NOTIFY,
+	CM_NUM_TXT_KINDS
+} cmTxtKind_t;
+
+static const char *cmTxtKinds[CM_NUM_TXT_KINDS] = { "Bottom bar", "Top bar", "Center", "Notify" };
+static const char *cmTxtSizes[] = { "small", "normal", "large" };
+
+typedef struct {
+	int			start;				// ms into the cinematic
+	int			ms;					// how long it shows
+	int			kind;				// cmTxtKind_t
+	int			size;				// 0 small, 1 normal, 2 large
+	qboolean	typed;				// a letter at a time
+	char		who[CM_TXT_WHO_LEN];	// who says it, shown before it; "" none
+	char		text[CM_TXT_LEN];
+} cmTxt_t;
+
+// a model in the scene from its moment for as long as it lasts, through its keys (ms into it,
+// where, turned how), smoothly or straight from one to the next: a ship setting down, a door
+typedef struct {
+	int			start;
+	int			ms;					// 0 to the end
+	char		model[MAX_QPATH];	// models/....md3
+	float		scale;
+	qboolean	smooth;
+	int			numKeys;
+	cmPlace_t	keys[CM_PROP_KEYS];
+} cmProp_t;
+
+// a light from its moment for as long as it lasts: at a spot or on someone, steady or flickering,
+// pulsing, strobing or a flash dying away, faded in and out
+typedef enum {
+	CM_LIGHT_STEADY,
+	CM_LIGHT_FLICKER,
+	CM_LIGHT_PULSE,
+	CM_LIGHT_STROBE,
+	CM_LIGHT_FLASH,
+	CM_NUM_LIGHT_FX
+} cmLightFx_t;
+
+static const char *cmLightFx[CM_NUM_LIGHT_FX] = { "steady", "flickering", "pulsing", "strobe", "a flash, dying away" };
+
+typedef struct {
+	int			start;
+	int			ms;					// 0 to the end
+	vec3_t		org;
+	char		who[MAX_QPATH];		// on someone, "" at org
+	float		radius;
+	vec3_t		color;
+	int			fx;					// cmLightFx_t
+	int			fade;				// ms in and out
+} cmLight_t;
+
+// over the whole picture from its moment for as long as it lasts: a flash dying away, a tint of
+// a colour faded in and out, or the edges darkened
+typedef enum {
+	CM_SCREEN_FLASH,
+	CM_SCREEN_TINT,
+	CM_SCREEN_VIGNETTE,
+	CM_NUM_SCREENS
+} cmScreenKind_t;
+
+static const char *cmScreenKinds[CM_NUM_SCREENS] = { "a flash", "a tint", "dark edges" };
+
+typedef struct {
+	int			start;
+	int			ms;
+	int			kind;				// cmScreenKind_t
+	vec3_t		color;
+	int			strength;			// percent
+	int			fade;				// ms in and out, a tint's and the edges'
+} cmScreen_t;
+
+// the map's look for a while, faded in and out: its light, how bright and what colour, the sky's
+// colour, and fog; one over another blends into it
+typedef struct {
+	int			start;
+	int			ms;					// 0 to the end
+	int			fade;
+	int			light;				// percent
+	vec3_t		lightColor;
+	vec3_t		skyColor;
+	float		fogDepth;			// how deep it takes to see nothing through it, 0 no fog
+	vec3_t		fogColor;
+	char		layout[MAX_QPATH];	// a map editor layout shown meanwhile: its props hidden or moved, textures...
+} cmMapLook_t;
+
+// a stretch of it played slower or faster: what the cinematic moves, the camera, those it poses,
+// its extras, props, lights and words; not what the server moves
+typedef struct {
+	int			start;				// ms of the cinematic's own time
+	int			ms;
+	int			speed;				// percent
+} cmSpeed_t;
 
 typedef struct {
 	qboolean	bars, hud;
+	qboolean	onlyCast;			// no one but those in it seen while it plays
+	int			barSize;			// 0 thin, 1 as they were, 2 wide
+	int			numMarks;			// moments marked on the timeline, things snap to them
+	int			marks[CM_MAX_MARKS];
+	char		markNames[CM_MAX_MARKS][32];
 	int			numShots;
 	rcShot_t	shots[CM_MAX_SHOTS];
 	int			numEnts;
@@ -227,7 +468,27 @@ typedef struct {
 	cmFx_t		fx[CM_MAX_FX];
 	int			numSnd;
 	cmSnd_t		snd[CM_MAX_SND];
+	int			numTxt;
+	cmTxt_t		txt[CM_MAX_TXT];
+	int			numProps;
+	cmProp_t	props[CM_MAX_PROPS];
+	int			numLights;
+	cmLight_t	lights[CM_MAX_LIGHTS];
+	int			numScreens;
+	cmScreen_t	screens[CM_MAX_SCREENS];
+	int			numMapLooks;
+	cmMapLook_t	mapLooks[CM_MAX_MAPLOOKS];
+	int			worldVolume;		// the game's own sounds while it plays, percent; its music as it is
+	int			numSpeeds;
+	cmSpeed_t	speeds[CM_MAX_SPEEDS];
 } cmCine_t;
+
+// how much of the screen's height each of a cinematic's bars takes
+static float CM_BarFrac( const cmCine_t *c ) {
+	static const float fracs[3] = { 0.07f, RC_BAR_FRAC, 0.18f };
+
+	return fracs[Com_Clampi( 0, 2, c->barSize )];
+}
 
 // a move as it goes: each of them from where they are then through the spots, a group
 // keeping its shape
@@ -343,7 +604,11 @@ static int CM_Resolve( const char *who, int *nums, int max ) {
 			p++;
 		if ( !item[0] )
 			continue;
-		if ( Q_stricmp( item, "me" ) && !Q_isanumber( item ) && ( found[0] = CM_FindPlayer( item ) ) >= 0 )
+		if ( CM_IsExtra( item ) && ( found[0] = CL_Extras_Find( item ) ) >= 0 )
+			n = 1;
+		else if ( CM_IsExtra( item ) )
+			continue;
+		if ( n <= 0 && Q_stricmp( item, "me" ) && !Q_isanumber( item ) && ( found[0] = CM_FindPlayer( item ) ) >= 0 )
 			n = 1;
 		if ( n <= 0 && Q_stricmp( item, "me" ) && !Q_isanumber( item ) )
 			n = CL_NpcWalk_Targets( item, found, CM_MAX_GROUP );
@@ -412,9 +677,8 @@ static float CM_CatmullRom( float p0, float p1, float p2, float p3, float t ) {
 		+ ( 3.0f * p1 - p0 - 3.0f * p2 + p3 ) * t * t * t );
 }
 
-// where a position has them ms into it, and how they're turned
-static void CM_PlaceAt( const cmClip_t *clip, int ms, vec3_t org, vec3_t ang ) {
-	const int n = clip->numKeys;
+// where keys have something ms in, and how it's turned: smoothly through them, or straight
+static void CM_KeysAt( const cmPlace_t *keys, int n, qboolean smooth, int ms, vec3_t org, vec3_t ang ) {
 	int i;
 
 	if ( !n ) {
@@ -422,26 +686,105 @@ static void CM_PlaceAt( const cmClip_t *clip, int ms, vec3_t org, vec3_t ang ) {
 		VectorClear( ang );
 		return;
 	}
-	if ( n == 1 || ms <= clip->keys[0].ms || ms >= clip->keys[n - 1].ms ) {
-		const cmPlace_t *k = ms <= clip->keys[0].ms ? &clip->keys[0] : &clip->keys[n - 1];
+	if ( n == 1 || ms <= keys[0].ms || ms >= keys[n - 1].ms ) {
+		const cmPlace_t *k = ms <= keys[0].ms ? &keys[0] : &keys[n - 1];
 
 		VectorCopy( k->org, org );
 		VectorCopy( k->ang, ang );
 		return;
 	}
-	for ( i = 1; i < n - 1 && ms > clip->keys[i].ms; i++ )
+	for ( i = 1; i < n - 1 && ms > keys[i].ms; i++ )
 		;
 	{
-		const cmPlace_t *k0 = &clip->keys[Q_max( i - 2, 0 )], *k1 = &clip->keys[i - 1], *k2 = &clip->keys[i], *k3 = &clip->keys[Q_min( i + 1, n - 1 )];
+		const cmPlace_t *k0 = &keys[Q_max( i - 2, 0 )], *k1 = &keys[i - 1], *k2 = &keys[i], *k3 = &keys[Q_min( i + 1, n - 1 )];
 		const int span = k2->ms - k1->ms;
 		const float f = span > 0 ? Com_Clamp( 0.0f, 1.0f, (float)( ms - k1->ms ) / span ) : 1.0f;
 
 		for ( int j = 0; j < 3; j++ ) {
-			org[j] = clip->smooth ? CM_CatmullRom( k0->org[j], k1->org[j], k2->org[j], k3->org[j], f ) : k1->org[j] + ( k2->org[j] - k1->org[j] ) * f;
-			ang[j] = LerpAngle( k1->ang[j], k2->ang[j], clip->smooth ? RC_Ease( f, qfalse ) : f );
+			org[j] = smooth ? CM_CatmullRom( k0->org[j], k1->org[j], k2->org[j], k3->org[j], f ) : k1->org[j] + ( k2->org[j] - k1->org[j] ) * f;
+			ang[j] = LerpAngle( k1->ang[j], k2->ang[j], smooth ? RC_Ease( f, qfalse ) : f );
 		}
 	}
 }
+
+// where a position has them ms into it, and how they're turned
+static void CM_PlaceAt( const cmClip_t *clip, int ms, vec3_t org, vec3_t ang ) {
+	CM_KeysAt( clip->keys, clip->numKeys, clip->smooth, ms, org, ang );
+}
+
+// a prop and a light: when they go, where they are, how bright
+static int CM_MapLookEnd( const cmCine_t *c, const cmMapLook_t *m ) {
+	return m->ms > 0 ? m->start + m->ms : Q_max( m->start + 1, CM_Total( c ) );
+}
+
+static int CM_PropEnd( const cmCine_t *c, const cmProp_t *pr ) {
+	return pr->ms > 0 ? pr->start + pr->ms : Q_max( pr->start + 1, CM_Total( c ) );
+}
+
+static int CM_LightEnd( const cmCine_t *c, const cmLight_t *l ) {
+	return l->ms > 0 ? l->start + l->ms : Q_max( l->start + 1, CM_Total( c ) );
+}
+
+// where a prop is t ms into the cinematic, qfalse if it isn't there then; t < 0 at its first key
+static qboolean CM_PropAt( const cmCine_t *c, const cmProp_t *pr, int t, vec3_t org, vec3_t ang ) {
+	if ( !pr->numKeys )
+		return qfalse;
+	if ( t < 0 ) {
+		VectorCopy( pr->keys[0].org, org );
+		VectorCopy( pr->keys[0].ang, ang );
+		return qtrue;
+	}
+	if ( t < pr->start || t >= CM_PropEnd( c, pr ) )
+		return qfalse;
+	CM_KeysAt( pr->keys, pr->numKeys, pr->smooth, t - pr->start, org, ang );
+	return qtrue;
+}
+
+// how bright a light is in ms into it, of len: faded in and out, and as it flickers
+static float CM_LightNow( const cmLight_t *l, int in, int len ) {
+	float a = 1.0f;
+
+	if ( l->fade > 0 ) {
+		a = Q_min( a, (float)in / l->fade );
+		a = Q_min( a, (float)( len - in ) / l->fade );
+	}
+	switch ( l->fx ) {
+	case CM_LIGHT_FLICKER: {
+		// the same flicker on every screen: from the time, not chance
+		const unsigned h = (unsigned)( in / 60 + 1 ) * 2654435761u;
+
+		a *= 0.35f + 0.65f * ( ( h >> 16 ) & 255 ) / 255.0f;
+		break;
+	}
+	case CM_LIGHT_PULSE:
+		a *= 0.55f + 0.45f * sinf( in * 0.00628f );
+		break;
+	case CM_LIGHT_STROBE:
+		a *= ( in % 250 ) < 70 ? 1.0f : 0.0f;
+		break;
+	case CM_LIGHT_FLASH: {
+		const float f = 1.0f - (float)in / Q_max( 1, len );
+
+		a *= f * f;
+		break;
+	}
+	default:
+		break;
+	}
+	return Com_Clamp( 0.0f, 1.0f, a );
+}
+
+// where a light is: on whoever it follows, a little over their middle, else its spot
+static void CM_LightOrg( const cmLight_t *l, vec3_t org ) {
+	int num;
+
+	if ( l->who[0] && CM_Resolve( l->who, &num, 1 ) && RC_EntityOrigin( num, org ) ) {
+		org[2] += 16.0f;
+		return;
+	}
+	VectorCopy( l->org, org );
+}
+
 
 // what a recording has ms into it: where from where it began, how they're turned; the moment's
 // doings, NULL if it has none
@@ -637,6 +980,8 @@ static void CM_RecEvents( const cmRec_t *r, const cmClip_t *clip, int from, int 
 }
 
 static qboolean CM_Playing( const cmCine_t *c );
+static void CM_WorldVolume( const cmCine_t *c );
+static void CM_SyncExtras( void );
 
 // everyone where the cinematic has them t ms in, on their animation's frame
 static void CM_Apply( const cmCine_t *c, const cmPlan_t *plans, int t ) {
@@ -703,13 +1048,51 @@ static void CM_Apply( const cmCine_t *c, const cmPlan_t *plans, int t ) {
 		}
 	}
 
-	// on each one, the animation or emote that started last, while it lasts
+	// on each one, the animation or emote that started last, while it lasts; a force power's on the
+	// one using it and the one it's at
 	for ( int i = 0; i < c->numClips; i++ ) {
 		const cmClip_t *clip = &c->clips[i];
-		const int len = clip->kind == CM_CLIP_ANIM || clip->kind == CM_CLIP_EMOTE ? CM_AnimLen( c, clip ) : 0;
+		const int len = clip->kind == CM_CLIP_ANIM || clip->kind == CM_CLIP_EMOTE || clip->kind == CM_CLIP_FORCE ? CM_AnimLen( c, clip ) : 0;
 		const rcAnim_t *a = &clip->a;
 		int targets[CM_MAX_GROUP], numTargets;
 
+		if ( clip->kind == CM_CLIP_FORCE && clip->forceAnims && t >= clip->start && ( len <= 0 || t < clip->start + len ) ) {
+			static rcAnim_t forceAnims[CM_MAX_CLIPS][2];
+			const cmForce_t *f = &cmForces[clip->power];
+
+			for ( int side = 0; side < 2; side++ ) {
+				const char *anim = side ? f->victim : f->anim;
+				const int who = side ? clip->target : clip->ent;
+				rcAnim_t *fa = &forceAnims[i][side];
+
+				if ( !anim || who < 0 || who >= c->numEnts || CM_GoneAt( c, who, t ) )
+					continue;
+				memset( fa, 0, sizeof( *fa ) );
+				Q_strncpyz( fa->anim, anim, sizeof( fa->anim ) );
+				fa->to = -1;
+				fa->loop = qtrue;
+				fa->speed = 100;
+				numTargets = CM_Resolve( c->ents[who].who, targets, CM_MAX_GROUP );
+				for ( int m = 0; m < numTargets; m++ ) {
+					int j = 0;
+
+					while ( j < count && nums[j] != targets[m] )
+						j++;
+					if ( j == count ) {
+						if ( count == (int)ARRAY_LEN( nums ) )
+							continue;
+						count++;
+					} else if ( starts[j] > clip->start ) {
+						continue;
+					}
+					nums[j] = targets[m];
+					anims[j] = fa;
+					starts[j] = clip->start;
+					elapsed[j] = t - clip->start;
+				}
+			}
+			continue;
+		}
 		if ( ( clip->kind != CM_CLIP_ANIM && clip->kind != CM_CLIP_EMOTE ) || t < clip->start || ( len > 0 && t >= clip->start + len )
 			|| CM_GoneAt( c, clip->ent, t ) )
 			continue;
@@ -794,6 +1177,8 @@ static int CM_FindEnt( cmCine_t *c, const char *who, qboolean add ) {
 static void CM_Default( cmCine_t *c ) {
 	memset( c, 0, sizeof( *c ) );
 	c->bars = qtrue;
+	c->barSize = 1;
+	c->worldVolume = 100;
 }
 
 static void CM_WriteLine( fileHandle_t f, const char *line ) {
@@ -807,7 +1192,19 @@ static int CM_ToText( const cmCine_t *c, char *out, int size ) {
 
 	out[0] = '\0';
 #define CM_ADD( text ) do { const char *t_ = ( text ); const int l_ = strlen( t_ ); if ( len + l_ < size ) { memcpy( out + len, t_, l_ + 1 ); len += l_; } } while ( 0 )
-	CM_ADD( va( "look %i %i\n", c->bars ? 1 : 0, c->hud ? 1 : 0 ) );
+	CM_ADD( va( "look %i %i %i %i %i\n", c->bars ? 1 : 0, c->hud ? 1 : 0, c->onlyCast ? 1 : 0, c->barSize, c->worldVolume ) );
+	// maplook <start> <seconds> <fade> <light %> <r g b> <sky r g b> <fog depth, 0 none> <fog r g b>
+	for ( int i = 0; i < c->numMapLooks; i++ ) {
+		const cmMapLook_t *m = &c->mapLooks[i];
+
+		CM_ADD( va( "maplook %g %g %g %i %g %g %g %g %g %g %i %g %g %g %s\n", RC_Seconds( m->start ), RC_Seconds( m->ms ), RC_Seconds( m->fade ), m->light,
+			m->lightColor[0], m->lightColor[1], m->lightColor[2], m->skyColor[0], m->skyColor[1], m->skyColor[2], RC_Round( m->fogDepth ),
+			m->fogColor[0], m->fogColor[1], m->fogColor[2], m->layout[0] ? m->layout : "-" ) );
+	}
+	for ( int i = 0; i < c->numMarks; i++ )
+		CM_ADD( va( "mark %g %s\n", RC_Seconds( c->marks[i] ), c->markNames[i][0] ? c->markNames[i] : "-" ) );
+	for ( int i = 0; i < c->numSpeeds; i++ )
+		CM_ADD( va( "speed %g %g %i\n", RC_Seconds( c->speeds[i].start ), RC_Seconds( c->speeds[i].ms ), c->speeds[i].speed ) );
 	// fx <start> <seconds, 0 once> <size> <x y z> <angles 0|1> <pitch yaw roll> <effect>
 	for ( int i = 0; i < c->numFx; i++ ) {
 		const cmFx_t *f = &c->fx[i];
@@ -820,8 +1217,45 @@ static int CM_ToText( const cmCine_t *c, char *out, int size ) {
 	for ( int i = 0; i < c->numSnd; i++ ) {
 		const cmSnd_t *s = &c->snd[i];
 
-		CM_ADD( va( "snd %g %g %i %i %i %i %s\n", RC_Seconds( s->start ), RC_Seconds( s->ms ), s->spot ? 1 : 0,
-			RC_Round( s->org[0] ), RC_Round( s->org[1] ), RC_Round( s->org[2] ), s->path ) );
+		if ( s->music )
+			CM_ADD( va( "music %g %g %s\n", RC_Seconds( s->start ), RC_Seconds( s->ms ), s->path ) );
+		else
+			CM_ADD( va( "snd %g %g %i %i %i %i %s\n", RC_Seconds( s->start ), RC_Seconds( s->ms ), s->spot ? 1 : 0,
+				RC_Round( s->org[0] ), RC_Round( s->org[1] ), RC_Round( s->org[2] ), s->path ) );
+	}
+	// prop <start> <seconds, 0 to the end> <smooth 0|1> <scale> <ms,x,y,z,pitch,yaw,roll;...> <model>
+	for ( int i = 0; i < c->numProps; i++ ) {
+		const cmProp_t *pr = &c->props[i];
+		char keys[CM_PROP_KEYS * 64] = "";
+
+		for ( int k = 0; k < pr->numKeys; k++ ) {
+			const cmPlace_t *pk = &pr->keys[k];
+
+			Q_strcat( keys, sizeof( keys ), va( "%s%i,%i,%i,%i,%i,%i,%i", k ? ";" : "", pk->ms, RC_Round( pk->org[0] ), RC_Round( pk->org[1] ), RC_Round( pk->org[2] ),
+				RC_Round( AngleNormalize180( pk->ang[PITCH] ) ), RC_Round( AngleNormalize360( pk->ang[YAW] ) ), RC_Round( AngleNormalize180( pk->ang[ROLL] ) ) ) );
+		}
+		if ( pr->numKeys && pr->model[0] )
+			CM_ADD( va( "prop %g %g %i %g %s %s\n", RC_Seconds( pr->start ), RC_Seconds( pr->ms ), pr->smooth ? 1 : 0, pr->scale, keys, pr->model ) );
+	}
+	// light <start> <seconds, 0 to the end> <x y z> <radius> <r g b> <cmLightFx> <fade seconds> <who|->
+	for ( int i = 0; i < c->numLights; i++ ) {
+		const cmLight_t *l = &c->lights[i];
+
+		CM_ADD( va( "light %g %g %i %i %i %i %g %g %g %i %g %s\n", RC_Seconds( l->start ), RC_Seconds( l->ms ), RC_Round( l->org[0] ), RC_Round( l->org[1] ),
+			RC_Round( l->org[2] ), RC_Round( l->radius ), l->color[0], l->color[1], l->color[2], l->fx, RC_Seconds( l->fade ), l->who[0] ? l->who : "-" ) );
+	}
+	// screen <start> <seconds> <kind> <r g b> <strength %> <fade seconds>
+	for ( int i = 0; i < c->numScreens; i++ ) {
+		const cmScreen_t *sc = &c->screens[i];
+
+		CM_ADD( va( "screen %g %g %i %g %g %g %i %g\n", RC_Seconds( sc->start ), RC_Seconds( sc->ms ), sc->kind, sc->color[0], sc->color[1], sc->color[2],
+			sc->strength, RC_Seconds( sc->fade ) ) );
+	}
+	// txt <start> <seconds> <kind> <size> <typed 0|1> <who>|<text>
+	for ( int i = 0; i < c->numTxt; i++ ) {
+		const cmTxt_t *x = &c->txt[i];
+
+		CM_ADD( va( "txt %g %g %i %i %i %s|%s\n", RC_Seconds( x->start ), RC_Seconds( x->ms ), x->kind, x->size, x->typed ? 1 : 0, x->who, x->text ) );
 	}
 	for ( int i = 0; i < c->numShots; i++ ) {
 		RC_WriteShot( &c->shots[i], hook, sizeof( hook ) );
@@ -830,6 +1264,13 @@ static int CM_ToText( const cmCine_t *c, char *out, int size ) {
 	}
 	for ( int i = 0; i < c->numEnts; i++ )
 		CM_ADD( va( "ent %s\n", c->ents[i].who[0] ? c->ents[i].who : "-" ) );
+	for ( int i = 0; i < c->numEnts; i++ ) {
+		const cmEnt_t *e = &c->ents[i];
+
+		if ( CM_IsExtra( e->who ) )
+			CM_ADD( va( "extra %i %i %i %i %i %i %i %s\n", i, RC_Round( e->home[0] ), RC_Round( e->home[1] ), RC_Round( e->home[2] ),
+				RC_Round( AngleNormalize360( e->yaw ) ), e->saber, e->color, e->model[0] ? e->model : "kyle" ) );
+	}
 	for ( int i = 0; i < c->numClips; i++ ) {
 		const cmClip_t *clip = &c->clips[i];
 
@@ -848,6 +1289,13 @@ static int CM_ToText( const cmCine_t *c, char *out, int size ) {
 		} else if ( clip->kind == CM_CLIP_SAY ) {
 			Com_sprintf( line, sizeof( line ), "say %i %g %s|%s\n", clip->ent, RC_Seconds( clip->start ), clip->name, clip->text );
 			CM_ADD( line );
+		} else if ( clip->kind == CM_CLIP_FORCE ) {
+			CM_ADD( va( "force %i %g %g %i %i %i\n", clip->ent, RC_Seconds( clip->start ), RC_Seconds( clip->a.ms ), clip->power, clip->target,
+				clip->forceAnims ? 1 : 0 ) );
+		} else if ( clip->kind == CM_CLIP_LOOK ) {
+			CM_ADD( va( "appear %i %g %g %i %i %i %i %i %i %i %i %i %s %i\n", clip->ent, RC_Seconds( clip->start ), RC_Seconds( clip->a.ms ), clip->hidden ? 1 : 0,
+				clip->size, clip->shell, clip->saber, clip->blade, clip->holdHand, RC_Round( clip->holdAng[PITCH] ), RC_Round( clip->holdAng[YAW] ),
+				RC_Round( clip->holdAng[ROLL] ), clip->hold[0] ? clip->hold : "-", clip->face ) );
 		} else if ( clip->kind == CM_CLIP_EMOTE ) {
 			Com_sprintf( line, sizeof( line ), "emote %i %g %g %s %i %i\n", clip->ent, RC_Seconds( clip->start ), RC_Seconds( clip->a.ms ),
 				clip->emote[0] ? clip->emote : "-", clip->a.loop ? 1 : 0, clip->realEmote ? 1 : 0 );
@@ -942,7 +1390,12 @@ static void CM_Parse( char *text, cmCine_t *c ) {
 		if ( !Q_stricmpn( line, "look ", 5 ) ) {
 			int bars = 1, hud = 0;
 
-			sscanf( line + 5, "%i %i", &bars, &hud );
+			int only = 0, size = 1, volume = 100;
+
+			sscanf( line + 5, "%i %i %i %i %i", &bars, &hud, &only, &size, &volume );
+			c->worldVolume = Com_Clampi( 0, 100, volume );
+			c->onlyCast = (qboolean)( only != 0 );
+			c->barSize = Com_Clampi( 0, 2, size );
 			c->bars = (qboolean)( bars != 0 );
 			c->hud = (qboolean)( hud != 0 );
 		} else if ( !Q_stricmpn( line, "shot ", 5 ) && c->numShots < CM_MAX_SHOTS ) {
@@ -988,6 +1441,148 @@ static void CM_Parse( char *text, cmCine_t *c ) {
 			s->spot = (qboolean)( spot != 0 );
 			Q_strncpyz( s->path, line + 4 + n, sizeof( s->path ) );
 			c->numSnd++;
+		} else if ( !Q_stricmpn( line, "maplook ", 8 ) && c->numMapLooks < CM_MAX_MAPLOOKS ) {
+			cmMapLook_t *m = &c->mapLooks[c->numMapLooks];
+			float start, secs, fade, fog;
+			char layout[MAX_QPATH] = "-";
+
+			memset( m, 0, sizeof( *m ) );
+			if ( sscanf( line + 8, "%f %f %f %i %f %f %f %f %f %f %f %f %f %f %63s", &start, &secs, &fade, &m->light, &m->lightColor[0], &m->lightColor[1],
+				&m->lightColor[2], &m->skyColor[0], &m->skyColor[1], &m->skyColor[2], &fog, &m->fogColor[0], &m->fogColor[1], &m->fogColor[2], layout ) < 14 )
+				continue;
+			Q_strncpyz( m->layout, strcmp( layout, "-" ) ? layout : "", sizeof( m->layout ) );
+			m->start = RC_SecondsMs( start );
+			m->ms = RC_SecondsMs( secs );
+			m->fade = RC_SecondsMs( fade );
+			m->light = Com_Clampi( 0, 300, m->light );
+			m->fogDepth = fog > 0.0f ? Com_Clamp( 64.0f, CM_FOG_NONE, fog ) : 0.0f;
+			c->numMapLooks++;
+		} else if ( !Q_stricmpn( line, "speed ", 6 ) && c->numSpeeds < CM_MAX_SPEEDS ) {
+			cmSpeed_t *sp = &c->speeds[c->numSpeeds];
+			float start, secs;
+			int speed = 100;
+
+			if ( sscanf( line + 6, "%f %f %i", &start, &secs, &speed ) < 3 )
+				continue;
+			sp->start = RC_SecondsMs( start );
+			sp->ms = Q_max( 100, RC_SecondsMs( secs ) );
+			sp->speed = Com_Clampi( 5, 400, speed );
+			c->numSpeeds++;
+		} else if ( !Q_stricmpn( line, "mark ", 5 ) && c->numMarks < CM_MAX_MARKS ) {
+			float at = 0.0f;
+			char name[32] = "-";
+
+			if ( sscanf( line + 5, "%f %31s", &at, name ) < 1 )
+				continue;
+			c->marks[c->numMarks] = RC_SecondsMs( at );
+			Q_strncpyz( c->markNames[c->numMarks], strcmp( name, "-" ) ? name : "", sizeof( c->markNames[0] ) );
+			c->numMarks++;
+		} else if ( !Q_stricmpn( line, "force ", 6 ) && c->numClips < CM_MAX_CLIPS ) {
+			cmClip_t *clip = &c->clips[c->numClips];
+			float start, seconds;
+			int ent, power = 0, target = -1, anims = 1;
+
+			memset( clip, 0, sizeof( *clip ) );
+			if ( sscanf( line + 6, "%i %f %f %i %i %i", &ent, &start, &seconds, &power, &target, &anims ) < 4 || ent < 0 || ent >= CM_MAX_ENTS )
+				continue;
+			clip->kind = CM_CLIP_FORCE;
+			clip->ent = ent;
+			clip->start = RC_SecondsMs( start );
+			clip->a.ms = RC_SecondsMs( seconds );
+			clip->power = Com_Clampi( 0, (int)ARRAY_LEN( cmForces ) - 1, power );
+			clip->target = target >= 0 && target < CM_MAX_ENTS ? target : -1;
+			clip->forceAnims = (qboolean)( anims != 0 );
+			c->numClips++;
+		} else if ( !Q_stricmpn( line, "music ", 6 ) && c->numSnd < CM_MAX_SND ) {
+			cmSnd_t *s = &c->snd[c->numSnd];
+			float start, secs;
+			int n = 0;
+
+			memset( s, 0, sizeof( *s ) );
+			if ( sscanf( line + 6, "%f %f %n", &start, &secs, &n ) < 2 || n <= 0 || !line[6 + n] )
+				continue;
+			s->start = RC_SecondsMs( start );
+			s->ms = RC_SecondsMs( secs );
+			s->music = qtrue;
+			Q_strncpyz( s->path, line + 6 + n, sizeof( s->path ) );
+			c->numSnd++;
+		} else if ( !Q_stricmpn( line, "prop ", 5 ) && c->numProps < CM_MAX_PROPS ) {
+			cmProp_t *pr = &c->props[c->numProps];
+			char keys[CM_PROP_KEYS * 64];
+			float start, secs, scale;
+			int smooth = 1, n = 0;
+
+			memset( pr, 0, sizeof( *pr ) );
+			if ( sscanf( line + 5, "%f %f %i %f %511s %n", &start, &secs, &smooth, &scale, keys, &n ) < 5 || n <= 0 || !line[5 + n] )
+				continue;
+			pr->start = RC_SecondsMs( start );
+			pr->ms = RC_SecondsMs( secs );
+			pr->smooth = (qboolean)( smooth != 0 );
+			pr->scale = Com_Clamp( 0.05f, 50.0f, scale );
+			Q_strncpyz( pr->model, line + 5 + n, sizeof( pr->model ) );
+			for ( const char *k = keys; *k && pr->numKeys < CM_PROP_KEYS; ) {
+				cmPlace_t *pk = &pr->keys[pr->numKeys];
+
+				if ( sscanf( k, "%i,%f,%f,%f,%f,%f,%f", &pk->ms, &pk->org[0], &pk->org[1], &pk->org[2], &pk->ang[PITCH], &pk->ang[YAW], &pk->ang[ROLL] ) == 7 )
+					pr->numKeys++;
+				k = strchr( k, ';' );
+				if ( !k )
+					break;
+				k++;
+			}
+			if ( pr->numKeys )
+				c->numProps++;
+		} else if ( !Q_stricmpn( line, "light ", 6 ) && c->numLights < CM_MAX_LIGHTS ) {
+			cmLight_t *l = &c->lights[c->numLights];
+			float start, secs, fade;
+			char who[MAX_QPATH];
+			int fx = 0;
+
+			memset( l, 0, sizeof( *l ) );
+			if ( sscanf( line + 6, "%f %f %f %f %f %f %f %f %f %i %f %63s", &start, &secs, &l->org[0], &l->org[1], &l->org[2], &l->radius,
+				&l->color[0], &l->color[1], &l->color[2], &fx, &fade, who ) < 11 )
+				continue;
+			l->start = RC_SecondsMs( start );
+			l->ms = RC_SecondsMs( secs );
+			l->radius = Com_Clamp( 8.0f, 2000.0f, l->radius );
+			l->fx = Com_Clampi( 0, CM_NUM_LIGHT_FX - 1, fx );
+			l->fade = RC_SecondsMs( fade );
+			Q_strncpyz( l->who, strcmp( who, "-" ) ? who : "", sizeof( l->who ) );
+			c->numLights++;
+		} else if ( !Q_stricmpn( line, "screen ", 7 ) && c->numScreens < CM_MAX_SCREENS ) {
+			cmScreen_t *sc = &c->screens[c->numScreens];
+			float start, secs, fade = 0.0f;
+			int kind = 0, strength = 100;
+
+			memset( sc, 0, sizeof( *sc ) );
+			if ( sscanf( line + 7, "%f %f %i %f %f %f %i %f", &start, &secs, &kind, &sc->color[0], &sc->color[1], &sc->color[2], &strength, &fade ) < 7 )
+				continue;
+			sc->start = RC_SecondsMs( start );
+			sc->ms = Q_max( 100, RC_SecondsMs( secs ) );
+			sc->kind = Com_Clampi( 0, CM_NUM_SCREENS - 1, kind );
+			sc->strength = Com_Clampi( 0, 100, strength );
+			sc->fade = RC_SecondsMs( fade );
+			c->numScreens++;
+		} else if ( !Q_stricmpn( line, "txt ", 4 ) && c->numTxt < CM_MAX_TXT ) {
+			cmTxt_t *x = &c->txt[c->numTxt];
+			float start, secs;
+			int kind = 0, size = 1, typed = 0, n = 0;
+			const char *who, *bar;
+
+			memset( x, 0, sizeof( *x ) );
+			if ( sscanf( line + 4, "%f %f %i %i %i %n", &start, &secs, &kind, &size, &typed, &n ) < 5 || n <= 0 )
+				continue;
+			who = line + 4 + n;
+			if ( !( bar = strchr( who, '|' ) ) || !bar[1] )
+				continue;
+			x->start = RC_SecondsMs( start );
+			x->ms = Q_max( 100, RC_SecondsMs( secs ) );
+			x->kind = Com_Clampi( 0, CM_NUM_TXT_KINDS - 1, kind );
+			x->size = Com_Clampi( 0, (int)ARRAY_LEN( cmTxtSizes ) - 1, size );
+			x->typed = (qboolean)( typed != 0 );
+			Q_strncpyz( x->who, who, Q_min( (int)sizeof( x->who ), (int)( bar - who ) + 1 ) );
+			Q_strncpyz( x->text, bar + 1, sizeof( x->text ) );
+			c->numTxt++;
 		} else if ( !Q_stricmpn( line, "ent ", 4 ) && c->numEnts < CM_MAX_ENTS ) {
 			// a player's name can have spaces in it
 			const char *who = line + 4;
@@ -995,6 +1590,41 @@ static void CM_Parse( char *text, cmCine_t *c ) {
 			while ( *who == ' ' )
 				who++;
 			Q_strncpyz( c->ents[c->numEnts++].who, strcmp( who, "-" ) ? who : "", sizeof( c->ents[0].who ) );
+		} else if ( !Q_stricmpn( line, "extra ", 6 ) ) {
+			float v[4];
+			int ent, saber = 0, color = 0, n = 0;
+
+			if ( sscanf( line + 6, "%i %f %f %f %f %i %i %n", &ent, &v[0], &v[1], &v[2], &v[3], &saber, &color, &n ) < 7 || n <= 0
+				|| ent < 0 || ent >= c->numEnts )
+				continue;
+			VectorCopy( v, c->ents[ent].home );
+			c->ents[ent].yaw = v[3];
+			c->ents[ent].saber = Com_Clampi( 0, CL_EXTRA_SABER_TWO, saber );
+			c->ents[ent].color = Com_Clampi( 0, CL_EXTRA_NUM_COLORS - 1, color );
+			Q_strncpyz( c->ents[ent].model, line + 6 + n, sizeof( c->ents[ent].model ) );
+		} else if ( !Q_stricmpn( line, "appear ", 7 ) && c->numClips < CM_MAX_CLIPS ) {
+			cmClip_t *clip = &c->clips[c->numClips];
+			float start, seconds;
+			int ent, hidden = 0, size = 100, shell = 0, saber = 0, blade = 100, hand = 0, face = 0;
+			char hold[MAX_QPATH] = "-";
+
+			memset( clip, 0, sizeof( *clip ) );
+			if ( sscanf( line + 7, "%i %f %f %i %i %i %i %i %i %f %f %f %63s %i", &ent, &start, &seconds, &hidden, &size, &shell, &saber, &blade, &hand,
+				&clip->holdAng[PITCH], &clip->holdAng[YAW], &clip->holdAng[ROLL], hold, &face ) < 3 || ent < 0 || ent >= CM_MAX_ENTS )
+				continue;
+			clip->face = Com_Clampi( 0, (int)ARRAY_LEN( cmFaces ) - 1, face );
+			clip->holdHand = hand ? 1 : 0;
+			Q_strncpyz( clip->hold, strcmp( hold, "-" ) ? hold : "", sizeof( clip->hold ) );
+			clip->kind = CM_CLIP_LOOK;
+			clip->ent = ent;
+			clip->start = RC_SecondsMs( start );
+			clip->a.ms = RC_SecondsMs( seconds );
+			clip->hidden = (qboolean)( hidden != 0 );
+			clip->size = Com_Clampi( 25, 400, size );
+			clip->shell = Com_Clampi( 0, (int)ARRAY_LEN( cmShells ) - 1, shell );
+			clip->saber = Com_Clampi( 0, (int)ARRAY_LEN( cmSaberLooks ) - 1, saber );
+			clip->blade = Com_Clampi( 25, 300, blade );
+			c->numClips++;
 		} else if ( !Q_stricmpn( line, "emote ", 6 ) && c->numClips < CM_MAX_CLIPS ) {
 			cmClip_t *clip = &c->clips[c->numClips];
 			char emote[48];
@@ -1296,6 +1926,10 @@ static struct {
 	int			seenNext;
 	int			fxNext[CM_MAX_FX];		// when each effect plays again; a one-off, 1 once it has
 	int			sndNext[CM_MAX_SND];	// the same for each sound
+	int			forceNext[CM_MAX_CLIPS];	// and each force power's effect
+	int			t;					// how far in, by its own clock: slowed or sped up where it says
+	double		tExact;
+	int			lastReal;
 } cmp;
 
 static sfxHandle_t CM_SndHandle( const char *path ) {
@@ -1312,6 +1946,9 @@ static int CM_SndLen( const char *path ) {
 }
 
 static int CM_SndEnd( const cmSnd_t *s ) {
+	// a track with no length plays on, shown as a while on the timeline
+	if ( s->music )
+		return s->start + ( s->ms > 0 ? s->ms : 10000 );
 	return s->start + ( s->ms > 0 ? s->ms : CM_SndLen( s->path ) );
 }
 
@@ -1323,6 +1960,8 @@ static void CM_PlaySnd( const cmSnd_t *s, sfxHandle_t h ) {
 }
 
 // t ms in: the one-offs at their moment, the others again each time they end while they last
+static qboolean cmMusicPlayed;		// a cinematic's track took over: the map's back after it
+
 static void CM_RunSnd( const cmCine_t *c, int t, int *next ) {
 	for ( int i = 0; i < c->numSnd; i++ ) {
 		const cmSnd_t *s = &c->snd[i];
@@ -1330,6 +1969,20 @@ static void CM_RunSnd( const cmCine_t *c, int t, int *next ) {
 
 		if ( t < s->start )
 			continue;
+		// a track: started once, from its start however late, and the map's back at its end
+		if ( s->music ) {
+			if ( !next[i] ) {
+				S_StopBackgroundTrack();
+				S_StartBackgroundTrack( s->path, s->path, qfalse );
+				cmMusicPlayed = qtrue;
+				next[i] = 1;
+			}
+			if ( next[i] == 1 && s->ms > 0 && t >= s->start + s->ms ) {
+				CL_SoundManager_RestoreMusic();
+				next[i] = 2;
+			}
+			continue;
+		}
 		if ( s->ms <= 0 ) {
 			// one played from the middle that's long past isn't
 			if ( !next[i] && t - s->start < 500 && ( h = CM_SndHandle( s->path ) ) != 0 )
@@ -1347,6 +2000,186 @@ static void CM_RunSnd( const cmCine_t *c, int t, int *next ) {
 		CM_PlaySnd( s, h );
 		next[i] = cls.realtime + Q_max( 200, (int)S_GetSampleLengthInMilliSeconds( h ) );
 	}
+}
+
+// a colour code, RPMod's letters too
+static qboolean CM_TxtCode( const char *p ) {
+	return (qboolean)( p[0] == Q_COLOR_ESCAPE && p[1] && isalnum( (unsigned char)p[1] ) );
+}
+
+// the text broken at spaces into lines that fit the width, each starting in the colour the one
+// before ended in; how many
+static int CM_TxtLines( const char *text, int font, float scale, float w, char lines[][CM_TXT_LEN + CM_TXT_WHO_LEN + 16], int max ) {
+	const int size = CM_TXT_LEN + CM_TXT_WHO_LEN + 16;
+	char code[3] = "";
+	int n = 0;
+
+	while ( *text && n < max ) {
+		char *line = lines[n];
+		const int start = strlen( code );
+		int len = 0, fit = 0;
+
+		Q_strncpyz( line, code, size );
+		while ( text[len] && start + len < size - 1 ) {
+			line[start + len] = text[len];
+			line[start + len + 1] = '\0';
+			if ( CL_RpHooks_TextWidth( line, font, scale ) > w )
+				break;
+			if ( text[len] == ' ' || !text[len + 1] )
+				fit = len + 1;
+			len++;
+		}
+		if ( !text[len] )
+			fit = len;
+		if ( !fit )
+			fit = Q_max( len, 1 );
+		line[start + fit] = '\0';
+		for ( int i = 0; i < fit; i++ ) {
+			if ( CM_TxtCode( text + i ) ) {
+				code[0] = text[i];
+				code[1] = text[i + 1];
+			}
+		}
+		n++;
+		text += fit;
+		while ( *text == ' ' )
+			text++;
+	}
+	return n;
+}
+
+// a line up to so many letters, its colour codes not counted; the letters it had
+static int CM_TxtTyped( const char *line, int letters, char *out, int size ) {
+	int len = 0, used = 0;
+
+	while ( *line && len < size - 2 ) {
+		if ( CM_TxtCode( line ) ) {
+			out[len++] = *line++;
+			out[len++] = *line++;
+			continue;
+		}
+		if ( used >= letters )
+			break;
+		out[len++] = *line++;
+		used++;
+	}
+	out[len] = '\0';
+	while ( *line ) {
+		if ( CM_TxtCode( line ) )
+			line += 2;
+		else
+			line++, used++;
+	}
+	return used;
+}
+
+// the texts showing t ms in: over the bars, in the middle, in the top left; a few of one kind at
+// once go one under the other
+static void CM_DrawTexts( const cmCine_t *c, int t ) {
+	static const float kindScale[CM_NUM_TXT_KINDS] = { 1.0f, 1.0f, 1.5f, 0.85f };
+	static const float sizeScale[] = { 0.8f, 1.0f, 1.3f };
+	static char lines[CM_TXT_MAX_LINES][CM_TXT_LEN + CM_TXT_WHO_LEN + 16];
+	const float barH = CM_BarFrac( c ) * SCREEN_HEIGHT;
+	float used[CM_NUM_TXT_KINDS] = { 0 };
+	int font = 0;
+
+	for ( int i = 0; i < c->numTxt; i++ ) {
+		const cmTxt_t *x = &c->txt[i];
+		const int in = t - x->start;
+		char full[CM_TXT_LEN + CM_TXT_WHO_LEN + 16], part[sizeof( full )];
+		vec4_t color = { 1.0f, 1.0f, 1.0f, 1.0f };
+		float scale, rowH, w, left, top, blockH;
+		int numLines, letters;
+
+		if ( in < 0 || in >= x->ms || !x->text[0] )
+			continue;
+		if ( !font )
+			font = CL_RpHooks_Font();
+		// typed out it comes in a letter at a time, else it fades in; either fades out
+		color[3] = Com_Clamp( 0.0f, 1.0f, (float)Q_min( x->typed ? CM_TXT_FADE_MS : in, x->ms - in ) / CM_TXT_FADE_MS );
+		if ( x->who[0] )
+			Com_sprintf( full, sizeof( full ), "%s%s" S_COLOR_WHITE ": %s", CM_TxtCode( x->who ) ? "" : S_COLOR_YELLOW, x->who, x->text );
+		else
+			Q_strncpyz( full, x->text, sizeof( full ) );
+		scale = kindScale[x->kind] * sizeScale[x->size];
+		rowH = re->Font_HeightPixels( font, scale ) + 2.0f;
+		w = x->kind == CM_TXT_NOTIFY ? 300.0f : x->kind == CM_TXT_CENTER ? 520.0f : 560.0f;
+		numLines = CM_TxtLines( full, font, scale, w, lines, CM_TXT_MAX_LINES );
+		blockH = numLines * rowH;
+		switch ( x->kind ) {
+		case CM_TXT_BOTTOM:
+			// the newest lowest, in the middle of the bar
+			top = SCREEN_HEIGHT - barH * 0.5f - blockH * 0.5f - used[x->kind];
+			break;
+		case CM_TXT_TOP:
+			top = barH * 0.5f - blockH * 0.5f + used[x->kind];
+			break;
+		case CM_TXT_CENTER:
+			top = SCREEN_HEIGHT * 0.42f - blockH * 0.5f + used[x->kind];
+			break;
+		default:
+			top = barH + 10.0f + used[x->kind];
+			break;
+		}
+		used[x->kind] += blockH + 4.0f;
+		// who says it is there at once, what's said typed after
+		letters = x->typed ? ( x->who[0] ? CM_TxtTyped( full, 0, part, sizeof( part ) ) - CM_TxtTyped( x->text, 0, part, sizeof( part ) ) : 0 )
+			+ in / CM_TXT_TYPE_MS + 1 : 1 << 20;
+		for ( int l = 0; l < numLines && letters > 0; l++ ) {
+			const float lw = (float)CL_RpHooks_TextWidth( lines[l], font, scale );
+
+			left = x->kind == CM_TXT_NOTIFY ? 16.0f : ( SCREEN_WIDTH - w ) * 0.5f + ( w - lw ) * 0.5f;
+			letters -= CM_TxtTyped( lines[l], letters, part, sizeof( part ) );
+			CL_RpHooks_DrawText( left, top + l * rowH, part, color, font, scale );
+		}
+	}
+}
+
+// what's over the whole picture t ms in: flashes, tints, dark edges
+static void CM_DrawScreens( const cmCine_t *c, int t ) {
+	for ( int i = 0; i < c->numScreens; i++ ) {
+		const cmScreen_t *sc = &c->screens[i];
+		const int in = t - sc->start;
+		vec4_t color;
+		float a = sc->strength / 100.0f;
+
+		if ( in < 0 || in >= sc->ms || a <= 0.0f )
+			continue;
+		if ( sc->kind == CM_SCREEN_FLASH ) {
+			const float f = 1.0f - (float)in / sc->ms;
+
+			a *= f * f;
+		} else if ( sc->fade > 0 ) {
+			a *= Com_Clamp( 0.0f, 1.0f, Q_min( (float)in, (float)( sc->ms - in ) ) / sc->fade );
+		}
+		VectorCopy( sc->color, color );
+		if ( sc->kind != CM_SCREEN_VIGNETTE ) {
+			color[3] = a;
+			re->SetColor( color );
+			re->DrawStretchPic( 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, 0, 0, 0, 0, cls.whiteShader );
+			continue;
+		}
+		// the edges: rings in from them, each fainter, darker where they meet at the corners
+		for ( int r = 0; r < 20; r++ ) {
+			const float band = 8.0f, inset = r * band, f = 1.0f - r / 20.0f;
+
+			color[3] = a * f * f * 0.85f;
+			re->SetColor( color );
+			re->DrawStretchPic( inset, inset, SCREEN_WIDTH - inset * 2, band, 0, 0, 0, 0, cls.whiteShader );
+			re->DrawStretchPic( inset, SCREEN_HEIGHT - inset - band, SCREEN_WIDTH - inset * 2, band, 0, 0, 0, 0, cls.whiteShader );
+			re->DrawStretchPic( inset, inset + band, band, SCREEN_HEIGHT - ( inset + band ) * 2, 0, 0, 0, 0, cls.whiteShader );
+			re->DrawStretchPic( SCREEN_WIDTH - inset - band, inset + band, band, SCREEN_HEIGHT - ( inset + band ) * 2, 0, 0, 0, 0, cls.whiteShader );
+		}
+	}
+	re->SetColor( NULL );
+}
+
+// while it plays, preview too: what's over the picture, then the texts over the bars and the scene
+void CM_DrawPlayingTexts( void ) {
+	if ( !cmp.playing )
+		return;
+	CM_DrawScreens( &cmp.cine, cmp.t );
+	CM_DrawTexts( &cmp.cine, cmp.t );
 }
 
 static int CM_FxId( const char *path ) {
@@ -1378,6 +2211,63 @@ static void CM_PlayFx( const cmFx_t *f, int id ) {
 
 static int CM_FxEnd( const cmFx_t *f ) {
 	return f->start + ( f->ms > 0 ? f->ms : CM_FX_ONCE_MS );
+}
+
+// where someone's hands are, near enough, turned toward a point: in front of their chest
+static qboolean CM_HandsToward( const cmCine_t *c, int ent, const vec3_t to, vec3_t org, vec3_t dir ) {
+	vec3_t flat;
+	int num;
+
+	if ( ent < 0 || ent >= c->numEnts || !CM_Resolve( c->ents[ent].who, &num, 1 ) || !RC_EntityOrigin( num, org ) )
+		return qfalse;
+	org[2] += 14.0f;
+	VectorSubtract( to, org, flat );
+	flat[2] = 0.0f;
+	if ( VectorNormalize( flat ) > 1.0f )
+		VectorMA( org, 14.0f, flat, org );
+	VectorSubtract( to, org, dir );
+	if ( VectorNormalize( dir ) < 1.0f )
+		VectorCopy( flat, dir );
+	return qtrue;
+}
+
+// the force powers going on t ms in: their effects again each while
+static void CM_RunForce( const cmCine_t *c, int t, int *next ) {
+	for ( int i = 0; i < c->numClips; i++ ) {
+		const cmClip_t *clip = &c->clips[i];
+		const cmForce_t *f;
+		const int len = clip->kind == CM_CLIP_FORCE ? CM_AnimLen( c, clip ) : 0;
+		vec3_t org, dir, at;
+		int id, num;
+
+		if ( clip->kind != CM_CLIP_FORCE || t < clip->start || ( len > 0 && t >= clip->start + len ) || cls.realtime < next[i] )
+			continue;
+		f = &cmForces[clip->power];
+		next[i] = cls.realtime + f->every;
+		if ( !( id = CM_FxId( f->effect ) ) )
+			continue;
+		// the one it's at, over their middle; with no one, in front of the one using it
+		if ( clip->target >= 0 && clip->target < c->numEnts && CM_Resolve( c->ents[clip->target].who, &num, 1 ) && RC_EntityOrigin( num, at ) ) {
+			at[2] += 12.0f;
+		} else {
+			vec3_t ang = { 0, 0, 0 }, fwd;
+
+			if ( clip->ent >= c->numEnts || !RC_TrackTarget( c->ents[clip->ent].who, at, &ang[YAW] ) )
+				continue;
+			AngleVectors( ang, fwd, NULL, NULL );
+			VectorMA( at, 128.0f, fwd, at );
+		}
+		if ( f->atTarget ) {
+			VectorSet( dir, 0, 0, 1 );
+			FX_PlayEffectID( id, at, dir, -1, -1 );
+		} else if ( CM_HandsToward( c, clip->ent, at, org, dir ) ) {
+			if ( f->onSelf ) {
+				org[2] -= 14.0f;
+				VectorSet( dir, 0, 0, 1 );
+			}
+			FX_PlayEffectID( id, org, dir, -1, -1 );
+		}
+	}
 }
 
 // t ms in: the one-offs at their moment, the others again and again while they last
@@ -1426,7 +2316,7 @@ static void CM_DriverTeles( int t, qboolean now ) {
 			const int ms = CM_PlanLen( &cmp.cine, p, clip, m );
 			vec3_t pos, ang;
 
-			if ( p->nums[m] < MAX_CLIENTS || cmp.teleSent[i][m] || ( !now && t < clip->start + ms ) )
+			if ( p->nums[m] < MAX_CLIENTS || CL_Extras_IsNum( p->nums[m] ) || cmp.teleSent[i][m] || ( !now && t < clip->start + ms ) )
 				continue;
 			CM_PlanAt( &cmp.cine, p, clip, m, Q_min( t - clip->start, ms ), pos, ang );
 			CM_Queue( va( "npc tele %i %i %i %i %i", RC_Round( pos[0] ), RC_Round( pos[1] ), RC_Round( pos[2] ),
@@ -1464,7 +2354,8 @@ static const char *CM_SayCommand( const cmCine_t *c, const cmClip_t *clip, qbool
 		return va( "say %s", text );
 	if ( nums[0] < MAX_CLIENTS )
 		return CL_RpHooks_NpcTalkCommand( va( "%i", nums[0] ), CM_PlayerName( nums[0] ), "^7", "", text );
-	return CL_RpHooks_NpcTalkCommand( c->ents[clip->ent].who, clip->name[0] ? clip->name : c->ents[clip->ent].who, "^7", "", text );
+	return CL_RpHooks_NpcTalkCommand( c->ents[clip->ent].who, clip->name[0] ? clip->name : CM_IsExtra( c->ents[clip->ent].who ) ? c->ents[clip->ent].who + 1
+		: c->ents[clip->ent].who, "^7", "", text );
 }
 
 // a hook shown on this screen alone, as if the server had sent it: a preview's lines
@@ -1519,7 +2410,8 @@ static void CM_RunEmotes( int t ) {
 static const char *CM_ActCommand( const cmCine_t *c, const cmClip_t *clip ) {
 	const char *who = c->ents[clip->ent].who;
 
-	if ( !who[0] || strchr( who, ',' ) )
+	// an extra is this client's alone: nothing goes to the server
+	if ( !who[0] || strchr( who, ',' ) || CM_IsExtra( who ) )
 		return NULL;
 	if ( clip->kind == CM_CLIP_REMOVE )
 		return va( "npc kill %s", who );
@@ -1575,12 +2467,20 @@ static void CM_PlanSpawned( void ) {
 	}
 }
 
+static void CM_VideoDone( void );
+
 static void CM_StopPlaying( void ) {
 	if ( !cmp.playing )
 		return;
 	cmp.playing = qfalse;
+	CM_VideoDone();
+	CM_WorldVolume( NULL );
+	if ( cmMusicPlayed ) {
+		cmMusicPlayed = qfalse;
+		CL_SoundManager_RestoreMusic();
+	}
 	if ( cmp.driver )
-		CM_DriverTeles( cls.realtime - cmp.start, qtrue );
+		CM_DriverTeles( cmp.t, qtrue );
 	CM_Unapply();
 	if ( CL_RpCinematic_Active() )
 		CL_RpCinematic_Stop();
@@ -1591,7 +2491,24 @@ static void CM_PlayerFrame( void ) {
 
 	if ( !cmp.playing )
 		return;
-	t = cls.realtime - cmp.start;
+	// its own clock on, as fast as the stretch it's in plays
+	{
+		float speed = 1.0f;
+		int latest = -1;
+
+		for ( int i = 0; i < cmp.cine.numSpeeds; i++ ) {
+			const cmSpeed_t *sp = &cmp.cine.speeds[i];
+
+			if ( cmp.t >= sp->start && cmp.t < sp->start + sp->ms && sp->start >= latest ) {
+				latest = sp->start;
+				speed = sp->speed / 100.0f;
+			}
+		}
+		cmp.tExact += ( cls.realtime - cmp.lastReal ) * speed;
+		cmp.lastReal = cls.realtime;
+		cmp.t = (int)cmp.tExact;
+	}
+	t = cmp.t;
 	// over, or left with /cincam stop
 	if ( cls.state != CA_ACTIVE || t >= cmp.total || ( cmp.shot >= 0 && !CL_RpCinematic_Active() ) ) {
 		CM_StopPlaying();
@@ -1601,10 +2518,14 @@ static void CM_PlayerFrame( void ) {
 	if ( shot != cmp.shot && shot >= 0 ) {
 		RC_CineShot( &cmp.cine.shots[shot], local );
 		cmp.shot = shot;
+	} else if ( shot >= 0 ) {
+		// the camera where the cinematic's own clock has it
+		RC_SetShotTime( local );
 	}
 	CM_Apply( &cmp.cine, cmPlayPlans, t );
 	CM_RunFx( &cmp.cine, t, cmp.fxNext );
 	CM_RunSnd( &cmp.cine, t, cmp.sndNext );
+	CM_RunForce( &cmp.cine, t, cmp.forceNext );
 	if ( cmp.driver )
 		CM_DriverTeles( t, qfalse );
 	CM_RunSays( t );
@@ -1621,9 +2542,15 @@ static qboolean CM_Play( const cmCine_t *c, int fromMs, qboolean local ) {
 	cmp.cine = *c;
 	cmp.total = CM_Total( c );
 	cmp.start = cls.realtime - Com_Clampi( 0, cmp.total - 1, fromMs );
+	cmp.t = Com_Clampi( 0, cmp.total - 1, fromMs );
+	cmp.tExact = cmp.t;
+	cmp.lastReal = cls.realtime;
 	cmp.shot = -1;
 	cmp.driver = qfalse;
 	cmp.local = local;
+	// its extras there before anything is worked out from where everyone is
+	cmp.playing = qtrue;
+	CM_SyncExtras();
 	memset( cmp.teleSent, 0, sizeof( cmp.teleSent ) );
 	memset( cmp.said, 0, sizeof( cmp.said ) );
 	memset( cmp.emoted, 0, sizeof( cmp.emoted ) );
@@ -1636,9 +2563,12 @@ static qboolean CM_Play( const cmCine_t *c, int fromMs, qboolean local ) {
 	}
 	memset( cmp.fxNext, 0, sizeof( cmp.fxNext ) );
 	memset( cmp.sndNext, 0, sizeof( cmp.sndNext ) );
+	memset( cmp.forceNext, 0, sizeof( cmp.forceNext ) );
 	CM_Plan( &cmp.cine, cmPlayPlans );
 	cmp.playing = qtrue;
 	RC_CineBegin( c->hud, c->bars );
+	RC_SetBarFrac( CM_BarFrac( c ) );
+	CM_WorldVolume( c );
 	CM_PlayerFrame();
 	return qtrue;
 }
@@ -1928,13 +2858,16 @@ typedef enum {
 	CM_TAB_CAMERA,
 	CM_TAB_ENTITIES,
 	CM_TAB_EFFECTS,
-	CM_TAB_SOUNDS
+	CM_TAB_SOUNDS,
+	CM_TAB_TEXT,
+	CM_TAB_WORLD		// props and lights
 } cmTab_t;
 
 typedef enum {
 	CM_PAGE_SPOTS,
 	CM_PAGE_FOCUS,
-	CM_PAGE_LOOK
+	CM_PAGE_LOOK,
+	CM_PAGE_TRACK		// who it keeps in frame, and its shaking
 } cmPage_t;
 
 typedef enum {
@@ -1948,7 +2881,15 @@ typedef enum {
 	CM_TYPE_EMOTE,
 	CM_TYPE_NEWNPC,		// a targetname for an NPC to spawn
 	CM_TYPE_NPCTYPE,	// a spawn's NPC type
-	CM_TYPE_DIALOG		// an NPC command's dialog
+	CM_TYPE_DIALOG,		// an NPC command's dialog
+	CM_TYPE_TXT,		// a text's words
+	CM_TYPE_TXTWHO,		// and who says them
+	CM_TYPE_TRACK,		// who a shot keeps in frame
+	CM_TYPE_EXTRANAME,	// an extra's name, + first
+	CM_TYPE_EXTRAMODEL,	// and its model
+	CM_TYPE_PROPMODEL,	// a prop's model, and the search for one
+	CM_TYPE_LIGHTWHO,	// who a light follows
+	CM_TYPE_HOLD		// the model a look has someone hold
 } cmTyping_t;
 
 typedef enum {
@@ -1962,7 +2903,19 @@ typedef enum {
 	CM_DRAG_FX,			// an effect, when it starts
 	CM_DRAG_FX_END,		// how long it goes on
 	CM_DRAG_SND,		// a sound, when it starts
-	CM_DRAG_SND_END		// how long it goes on
+	CM_DRAG_SND_END,	// how long it goes on
+	CM_DRAG_TXT,		// a text, when it shows
+	CM_DRAG_TXT_END,	// how long it shows
+	CM_DRAG_PROP,		// a prop, when it comes
+	CM_DRAG_PROP_END,	// how long it stays
+	CM_DRAG_LIGHT,		// a light, when it comes on
+	CM_DRAG_LIGHT_END,	// how long it stays on
+	CM_DRAG_SCREEN,		// a flash, tint or dark edges, when
+	CM_DRAG_SCREEN_END,	// and how long
+	CM_DRAG_MAPLOOK,	// the map's look, when
+	CM_DRAG_MAPLOOK_END,	// and how long
+	CM_DRAG_SPEED,		// a stretch slowed or sped up, when
+	CM_DRAG_SPEED_END	// and how long
 } cmDrag_t;
 
 static struct {
@@ -2020,12 +2973,52 @@ static struct {
 	qboolean	sndPicked;
 	cmSnd_t		sndPickedSnd;
 
+	// the Text tab: the one picked
+	int			txt;
+	int			txtScroll;
+
+	// the Track page: the jolt picked
+	int			shakeSel;
+
+	// the World tab: its page, the prop and its key picked, the light picked; one held in the view
+	int			worldPage;			// 0 props, 1 lights
+	int			prop, propKey, propScroll, propPickScroll;
+	int			light, lightScroll;
+	int			screen, screenScroll;
+	int			mapLook, mapLookScroll;
+	int			speed, speedScroll;
+
+	// bars picked together with Ctrl+click, moved together: their kind, which, and where they
+	// started when the drag began
+	int			numMulti;
+	int			multiKind[64], multiIndex[64], multiBase[64];
+	qboolean	worldDrag;
+
 	// the move arrows over the effect picked: J; one dragged moves it along
 	qboolean	gizmo;
 	qboolean	gzDragging;
 	gzDrag_t	gzDrag;
 	int			gzHot;
-	qboolean	addOpen;			// the actions to add are listed
+	qboolean	addOpen;			// the actions to add are listed, in a popup over the panel
+	qboolean	addPlaced;			// the popup placed this frame, where addPop says
+	float		addPop[4];			// x y w h
+	float		addBtn[4];			// the button that opens it
+	qboolean	popClick;			// this frame's click, landed in the popup
+	qboolean	popHover;			// the mouse over the popup: nothing under it lights up
+	qboolean	extraOpen;			// an extra's settings shown
+
+	// a preview going round between the marks either side of the moment
+	qboolean	loop;
+	int			loopFrom, loopTo;
+	// a picture of the moment: the manager hidden a few frames for it
+	int			pictureFrames;
+
+	// the free camera flown and kept as a shot: where it was, every tenth of a second
+	qboolean	camRec;
+	int			camRecStart, camRecNext, camRecCount;
+	vec3_t		camRecOrg[CM_CAMREC_MAX], camRecAng[CM_CAMREC_MAX];
+	float		camRecFov[CM_CAMREC_MAX];
+	int			camRecMs[CM_CAMREC_MAX];
 	char		newNpc[MAX_QPATH];	// an NPC to spawn in it, by its targetname, being typed
 	int			listAsked;			// cls.realtime the NPC list was last asked for
 	int			entScroll, pickScroll;
@@ -2150,9 +3143,29 @@ static void CM_Message( const char *text ) {
 	cm.messageTime = cls.realtime;
 }
 
+// undo and redo: the cinematic as its file's text, kept once a change has settled (the mouse let
+// go and nothing else changed for a moment), so a drag or a run of clicks goes back in one
+#define CM_UNDO_MAX			60
+#define CM_UNDO_SETTLE_MS	400
+
+static std::vector<std::string> cmUndo, cmRedo;
+static std::string cmUndoBase;			// as it was when last kept
+static qboolean cmUndoPending;
+static int cmUndoTime;
+
 static void CM_Changed( void ) {
 	cm.dirty = qtrue;
+	cmUndoPending = qtrue;
+	cmUndoTime = cls.realtime;
 }
+
+static void CM_CamRecStart( void );
+static void CM_CamRecStop( void );
+static void CM_UndoReset( void );
+static void CM_UndoFrame( void );
+static void CM_Undo( qboolean redo );
+static void CM_Copy( void );
+static void CM_Paste( void );
 
 static rcShot_t *CM_Shot( void ) {
 	if ( cm.cur < 0 || cm.cur >= cm.cine.numShots )
@@ -2263,6 +3276,18 @@ static void CM_Ripple( void ) {
 		CM_REMAP( c->fx[i].start );
 	for ( int i = 0; i < c->numSnd; i++ )
 		CM_REMAP( c->snd[i].start );
+	for ( int i = 0; i < c->numTxt; i++ )
+		CM_REMAP( c->txt[i].start );
+	for ( int i = 0; i < c->numProps; i++ )
+		CM_REMAP( c->props[i].start );
+	for ( int i = 0; i < c->numLights; i++ )
+		CM_REMAP( c->lights[i].start );
+	for ( int i = 0; i < c->numScreens; i++ )
+		CM_REMAP( c->screens[i].start );
+	for ( int i = 0; i < c->numMapLooks; i++ )
+		CM_REMAP( c->mapLooks[i].start );
+	for ( int i = 0; i < c->numSpeeds; i++ )
+		CM_REMAP( c->speeds[i].start );
 	if ( cm.tlPinned && !cm.tlDrag )
 		CM_REMAP( cm.tlMs );
 #undef CM_REMAP
@@ -2271,10 +3296,15 @@ static void CM_Ripple( void ) {
 
 // what starts at or after ms moves by delta, what's between ms and ms - delta back to ms
 static void CM_ShiftClips( int ms, int delta ) {
-	const int clips = cm.cine.numClips, fx = clips + cm.cine.numFx;
+	const int clips = cm.cine.numClips, fx = clips + cm.cine.numFx, snd = fx + cm.cine.numSnd, txt = snd + cm.cine.numTxt;
+	const int props = txt + cm.cine.numProps, lights = props + cm.cine.numLights, screens = lights + cm.cine.numScreens;
+	const int maps = screens + cm.cine.numMapLooks;
 
-	for ( int i = 0; i < fx + cm.cine.numSnd; i++ ) {
-		int *start = i < clips ? &cm.cine.clips[i].start : i < fx ? &cm.cine.fx[i - clips].start : &cm.cine.snd[i - fx].start;
+	for ( int i = 0; i < maps + cm.cine.numSpeeds; i++ ) {
+		int *start = i < clips ? &cm.cine.clips[i].start : i < fx ? &cm.cine.fx[i - clips].start
+			: i < snd ? &cm.cine.snd[i - fx].start : i < txt ? &cm.cine.txt[i - snd].start
+			: i < props ? &cm.cine.props[i - txt].start : i < lights ? &cm.cine.lights[i - props].start
+			: i < screens ? &cm.cine.screens[i - lights].start : i < maps ? &cm.cine.mapLooks[i - screens].start : &cm.cine.speeds[i - maps].start;
 
 		if ( delta < 0 && *start >= ms + delta && *start < ms )
 			*start = ms + delta;
@@ -2534,6 +3564,11 @@ static void CM_RemoveEnt( void ) {
 		}
 		if ( c->clips[i].ent > e )
 			c->clips[i].ent--;
+		// a force power at them is at no one now
+		if ( c->clips[i].kind == CM_CLIP_FORCE && c->clips[i].target == e )
+			c->clips[i].target = -1;
+		else if ( c->clips[i].kind == CM_CLIP_FORCE && c->clips[i].target > e )
+			c->clips[i].target--;
 		i++;
 	}
 	c->numEnts--;
@@ -2591,6 +3626,21 @@ static void CM_AddClip( int kind, qboolean tele ) {
 	} else if ( kind == CM_CLIP_SAY ) {
 		cm.typing = CM_TYPE_SAY;
 		CM_Message( "Type what they say" );
+	} else if ( kind == CM_CLIP_FORCE ) {
+		clip->a.ms = CM_FORCE_MS;
+		clip->target = -1;
+		clip->forceAnims = qtrue;
+		// at the first one in it who isn't them
+		for ( int e = 0; e < c->numEnts && clip->target < 0; e++ ) {
+			if ( e != cm.ent )
+				clip->target = e;
+		}
+		CM_Message( "A force power: pick it and who it's at; its end on the timeline is when it stops" );
+	} else if ( kind == CM_CLIP_LOOK ) {
+		clip->a.ms = CM_EMOTE_MS;
+		clip->size = 100;
+		clip->blade = 100;
+		CM_Message( "How they look meanwhile: drag its end on the timeline for how long" );
 	} else if ( kind == CM_CLIP_EMOTE ) {
 		clip->a.to = -1;
 		clip->a.speed = 100;
@@ -2804,6 +3854,8 @@ static void CM_New( void ) {
 	cm.tlScroll = 0;
 	cm.planTime = 0;
 	cm.seenShots = -1;
+	cm.numMulti = 0;
+	CM_UndoReset();
 }
 
 static void CM_AfterLoad( const char *name ) {
@@ -2811,6 +3863,7 @@ static void CM_AfterLoad( const char *name ) {
 
 	CM_New();
 	cm.cine = c;
+	CM_UndoReset();
 	Q_strncpyz( cm.name, name, sizeof( cm.name ) );
 	cm.cur = -1;
 	CM_SelectShot( 0 );
@@ -2942,7 +3995,7 @@ static qboolean CM_ViewCam( vec3_t org, vec3_t ang, float *fov ) {
 		int local;
 		const int shot = CM_ShotAt( &cm.cine, cm.tlMs, &local );
 
-		RC_EvalShot( &cm.cine.shots[shot], local, org, ang, fov );
+		RC_EvalShotLive( &cm.cine.shots[shot], local, org, ang, fov, qfalse );
 		return qtrue;
 	}
 	VectorCopy( cm.camOrg, org );
@@ -2964,22 +4017,36 @@ static void CM_TlLetGo( void ) {
 	cm.tlDrag = CM_DRAG_NONE;
 }
 
-static void CM_StopPreview( void ) {
-	if ( !cm.preview )
-		return;
-	cm.preview = qfalse;
-	// the timeline's moment where it got to
-	if ( cm.tlPinned && cmp.playing )
-		cm.tlMs = Q_max( 0, cls.realtime - cmp.start );
-	CM_StopPlaying();
+// a video of it: played from the start on this screen, every frame kept at cl_aviFrameRate, into
+// videos/<name>-<n>.avi in the game folder, until it ends or is stopped
+static qboolean cmVideo;
+static char cmVideoPath[MAX_QPATH];
+
+static qboolean CM_VideoPlay( const cmCine_t *c, const char *name ) {
+	char path[MAX_QPATH];
+	int n;
+
+	if ( CL_VideoRecording() || !c->numShots )
+		return qfalse;
+	for ( n = 1; n < 1000; n++ ) {
+		Com_sprintf( path, sizeof( path ), "videos/%s-%03i.avi", name[0] ? name : "cinematic", n );
+		if ( !FS_FileExists( path ) )
+			break;
+	}
+	if ( !CM_Play( c, 0, qtrue ) )
+		return qfalse;
+	if ( !CL_OpenAVIForWriting( path ) ) {
+		CM_StopPlaying();
+		Com_Printf( S_COLOR_RED "Couldn't make the video file %s\n", path );
+		return qfalse;
+	}
+	cmVideo = qtrue;
+	Q_strncpyz( cmVideoPath, path, sizeof( cmVideoPath ) );
+	return qtrue;
 }
 
-// the cinematic on this screen, from the timeline's moment or the start
-static void CM_Preview( void ) {
-	const int total = CM_Total( &cm.cine );
-	const int from = cm.tlPinned && cm.tlMs < total ? cm.tlMs : 0;
-
-	if ( cm.preview )
+static void CM_RecordVideo( void ) {
+	if ( cm.preview || CL_VideoRecording() )
 		return;
 	if ( !cm.cine.numShots ) {
 		CM_Message( S_COLOR_YELLOW "Add a shot first: fly where it starts and press Enter" );
@@ -2989,8 +4056,74 @@ static void CM_Preview( void ) {
 	cm.applied = qfalse;
 	cm.flying = qfalse;
 	cm.through = qfalse;
+	cm.typing = CM_TYPE_NONE;
+	if ( CM_VideoPlay( &cm.cine, cm.name ) )
+		cm.preview = qtrue;
+}
+
+static void CM_VideoDone( void ) {
+	if ( !cmVideo )
+		return;
+	cmVideo = qfalse;
+	// closed at the end of the frame: the renderer still has the last one to fill
+	CL_CloseAVILater();
+	Com_Printf( "Cinematic video saved: %s\n", cmVideoPath );
+	CM_Message( va( S_COLOR_GREEN "Saved %s in the game folder", cmVideoPath ) );
+}
+
+static void CM_StopPreview( void ) {
+	if ( !cm.preview )
+		return;
+	cm.preview = qfalse;
+	// the timeline's moment where it got to
+	if ( cm.tlPinned && cmp.playing )
+		cm.tlMs = Q_max( 0, cmp.t );
+	CM_StopPlaying();
+}
+
+// the cinematic on this screen, from the timeline's moment or the start
+static void CM_LoopSpan( int *from, int *to );
+
+static void CM_Preview( void ) {
+	const int total = CM_Total( &cm.cine );
+	int from = cm.tlPinned && cm.tlMs < total ? cm.tlMs : 0;
+
+	if ( cm.preview )
+		return;
+	if ( !cm.cine.numShots ) {
+		CM_Message( S_COLOR_YELLOW "Add a shot first: fly where it starts and press Enter" );
+		return;
+	}
+	// going round between the marks either side of the moment
+	if ( cm.loop ) {
+		CM_LoopSpan( &cm.loopFrom, &cm.loopTo );
+		from = cm.loopFrom;
+	}
+	CM_Unapply();
+	cm.applied = qfalse;
+	cm.flying = qfalse;
+	cm.through = qfalse;
 	if ( CM_Play( &cm.cine, from, qtrue ) )
 		cm.preview = qtrue;
+}
+
+// a picture of the moment as the players see it, through the cinematic's camera, into
+// screenshots/<name>-<ms>.jpg, nothing of the manager's on it
+static void CM_Picture( void ) {
+	if ( !cm.cine.numShots ) {
+		CM_Message( S_COLOR_YELLOW "Add a shot first: fly where it starts and press Enter" );
+		return;
+	}
+	if ( !cm.tlPinned ) {
+		cm.tlMs = 0;
+		CM_TlPin();
+	}
+	cm.tlCam = qtrue;
+	cm.through = qfalse;
+	cm.typing = CM_TYPE_NONE;
+	cm.pictureFrames = 4;
+	Cbuf_AddText( va( "screenshot %s-%06i\n", cm.name[0] ? cm.name : "cinematic", cm.tlMs ) );
+	CM_Message( va( S_COLOR_GREEN "Picture of %.1f s in screenshots/", cm.tlMs / 1000.0f ) );
 }
 
 // every frame: the timeline's moment shown, or the animation being made on its model
@@ -3066,6 +4199,8 @@ void CL_RpCinematic_Edit( const char *name, qboolean fromStoryteller ) {
 	CL_SoundManager_Close();
 	CL_AnimManager_Close();
 	CL_Presets_Close();
+	CL_SpecialMoves_Close();
+	CL_ChatLog_Close();
 	CL_MapEditor_Close();
 
 	cm.font = re->RegisterFont( "arialnb" );
@@ -3120,6 +4255,11 @@ void CL_RpCinematic_EditorClose( void ) {
 	CM_TlLetGo();
 	cm.open = qfalse;
 	cm.typing = CM_TYPE_NONE;
+	// a track listened to: the map's music back
+	if ( cmMusicPlayed && !cmp.playing ) {
+		cmMusicPlayed = qfalse;
+		CL_SoundManager_RestoreMusic();
+	}
 	cm.listing = qfalse;
 	cm.through = qfalse;
 	CM_ReleaseKeys();
@@ -3177,6 +4317,32 @@ static char *CM_TypedText( int *size ) {
 			return NULL;
 		*size = sizeof( s->dofWho );
 		return s->dofWho;
+	case CM_TYPE_EXTRANAME:
+	case CM_TYPE_EXTRAMODEL:
+		if ( cm.ent < 0 || cm.ent >= cm.cine.numEnts || !CM_IsExtra( cm.cine.ents[cm.ent].who ) )
+			return NULL;
+		*size = cm.typing == CM_TYPE_EXTRANAME ? sizeof( cm.cine.ents[0].who ) : sizeof( cm.cine.ents[0].model );
+		return cm.typing == CM_TYPE_EXTRANAME ? cm.cine.ents[cm.ent].who : cm.cine.ents[cm.ent].model;
+	case CM_TYPE_HOLD:
+		if ( !clip || clip->kind != CM_CLIP_LOOK )
+			return NULL;
+		*size = sizeof( clip->hold );
+		return clip->hold;
+	case CM_TYPE_PROPMODEL:
+		if ( cm.prop < 0 || cm.prop >= cm.cine.numProps )
+			return NULL;
+		*size = sizeof( cm.cine.props[0].model );
+		return cm.cine.props[cm.prop].model;
+	case CM_TYPE_LIGHTWHO:
+		if ( cm.light < 0 || cm.light >= cm.cine.numLights )
+			return NULL;
+		*size = sizeof( cm.cine.lights[0].who );
+		return cm.cine.lights[cm.light].who;
+	case CM_TYPE_TRACK:
+		if ( !s )
+			return NULL;
+		*size = sizeof( s->trackWho );
+		return s->trackWho;
 	case CM_TYPE_EMOTE:
 		if ( !clip || clip->kind != CM_CLIP_EMOTE )
 			return NULL;
@@ -3185,6 +4351,12 @@ static char *CM_TypedText( int *size ) {
 	case CM_TYPE_NEWNPC:
 		*size = sizeof( cm.newNpc );
 		return cm.newNpc;
+	case CM_TYPE_TXT:
+	case CM_TYPE_TXTWHO:
+		if ( cm.txt < 0 || cm.txt >= cm.cine.numTxt )
+			return NULL;
+		*size = cm.typing == CM_TYPE_TXT ? sizeof( cm.cine.txt[0].text ) : sizeof( cm.cine.txt[0].who );
+		return cm.typing == CM_TYPE_TXT ? cm.cine.txt[cm.txt].text : cm.cine.txt[cm.txt].who;
 	case CM_TYPE_NPCTYPE:
 		if ( !clip || clip->kind != CM_CLIP_SPAWN )
 			return NULL;
@@ -3209,14 +4381,31 @@ static char *CM_TypedText( int *size ) {
 // a character the box typed in takes: a line anything, a name shown anything but the | that
 // ends it in the file; the rest names, who can be several with commas between
 static qboolean CM_AllowChar( int ch ) {
-	if ( cm.typing == CM_TYPE_SAY || cm.typing == CM_TYPE_SAYNAME || cm.typing == CM_TYPE_DIALOG )
-		return (qboolean)!( ch < ' ' || ch > '~' || ( cm.typing != CM_TYPE_SAY && ch == '|' ) || ( cm.typing == CM_TYPE_DIALOG && ch == ';' ) );
-	return (qboolean)( CM_NameChar( ch ) || ( ( cm.typing == CM_TYPE_WHO || cm.typing == CM_TYPE_FOCUS ) && ch == ',' ) );
+	if ( cm.typing == CM_TYPE_SAY || cm.typing == CM_TYPE_SAYNAME || cm.typing == CM_TYPE_DIALOG || cm.typing == CM_TYPE_TXT || cm.typing == CM_TYPE_TXTWHO )
+		return (qboolean)!( ch < ' ' || ch > '~' || ( cm.typing != CM_TYPE_SAY && cm.typing != CM_TYPE_TXT && ch == '|' ) || ( cm.typing == CM_TYPE_DIALOG && ch == ';' ) );
+	if ( cm.typing == CM_TYPE_EXTRAMODEL )
+		return (qboolean)( CM_NameChar( ch ) || ch == '/' || ch == '|' );
+	if ( cm.typing == CM_TYPE_PROPMODEL || cm.typing == CM_TYPE_HOLD )
+		return (qboolean)( CM_NameChar( ch ) || ch == '/' || ch == '.' );
+	if ( cm.typing == CM_TYPE_LIGHTWHO )
+		return (qboolean)( CM_NameChar( ch ) || ch == ',' || ch == '+' );
+	if ( cm.typing == CM_TYPE_EXTRANAME )
+		return (qboolean)( CM_NameChar( ch ) || ch == '+' );
+	return (qboolean)( CM_NameChar( ch ) || ( ( cm.typing == CM_TYPE_WHO || cm.typing == CM_TYPE_FOCUS || cm.typing == CM_TYPE_TRACK ) && ch == ',' ) );
 }
 
 // what was typed changed: the animations' names are in capitals, the emotes' small, and their
 // lists start again from the top
 static void CM_TypedChanged( char *text ) {
+	// an extra's name always starts with its +
+	if ( cm.typing == CM_TYPE_EXTRANAME && text[0] != '+' ) {
+		const int len = (int)strlen( text );
+
+		if ( len < MAX_QPATH - 1 ) {
+			memmove( text + 1, text, len + 1 );
+			text[0] = '+';
+		}
+	}
 	if ( cm.typing == CM_TYPE_ANIM ) {
 		Q_strupr( text );
 		cm.pickScroll = 0;
@@ -3232,6 +4421,8 @@ static void CM_DeletePlaceKey( cmClip_t *clip );
 
 static void CM_DeleteFx( void );
 static void CM_DeleteSnd( void );
+static void CM_DeleteTxt( void );
+static void CM_DeleteWorld( void );
 
 void CL_RpCinematic_EditorKeyEvent( int key, qboolean down ) {
 	cmClip_t *clip;
@@ -3313,7 +4504,35 @@ void CL_RpCinematic_EditorKeyEvent( int key, qboolean down ) {
 		return;
 	}
 
+	// Ctrl+Z, Ctrl+Y or Ctrl+Shift+Z, Ctrl+C, Ctrl+V
+	if ( CM_CtrlDown() ) {
+		switch ( key ) {
+		case A_CAP_Z:
+		case A_LOW_Z:
+			CM_Undo( (qboolean)( cm.held[A_SHIFT] || cm.held[A_SHIFT2] ) );
+			return;
+		case A_CAP_Y:
+		case A_LOW_Y:
+			CM_Undo( qtrue );
+			return;
+		case A_CAP_C:
+		case A_LOW_C:
+			CM_Copy();
+			return;
+		case A_CAP_V:
+		case A_LOW_V:
+			CM_Paste();
+			return;
+		default:
+			break;
+		}
+	}
+
 	clip = CM_Clip();
+	if ( cm.camRec && ( key == A_ENTER || key == A_KP_ENTER ) ) {
+		CM_CamRecStop();
+		return;
+	}
 	switch ( key ) {
 	case A_ENTER:
 	case A_KP_ENTER:
@@ -3335,6 +4554,10 @@ void CL_RpCinematic_EditorKeyEvent( int key, qboolean down ) {
 			CM_DeleteFx();
 		else if ( cm.tab == CM_TAB_SOUNDS )
 			CM_DeleteSnd();
+		else if ( cm.tab == CM_TAB_TEXT )
+			CM_DeleteTxt();
+		else if ( cm.tab == CM_TAB_WORLD )
+			CM_DeleteWorld();
 		else if ( cm.tab == CM_TAB_ENTITIES && clip && clip->kind == CM_CLIP_PLACE )
 			CM_DeletePlaceKey( clip );
 		else if ( cm.tab == CM_TAB_ENTITIES )
@@ -3442,6 +4665,12 @@ static void CM_EditorFrame( void ) {
 	CM_Ripple();
 
 	if ( cm.preview ) {
+		// round again from the first mark, at the second or the end
+		if ( cm.loop && !cmVideo && ( !cmp.playing || cmp.t >= cm.loopTo ) ) {
+			if ( !CM_Play( &cm.cine, cm.loopFrom, qtrue ) )
+				cm.preview = qfalse;
+			return;
+		}
 		if ( !cmp.playing )
 			cm.preview = qfalse;
 		return;
@@ -3696,6 +4925,29 @@ static void CM_AddScene( void ) {
 		if ( cm.cine.snd[i].spot )
 			CM_Cross( cm.cine.snd[i].org, sel ? 8.0f : 4.0f, sel ? cmSelColor : cm.tab == CM_TAB_SOUNDS ? sndColor : sndFaint );
 	}
+	// the props' paths through their keys, the one picked brighter; the lights, in their colour
+	if ( cm.tab == CM_TAB_WORLD ) {
+		static const byte propColor[4] = { 230, 200, 120, 255 }, propFaint[4] = { 230, 200, 120, 90 };
+
+		for ( int i = 0; i < cm.cine.numProps && cm.worldPage == 0; i++ ) {
+			const cmProp_t *pr = &cm.cine.props[i];
+			const qboolean sel = (qboolean)( i == cm.prop );
+
+			for ( int k = 0; k < pr->numKeys; k++ ) {
+				CM_Cross( pr->keys[k].org, sel && k == cm.propKey ? 8.0f : 4.0f, sel && k == cm.propKey ? cmSelColor : sel ? propColor : propFaint );
+				if ( k )
+					CM_Line( pr->keys[k - 1].org, pr->keys[k].org, sel ? propColor : propFaint );
+			}
+		}
+		for ( int i = 0; i < cm.cine.numLights && cm.worldPage == 1; i++ ) {
+			const cmLight_t *l = &cm.cine.lights[i];
+			const byte color[4] = { (byte)( l->color[0] * 255 ), (byte)( l->color[1] * 255 ), (byte)( l->color[2] * 255 ), 255 };
+			vec3_t org;
+
+			CM_LightOrg( l, org );
+			CM_Cross( org, i == cm.light ? 8.0f : 5.0f, i == cm.light ? cmSelColor : color );
+		}
+	}
 
 	// the shots' trails, the one shown brighter
 	for ( int i = 0; i < cm.cine.numShots; i++ )
@@ -3748,7 +5000,7 @@ static void CM_AddScene( void ) {
 		const int ms = cm.tlPinned ? cm.tlMs : cls.realtime % ( total + 1000 );
 		const int shot = CM_ShotAt( &cm.cine, Q_min( ms, total ), &local );
 
-		RC_EvalShot( &cm.cine.shots[shot], local, org, ang, &fov );
+		RC_EvalShotLive( &cm.cine.shots[shot], local, org, ang, &fov, qfalse );
 		CM_Camera( org, ang, fov, cmGhostColor );
 	}
 
@@ -3902,7 +5154,7 @@ static void CM_TextClipped( float x, float y, float w, const char *text, const f
 }
 
 static qboolean CM_InRect( float x, float y, float w, float h ) {
-	return (qboolean)( !cm.flying && cm.cursorX >= x && cm.cursorX < x + w && cm.cursorY >= y && cm.cursorY < y + h );
+	return (qboolean)( !cm.flying && !cm.popHover && cm.cursorX >= x && cm.cursorX < x + w && cm.cursorY >= y && cm.cursorY < y + h );
 }
 
 // eats this frame's click if it landed in the rect
@@ -4132,6 +5384,14 @@ static void CM_DrawSpotsPage( float x, float y, float w ) {
 			k->ang[ROLL] = roll;
 			if ( cm.through )
 				cm.camAng[ROLL] = roll;
+		}
+	}
+	// slowing into it and out of it, as a camera that stops there
+	if ( s->numKeys > 1 ) {
+		y += CM_CTRL_H + CM_GAP;
+		if ( CM_Switch( x, y, w, "Stops here", k->stops ? "yes, eases in and out" : "no, goes through" ) ) {
+			k->stops = (qboolean)!k->stops;
+			CM_Changed();
 		}
 	}
 }
@@ -4504,10 +5764,122 @@ static void CM_DrawLookPage( float x, float y, float w ) {
 	y = CM_DrawTransition( x, y, w, "Going out", &s->out );
 }
 
+// someone kept in frame, a path turning to them or an orbit circling them; and the camera
+// shaking, held by hand and jolted
+static void CM_DrawTrackPage( float x, float y, float w ) {
+	static const char *handheld[RC_MAX_HANDHELD + 1] = { "off, steady", "light", "medium", "heavy" };
+	rcShot_t *s = CM_Shot();
+	const float half = ( w - 4 ) * 0.5f;
+	int steps, local = 0;
+	vec3_t at;
+	float yaw;
+
+	CM_Text( x, y + 2, "Keep in frame", cmWhite );
+	y += CM_ROW_H + 2;
+	CM_Text( x, y + 2, "Who", cmDim );
+	CM_TextBox( x + 30, y, w - 30 - 34, s->trackWho, "nobody: as set", CM_TYPE_TRACK, NULL );
+	if ( CM_Button( x + w - 30, y, 30, "Aim", qfalse, (qboolean)( CM_PersonAtCrosshair() != NULL ) ) ) {
+		Q_strncpyz( s->trackWho, CM_PersonAtCrosshair(), sizeof( s->trackWho ) );
+		CM_Changed();
+	}
+	y += CM_CTRL_H + CM_GAP;
+	if ( s->trackWho[0] ) {
+		if ( RC_TrackTarget( s->trackWho, at, &yaw ) )
+			CM_TextClipped( x, y, w, va( S_COLOR_GREEN "%s" S_COLOR_GREY ": the camera %s", s->trackWho, s->orbit ? "circles them" : "turns to them" ), cmWhite );
+		else
+			CM_TextClipped( x, y, w, va( S_COLOR_YELLOW "%s isn't here: as set meanwhile", s->trackWho ), cmWhite );
+		y += CM_ROW_H + 2;
+		if ( s->orbit ) {
+			if ( CM_Switch( x, y, w, "From yaw", s->trackTurn ? "the way they face" : "the map's" ) ) {
+				s->trackTurn = (qboolean)!s->trackTurn;
+				CM_Changed();
+			}
+			y += CM_CTRL_H + CM_GAP;
+			CM_Text( x, y, S_COLOR_GREY "Their way: from yaw 180 behind them,", cmWhite );
+			CM_Text( x, y + CM_ROW_H, S_COLOR_GREY "90 or 270 beside, 0 in front; degrees 0", cmWhite );
+			CM_Text( x, y + CM_ROW_H * 2, S_COLOR_GREY "stays there as they go (Spots page)", cmWhite );
+			y += CM_ROW_H * 3 + 2;
+		} else {
+			CM_Text( x, y, S_COLOR_GREY "The spots stay where they are; it turns", cmWhite );
+			CM_Text( x, y + CM_ROW_H, S_COLOR_GREY "to them. An orbit goes round them", cmWhite );
+			y += CM_ROW_H * 2 + 2;
+		}
+	} else {
+		CM_Text( x, y, S_COLOR_GREY "A player or NPC: a path turns to them", cmWhite );
+		CM_Text( x, y + CM_ROW_H, S_COLOR_GREY "wherever they go, an orbit circles them", cmWhite );
+		y += CM_ROW_H * 2 + 2;
+	}
+
+	// the vertigo shot: zoomed as the camera moves so what it looks at stays as big
+	if ( !s->orbit && ( s->trackWho[0] || s->look ) ) {
+		if ( CM_Switch( x, y, w, "Dolly zoom", s->dolly ? "on: it stays as big" : "off" ) ) {
+			s->dolly = (qboolean)!s->dolly;
+			CM_Changed();
+		}
+		y += CM_CTRL_H + CM_GAP;
+	}
+	y += 4;
+	CM_Fill( x, y - 3, w, 1, cmBorder );
+	CM_Text( x, y + 2, "Shake", cmWhite );
+	y += CM_ROW_H + 2;
+	steps = CM_Stepper( x, y, w, "Handheld", handheld[s->handheld] );
+	if ( steps ) {
+		s->handheld = Com_Clampi( 0, RC_MAX_HANDHELD, s->handheld + steps );
+		CM_Changed();
+	}
+	y += CM_CTRL_H + CM_GAP;
+	// a jolt at the moment picked, if it's in this shot
+	if ( cm.tlPinned && CM_ShotAt( &cm.cine, cm.tlMs, &local ) != cm.cur )
+		local = 0;
+	if ( CM_Button( x, y, w, va( "+ Jolt at %.1f s into the shot", local / 1000.0f ), qfalse, (qboolean)( s->numShakes < RC_MAX_SHAKES ) ) ) {
+		int i = s->numShakes++;
+
+		for ( ; i > 0 && s->shakes[i - 1].ms > local; i-- )
+			s->shakes[i] = s->shakes[i - 1];
+		s->shakes[i].ms = local;
+		s->shakes[i].strength = 5;
+		s->shakes[i].len = 1000;
+		cm.shakeSel = i;
+		CM_Changed();
+	}
+	y += CM_CTRL_H + CM_GAP;
+	for ( int i = 0; i < s->numShakes; i++ ) {
+		const rcShake_t *k = &s->shakes[i];
+
+		if ( CM_Button( x, y, w - 20, va( "%.1f s: strength %i, %.1f s", k->ms / 1000.0f, k->strength, k->len / 1000.0f ), (qboolean)( i == cm.shakeSel ), qtrue ) )
+			cm.shakeSel = i;
+		if ( CM_Button( x + w - 16, y, 16, "x", qfalse, qtrue ) ) {
+			memmove( &s->shakes[i], &s->shakes[i + 1], ( s->numShakes - i - 1 ) * sizeof( s->shakes[0] ) );
+			s->numShakes--;
+			CM_Changed();
+			return;
+		}
+		y += CM_CTRL_H + 2;
+	}
+	if ( cm.shakeSel >= 0 && cm.shakeSel < s->numShakes ) {
+		rcShake_t *k = &s->shakes[cm.shakeSel];
+
+		y += CM_GAP;
+		steps = CM_Stepper( x, y, w, "Strength", va( "%i", k->strength ) );
+		if ( steps ) {
+			k->strength = Com_Clampi( 1, 10, k->strength + steps );
+			CM_Changed();
+		}
+		y += CM_CTRL_H + CM_GAP;
+		steps = CM_Stepper( x, y, w, "Dies away in", va( "%.1f s", k->len / 1000.0f ) );
+		CM_AdjustMs( &k->len, steps, 0.25f, 100 );
+		y += CM_CTRL_H + CM_GAP;
+		steps = CM_Stepper( x, y, half * 2 + 4, "At", va( "%.1f s", k->ms / 1000.0f ) );
+		CM_AdjustMs( &k->ms, steps, 0.1f, 0 );
+	} else if ( !s->numShakes ) {
+		CM_Text( x, y, S_COLOR_GREY "A jolt: an explosion, a ship landing", cmWhite );
+	}
+}
+
 static void CM_DrawCameraTab( float x, float y, float w ) {
 	rcShot_t *s = CM_Shot();
 	const float half = ( w - 4 ) * 0.5f;
-	static const char *pages[] = { "Spots", "Focus", "Filter, fades" };
+	static const char *pages[] = { "Spots", "Focus", "Filter", "Track" };
 
 	if ( !s ) {
 		CM_Text( x, y, "No shots yet", cmWhite );
@@ -4532,6 +5904,15 @@ static void CM_DrawCameraTab( float x, float y, float w ) {
 		return;
 	}
 	y += CM_CTRL_H + CM_GAP;
+	// a shot flown by hand
+	if ( CM_Button( x, y, w, cm.camRec ? va( S_COLOR_RED "Recording %.1f s: Stop (Enter)", ( cls.realtime - cm.camRecStart ) / 1000.0f ) : "Record a shot: fly the camera",
+		cm.camRec, (qboolean)( cm.camRec || cm.cine.numShots < CM_MAX_SHOTS ) ) ) {
+		if ( cm.camRec )
+			CM_CamRecStop();
+		else
+			CM_CamRecStart();
+	}
+	y += CM_CTRL_H + CM_GAP;
 	if ( CM_Button( x, y, half, "Path", (qboolean)!s->orbit, qtrue ) )
 		CM_SetOrbit( qfalse );
 	if ( CM_Button( x + half + 4, y, half, "Orbit", s->orbit, qtrue ) )
@@ -4546,13 +5927,15 @@ static void CM_DrawCameraTab( float x, float y, float w ) {
 	}
 	y += 2;
 	cm.page = CM_Tabs( x, y, w, pages, ARRAY_LEN( pages ), cm.page );
-	if ( cm.page != CM_PAGE_FOCUS && cm.typing == CM_TYPE_FOCUS )
+	if ( ( cm.page != CM_PAGE_FOCUS && cm.typing == CM_TYPE_FOCUS ) || ( cm.page != CM_PAGE_TRACK && cm.typing == CM_TYPE_TRACK ) )
 		cm.typing = CM_TYPE_NONE;
 	y += CM_CTRL_H + 6;
 	if ( cm.page == CM_PAGE_FOCUS )
 		CM_DrawFocusPage( x, y, w );
 	else if ( cm.page == CM_PAGE_LOOK )
 		CM_DrawLookPage( x, y, w );
+	else if ( cm.page == CM_PAGE_TRACK )
+		CM_DrawTrackPage( x, y, w );
 	else if ( s->orbit )
 		CM_DrawOrbitPage( x, y, w );
 	else
@@ -4771,7 +6154,10 @@ static void CM_ListPeople( void ) {
 		p->num = -1;
 		p->ent = e;
 		Q_strncpyz( p->who, cm.cine.ents[e].who, sizeof( p->who ) );
-		Com_sprintf( p->label, sizeof( p->label ), "%s" S_COLOR_YELLOW "  not here", p->who[0] ? p->who : "nobody" );
+		if ( CM_IsExtra( p->who ) )
+			Com_sprintf( p->label, sizeof( p->label ), "%s" S_COLOR_GREY "  extra, %s", p->who + 1, cm.cine.ents[e].model[0] ? cm.cine.ents[e].model : "kyle" );
+		else
+			Com_sprintf( p->label, sizeof( p->label ), "%s" S_COLOR_YELLOW "  not here", p->who[0] ? p->who : "nobody" );
 		cmNumPeople++;
 	}
 }
@@ -5112,18 +6498,248 @@ static void CM_DrawRecordClip( float x, float y, float w, cmClip_t *clip ) {
 	CM_Text( x, y + CM_ROW_H * 3, S_COLOR_GREY "they are then; drag it on the timeline", cmWhite );
 }
 
+static const char *cmExtraSabers[] = { "none", "a saber", "a staff", "two sabers" };
+static const char *cmExtraColors[CL_EXTRA_NUM_COLORS] = { "red", "orange", "yellow", "green", "blue", "purple" };
+
+// the model you wear, as everyone sees it
+static const char *CM_MyModel( void ) {
+	const int index = cl.gameState.stringOffsets[CS_PLAYERS + clc.clientNum];
+	const char *model = index ? Info_ValueForKey( cl.gameState.stringData + index, "model" ) : "";
+
+	return model[0] ? model : "kyle";
+}
+
+// a new extra where the crosshair is, facing the camera, in your model, a blue saber in hand
+static void CM_AddExtra( void ) {
+	char who[MAX_QPATH];
+	cmEnt_t *e;
+	int n = 1;
+
+	do {
+		Com_sprintf( who, sizeof( who ), "+Extra%i", n++ );
+	} while ( CM_FindEnt( &cm.cine, who, qfalse ) >= 0 );
+	if ( CM_AddEnt( who ) < 0 )
+		return;
+	e = &cm.cine.ents[cm.ent];
+	Q_strncpyz( e->model, CM_MyModel(), sizeof( e->model ) );
+	e->saber = CL_EXTRA_SABER_SINGLE;
+	e->color = 4;
+	if ( cm.haveAim ) {
+		VectorCopy( cm.aim, e->home );
+	} else {
+		vec3_t forward;
+
+		AngleVectors( cm.camAng, forward, NULL, NULL );
+		VectorMA( cm.camOrg, 128.0f, forward, e->home );
+	}
+	e->home[2] += CM_LOOK_UP;
+	e->yaw = AngleNormalize360( cm.camAng[YAW] + 180.0f );
+	cm.pickNum = -1;
+	Q_strncpyz( cm.pickWho, who, sizeof( cm.pickWho ) );
+	cm.clip = -1;
+	cm.extraOpen = qtrue;
+	CM_Changed();
+	CM_Message( "An extra: only screens with this client see it. Give it a name, a model, and actions" );
+}
+
+// an extra's name, model, saber and spot; where the next row goes
+static float CM_DrawExtra( float x, float y, float w, cmEnt_t *e ) {
+	const float half = ( w - 4 ) * 0.5f;
+	int steps;
+
+	if ( CM_Button( x, y, w, va( "Extra: %s, %s   %s", e->model[0] ? e->model : "kyle", cmExtraSabers[e->saber], cm.extraOpen ? "^" : "v" ),
+		cm.extraOpen, qtrue ) )
+		cm.extraOpen = (qboolean)!cm.extraOpen;
+	y += CM_CTRL_H + CM_GAP;
+	if ( !cm.extraOpen )
+		return y;
+	CM_Text( x, y + 2, "Name", cmDim );
+	CM_TextBox( x + 40, y, w - 40, e->who, "+ and a name", CM_TYPE_EXTRANAME, NULL );
+	y += CM_CTRL_H + CM_GAP;
+	CM_Text( x, y + 2, "Model", cmDim );
+	CM_TextBox( x + 40, y, w - 40 - 40, e->model, "model/skin", CM_TYPE_EXTRAMODEL, NULL );
+	if ( CM_Button( x + w - 36, y, 36, "Mine", qfalse, qtrue ) ) {
+		Q_strncpyz( e->model, CM_MyModel(), sizeof( e->model ) );
+		CM_Changed();
+	}
+	y += CM_CTRL_H + CM_GAP;
+	steps = CM_Stepper( x, y, w, "Holds", cmExtraSabers[e->saber] );
+	if ( steps ) {
+		e->saber = ( e->saber + steps + ARRAY_LEN( cmExtraSabers ) ) % ARRAY_LEN( cmExtraSabers );
+		CM_Changed();
+	}
+	y += CM_CTRL_H + CM_GAP;
+	if ( e->saber ) {
+		steps = CM_Stepper( x, y, w, "Blades", cmExtraColors[e->color] );
+		if ( steps ) {
+			e->color = ( e->color + steps + CL_EXTRA_NUM_COLORS ) % CL_EXTRA_NUM_COLORS;
+			CM_Changed();
+		}
+		y += CM_CTRL_H + CM_GAP;
+	}
+	if ( CM_Button( x, y, half, "Stand at crosshair", qfalse, cm.haveAim ) ) {
+		VectorCopy( cm.aim, e->home );
+		e->home[2] += CM_LOOK_UP;
+		CM_Changed();
+	}
+	steps = CM_MiniStepper( x + half + 4, y, half, "Yaw", va( "%i", RC_Round( AngleNormalize360( e->yaw ) ) ) );
+	if ( steps ) {
+		e->yaw = AngleNormalize360( e->yaw + steps * 15.0f );
+		CM_Changed();
+	}
+	y += CM_CTRL_H + CM_GAP;
+	CM_Text( x, y, S_COLOR_GREY "Stands there until an action moves it", cmWhite );
+	return y + CM_ROW_H + 4;
+}
+
+static void CM_DrawForceClip( float x, float y, float w, cmClip_t *clip ) {
+	const cmCine_t *c = &cm.cine;
+	int steps;
+
+	steps = CM_Stepper( x, y, w, "Power", cmForces[clip->power].name );
+	if ( steps ) {
+		clip->power = ( clip->power + steps + ARRAY_LEN( cmForces ) ) % ARRAY_LEN( cmForces );
+		CM_Changed();
+	}
+	y += CM_CTRL_H + CM_GAP;
+	// at someone else in it, or at no one: in front of them
+	steps = CM_Stepper( x, y, w, "At", clip->target >= 0 && clip->target < c->numEnts ? c->ents[clip->target].who : "no one, ahead" );
+	if ( steps ) {
+		int t = clip->target;
+
+		for ( int n = 0; n <= c->numEnts; n++ ) {
+			t += steps > 0 ? 1 : -1;
+			if ( t >= c->numEnts )
+				t = -1;
+			else if ( t < -1 )
+				t = c->numEnts - 1;
+			if ( t != clip->ent )
+				break;
+		}
+		clip->target = t;
+		CM_Changed();
+	}
+	y += CM_CTRL_H + CM_GAP;
+	if ( CM_Switch( x, y, w, "Acted", clip->forceAnims ? "both of them" : "no, the effect only" ) ) {
+		clip->forceAnims = (qboolean)!clip->forceAnims;
+		CM_Changed();
+	}
+	y += CM_CTRL_H + CM_GAP;
+	CM_Text( x, y + 1, va( S_COLOR_GREY "%.1f s to %s: drag it on the timeline", clip->start / 1000.0f,
+		clip->a.ms ? va( "%.1f s", ( clip->start + clip->a.ms ) / 1000.0f ) : "the end" ), cmWhite );
+	CM_Text( x, y + 1 + CM_ROW_H, S_COLOR_GREY "Only seen, on screens with this client;", cmWhite );
+	CM_Text( x, y + 1 + CM_ROW_H * 2, S_COLOR_GREY "no one is hurt. Seen when it plays", cmWhite );
+}
+
+// a look in a few words, for its bar
+static const char *CM_LookSummary( const cmClip_t *clip ) {
+	static char out[96];
+
+	if ( clip->hidden )
+		return "look: hidden";
+	Q_strncpyz( out, "look:", sizeof( out ) );
+	if ( clip->size != 100 )
+		Q_strcat( out, sizeof( out ), va( " %i%%", clip->size ) );
+	if ( clip->shell )
+		Q_strcat( out, sizeof( out ), va( " %s", cmShells[clip->shell].name ) );
+	if ( clip->saber )
+		Q_strcat( out, sizeof( out ), va( " saber %s", cmSaberLooks[clip->saber] ) );
+	if ( clip->saber != CM_SABER_OFF && clip->blade != 100 )
+		Q_strcat( out, sizeof( out ), va( " blade %i%%", clip->blade ) );
+	if ( clip->hold[0] )
+		Q_strcat( out, sizeof( out ), va( " holds %s", COM_SkipPath( (char *)clip->hold ) ) );
+	if ( clip->face )
+		Q_strcat( out, sizeof( out ), va( " %s", cmFaces[clip->face].name ) );
+	return !strcmp( out, "look:" ) ? "look: as they are" : out;
+}
+
+static float CM_ModelPicks( float x, float y, float w, char *model, int size, qboolean shown );
+
+static void CM_DrawLookClip( float x, float y, float w, cmClip_t *clip ) {
+	const float half = ( w - 4 ) * 0.5f;
+	int steps;
+
+	if ( CM_Switch( x, y, w, "Shown", clip->hidden ? "no, hidden" : "yes" ) ) {
+		clip->hidden = (qboolean)!clip->hidden;
+		CM_Changed();
+	}
+	y += CM_CTRL_H + CM_GAP;
+	if ( !clip->hidden ) {
+		steps = CM_Stepper( x, y, w, "Size", va( "%i%%", clip->size ) );
+		if ( steps ) {
+			clip->size = Com_Clampi( 25, 400, clip->size + steps * ( clip->size > 100 || ( clip->size == 100 && steps > 0 ) ? 10 : 5 ) );
+			CM_Changed();
+		}
+		y += CM_CTRL_H + CM_GAP;
+		steps = CM_Stepper( x, y, w, "Drawn", cmShells[clip->shell].name );
+		if ( steps ) {
+			clip->shell = ( clip->shell + steps + ARRAY_LEN( cmShells ) ) % ARRAY_LEN( cmShells );
+			CM_Changed();
+		}
+		y += CM_CTRL_H + CM_GAP;
+		steps = CM_Stepper( x, y, w, "Saber", cmSaberLooks[clip->saber] );
+		if ( steps ) {
+			clip->saber = ( clip->saber + steps + ARRAY_LEN( cmSaberLooks ) ) % ARRAY_LEN( cmSaberLooks );
+			CM_Changed();
+		}
+		y += CM_CTRL_H + CM_GAP;
+		if ( clip->saber != CM_SABER_OFF ) {
+			steps = CM_Stepper( x, y, w, "Blades", va( "%i%% long", clip->blade ) );
+			if ( steps ) {
+				clip->blade = Com_Clampi( 25, 300, clip->blade + steps * 10 );
+				CM_Changed();
+			}
+			y += CM_CTRL_H + CM_GAP;
+		}
+		steps = CM_Stepper( x, y, w, "Face", cmFaces[clip->face].name );
+		if ( steps ) {
+			clip->face = ( clip->face + steps + ARRAY_LEN( cmFaces ) ) % ARRAY_LEN( cmFaces );
+			CM_Changed();
+		}
+		y += CM_CTRL_H + CM_GAP;
+		// a model in a hand: a blaster, a datapad, a cup
+		CM_Text( x, y + 2, "Holds", cmDim );
+		CM_TextBox( x + 36, y, w - 36, clip->hold, "nothing: type to find a model", CM_TYPE_HOLD, NULL );
+		y += CM_CTRL_H + 1;
+		y = CM_ModelPicks( x, y, w, clip->hold, sizeof( clip->hold ), (qboolean)( cm.typing == CM_TYPE_HOLD ) );
+		if ( clip->hold[0] ) {
+			y += CM_GAP;
+			if ( CM_Button( x, y, half, clip->holdHand ? "In the left hand" : "In the right hand", qfalse, qtrue ) ) {
+				clip->holdHand = !clip->holdHand;
+				CM_Changed();
+			}
+			steps = CM_MiniStepper( x + half + 4, y, half, "Pitch", va( "%i", RC_Round( clip->holdAng[PITCH] ) ) );
+			CM_Adjust( &clip->holdAng[PITCH], steps, 15.0f, -180.0f, 180.0f );
+			y += CM_CTRL_H + CM_GAP;
+			steps = CM_MiniStepper( x, y, half, "Yaw", va( "%i", RC_Round( clip->holdAng[YAW] ) ) );
+			CM_Adjust( &clip->holdAng[YAW], steps, 15.0f, -180.0f, 180.0f );
+			steps = CM_MiniStepper( x + half + 4, y, half, "Roll", va( "%i", RC_Round( clip->holdAng[ROLL] ) ) );
+			CM_Adjust( &clip->holdAng[ROLL], steps, 15.0f, -180.0f, 180.0f );
+			y += CM_CTRL_H + CM_GAP;
+		}
+	}
+	CM_Text( x, y + 1, va( S_COLOR_GREY "%.1f s to %s: drag it on the timeline", clip->start / 1000.0f,
+		clip->a.ms ? va( "%.1f s", ( clip->start + clip->a.ms ) / 1000.0f ) : "the end" ), cmWhite );
+	CM_Text( x, y + 1 + CM_ROW_H, S_COLOR_GREY "Seen on screens with this client; a saber", cmWhite );
+	CM_Text( x, y + 1 + CM_ROW_H * 2, S_COLOR_GREY "that's off can't be lit here", cmWhite );
+}
+
+// the actions to add: a teleport is a position of one key
+static const struct {
+	const char	*label;
+	int			kind;
+	qboolean	tele;
+} cmAdds[] = {
+	{ "Move", CM_CLIP_MOVE, qfalse }, { "Position", CM_CLIP_PLACE, qfalse }, { "Teleport", CM_CLIP_PLACE, qtrue },
+	{ "Record", CM_CLIP_RECORD, qfalse }, { "Animation", CM_CLIP_ANIM, qfalse }, { "Emote", CM_CLIP_EMOTE, qfalse },
+	{ "Say", CM_CLIP_SAY, qfalse }, { "Look", CM_CLIP_LOOK, qfalse }, { "Force", CM_CLIP_FORCE, qfalse },
+	{ "NPC command", CM_CLIP_NPCCMD, qfalse }, { "Spawn", CM_CLIP_SPAWN, qfalse }, { "Remove", CM_CLIP_REMOVE, qfalse } };
+#define CM_ADD_LINES		( ( (int)ARRAY_LEN( cmAdds ) + 2 ) / 3 )
+// the top of the panel's bottom part: Preview, Video, Play for everyone
+#define CM_BOTTOM_Y			( SCREEN_HEIGHT - 4 - ( CM_CTRL_H + CM_GAP ) * 2 - CM_ROW_H )
+
 static void CM_DrawEntitiesTab( float x, float y, float w ) {
-	static const char *kinds[CM_NUM_CLIPS] = { "Move", "Animation", "Say", "Emote", "Position", "Record", "NPC command", "Spawn", "Remove" };
-	// the actions to add: a teleport is a position of one key
-	static const struct {
-		const char	*label;
-		int			kind;
-		qboolean	tele;
-	} adds[] = {
-		{ "Move", CM_CLIP_MOVE, qfalse }, { "Position", CM_CLIP_PLACE, qfalse }, { "Teleport", CM_CLIP_PLACE, qtrue },
-		{ "Record", CM_CLIP_RECORD, qfalse }, { "Animation", CM_CLIP_ANIM, qfalse }, { "Emote", CM_CLIP_EMOTE, qfalse },
-		{ "Say", CM_CLIP_SAY, qfalse }, { "NPC command", CM_CLIP_NPCCMD, qfalse }, { "Spawn", CM_CLIP_SPAWN, qfalse },
-		{ "Remove", CM_CLIP_REMOVE, qfalse } };
+	static const char *kinds[CM_NUM_CLIPS] = { "Move", "Animation", "Say", "Emote", "Position", "Record", "NPC command", "Spawn", "Remove", "Look", "Force" };
 	cmCine_t *c = &cm.cine;
 	const int rows = CM_Clip() && cm.ent >= 0 && CM_Clip()->ent == cm.ent ? 4 : 6;
 	const cmPerson_t *picked = NULL;
@@ -5183,6 +6799,12 @@ static void CM_DrawEntitiesTab( float x, float y, float w ) {
 		return;
 	}
 	y += CM_CTRL_H + 4;
+	// someone only this client draws, any model, where the crosshair is
+	if ( CM_Button( x, y, w, "+ Extra: anyone, drawn by this client", qfalse, (qboolean)( c->numEnts < CM_MAX_ENTS ) ) ) {
+		CM_AddExtra();
+		return;
+	}
+	y += CM_CTRL_H + 4;
 	if ( !picked ) {
 		CM_Text( x, y, S_COLOR_GREY "Pick someone here, or click them", cmWhite );
 		CM_Text( x, y + CM_ROW_H, S_COLOR_GREY "in the view", cmWhite );
@@ -5196,23 +6818,30 @@ static void CM_DrawEntitiesTab( float x, float y, float w ) {
 	}
 	CM_TextClipped( x, y + 2, w - 56, picked->label, cmWhite );
 	y += CM_CTRL_H + CM_GAP;
+	if ( picked->ent >= 0 && CM_IsExtra( c->ents[picked->ent].who ) )
+		y = CM_DrawExtra( x, y, w, &c->ents[picked->ent] );
 	if ( CM_Button( x, y, w, va( "+ Add action at %.1f s   %s", CM_AddTime( CM_CLIP_MOVE ) / 1000.0f, cm.addOpen ? "^" : "v" ), cm.addOpen,
 		(qboolean)( c->numClips < CM_MAX_CLIPS ) ) )
 		cm.addOpen = (qboolean)!cm.addOpen;
-	y += CM_CTRL_H + 1;
+	cm.addBtn[0] = x;
+	cm.addBtn[1] = y;
+	cm.addBtn[2] = w;
+	cm.addBtn[3] = CM_CTRL_H;
+	// the actions in a popup drawn over the rest: under the button, or over it if the panel's
+	// bottom is in the way
 	if ( cm.addOpen ) {
-		const float third = ( w - 8 ) / 3.0f;
+		const float h = CM_ADD_LINES * ( CM_CTRL_H + 1 ) + 7;
+		float py = y + CM_CTRL_H + 1;
 
-		for ( int k = 0; k < (int)ARRAY_LEN( adds ); k++ ) {
-			if ( CM_Button( x + ( k % 3 ) * ( third + 4 ), y + ( k / 3 ) * ( CM_CTRL_H + 1 ), third, adds[k].label, qfalse, qtrue ) ) {
-				cm.addOpen = qfalse;
-				CM_AddClip( adds[k].kind, adds[k].tele );
-				return;
-			}
-		}
-		y += ( CM_CTRL_H + 1 ) * ( ( (int)ARRAY_LEN( adds ) + 2 ) / 3 );
+		if ( py + h > CM_BOTTOM_Y - 6 )
+			py = y - 1 - h;
+		cm.addPop[0] = x - 3;
+		cm.addPop[1] = Q_max( 4.0f, py );
+		cm.addPop[2] = w + 6;
+		cm.addPop[3] = h;
+		cm.addPlaced = qtrue;
 	}
-	y += CM_GAP + 3;
+	y += CM_CTRL_H + 1 + CM_GAP + 3;
 
 	clip = CM_Clip();
 	if ( !clip || clip->ent != cm.ent || cm.ent < 0 ) {
@@ -5245,6 +6874,10 @@ static void CM_DrawEntitiesTab( float x, float y, float w ) {
 		CM_DrawSpawnClip( x, y, w, clip );
 	else if ( clip->kind == CM_CLIP_REMOVE )
 		CM_DrawRemoveClip( x, y, w, clip );
+	else if ( clip->kind == CM_CLIP_LOOK )
+		CM_DrawLookClip( x, y, w, clip );
+	else if ( clip->kind == CM_CLIP_FORCE )
+		CM_DrawForceClip( x, y, w, clip );
 	else
 		CM_DrawAnimClip( x, y, w, clip );
 }
@@ -5544,14 +7177,17 @@ static cmSnd_t *CM_Snd( void ) {
 }
 
 // the sound manager opened; what it would send comes back here (CL_Cinematic_CaptureSound)
-static void CM_PickSnd( int replace ) {
+static void CM_PickSnd( int replace, qboolean music ) {
 	cm.sndPicking = qtrue;
 	cm.sndPicked = qfalse;
 	cm.sndPickIndex = replace;
 	cm.sndPickStart = cm.tlPinned ? cm.tlMs : 0;
 	cm.sndPickPinned = cm.tlPinned;
 	CL_RpCinematic_EditorClose();
-	CL_SoundManager_OpenForCinematic();
+	if ( music )
+		CL_MusicManager_OpenForCinematic();
+	else
+		CL_SoundManager_OpenForCinematic();
 	if ( !CL_SoundManager_Active() ) {
 		cm.sndPicking = qfalse;
 		cm.keepCam = qtrue;
@@ -5568,7 +7204,17 @@ qboolean CL_Cinematic_CaptureSound( const char *cmd ) {
 
 	if ( !cm.sndPicking || !CL_SoundManager_Active() )
 		return qfalse;
-	if ( cm.sndPicked || Q_stricmpn( cmd, "rpsound ", 8 ) )
+	if ( cm.sndPicked )
+		return qtrue;
+	// a track from the music manager
+	if ( !Q_stricmpn( cmd, "rpmusic ", 8 ) ) {
+		memset( s, 0, sizeof( *s ) );
+		Com_sprintf( s->path, sizeof( s->path ), "music/%s", cmd + 8 );
+		s->music = qtrue;
+		cm.sndPicked = qtrue;
+		return qtrue;
+	}
+	if ( Q_stricmpn( cmd, "rpsound ", 8 ) )
 		return qtrue;
 	Q_strncpyz( buf, cmd, sizeof( buf ) );
 	for ( char *p = buf; *p && argc < (int)ARRAY_LEN( argv ); ) {
@@ -5605,6 +7251,8 @@ static void CM_PickSndFrame( void ) {
 	CL_SoundManager_Close();
 	CL_AnimManager_Close();
 	CL_Presets_Close();
+	CL_SpecialMoves_Close();
+	CL_ChatLog_Close();
 	cm.keepCam = qtrue;
 	CL_RpCinematic_Edit( NULL, cm.fromStoryteller );
 	cm.tab = CM_TAB_SOUNDS;
@@ -5617,6 +7265,7 @@ static void CM_PickSndFrame( void ) {
 	if ( cm.sndPickIndex >= 0 && cm.sndPickIndex < c->numSnd ) {
 		// picked again: the sound changes, when and where it plays stay
 		Q_strncpyz( c->snd[cm.sndPickIndex].path, cm.sndPickedSnd.path, sizeof( c->snd[0].path ) );
+		c->snd[cm.sndPickIndex].music = cm.sndPickedSnd.music;
 		cm.snd = cm.sndPickIndex;
 	} else if ( c->numSnd < CM_MAX_SND ) {
 		cm.sndPickedSnd.start = cm.sndPickStart;
@@ -5640,8 +7289,14 @@ static void CM_DeleteSnd( void ) {
 
 // the one picked, heard here alone, as it would be
 static void CM_ListenSnd( const cmSnd_t *s ) {
-	const sfxHandle_t h = CM_SndHandle( s->path );
+	const sfxHandle_t h = s->music ? 0 : CM_SndHandle( s->path );
 
+	if ( s->music ) {
+		S_StopBackgroundTrack();
+		S_StartBackgroundTrack( s->path, s->path, qfalse );
+		cmMusicPlayed = qtrue;
+		return;
+	}
 	if ( !h ) {
 		CM_Message( va( S_COLOR_YELLOW "Can't play %s", s->path ) );
 		return;
@@ -5677,15 +7332,19 @@ static void CM_DrawSoundsTab( float x, float y, float w ) {
 		else if ( CM_InRect( x, ry, lw, CM_ROW_H ) )
 			CM_Fill( x + 1, ry, lw - 2, CM_ROW_H, cmHoverBox );
 		CM_TextClipped( x + 4, ry, lw - 8, va( S_COLOR_CYAN "%.1fs " S_COLOR_WHITE "%s" S_COLOR_GREY "  %s", e->start / 1000.0f, COM_SkipPath( (char *)e->path ),
-			e->ms > 0 ? va( "%.1f s", e->ms / 1000.0f ) : "once" ), cmWhite );
+			e->music ? "music" : e->ms > 0 ? va( "%.1f s", e->ms / 1000.0f ) : "once" ), cmWhite );
 		if ( CM_Clicked( x, ry, lw, CM_ROW_H ) )
 			cm.snd = i;
 	}
 	if ( !c->numSnd )
 		CM_Text( x + 4, y + 2, S_COLOR_GREY "None yet", cmWhite );
 	y += rows * CM_ROW_H + 6;
-	if ( CM_Button( x, y, w, va( "+ Pick a sound, at %.1f s...", ( cm.tlPinned ? cm.tlMs : 0 ) / 1000.0f ), qfalse, (qboolean)( c->numSnd < CM_MAX_SND ) ) ) {
-		CM_PickSnd( -1 );
+	if ( CM_Button( x, y, half, va( "+ Sound at %.1f s...", ( cm.tlPinned ? cm.tlMs : 0 ) / 1000.0f ), qfalse, (qboolean)( c->numSnd < CM_MAX_SND ) ) ) {
+		CM_PickSnd( -1, qfalse );
+		return;
+	}
+	if ( CM_Button( x + half + 4, y, half, va( "+ Music at %.1f s...", ( cm.tlPinned ? cm.tlMs : 0 ) / 1000.0f ), qfalse, (qboolean)( c->numSnd < CM_MAX_SND ) ) ) {
+		CM_PickSnd( -1, qtrue );
 		return;
 	}
 	y += CM_CTRL_H + CM_GAP + 3;
@@ -5705,7 +7364,7 @@ static void CM_DrawSoundsTab( float x, float y, float w ) {
 	}
 	y += CM_CTRL_H + CM_GAP;
 	if ( CM_Button( x, y, half, "Pick again...", qfalse, qtrue ) ) {
-		CM_PickSnd( cm.snd );
+		CM_PickSnd( cm.snd, s->music );
 		return;
 	}
 	if ( CM_Button( x + half + 4, y, half, "Listen", qfalse, qtrue ) )
@@ -5714,6 +7373,15 @@ static void CM_DrawSoundsTab( float x, float y, float w ) {
 	steps = CM_Stepper( x, y, w, "Starts", va( "%.1f s", s->start / 1000.0f ) );
 	CM_AdjustMs( &s->start, steps, 0.1f, 0 );
 	y += CM_CTRL_H + CM_GAP;
+	// a track: in place of the map's music, for a while or on to the end
+	if ( s->music ) {
+		steps = CM_Stepper( x, y, w, "Plays", s->ms > 0 ? va( "%.1f s, then the map's", s->ms / 1000.0f ) : "on, to the end" );
+		CM_AdjustMs( &s->ms, steps, 1.0f, 0 );
+		y += CM_CTRL_H + CM_GAP;
+		CM_Text( x, y, S_COLOR_GREY "Music in place of the map's; the map's", cmWhite );
+		CM_Text( x, y + CM_ROW_H, S_COLOR_GREY "comes back when it ends, or the cinematic does", cmWhite );
+		return;
+	}
 	steps = CM_Stepper( x, y, w, "Plays", s->ms > 0 ? va( "%.1f s, over and over", s->ms / 1000.0f ) : "once" );
 	CM_AdjustMs( &s->ms, steps, 0.5f, 0 );
 	y += CM_CTRL_H + CM_GAP;
@@ -5744,6 +7412,947 @@ static void CM_DrawSoundsTab( float x, float y, float w ) {
 	CM_Text( x, y, S_COLOR_GREY "Its bar on the timeline: drag it, or its end", cmWhite );
 }
 
+/*
+===============================================================================
+
+Text: what's written on the screen at its moment
+
+===============================================================================
+*/
+
+static cmTxt_t *CM_Txt( void ) {
+	return cm.txt >= 0 && cm.txt < cm.cine.numTxt ? &cm.cine.txt[cm.txt] : NULL;
+}
+
+// a new one at the moment picked, of the kind of the one picked, its words typed next
+static void CM_AddTxt( void ) {
+	cmCine_t *c = &cm.cine;
+	const cmTxt_t *like = CM_Txt();
+	cmTxt_t *x;
+
+	if ( c->numTxt >= CM_MAX_TXT ) {
+		CM_Message( S_COLOR_YELLOW "A cinematic has 32 texts at most" );
+		return;
+	}
+	x = &c->txt[c->numTxt];
+	memset( x, 0, sizeof( *x ) );
+	x->start = cm.tlPinned ? cm.tlMs : 0;
+	x->ms = CM_TXT_MS;
+	x->kind = like ? like->kind : CM_TXT_BOTTOM;
+	x->size = like ? like->size : 1;
+	x->typed = like ? like->typed : qfalse;
+	if ( like && like->kind == CM_TXT_BOTTOM )
+		Q_strncpyz( x->who, like->who, sizeof( x->who ) );
+	cm.txt = c->numTxt++;
+	cm.txtScroll = Q_max( 0, cm.txt - 3 );
+	cm.typing = CM_TYPE_TXT;
+	CM_Changed();
+}
+
+static void CM_DeleteTxt( void ) {
+	cmCine_t *c = &cm.cine;
+
+	if ( !CM_Txt() )
+		return;
+	cm.typing = CM_TYPE_NONE;
+	c->numTxt--;
+	memmove( &c->txt[cm.txt], &c->txt[cm.txt + 1], ( c->numTxt - cm.txt ) * sizeof( c->txt[0] ) );
+	cm.txt = Q_min( cm.txt, c->numTxt - 1 );
+	CM_Changed();
+}
+
+static void CM_DrawTextTab( float x, float y, float w ) {
+	cmCine_t *c = &cm.cine;
+	const float half = ( w - 4 ) * 0.5f;
+	const int rows = 6;
+	cmTxt_t *t;
+	int steps;
+
+	CM_Text( x, y + 2, va( "Texts (%i)", c->numTxt ), cmWhite );
+	y += CM_CTRL_H + 2;
+	if ( cm.wheel && CM_InRect( x, y, w, rows * CM_ROW_H ) ) {
+		cm.txtScroll += cm.wheel;
+		cm.wheel = 0;
+	}
+	cm.txtScroll = Com_Clampi( 0, Q_max( 0, c->numTxt - rows ), cm.txtScroll );
+	CM_Box( x, y, w, rows * CM_ROW_H + 2, cmPanelLight );
+	const float lw = CM_ListBar( x, y, w, rows * CM_ROW_H + 2, c->numTxt, rows, &cm.txtScroll );
+	for ( int i = 0; i < c->numTxt; i++ ) {
+		const cmTxt_t *e = &c->txt[i];
+		const int r = i - cm.txtScroll;
+		const float ry = y + 1 + r * CM_ROW_H;
+
+		if ( r < 0 || r >= rows )
+			continue;
+		if ( i == cm.txt )
+			CM_Fill( x + 1, ry, lw - 2, CM_ROW_H, cmHighlight );
+		else if ( CM_InRect( x, ry, lw, CM_ROW_H ) )
+			CM_Fill( x + 1, ry, lw - 2, CM_ROW_H, cmHoverBox );
+		CM_TextClipped( x + 4, ry, lw - 8, va( S_COLOR_CYAN "%.1fs " S_COLOR_GREY "%s  " S_COLOR_WHITE "%s%s%s", e->start / 1000.0f, cmTxtKinds[e->kind],
+			e->who[0] ? e->who : "", e->who[0] ? S_COLOR_WHITE ": " : "", e->text[0] ? e->text : S_COLOR_YELLOW "nothing yet" ), cmWhite );
+		if ( CM_Clicked( x, ry, lw, CM_ROW_H ) ) {
+			cm.txt = i;
+			cm.typing = CM_TYPE_NONE;
+		}
+	}
+	if ( !c->numTxt )
+		CM_Text( x + 4, y + 2, S_COLOR_GREY "None yet", cmWhite );
+	y += rows * CM_ROW_H + 6;
+	if ( CM_Button( x, y, w, va( "+ Add text, at %.1f s", ( cm.tlPinned ? cm.tlMs : 0 ) / 1000.0f ), qfalse, (qboolean)( c->numTxt < CM_MAX_TXT ) ) )
+		CM_AddTxt();
+	y += CM_CTRL_H + CM_GAP + 3;
+
+	t = CM_Txt();
+	if ( !t ) {
+		CM_Text( x, y, S_COLOR_GREY "Words on the screen at a moment: a line", cmWhite );
+		CM_Text( x, y + CM_ROW_H, S_COLOR_GREY "said on the bottom bar, a title on the", cmWhite );
+		CM_Text( x, y + CM_ROW_H * 2, S_COLOR_GREY "top one, a centre message, a notification", cmWhite );
+		return;
+	}
+	CM_Fill( x, y - 2, w, 1, cmBorder );
+	CM_TextBox( x, y, w - 56, t->text, "type it: ^1 colours work", CM_TYPE_TXT, NULL );
+	if ( CM_Button( x + w - 50, y, 50, "Delete", qfalse, qtrue ) ) {
+		CM_DeleteTxt();
+		return;
+	}
+	y += CM_CTRL_H + CM_GAP;
+	CM_Text( x, y + 2, "Said by", cmDim );
+	CM_TextBox( x + 52, y, w - 52, t->who, "no one, or a name shown before it", CM_TYPE_TXTWHO, NULL );
+	y += CM_CTRL_H + CM_GAP;
+	// where it shows
+	for ( int k = 0; k < CM_NUM_TXT_KINDS; k++ ) {
+		const float bx = x + ( k & 1 ) * ( half + 4 ), by = y + ( k >> 1 ) * ( CM_CTRL_H + CM_GAP );
+
+		if ( CM_Button( bx, by, half, cmTxtKinds[k], (qboolean)( t->kind == k ), qtrue ) && t->kind != k ) {
+			t->kind = k;
+			CM_Changed();
+		}
+	}
+	y += ( CM_CTRL_H + CM_GAP ) * 2;
+	steps = CM_Stepper( x, y, w, "Shows at", va( "%.1f s", t->start / 1000.0f ) );
+	CM_AdjustMs( &t->start, steps, 0.1f, 0 );
+	y += CM_CTRL_H + CM_GAP;
+	steps = CM_Stepper( x, y, w, "For", va( "%.1f s", t->ms / 1000.0f ) );
+	CM_AdjustMs( &t->ms, steps, 0.5f, 100 );
+	y += CM_CTRL_H + CM_GAP;
+	steps = CM_Stepper( x, y, w, "Size", cmTxtSizes[t->size] );
+	if ( steps ) {
+		t->size = Com_Clampi( 0, (int)ARRAY_LEN( cmTxtSizes ) - 1, t->size + steps );
+		CM_Changed();
+	}
+	y += CM_CTRL_H + CM_GAP;
+	if ( CM_Switch( x, y, w, "Typed out", t->typed ? "a letter at a time" : "no, all at once" ) ) {
+		t->typed = (qboolean)!t->typed;
+		CM_Changed();
+	}
+	y += CM_CTRL_H + CM_GAP;
+	CM_Text( x, y, S_COLOR_GREY "Its bar on the timeline: drag it, or its end", cmWhite );
+	CM_Text( x, y + CM_ROW_H, S_COLOR_GREY "Seen on screens with this client", cmWhite );
+}
+
+/*
+===============================================================================
+
+The World tab: props, models through keys while they last; and lights
+
+===============================================================================
+*/
+
+static const struct {
+	const char	*name;
+	vec3_t		rgb;
+} cmLightColors[] = {
+	{ "White", { 1.0f, 1.0f, 1.0f } },
+	{ "Warm", { 1.0f, 0.8f, 0.55f } },
+	{ "Red", { 1.0f, 0.15f, 0.1f } },
+	{ "Orange", { 1.0f, 0.5f, 0.1f } },
+	{ "Yellow", { 1.0f, 0.9f, 0.25f } },
+	{ "Green", { 0.2f, 1.0f, 0.3f } },
+	{ "Cyan", { 0.2f, 0.9f, 1.0f } },
+	{ "Blue", { 0.2f, 0.35f, 1.0f } },
+	{ "Purple", { 0.7f, 0.25f, 1.0f } }
+};
+
+static std::vector<std::string> cmModels;	// every models/**/*.md3 but the players', to pick a prop's
+static qboolean cmModelsIndexed;
+
+static void CM_AddModelName( const char *name, void *ctx ) {
+	std::string n( name );
+
+	if ( !Q_stricmpn( name, "models/players/", 15 ) )
+		return;
+	for ( size_t i = 0; i < n.size(); i++ )
+		n[i] = n[i] == '\\' ? '/' : (char)tolower( (unsigned char)n[i] );
+	cmModels.push_back( n );
+}
+
+static void CM_IndexModels( void ) {
+	if ( cmModelsIndexed )
+		return;
+	cmModelsIndexed = qtrue;
+	cmModels.clear();
+	FS_ListFilesRecursive( "models", ".md3", CM_AddModelName, NULL );
+	std::sort( cmModels.begin(), cmModels.end() );
+	cmModels.erase( std::unique( cmModels.begin(), cmModels.end() ), cmModels.end() );
+}
+
+// every model the filter matches, under a box being typed in: a click puts it in the box; where
+// the next row goes
+static float CM_ModelPicks( float x, float y, float w, char *model, int size, qboolean shown ) {
+	static std::vector<int> picks;
+	const int rows = 6;
+
+	if ( !shown )
+		return y;
+	CM_IndexModels();
+	picks.clear();
+	for ( size_t i = 0; i < cmModels.size(); i++ ) {
+		if ( !model[0] || Q_stristr( cmModels[i].c_str(), model ) )
+			picks.push_back( (int)i );
+	}
+	if ( cm.wheel && CM_InRect( x, y, w, rows * CM_ROW_H ) ) {
+		cm.propPickScroll += cm.wheel;
+		cm.wheel = 0;
+	}
+	cm.propPickScroll = Com_Clampi( 0, Q_max( 0, (int)picks.size() - rows ), cm.propPickScroll );
+	CM_Box( x, y, w, rows * CM_ROW_H + 2, cmPanelLight );
+	const float lw = CM_ListBar( x, y, w, rows * CM_ROW_H + 2, (int)picks.size(), rows, &cm.propPickScroll );
+	for ( int r = 0; r < rows && cm.propPickScroll + r < (int)picks.size(); r++ ) {
+		const char *name = cmModels[picks[cm.propPickScroll + r]].c_str();
+		const float ry = y + 1 + r * CM_ROW_H;
+
+		if ( CM_InRect( x, ry, lw, CM_ROW_H ) )
+			CM_Fill( x + 1, ry, lw - 2, CM_ROW_H, cmHoverBox );
+		CM_TextClipped( x + 4, ry, lw - 8, name + 7, cmWhite );
+		if ( CM_Clicked( x, ry, lw, CM_ROW_H ) ) {
+			Q_strncpyz( model, name, size );
+			cm.typing = CM_TYPE_NONE;
+			CM_Changed();
+		}
+	}
+	if ( picks.empty() )
+		CM_Text( x + 4, y + 2, S_COLOR_GREY "No model has that in its name", cmWhite );
+	return y + rows * CM_ROW_H + 6;
+}
+
+static cmProp_t *CM_Prop( void ) {
+	return cm.prop >= 0 && cm.prop < cm.cine.numProps ? &cm.cine.props[cm.prop] : NULL;
+}
+
+static cmPlace_t *CM_PropKey( void ) {
+	cmProp_t *pr = CM_Prop();
+
+	return pr && cm.propKey >= 0 && cm.propKey < pr->numKeys ? &pr->keys[cm.propKey] : NULL;
+}
+
+static cmLight_t *CM_Light( void ) {
+	return cm.light >= 0 && cm.light < cm.cine.numLights ? &cm.cine.lights[cm.light] : NULL;
+}
+
+// what the move arrows and a drag in the view move on the World tab: the prop's key picked, or
+// the light picked, unless it follows someone
+static float *CM_WorldOrg( void ) {
+	if ( cm.worldPage == 0 )
+		return CM_PropKey() ? CM_PropKey()->org : NULL;
+	if ( cm.worldPage == 1 )
+		return CM_Light() && !CM_Light()->who[0] ? CM_Light()->org : NULL;
+	return NULL;
+}
+
+// where something new goes: on what the crosshair is on, else in front of the camera
+static void CM_NewSpot( vec3_t out ) {
+	vec3_t forward;
+
+	if ( cm.haveAim ) {
+		VectorCopy( cm.aim, out );
+		return;
+	}
+	AngleVectors( cm.camAng, forward, NULL, NULL );
+	VectorMA( cm.camOrg, 128.0f, forward, out );
+}
+
+// a key kept in order of when, and still the one picked
+static void CM_SortPropKey( cmProp_t *pr ) {
+	int i = cm.propKey;
+
+	while ( i > 0 && pr->keys[i - 1].ms > pr->keys[i].ms ) {
+		const cmPlace_t k = pr->keys[i];
+
+		pr->keys[i] = pr->keys[i - 1];
+		pr->keys[i - 1] = k;
+		i--;
+	}
+	while ( i < pr->numKeys - 1 && pr->keys[i + 1].ms < pr->keys[i].ms ) {
+		const cmPlace_t k = pr->keys[i];
+
+		pr->keys[i] = pr->keys[i + 1];
+		pr->keys[i + 1] = k;
+		i++;
+	}
+	cm.propKey = i;
+}
+
+static void CM_AddProp( void ) {
+	cmCine_t *c = &cm.cine;
+	const cmProp_t *like = CM_Prop();
+	cmProp_t *pr;
+
+	if ( c->numProps >= CM_MAX_PROPS ) {
+		CM_Message( S_COLOR_YELLOW "A cinematic has 16 props at most" );
+		return;
+	}
+	pr = &c->props[c->numProps];
+	memset( pr, 0, sizeof( *pr ) );
+	pr->start = cm.tlPinned ? cm.tlMs : 0;
+	pr->ms = CM_PROP_MS;
+	pr->scale = 1.0f;
+	pr->smooth = qtrue;
+	if ( like )
+		Q_strncpyz( pr->model, like->model, sizeof( pr->model ) );
+	pr->numKeys = 1;
+	CM_NewSpot( pr->keys[0].org );
+	pr->keys[0].ang[YAW] = AngleNormalize360( cm.camAng[YAW] + 180.0f );
+	cm.prop = c->numProps++;
+	cm.propKey = 0;
+	cm.propScroll = Q_max( 0, cm.prop - 3 );
+	cm.typing = like ? CM_TYPE_NONE : CM_TYPE_PROPMODEL;
+	CM_Changed();
+	CM_Message( "A prop: pick its model, then add keys at other moments for where it goes" );
+}
+
+static void CM_AddLight( void ) {
+	cmCine_t *c = &cm.cine;
+	const cmLight_t *like = CM_Light();
+	cmLight_t *l;
+
+	if ( c->numLights >= CM_MAX_LIGHTS ) {
+		CM_Message( S_COLOR_YELLOW "A cinematic has 16 lights at most" );
+		return;
+	}
+	l = &c->lights[c->numLights];
+	memset( l, 0, sizeof( *l ) );
+	l->start = cm.tlPinned ? cm.tlMs : 0;
+	l->ms = CM_LIGHT_MS;
+	CM_NewSpot( l->org );
+	l->org[2] += 32.0f;
+	l->radius = like ? like->radius : 300.0f;
+	if ( like )
+		VectorCopy( like->color, l->color );
+	else
+		VectorCopy( cmLightColors[1].rgb, l->color );
+	l->fx = like ? like->fx : CM_LIGHT_STEADY;
+	cm.light = c->numLights++;
+	cm.lightScroll = Q_max( 0, cm.light - 3 );
+	CM_Changed();
+}
+
+static void CM_DeleteWorld( void ) {
+	cmCine_t *c = &cm.cine;
+
+	cm.typing = CM_TYPE_NONE;
+	if ( cm.worldPage == 0 && CM_Prop() ) {
+		c->numProps--;
+		memmove( &c->props[cm.prop], &c->props[cm.prop + 1], ( c->numProps - cm.prop ) * sizeof( c->props[0] ) );
+		cm.prop = Q_min( cm.prop, c->numProps - 1 );
+		cm.propKey = 0;
+		CM_Changed();
+	} else if ( cm.worldPage == 1 && CM_Light() ) {
+		c->numLights--;
+		memmove( &c->lights[cm.light], &c->lights[cm.light + 1], ( c->numLights - cm.light ) * sizeof( c->lights[0] ) );
+		cm.light = Q_min( cm.light, c->numLights - 1 );
+		CM_Changed();
+	} else if ( cm.worldPage == 2 && cm.screen >= 0 && cm.screen < c->numScreens ) {
+		c->numScreens--;
+		memmove( &c->screens[cm.screen], &c->screens[cm.screen + 1], ( c->numScreens - cm.screen ) * sizeof( c->screens[0] ) );
+		cm.screen = Q_min( cm.screen, c->numScreens - 1 );
+		CM_Changed();
+	} else if ( cm.worldPage == 4 && cm.speed >= 0 && cm.speed < c->numSpeeds ) {
+		c->numSpeeds--;
+		memmove( &c->speeds[cm.speed], &c->speeds[cm.speed + 1], ( c->numSpeeds - cm.speed ) * sizeof( c->speeds[0] ) );
+		cm.speed = Q_min( cm.speed, c->numSpeeds - 1 );
+		CM_Changed();
+	} else if ( cm.worldPage == 3 && cm.mapLook >= 0 && cm.mapLook < c->numMapLooks ) {
+		c->numMapLooks--;
+		memmove( &c->mapLooks[cm.mapLook], &c->mapLooks[cm.mapLook + 1], ( c->numMapLooks - cm.mapLook ) * sizeof( c->mapLooks[0] ) );
+		cm.mapLook = Q_min( cm.mapLook, c->numMapLooks - 1 );
+		CM_Changed();
+	}
+}
+
+// a list's rows, the one picked lit; the one clicked, -1 none
+static int CM_WorldList( float x, float y, float w, int rows, int count, int sel, int *scroll, const char *( *label )( int ) ) {
+	int clicked = -1;
+
+	if ( cm.wheel && CM_InRect( x, y, w, rows * CM_ROW_H ) ) {
+		*scroll += cm.wheel;
+		cm.wheel = 0;
+	}
+	*scroll = Com_Clampi( 0, Q_max( 0, count - rows ), *scroll );
+	CM_Box( x, y, w, rows * CM_ROW_H + 2, cmPanelLight );
+	const float lw = CM_ListBar( x, y, w, rows * CM_ROW_H + 2, count, rows, scroll );
+	for ( int i = *scroll; i < count && i < *scroll + rows; i++ ) {
+		const float ry = y + 1 + ( i - *scroll ) * CM_ROW_H;
+
+		if ( i == sel )
+			CM_Fill( x + 1, ry, lw - 2, CM_ROW_H, cmHighlight );
+		else if ( CM_InRect( x, ry, lw, CM_ROW_H ) )
+			CM_Fill( x + 1, ry, lw - 2, CM_ROW_H, cmHoverBox );
+		CM_TextClipped( x + 4, ry, lw - 8, label( i ), cmWhite );
+		if ( CM_Clicked( x, ry, lw, CM_ROW_H ) )
+			clicked = i;
+	}
+	if ( !count )
+		CM_Text( x + 4, y + 2, S_COLOR_GREY "None yet", cmWhite );
+	return clicked;
+}
+
+static const char *CM_PropLabel( int i ) {
+	const cmProp_t *pr = &cm.cine.props[i];
+
+	return va( S_COLOR_CYAN "%.1fs " S_COLOR_WHITE "%s" S_COLOR_GREY "  %i key%s", pr->start / 1000.0f,
+		pr->model[0] ? COM_SkipPath( (char *)pr->model ) : S_COLOR_YELLOW "no model yet", pr->numKeys, pr->numKeys == 1 ? "" : "s" );
+}
+
+static const char *CM_LightLabel( int i ) {
+	const cmLight_t *l = &cm.cine.lights[i];
+
+	return va( S_COLOR_CYAN "%.1fs " S_COLOR_WHITE "%s" S_COLOR_GREY "  reach %i%s", l->start / 1000.0f, cmLightFx[l->fx], RC_Round( l->radius ),
+		l->who[0] ? va( ", on %s", l->who ) : "" );
+}
+
+static void CM_DrawPropsPage( float x, float y, float w ) {
+	cmCine_t *c = &cm.cine;
+	const float half = ( w - 4 ) * 0.5f;
+	cmProp_t *pr;
+	cmPlace_t *k;
+	int clicked, steps;
+
+	clicked = CM_WorldList( x, y, w, 4, c->numProps, cm.prop, &cm.propScroll, CM_PropLabel );
+	if ( clicked >= 0 && clicked != cm.prop ) {
+		cm.prop = clicked;
+		cm.propKey = 0;
+		cm.typing = CM_TYPE_NONE;
+	}
+	y += 4 * CM_ROW_H + 6;
+	if ( CM_Button( x, y, w, va( "+ Prop at %.1f s, at the crosshair", ( cm.tlPinned ? cm.tlMs : 0 ) / 1000.0f ), qfalse, (qboolean)( c->numProps < CM_MAX_PROPS ) ) )
+		CM_AddProp();
+	y += CM_CTRL_H + CM_GAP + 3;
+	if ( !( pr = CM_Prop() ) ) {
+		CM_Text( x, y, S_COLOR_GREY "A model in the scene for a while: a ship", cmWhite );
+		CM_Text( x, y + CM_ROW_H, S_COLOR_GREY "setting down, a speeder going by, a door", cmWhite );
+		return;
+	}
+	CM_Fill( x, y - 2, w, 1, cmBorder );
+	CM_TextBox( x, y, w - 54, pr->model, "type to find a model", CM_TYPE_PROPMODEL, NULL );
+	if ( CM_Button( x + w - 50, y, 50, "Delete", qfalse, qtrue ) ) {
+		CM_DeleteWorld();
+		return;
+	}
+	y += CM_CTRL_H + 1;
+	// the models there are, while it's typed in or has none
+	y = CM_ModelPicks( x, y, w, pr->model, sizeof( pr->model ), (qboolean)( cm.typing == CM_TYPE_PROPMODEL || !pr->model[0] ) );
+	steps = CM_Stepper( x, y, w, "Shows", pr->ms > 0 ? va( "%.1f s", pr->ms / 1000.0f ) : "to the end" );
+	CM_AdjustMs( &pr->ms, steps, 0.5f, 0 );
+	y += CM_CTRL_H + CM_GAP;
+	steps = CM_MiniStepper( x, y, half, "Size", va( "%.2f", pr->scale ) );
+	CM_Adjust( &pr->scale, steps, 0.1f, 0.05f, 50.0f );
+	if ( CM_Button( x + half + 4, y, half, pr->smooth ? "Moves smoothly" : "Moves straight", pr->smooth, qtrue ) ) {
+		pr->smooth = (qboolean)!pr->smooth;
+		CM_Changed();
+	}
+	y += CM_CTRL_H + CM_GAP + 2;
+
+	// its keys: where it is, turned how, at moments of it
+	cm.propKey = Com_Clampi( 0, pr->numKeys - 1, cm.propKey );
+	steps = CM_Stepper( x, y, w, "Key", va( "%i of %i, at %.1f s", cm.propKey + 1, pr->numKeys, ( pr->start + pr->keys[cm.propKey].ms ) / 1000.0f ) );
+	if ( steps )
+		cm.propKey = Com_Clampi( 0, pr->numKeys - 1, cm.propKey + steps );
+	y += CM_CTRL_H + CM_GAP;
+	{
+		const int at = cm.tlPinned ? Q_max( 0, cm.tlMs - pr->start ) : pr->keys[pr->numKeys - 1].ms + 1000;
+
+		if ( CM_Button( x, y, half, va( "+ Key at %.1f s", ( pr->start + at ) / 1000.0f ), qfalse, (qboolean)( pr->numKeys < CM_PROP_KEYS ) ) ) {
+			cmPlace_t nk;
+
+			nk.ms = at;
+			CM_KeysAt( pr->keys, pr->numKeys, pr->smooth, at, nk.org, nk.ang );
+			pr->keys[pr->numKeys] = nk;
+			cm.propKey = pr->numKeys++;
+			CM_SortPropKey( pr );
+			CM_Changed();
+		}
+	}
+	if ( CM_Button( x + half + 4, y, half, "Delete key", qfalse, (qboolean)( pr->numKeys > 1 ) ) ) {
+		memmove( &pr->keys[cm.propKey], &pr->keys[cm.propKey + 1], ( pr->numKeys - cm.propKey - 1 ) * sizeof( pr->keys[0] ) );
+		pr->numKeys--;
+		cm.propKey = Q_min( cm.propKey, pr->numKeys - 1 );
+		CM_Changed();
+		return;
+	}
+	y += CM_CTRL_H + CM_GAP;
+	k = &pr->keys[cm.propKey];
+	if ( CM_Button( x, y, half, "To the crosshair", qfalse, cm.haveAim ) ) {
+		VectorCopy( cm.aim, k->org );
+		CM_Changed();
+	}
+	if ( cm.propKey > 0 ) {
+		steps = CM_MiniStepper( x + half + 4, y, half, "At", va( "%.1f", ( pr->start + k->ms ) / 1000.0f ) );
+		if ( steps ) {
+			CM_AdjustMs( &k->ms, steps, 0.1f, 0 );
+			CM_SortPropKey( pr );
+			k = &pr->keys[cm.propKey];
+		}
+	}
+	y += CM_CTRL_H + CM_GAP;
+	steps = CM_MiniStepper( x, y, half, "Yaw", va( "%i", RC_Round( AngleNormalize360( k->ang[YAW] ) ) ) );
+	CM_Adjust( &k->ang[YAW], steps, 15.0f, -3600.0f, 3600.0f );
+	steps = CM_MiniStepper( x + half + 4, y, half, "Pitch", va( "%i", RC_Round( AngleNormalize180( k->ang[PITCH] ) ) ) );
+	CM_Adjust( &k->ang[PITCH], steps, 15.0f, -3600.0f, 3600.0f );
+	y += CM_CTRL_H + CM_GAP;
+	steps = CM_MiniStepper( x, y, half, "Roll", va( "%i", RC_Round( AngleNormalize180( k->ang[ROLL] ) ) ) );
+	CM_Adjust( &k->ang[ROLL], steps, 15.0f, -3600.0f, 3600.0f );
+	steps = CM_MiniStepper( x + half + 4, y, half, "Up", va( "%i", RC_Round( k->org[2] ) ) );
+	CM_Adjust( &k->org[2], steps, 8.0f, -65536.0f, 65536.0f );
+	y += CM_CTRL_H + CM_GAP;
+	CM_Text( x, y, S_COLOR_GREY "Drag the key in the view, or J for arrows;", cmWhite );
+	CM_Text( x, y + CM_ROW_H, S_COLOR_GREY "its bar on the timeline: drag it, or its end", cmWhite );
+}
+
+static void CM_DrawLightsPage( float x, float y, float w ) {
+	cmCine_t *c = &cm.cine;
+	const float sw = ( w - 4.0f * ( ARRAY_LEN( cmLightColors ) - 1 ) ) / ARRAY_LEN( cmLightColors );
+	cmLight_t *l;
+	int clicked, steps;
+	vec3_t at;
+
+	clicked = CM_WorldList( x, y, w, 4, c->numLights, cm.light, &cm.lightScroll, CM_LightLabel );
+	if ( clicked >= 0 && clicked != cm.light ) {
+		cm.light = clicked;
+		cm.typing = CM_TYPE_NONE;
+	}
+	y += 4 * CM_ROW_H + 6;
+	if ( CM_Button( x, y, w, va( "+ Light at %.1f s, at the crosshair", ( cm.tlPinned ? cm.tlMs : 0 ) / 1000.0f ), qfalse, (qboolean)( c->numLights < CM_MAX_LIGHTS ) ) )
+		CM_AddLight();
+	y += CM_CTRL_H + CM_GAP + 3;
+	if ( !( l = CM_Light() ) ) {
+		CM_Text( x, y, S_COLOR_GREY "A light for a while: blaster fire, a fire,", cmWhite );
+		CM_Text( x, y + CM_ROW_H, S_COLOR_GREY "an alarm, lightning, a torch someone holds", cmWhite );
+		return;
+	}
+	CM_Fill( x, y - 2, w, 1, cmBorder );
+	CM_Text( x, y + 2, "Light", cmWhite );
+	if ( CM_Button( x + w - 50, y, 50, "Delete", qfalse, qtrue ) ) {
+		CM_DeleteWorld();
+		return;
+	}
+	y += CM_CTRL_H + CM_GAP;
+	for ( int i = 0; i < (int)ARRAY_LEN( cmLightColors ); i++ ) {
+		const float sx = x + i * ( sw + 4 );
+		vec4_t col;
+
+		VectorCopy( cmLightColors[i].rgb, col );
+		col[3] = 1.0f;
+		CM_Box( sx, y, sw, CM_CTRL_H, VectorCompare( cmLightColors[i].rgb, l->color ) ? cmHighlight : CM_InRect( sx, y, sw, CM_CTRL_H ) ? cmHoverBox : cmPanelLight );
+		CM_Fill( sx + 3, y + 3, sw - 6, CM_CTRL_H - 6, col );
+		if ( CM_Clicked( sx, y, sw, CM_CTRL_H ) ) {
+			VectorCopy( cmLightColors[i].rgb, l->color );
+			CM_Changed();
+		}
+	}
+	y += CM_CTRL_H + CM_GAP;
+	steps = CM_Stepper( x, y, w, "Reach", va( "%i", RC_Round( l->radius ) ) );
+	CM_Adjust( &l->radius, steps, 25.0f, 8.0f, 2000.0f );
+	y += CM_CTRL_H + CM_GAP;
+	steps = CM_Stepper( x, y, w, "It's", cmLightFx[l->fx] );
+	if ( steps ) {
+		l->fx = ( l->fx + steps + CM_NUM_LIGHT_FX ) % CM_NUM_LIGHT_FX;
+		CM_Changed();
+	}
+	y += CM_CTRL_H + CM_GAP;
+	steps = CM_Stepper( x, y, w, "On for", l->ms > 0 ? va( "%.1f s", l->ms / 1000.0f ) : "to the end" );
+	CM_AdjustMs( &l->ms, steps, 0.5f, 0 );
+	y += CM_CTRL_H + CM_GAP;
+	steps = CM_Stepper( x, y, w, "Fades", l->fade > 0 ? va( "%.2f s in and out", l->fade / 1000.0f ) : "no, at once" );
+	CM_AdjustMs( &l->fade, steps, 0.25f, 0 );
+	y += CM_CTRL_H + CM_GAP;
+	CM_Text( x, y + 2, "On", cmDim );
+	CM_TextBox( x + 30, y, w - 30 - 34, l->who, "nobody: at its spot", CM_TYPE_LIGHTWHO, NULL );
+	if ( CM_Button( x + w - 30, y, 30, "Aim", qfalse, (qboolean)( CM_PersonAtCrosshair() != NULL ) ) ) {
+		Q_strncpyz( l->who, CM_PersonAtCrosshair(), sizeof( l->who ) );
+		CM_Changed();
+	}
+	y += CM_CTRL_H + CM_GAP;
+	if ( l->who[0] ) {
+		int num;
+
+		if ( CM_Resolve( l->who, &num, 1 ) && RC_EntityOrigin( num, at ) )
+			CM_TextClipped( x, y, w, va( S_COLOR_GREEN "%s" S_COLOR_GREY ": it goes where they go", l->who ), cmWhite );
+		else
+			CM_TextClipped( x, y, w, va( S_COLOR_YELLOW "%s isn't here: at its spot meanwhile", l->who ), cmWhite );
+		y += CM_ROW_H + 2;
+	}
+	if ( CM_Button( x, y, w, "To the crosshair", qfalse, cm.haveAim ) ) {
+		VectorCopy( cm.aim, l->org );
+		l->org[2] += 32.0f;
+		CM_Changed();
+	}
+	y += CM_CTRL_H + CM_GAP;
+	CM_Text( x, y, S_COLOR_GREY "Drag it in the view, or J for arrows", cmWhite );
+}
+
+static cmScreen_t *CM_Screen( void ) {
+	return cm.screen >= 0 && cm.screen < cm.cine.numScreens ? &cm.cine.screens[cm.screen] : NULL;
+}
+
+static const char *CM_ScreenLabel( int i ) {
+	const cmScreen_t *sc = &cm.cine.screens[i];
+
+	return va( S_COLOR_CYAN "%.1fs " S_COLOR_WHITE "%s" S_COLOR_GREY "  %i%%, %.1f s", sc->start / 1000.0f, cmScreenKinds[sc->kind], sc->strength, sc->ms / 1000.0f );
+}
+
+static void CM_DrawScreenPage( float x, float y, float w ) {
+	cmCine_t *c = &cm.cine;
+	const int numColors = (int)ARRAY_LEN( cmLightColors ) + 1;
+	const float sw = ( w - 4.0f * ( numColors - 1 ) ) / numColors;
+	cmScreen_t *sc;
+	int clicked, steps;
+
+	clicked = CM_WorldList( x, y, w, 4, c->numScreens, cm.screen, &cm.screenScroll, CM_ScreenLabel );
+	if ( clicked >= 0 )
+		cm.screen = clicked;
+	y += 4 * CM_ROW_H + 6;
+	if ( CM_Button( x, y, w, va( "+ Over the picture at %.1f s", ( cm.tlPinned ? cm.tlMs : 0 ) / 1000.0f ), qfalse, (qboolean)( c->numScreens < CM_MAX_SCREENS ) ) ) {
+		const cmScreen_t *like = CM_Screen();
+
+		sc = &c->screens[c->numScreens];
+		memset( sc, 0, sizeof( *sc ) );
+		sc->start = cm.tlPinned ? cm.tlMs : 0;
+		sc->ms = CM_SCREEN_MS;
+		sc->kind = like ? like->kind : CM_SCREEN_FLASH;
+		if ( like )
+			VectorCopy( like->color, sc->color );
+		else
+			VectorSet( sc->color, 1, 1, 1 );
+		sc->strength = like ? like->strength : 100;
+		sc->fade = like ? like->fade : 250;
+		cm.screen = c->numScreens++;
+		cm.screenScroll = Q_max( 0, cm.screen - 3 );
+		CM_Changed();
+	}
+	y += CM_CTRL_H + CM_GAP + 3;
+	if ( !( sc = CM_Screen() ) ) {
+		CM_Text( x, y, S_COLOR_GREY "Over the whole picture: a flash dying", cmWhite );
+		CM_Text( x, y + CM_ROW_H, S_COLOR_GREY "away, a colour over it, the edges dark;", cmWhite );
+		CM_Text( x, y + CM_ROW_H * 2, S_COLOR_GREY "black, full: a fade out and back", cmWhite );
+		return;
+	}
+	CM_Fill( x, y - 2, w, 1, cmBorder );
+	steps = CM_Stepper( x, y, w - 54, "It's", cmScreenKinds[sc->kind] );
+	if ( steps ) {
+		sc->kind = ( sc->kind + steps + CM_NUM_SCREENS ) % CM_NUM_SCREENS;
+		if ( sc->kind == CM_SCREEN_VIGNETTE )
+			VectorClear( sc->color );
+		CM_Changed();
+	}
+	if ( CM_Button( x + w - 50, y, 50, "Delete", qfalse, qtrue ) ) {
+		CM_DeleteWorld();
+		return;
+	}
+	y += CM_CTRL_H + CM_GAP;
+	// black, then the lights' colours
+	for ( int i = 0; i < numColors; i++ ) {
+		const float sx = x + i * ( sw + 4 );
+		vec3_t rgb;
+		vec4_t col;
+
+		if ( i )
+			VectorCopy( cmLightColors[i - 1].rgb, rgb );
+		else
+			VectorClear( rgb );
+		VectorCopy( rgb, col );
+		col[3] = 1.0f;
+		CM_Box( sx, y, sw, CM_CTRL_H, VectorCompare( rgb, sc->color ) ? cmHighlight : CM_InRect( sx, y, sw, CM_CTRL_H ) ? cmHoverBox : cmPanelLight );
+		CM_Fill( sx + 3, y + 3, sw - 6, CM_CTRL_H - 6, col );
+		if ( CM_Clicked( sx, y, sw, CM_CTRL_H ) ) {
+			VectorCopy( rgb, sc->color );
+			CM_Changed();
+		}
+	}
+	y += CM_CTRL_H + CM_GAP;
+	steps = CM_Stepper( x, y, w, "Strength", va( "%i%%", sc->strength ) );
+	if ( steps ) {
+		sc->strength = Com_Clampi( 5, 100, sc->strength + steps * 5 );
+		CM_Changed();
+	}
+	y += CM_CTRL_H + CM_GAP;
+	steps = CM_Stepper( x, y, w, "Lasts", va( "%.1f s", sc->ms / 1000.0f ) );
+	CM_AdjustMs( &sc->ms, steps, 0.25f, 100 );
+	y += CM_CTRL_H + CM_GAP;
+	if ( sc->kind != CM_SCREEN_FLASH ) {
+		steps = CM_Stepper( x, y, w, "Fades", sc->fade > 0 ? va( "%.2f s in and out", sc->fade / 1000.0f ) : "no, at once" );
+		CM_AdjustMs( &sc->fade, steps, 0.25f, 0 );
+		y += CM_CTRL_H + CM_GAP;
+	}
+	CM_Text( x, y, S_COLOR_GREY "Seen at the moment picked on the timeline;", cmWhite );
+	CM_Text( x, y + CM_ROW_H, S_COLOR_GREY "its bar there: drag it, or its end", cmWhite );
+}
+
+// a row of colour swatches, black first if asked; qtrue if one's clicked into rgb
+static qboolean CM_Swatches( float x, float y, float w, float *rgb, qboolean black ) {
+	const int first = black ? 0 : 1, num = (int)ARRAY_LEN( cmLightColors ) + 1 - first;
+	const float sw = ( w - 4.0f * ( num - 1 ) ) / num;
+	qboolean clicked = qfalse;
+
+	for ( int i = 0; i < num; i++ ) {
+		const float sx = x + i * ( sw + 4 );
+		vec3_t c;
+		vec4_t col;
+
+		if ( i + first )
+			VectorCopy( cmLightColors[i + first - 1].rgb, c );
+		else
+			VectorClear( c );
+		VectorCopy( c, col );
+		col[3] = 1.0f;
+		CM_Box( sx, y, sw, CM_CTRL_H, VectorCompare( c, rgb ) ? cmHighlight : CM_InRect( sx, y, sw, CM_CTRL_H ) ? cmHoverBox : cmPanelLight );
+		CM_Fill( sx + 3, y + 3, sw - 6, CM_CTRL_H - 6, col );
+		if ( CM_Clicked( sx, y, sw, CM_CTRL_H ) ) {
+			VectorCopy( c, rgb );
+			clicked = qtrue;
+		}
+	}
+	return clicked;
+}
+
+static cmMapLook_t *CM_MapLook( void ) {
+	return cm.mapLook >= 0 && cm.mapLook < cm.cine.numMapLooks ? &cm.cine.mapLooks[cm.mapLook] : NULL;
+}
+
+static const char *CM_MapLookLabel( int i ) {
+	const cmMapLook_t *m = &cm.cine.mapLooks[i];
+
+	return va( S_COLOR_CYAN "%.1fs " S_COLOR_WHITE "light %i%%" S_COLOR_GREY "%s", m->start / 1000.0f, m->light, m->fogDepth > 0.0f ? ", fog" : "" );
+}
+
+static void CM_DrawMapPage( float x, float y, float w ) {
+	static const int volumes[] = { 100, 50, 25, 0 };
+	cmCine_t *c = &cm.cine;
+	cmMapLook_t *m;
+	int clicked, steps;
+
+	clicked = CM_WorldList( x, y, w, 3, c->numMapLooks, cm.mapLook, &cm.mapLookScroll, CM_MapLookLabel );
+	if ( clicked >= 0 )
+		cm.mapLook = clicked;
+	y += 3 * CM_ROW_H + 6;
+	if ( CM_Button( x, y, w, va( "+ The map's look at %.1f s", ( cm.tlPinned ? cm.tlMs : 0 ) / 1000.0f ), qfalse, (qboolean)( c->numMapLooks < CM_MAX_MAPLOOKS ) ) ) {
+		const cmMapLook_t *like = CM_MapLook();
+
+		m = &c->mapLooks[c->numMapLooks];
+		if ( like ) {
+			*m = *like;
+		} else {
+			memset( m, 0, sizeof( *m ) );
+			m->light = 40;
+			VectorSet( m->lightColor, 0.55f, 0.65f, 1.0f );
+			VectorSet( m->skyColor, 0.3f, 0.35f, 0.6f );
+			VectorSet( m->fogColor, 0.5f, 0.5f, 0.5f );
+		}
+		m->start = cm.tlPinned ? cm.tlMs : 0;
+		m->ms = like ? like->ms : CM_MAPLOOK_MS;
+		m->fade = like ? like->fade : 1500;
+		cm.mapLook = c->numMapLooks++;
+		cm.mapLookScroll = Q_max( 0, cm.mapLook - 2 );
+		CM_Changed();
+	}
+	y += CM_CTRL_H + CM_GAP + 3;
+	if ( ( m = CM_MapLook() ) != NULL ) {
+		CM_Fill( x, y - 2, w, 1, cmBorder );
+		steps = CM_Stepper( x, y, w - 54, "Light", va( "%i%%", m->light ) );
+		if ( steps ) {
+			m->light = Com_Clampi( 0, 300, m->light + steps * 10 );
+			CM_Changed();
+		}
+		if ( CM_Button( x + w - 50, y, 50, "Delete", qfalse, qtrue ) ) {
+			CM_DeleteWorld();
+			return;
+		}
+		y += CM_CTRL_H + CM_GAP;
+		if ( CM_Swatches( x, y, w, m->lightColor, qfalse ) )
+			CM_Changed();
+		y += CM_CTRL_H + CM_GAP;
+		CM_Text( x, y + 2, "Sky", cmDim );
+		if ( CM_Swatches( x + 30, y, w - 30, m->skyColor, qtrue ) )
+			CM_Changed();
+		y += CM_CTRL_H + CM_GAP;
+		// none, then thicker and thicker
+		{
+			static const float depths[] = { 0.0f, 8000.0f, 5000.0f, 3000.0f, 2000.0f, 1400.0f, 1000.0f, 700.0f, 450.0f, 250.0f };
+			int d = 0;
+
+			while ( d < (int)ARRAY_LEN( depths ) - 1 && m->fogDepth > 0.0f && depths[d] != m->fogDepth && ( d == 0 || depths[d] > m->fogDepth ) )
+				d++;
+			steps = CM_Stepper( x, y, w, "Fog", m->fogDepth > 0.0f ? va( "see %i through it", RC_Round( m->fogDepth ) ) : "none" );
+			if ( steps ) {
+				m->fogDepth = depths[Com_Clampi( 0, (int)ARRAY_LEN( depths ) - 1, d + steps )];
+				CM_Changed();
+			}
+		}
+		y += CM_CTRL_H + CM_GAP;
+		if ( m->fogDepth > 0.0f ) {
+			if ( CM_Swatches( x, y, w, m->fogColor, qtrue ) )
+				CM_Changed();
+			y += CM_CTRL_H + CM_GAP;
+		}
+		steps = CM_Stepper( x, y, w, "Lasts", m->ms > 0 ? va( "%.1f s", m->ms / 1000.0f ) : "to the end" );
+		CM_AdjustMs( &m->ms, steps, 0.5f, 0 );
+		y += CM_CTRL_H + CM_GAP;
+		steps = CM_Stepper( x, y, w, "Fades", m->fade > 0 ? va( "%.1f s in and out", m->fade / 1000.0f ) : "no, at once" );
+		CM_AdjustMs( &m->fade, steps, 0.5f, 0 );
+		y += CM_CTRL_H + CM_GAP;
+		// a map editor layout of this map, shown while it lasts: props hidden or moved, textures
+		{
+			static char layouts[64][MAX_QPATH];
+			static int numLayouts, nextList;
+			int cur = -1;
+
+			if ( cls.realtime >= nextList ) {
+				numLayouts = CL_MapEditor_Layouts( layouts, ARRAY_LEN( layouts ) );
+				nextList = cls.realtime + 2000;
+			}
+			for ( int i = 0; i < numLayouts && cur < 0; i++ ) {
+				if ( !Q_stricmp( layouts[i], m->layout ) )
+					cur = i;
+			}
+			steps = CM_Stepper( x, y, w, "Map edits", m->layout[0] ? m->layout : numLayouts ? "none" : "none: make a layout" );
+			if ( steps && numLayouts ) {
+				cur += steps;
+				if ( cur < -1 )
+					cur = numLayouts - 1;
+				else if ( cur >= numLayouts )
+					cur = -1;
+				Q_strncpyz( m->layout, cur >= 0 ? layouts[cur] : "", sizeof( m->layout ) );
+				CM_Changed();
+			}
+			y += CM_CTRL_H + CM_GAP;
+		}
+	} else {
+		CM_Text( x, y, S_COLOR_GREY "The map's light, its sky and fog for a while:", cmWhite );
+		CM_Text( x, y + CM_ROW_H, S_COLOR_GREY "night falling, an alarm's red, a haze", cmWhite );
+		y += CM_ROW_H * 2 + 4;
+	}
+	// for all of it
+	CM_Fill( x, y - 2, w, 1, cmBorder );
+	{
+		int v = 0;
+
+		while ( v < (int)ARRAY_LEN( volumes ) - 1 && volumes[v] > c->worldVolume )
+			v++;
+		steps = CM_Stepper( x, y + 2, w, "Game sounds", c->worldVolume >= 100 ? "as they are" : c->worldVolume ? va( "%i%%, music as it is", c->worldVolume ) : "none, music only" );
+		if ( steps ) {
+			c->worldVolume = volumes[Com_Clampi( 0, (int)ARRAY_LEN( volumes ) - 1, v + steps )];
+			CM_Changed();
+		}
+	}
+}
+
+static const char *CM_SpeedLabel( int i ) {
+	const cmSpeed_t *sp = &cm.cine.speeds[i];
+
+	return va( S_COLOR_CYAN "%.1fs " S_COLOR_WHITE "%i%%" S_COLOR_GREY "  for %.1f s", sp->start / 1000.0f, sp->speed, sp->ms / 1000.0f );
+}
+
+// stretches of it played slower or faster
+static void CM_DrawTimePage( float x, float y, float w ) {
+	static const int speeds[] = { 10, 25, 50, 75, 150, 200, 400 };
+	cmCine_t *c = &cm.cine;
+	cmSpeed_t *sp;
+	int clicked, steps;
+
+	clicked = CM_WorldList( x, y, w, 4, c->numSpeeds, cm.speed, &cm.speedScroll, CM_SpeedLabel );
+	if ( clicked >= 0 )
+		cm.speed = clicked;
+	y += 4 * CM_ROW_H + 6;
+	if ( CM_Button( x, y, w, va( "+ Slow motion at %.1f s", ( cm.tlPinned ? cm.tlMs : 0 ) / 1000.0f ), qfalse, (qboolean)( c->numSpeeds < CM_MAX_SPEEDS ) ) ) {
+		sp = &c->speeds[c->numSpeeds];
+		sp->start = cm.tlPinned ? cm.tlMs : 0;
+		sp->ms = CM_SPEED_MS;
+		sp->speed = 25;
+		cm.speed = c->numSpeeds++;
+		CM_Changed();
+	}
+	y += CM_CTRL_H + CM_GAP + 3;
+	sp = cm.speed >= 0 && cm.speed < c->numSpeeds ? &c->speeds[cm.speed] : NULL;
+	if ( !sp ) {
+		CM_Text( x, y, S_COLOR_GREY "A stretch played slower, or faster: the", cmWhite );
+		CM_Text( x, y + CM_ROW_H, S_COLOR_GREY "camera, those it moves, its extras, props,", cmWhite );
+		CM_Text( x, y + CM_ROW_H * 2, S_COLOR_GREY "lights and words; not what the server moves", cmWhite );
+		return;
+	}
+	CM_Fill( x, y - 2, w, 1, cmBorder );
+	{
+		int v = 0;
+
+		while ( v < (int)ARRAY_LEN( speeds ) - 1 && speeds[v] < sp->speed )
+			v++;
+		steps = CM_Stepper( x, y, w - 54, "Speed", sp->speed < 100 ? va( "%i%%, slower", sp->speed ) : va( "%i%%, faster", sp->speed ) );
+		if ( steps ) {
+			sp->speed = speeds[Com_Clampi( 0, (int)ARRAY_LEN( speeds ) - 1, v + steps )];
+			CM_Changed();
+		}
+	}
+	if ( CM_Button( x + w - 50, y, 50, "Delete", qfalse, qtrue ) ) {
+		CM_DeleteWorld();
+		return;
+	}
+	y += CM_CTRL_H + CM_GAP;
+	steps = CM_Stepper( x, y, w, "Lasts", va( "%.1f s of it", sp->ms / 1000.0f ) );
+	CM_AdjustMs( &sp->ms, steps, 0.5f, 100 );
+	y += CM_CTRL_H + CM_GAP;
+	CM_Text( x, y, va( S_COLOR_GREY "Takes %.1f s to play", sp->ms * 100.0f / sp->speed / 1000.0f ), cmWhite );
+}
+
+static void CM_DrawWorldTab( float x, float y, float w ) {
+	static const char *pages[] = { "Props", "Lights", "Screen", "Map", "Time" };
+	const int page = CM_Tabs( x, y, w, pages, ARRAY_LEN( pages ), cm.worldPage );
+
+	if ( page != cm.worldPage ) {
+		cm.worldPage = page;
+		cm.typing = CM_TYPE_NONE;
+	}
+	y += CM_CTRL_H + 6;
+	if ( cm.worldPage == 0 )
+		CM_DrawPropsPage( x, y, w );
+	else if ( cm.worldPage == 1 )
+		CM_DrawLightsPage( x, y, w );
+	else if ( cm.worldPage == 2 )
+		CM_DrawScreenPage( x, y, w );
+	else if ( cm.worldPage == 3 )
+		CM_DrawMapPage( x, y, w );
+	else
+		CM_DrawTimePage( x, y, w );
+}
+
+// the key or light held follows what's under the mouse
+static void CM_WorldDrag( void ) {
+	float *org = CM_WorldOrg();
+	vec3_t at;
+
+	if ( !cm.worldDrag )
+		return;
+	if ( !cm.held[A_MOUSE1] || !org || cm.tab != CM_TAB_WORLD ) {
+		cm.worldDrag = qfalse;
+		return;
+	}
+	if ( CM_CursorSurface( at ) ) {
+		if ( cm.worldPage == 1 )
+			at[2] += 32.0f;
+		if ( !VectorCompare( at, org ) ) {
+			VectorCopy( at, org );
+			CM_Changed();
+		}
+	}
+}
+
 // the sound held follows what's under the mouse
 static void CM_SndDrag( void ) {
 	cmSnd_t *s = CM_Snd();
@@ -5767,6 +8376,8 @@ static float *CM_GzOrg( void ) {
 		return CM_Fx()->org;
 	if ( cm.tab == CM_TAB_SOUNDS && CM_Snd() && CM_Snd()->spot )
 		return CM_Snd()->org;
+	if ( cm.tab == CM_TAB_WORLD )
+		return CM_WorldOrg();
 	return NULL;
 }
 
@@ -6016,6 +8627,56 @@ static void CM_ViewClick( void ) {
 			return;
 		}
 	}
+	if ( cm.tab == CM_TAB_WORLD && cm.worldPage == 0 ) {
+		const cmProp_t *pr = CM_Prop();
+		int prop = -1, key = -1;
+
+		// the keys of the one picked first, then where each prop is
+		for ( int k = 0; pr && k < pr->numKeys; k++ ) {
+			if ( !CM_Project( pr->keys[k].org, &sx, &sy ) || sqrtf( Square( sx - cm.clickX ) + Square( sy - cm.clickY ) ) > best )
+				continue;
+			best = sqrtf( Square( sx - cm.clickX ) + Square( sy - cm.clickY ) );
+			prop = cm.prop;
+			key = k;
+		}
+		for ( int i = 0; key < 0 && i < cm.cine.numProps; i++ ) {
+			vec3_t org, ang;
+
+			if ( !CM_PropAt( &cm.cine, &cm.cine.props[i], cm.tlPinned ? cm.tlMs : -1, org, ang ) || !CM_Project( org, &sx, &sy )
+				|| sqrtf( Square( sx - cm.clickX ) + Square( sy - cm.clickY ) ) > best )
+				continue;
+			best = sqrtf( Square( sx - cm.clickX ) + Square( sy - cm.clickY ) );
+			prop = i;
+		}
+		if ( prop >= 0 ) {
+			if ( prop != cm.prop )
+				cm.propKey = 0;
+			cm.prop = prop;
+			if ( key >= 0 ) {
+				cm.propKey = key;
+				cm.worldDrag = qtrue;
+			}
+			cm.click = qfalse;
+			return;
+		}
+	}
+	if ( cm.tab == CM_TAB_WORLD && cm.worldPage == 1 ) {
+		for ( int i = 0; i < cm.cine.numLights; i++ ) {
+			vec3_t org;
+
+			CM_LightOrg( &cm.cine.lights[i], org );
+			if ( !CM_Project( org, &sx, &sy ) || sqrtf( Square( sx - cm.clickX ) + Square( sy - cm.clickY ) ) > best )
+				continue;
+			best = sqrtf( Square( sx - cm.clickX ) + Square( sy - cm.clickY ) );
+			found = i;
+		}
+		if ( found >= 0 ) {
+			cm.light = found;
+			cm.worldDrag = (qboolean)!cm.cine.lights[found].who[0];
+			cm.click = qfalse;
+			return;
+		}
+	}
 	if ( CM_OnFocusCircle( cm.clickX, cm.clickY ) <= 1.0f ) {
 		cm.focusDrag = qtrue;
 		cm.focusDragMs = CM_FocusMs( CM_Shot() );
@@ -6132,6 +8793,7 @@ retime them.
 #define CM_TL_BOTTOM		( SCREEN_HEIGHT - 12 - ( CM_HELP_LINES - 1 ) * CM_ROW_H - 4 )
 #define CM_TL_GRAB			4.0f		// a spot or an end is grabbed this near
 #define CM_TL_SNAP_MS		100
+#define CM_TL_MARK_SNAP		150		// ms either side of a mark that snaps to it
 #define CM_TL_MIN_MS		100			// the least between two spots
 
 static vec4_t cmTlStripe	= { 1.0f, 1.0f, 1.0f, 0.04f };
@@ -6167,8 +8829,103 @@ static int CM_TlMsAt( const cmTrack_t *t, float x, qboolean pastEnd ) {
 	return (int)( Com_Clamp( 0.0f, pastEnd ? 4.0f : 1.0f, f ) * t->span + 0.5f );
 }
 
+// the marked moment within range of ms, -1 none
+static int CM_MarkNear( int ms, int range ) {
+	int best = -1;
+
+	for ( int i = 0; i < cm.cine.numMarks; i++ ) {
+		const int d = abs( cm.cine.marks[i] - ms );
+
+		if ( d <= range && ( best < 0 || d < abs( cm.cine.marks[best] - ms ) ) )
+			best = i;
+	}
+	return best;
+}
+
+// a moment dragged to: on a marked one near it, else on the tenth of a second
 static int CM_TlSnap( int ms ) {
+	const int m = CM_MarkNear( ms, CM_TL_MARK_SNAP );
+
+	if ( m >= 0 )
+		return cm.cine.marks[m];
 	return Q_max( 0, ( ms + CM_TL_SNAP_MS / 2 ) / CM_TL_SNAP_MS * CM_TL_SNAP_MS );
+}
+
+// a second more at the moment picked, or a second less from it: the shot it's in longer or shorter
+// there, and all after it along with it
+static void CM_ChangeTime( int delta ) {
+	cmCine_t *c = &cm.cine;
+	rcShot_t *s;
+	int local, shot;
+
+	if ( !cm.tlPinned || !c->numShots || ( shot = CM_ShotAt( c, cm.tlMs, &local ) ) < 0 )
+		return;
+	s = &c->shots[shot];
+	if ( s->orbit || s->numKeys == 1 ) {
+		if ( s->ms + delta < 500 ) {
+			CM_Message( S_COLOR_YELLOW "The shot's too short to take a second from" );
+			return;
+		}
+		s->ms += delta;
+	} else {
+		int from = 0, i;
+
+		// the stretch between two spots the moment is in
+		for ( i = 1; i < s->numKeys - 1 && local > from + s->keys[i].ms; i++ )
+			from += s->keys[i].ms;
+		if ( s->keys[i].ms + delta < 100 ) {
+			CM_Message( S_COLOR_YELLOW "Too short between these spots to take a second from" );
+			return;
+		}
+		s->keys[i].ms += delta;
+	}
+	if ( delta > 0 )
+		CM_ShiftClips( cm.tlMs, delta );
+	else
+		CM_ShiftClips( cm.tlMs - delta, delta );
+	// the shot's new length is ours, not one to stretch what's in it over
+	CM_SeeShots();
+	CM_Changed();
+	CM_Message( delta > 0 ? va( "A second more at %.1f s", cm.tlMs / 1000.0f ) : va( "A second less from %.1f s", cm.tlMs / 1000.0f ) );
+}
+
+// the marks either side of the moment, or the start and the end
+static void CM_LoopSpan( int *from, int *to ) {
+	const int total = CM_Total( &cm.cine ), at = cm.tlPinned ? cm.tlMs : 0;
+
+	*from = 0;
+	*to = total;
+	for ( int i = 0; i < cm.cine.numMarks; i++ ) {
+		const int m = cm.cine.marks[i];
+
+		if ( m <= at && m > *from )
+			*from = m;
+		if ( m > at && m < *to )
+			*to = m;
+	}
+}
+
+// a moment marked where the timeline's at, or the mark there taken away
+static void CM_ToggleMark( void ) {
+	cmCine_t *c = &cm.cine;
+	const int m = CM_MarkNear( cm.tlMs, 0 );
+
+	if ( m >= 0 ) {
+		c->numMarks--;
+		memmove( &c->marks[m], &c->marks[m + 1], ( c->numMarks - m ) * sizeof( c->marks[0] ) );
+		memmove( c->markNames[m], c->markNames[m + 1], ( c->numMarks - m ) * sizeof( c->markNames[0] ) );
+		CM_Changed();
+		return;
+	}
+	if ( c->numMarks >= CM_MAX_MARKS ) {
+		CM_Message( S_COLOR_YELLOW "16 marks at most" );
+		return;
+	}
+	c->marks[c->numMarks] = cm.tlMs;
+	c->markNames[c->numMarks][0] = '\0';
+	c->numMarks++;
+	CM_Changed();
+	CM_Message( va( "Marked %.1f s: what's dragged near it snaps to it", cm.tlMs / 1000.0f ) );
 }
 
 static int CM_ClipEnd( int i, int span ) {
@@ -6214,13 +8971,14 @@ static qboolean CM_TlGrabShotEnd( int shot, int localEnd ) {
 
 // a click on the timeline: a row's name picks it, a spot, an end or a bar is grabbed, anywhere
 // else is the moment
-static void CM_TlClick( const cmTrack_t *t, float rowsY, int numRows ) {
+static void CM_TlClickOne( const cmTrack_t *t, float rowsY, int numRows ) {
 	cmCine_t *c = &cm.cine;
 	const float cx = cm.clickX;
 	const int r = cm.clickY >= rowsY ? (int)( ( cm.clickY - rowsY ) / CM_ROW_H ) : -1;
 	const int row = r > 0 ? cm.tlScroll + r : r;
 	const int at = CM_TlMsAt( t, cx, qfalse );
-	const int fxRow = 1 + c->numEnts * 2, sndRow = fxRow + 1;
+	const int fxRow = 1 + c->numEnts * 2, sndRow = fxRow + 1, txtRow = sndRow + 1, propRow = txtRow + 1, lightRow = propRow + 1, screenRow = lightRow + 1;
+	const int mapRow = screenRow + 1, speedRow = mapRow + 1;
 
 	cm.tlDragSpan = t->span;
 	cm.typing = CM_TYPE_NONE;
@@ -6234,6 +8992,11 @@ static void CM_TlClick( const cmTrack_t *t, float rowsY, int numRows ) {
 			cm.tab = CM_TAB_EFFECTS;
 		} else if ( row == sndRow ) {
 			cm.tab = CM_TAB_SOUNDS;
+		} else if ( row == txtRow ) {
+			cm.tab = CM_TAB_TEXT;
+		} else if ( row == propRow || row == lightRow || row == screenRow || row == mapRow || row == speedRow ) {
+			cm.tab = CM_TAB_WORLD;
+			cm.worldPage = row == propRow ? 0 : row == lightRow ? 1 : row == screenRow ? 2 : row == mapRow ? 3 : 4;
 		} else if ( row > 0 ) {
 			cm.ent = ( row - 1 ) / 2;
 			cm.clip = -1;
@@ -6331,6 +9094,111 @@ static void CM_TlClick( const cmTrack_t *t, float rowsY, int numRows ) {
 			}
 			return;
 		}
+	} else if ( row == txtRow ) {
+		// a text: its bar, or its end to make it show longer
+		for ( int i = c->numTxt - 1; i >= 0; i-- ) {
+			const cmTxt_t *x = &c->txt[i];
+			const float x0 = CM_TlX( t, x->start ), x1 = CM_TlX( t, x->start + x->ms );
+
+			if ( cx < x0 - 2 || cx > x1 + CM_TL_GRAB )
+				continue;
+			cm.txt = i;
+			cm.tab = CM_TAB_TEXT;
+			cm.tlDragIndex = i;
+			if ( cx >= x1 - CM_TL_GRAB && x1 - x0 > CM_TL_GRAB * 2 ) {
+				cm.tlDrag = CM_DRAG_TXT_END;
+			} else {
+				cm.tlDrag = CM_DRAG_TXT;
+				cm.tlDragGrab = at - x->start;
+			}
+			return;
+		}
+	} else if ( row == speedRow ) {
+		for ( int i = c->numSpeeds - 1; i >= 0; i-- ) {
+			const cmSpeed_t *sp = &c->speeds[i];
+			const float x0 = CM_TlX( t, sp->start ), x1 = CM_TlX( t, sp->start + sp->ms );
+
+			if ( cx < x0 - 2 || cx > x1 + CM_TL_GRAB )
+				continue;
+			cm.tab = CM_TAB_WORLD;
+			cm.worldPage = 4;
+			cm.speed = i;
+			cm.tlDragIndex = i;
+			if ( cx >= x1 - CM_TL_GRAB && x1 - x0 > CM_TL_GRAB * 2 ) {
+				cm.tlDrag = CM_DRAG_SPEED_END;
+			} else {
+				cm.tlDrag = CM_DRAG_SPEED;
+				cm.tlDragGrab = at - sp->start;
+			}
+			return;
+		}
+	} else if ( row == mapRow ) {
+		for ( int i = c->numMapLooks - 1; i >= 0; i-- ) {
+			const cmMapLook_t *m = &c->mapLooks[i];
+			const float x0 = CM_TlX( t, m->start ), x1 = CM_TlX( t, CM_MapLookEnd( c, m ) );
+
+			if ( cx < x0 - 2 || cx > x1 + CM_TL_GRAB )
+				continue;
+			cm.tab = CM_TAB_WORLD;
+			cm.worldPage = 3;
+			cm.mapLook = i;
+			cm.tlDragIndex = i;
+			if ( cx >= x1 - CM_TL_GRAB && x1 - x0 > CM_TL_GRAB * 2 ) {
+				cm.tlDrag = CM_DRAG_MAPLOOK_END;
+			} else {
+				cm.tlDrag = CM_DRAG_MAPLOOK;
+				cm.tlDragGrab = at - m->start;
+			}
+			return;
+		}
+	} else if ( row == screenRow ) {
+		for ( int i = c->numScreens - 1; i >= 0; i-- ) {
+			const cmScreen_t *sc = &c->screens[i];
+			const float x0 = CM_TlX( t, sc->start ), x1 = CM_TlX( t, sc->start + sc->ms );
+
+			if ( cx < x0 - 2 || cx > x1 + CM_TL_GRAB )
+				continue;
+			cm.tab = CM_TAB_WORLD;
+			cm.worldPage = 2;
+			cm.screen = i;
+			cm.tlDragIndex = i;
+			if ( cx >= x1 - CM_TL_GRAB && x1 - x0 > CM_TL_GRAB * 2 ) {
+				cm.tlDrag = CM_DRAG_SCREEN_END;
+			} else {
+				cm.tlDrag = CM_DRAG_SCREEN;
+				cm.tlDragGrab = at - sc->start;
+			}
+			return;
+		}
+	} else if ( row == propRow || row == lightRow ) {
+		// a prop or a light: its bar, or its end to make it last longer
+		const qboolean props = (qboolean)( row == propRow );
+
+		for ( int i = ( props ? c->numProps : c->numLights ) - 1; i >= 0; i-- ) {
+			const int start = props ? c->props[i].start : c->lights[i].start;
+			const int end = props ? CM_PropEnd( c, &c->props[i] ) : CM_LightEnd( c, &c->lights[i] );
+			const float x0 = CM_TlX( t, start ), x1 = CM_TlX( t, end );
+
+			if ( cx < x0 - 2 || cx > x1 + CM_TL_GRAB )
+				continue;
+			cm.tab = CM_TAB_WORLD;
+			cm.worldPage = props ? 0 : 1;
+			if ( props ) {
+				if ( cm.prop != i )
+					cm.propKey = 0;
+				cm.prop = i;
+			} else {
+				cm.light = i;
+			}
+			cm.tlDragIndex = i;
+			if ( cx >= x1 - CM_TL_GRAB && x1 - x0 > CM_TL_GRAB * 2 ) {
+				cm.tlDrag = props ? CM_DRAG_PROP_END : CM_DRAG_LIGHT_END;
+			} else {
+				cm.tlDrag = props ? CM_DRAG_PROP : CM_DRAG_LIGHT;
+				cm.tlDragGrab = at - start;
+			}
+			return;
+		}
 	} else {
 		// what someone does: the last drawn is on top
 		const int e = ( row - 1 ) / 2, lane = ( row - 1 ) & 1;
@@ -6352,7 +9220,8 @@ static void CM_TlClick( const cmTrack_t *t, float rowsY, int numRows ) {
 			Q_strncpyz( cm.pickWho, c->ents[e].who, sizeof( cm.pickWho ) );
 			cm.tab = CM_TAB_ENTITIES;
 			cm.tlDragIndex = i;
-			if ( ( clip->kind == CM_CLIP_ANIM || clip->kind == CM_CLIP_EMOTE ) && cx >= x1 - CM_TL_GRAB && x1 - x0 > CM_TL_GRAB * 2 ) {
+			if ( ( clip->kind == CM_CLIP_ANIM || clip->kind == CM_CLIP_EMOTE || clip->kind == CM_CLIP_LOOK || clip->kind == CM_CLIP_FORCE ) && cx >= x1 - CM_TL_GRAB
+				&& x1 - x0 > CM_TL_GRAB * 2 ) {
 				cm.tlDrag = CM_DRAG_CLIP_END;
 			} else {
 				cm.tlDrag = CM_DRAG_CLIP;
@@ -6380,6 +9249,163 @@ static void CM_TlClick( const cmTrack_t *t, float rowsY, int numRows ) {
 }
 
 // what's grabbed follows the mouse, until the button's let go
+// the kinds of bars that can be picked together, as their drags have them
+enum { CM_MK_CLIP, CM_MK_FX, CM_MK_SND, CM_MK_TXT, CM_MK_PROP, CM_MK_LIGHT, CM_MK_SCREEN, CM_MK_MAPLOOK, CM_MK_SPEED, CM_NUM_MK };
+
+// where a bar starts, NULL if it's gone
+static int *CM_MultiStart( int kind, int i ) {
+	cmCine_t *c = &cm.cine;
+
+	switch ( kind ) {
+	case CM_MK_CLIP:	return i < c->numClips ? &c->clips[i].start : NULL;
+	case CM_MK_FX:		return i < c->numFx ? &c->fx[i].start : NULL;
+	case CM_MK_SND:		return i < c->numSnd ? &c->snd[i].start : NULL;
+	case CM_MK_TXT:		return i < c->numTxt ? &c->txt[i].start : NULL;
+	case CM_MK_PROP:	return i < c->numProps ? &c->props[i].start : NULL;
+	case CM_MK_LIGHT:	return i < c->numLights ? &c->lights[i].start : NULL;
+	case CM_MK_SCREEN:	return i < c->numScreens ? &c->screens[i].start : NULL;
+	case CM_MK_MAPLOOK:	return i < c->numMapLooks ? &c->mapLooks[i].start : NULL;
+	case CM_MK_SPEED:	return i < c->numSpeeds ? &c->speeds[i].start : NULL;
+	default:			return NULL;
+	}
+}
+
+// the kind of bar a drag moves by its start, -1 one that isn't
+static int CM_DragKind( int drag ) {
+	switch ( drag ) {
+	case CM_DRAG_CLIP:		return CM_MK_CLIP;
+	case CM_DRAG_FX:		return CM_MK_FX;
+	case CM_DRAG_SND:		return CM_MK_SND;
+	case CM_DRAG_TXT:		return CM_MK_TXT;
+	case CM_DRAG_PROP:		return CM_MK_PROP;
+	case CM_DRAG_LIGHT:		return CM_MK_LIGHT;
+	case CM_DRAG_SCREEN:	return CM_MK_SCREEN;
+	case CM_DRAG_MAPLOOK:	return CM_MK_MAPLOOK;
+	case CM_DRAG_SPEED:		return CM_MK_SPEED;
+	default:				return -1;
+	}
+}
+
+static int CM_MultiFind( int kind, int i ) {
+	for ( int m = 0; m < cm.numMulti; m++ ) {
+		if ( cm.multiKind[m] == kind && cm.multiIndex[m] == i )
+			return m;
+	}
+	return -1;
+}
+
+// a click on the timeline: Ctrl+click puts a bar with the others picked or takes it out; a drag
+// of one of them takes them all
+static void CM_TlClick( const cmTrack_t *t, float rowsY, int numRows ) {
+	int kind, m;
+
+	CM_TlClickOne( t, rowsY, numRows );
+	kind = CM_DragKind( cm.tlDrag );
+	if ( kind < 0 ) {
+		if ( !CM_CtrlDown() && cm.tlDrag != CM_DRAG_HEAD )
+			cm.numMulti = 0;
+		return;
+	}
+	m = CM_MultiFind( kind, cm.tlDragIndex );
+	if ( CM_CtrlDown() ) {
+		if ( m >= 0 ) {
+			cm.numMulti--;
+			cm.multiKind[m] = cm.multiKind[cm.numMulti];
+			cm.multiIndex[m] = cm.multiIndex[cm.numMulti];
+		} else if ( cm.numMulti < (int)ARRAY_LEN( cm.multiKind ) ) {
+			cm.multiKind[cm.numMulti] = kind;
+			cm.multiIndex[cm.numMulti++] = cm.tlDragIndex;
+		}
+		cm.tlDrag = CM_DRAG_NONE;
+		CM_Message( va( "%i picked: drag one to move them all; a click elsewhere lets them go", cm.numMulti ) );
+		return;
+	}
+	if ( m < 0 ) {
+		cm.numMulti = 0;
+		return;
+	}
+	// where each started, to move them all by as much as the one dragged
+	for ( int j = 0; j < cm.numMulti; j++ ) {
+		const int *start = CM_MultiStart( cm.multiKind[j], cm.multiIndex[j] );
+
+		cm.multiBase[j] = start ? *start : 0;
+	}
+}
+
+// the others picked with the one dragged, moved by as much
+static void CM_MultiDrag( void ) {
+	const int kind = CM_DragKind( cm.tlDrag ), m = kind >= 0 ? CM_MultiFind( kind, cm.tlDragIndex ) : -1;
+	const int *dragged = m >= 0 ? CM_MultiStart( kind, cm.tlDragIndex ) : NULL;
+	int delta;
+
+	if ( !dragged || cm.numMulti < 2 )
+		return;
+	delta = *dragged - cm.multiBase[m];
+	for ( int j = 0; j < cm.numMulti; j++ ) {
+		int *start = CM_MultiStart( cm.multiKind[j], cm.multiIndex[j] );
+
+		if ( j != m && start && *start != Q_max( 0, cm.multiBase[j] + delta ) ) {
+			*start = Q_max( 0, cm.multiBase[j] + delta );
+			CM_Changed();
+		}
+	}
+}
+
+// the bars picked together, outlined where they're drawn
+static void CM_MultiOutline( const cmTrack_t *t, float rowsY, int visRows ) {
+	cmCine_t *c = &cm.cine;
+	const int fxRow = 1 + c->numEnts * 2;
+	static const vec4_t outline = { 0.3f, 0.95f, 1.0f, 1.0f };
+
+	for ( int j = 0; j < cm.numMulti; j++ ) {
+		const int i = cm.multiIndex[j];
+		int start, end, row, r;
+		float x0, x1, y;
+
+		switch ( cm.multiKind[j] ) {
+		case CM_MK_CLIP:
+			if ( i >= c->numClips ) continue;
+			start = c->clips[i].start; end = CM_ClipEnd( i, t->span ); row = 1 + c->clips[i].ent * 2 + ( CM_Moves( c->clips[i].kind ) ? 0 : 1 ); break;
+		case CM_MK_FX:
+			if ( i >= c->numFx ) continue;
+			start = c->fx[i].start; end = CM_FxEnd( &c->fx[i] ); row = fxRow; break;
+		case CM_MK_SND:
+			if ( i >= c->numSnd ) continue;
+			start = c->snd[i].start; end = CM_SndEnd( &c->snd[i] ); row = fxRow + 1; break;
+		case CM_MK_TXT:
+			if ( i >= c->numTxt ) continue;
+			start = c->txt[i].start; end = start + c->txt[i].ms; row = fxRow + 2; break;
+		case CM_MK_PROP:
+			if ( i >= c->numProps ) continue;
+			start = c->props[i].start; end = CM_PropEnd( c, &c->props[i] ); row = fxRow + 3; break;
+		case CM_MK_LIGHT:
+			if ( i >= c->numLights ) continue;
+			start = c->lights[i].start; end = CM_LightEnd( c, &c->lights[i] ); row = fxRow + 4; break;
+		case CM_MK_SCREEN:
+			if ( i >= c->numScreens ) continue;
+			start = c->screens[i].start; end = start + c->screens[i].ms; row = fxRow + 5; break;
+		case CM_MK_MAPLOOK:
+			if ( i >= c->numMapLooks ) continue;
+			start = c->mapLooks[i].start; end = CM_MapLookEnd( c, &c->mapLooks[i] ); row = fxRow + 6; break;
+		case CM_MK_SPEED:
+			if ( i >= c->numSpeeds ) continue;
+			start = c->speeds[i].start; end = start + c->speeds[i].ms; row = fxRow + 7; break;
+		default:
+			continue;
+		}
+		r = row - cm.tlScroll;
+		if ( r < 1 || r >= visRows )
+			continue;
+		x0 = CM_TlX( t, start );
+		x1 = Q_max( x0 + 3.0f, CM_TlX( t, end ) );
+		y = rowsY + r * CM_ROW_H;
+		CM_Fill( x0, y, x1 - x0, 2, outline );
+		CM_Fill( x0, y + CM_ROW_H - 2, x1 - x0, 2, outline );
+		CM_Fill( x0, y, 2, CM_ROW_H, outline );
+		CM_Fill( x1 - 2, y, 2, CM_ROW_H, outline );
+	}
+}
+
 static void CM_TlDrag( const cmTrack_t *t ) {
 	cmCine_t *c = &cm.cine;
 	const int at = CM_TlMsAt( t, cm.cursorX, (qboolean)( cm.tlDrag != CM_DRAG_HEAD ) );
@@ -6388,9 +9414,11 @@ static void CM_TlDrag( const cmTrack_t *t ) {
 		cm.tlDrag = CM_DRAG_NONE;
 	switch ( cm.tlDrag ) {
 	case CM_DRAG_HEAD: {
+		const int m = CM_MarkNear( at, (int)( 6.0f / t->w * t->span ) );
 		int local;
 
-		cm.tlMs = at;
+		// on a mark when it's dragged near one
+		cm.tlMs = m >= 0 ? c->marks[m] : at;
 		// the camera tab follows the shot it's in
 		if ( c->numShots && cm.tab == CM_TAB_CAMERA )
 			CM_SelectShot( CM_ShotAt( c, at, &local ) );
@@ -6469,6 +9497,78 @@ static void CM_TlDrag( const cmTrack_t *t ) {
 			}
 		}
 		break;
+	case CM_DRAG_PROP:
+	case CM_DRAG_PROP_END:
+	case CM_DRAG_LIGHT:
+	case CM_DRAG_LIGHT_END: {
+		const qboolean props = (qboolean)( cm.tlDrag == CM_DRAG_PROP || cm.tlDrag == CM_DRAG_PROP_END );
+		const qboolean end = (qboolean)( cm.tlDrag == CM_DRAG_PROP_END || cm.tlDrag == CM_DRAG_LIGHT_END );
+
+		if ( cm.tlDragIndex < ( props ? c->numProps : c->numLights ) ) {
+			int *startField = props ? &c->props[cm.tlDragIndex].start : &c->lights[cm.tlDragIndex].start;
+			int *msField = props ? &c->props[cm.tlDragIndex].ms : &c->lights[cm.tlDragIndex].ms;
+			const int ms = !end ? CM_TlSnap( at - cm.tlDragGrab ) : Q_max( CM_TL_MIN_MS, CM_TlSnap( at - *startField ) );
+			int *field = end ? msField : startField;
+
+			if ( ms != *field ) {
+				*field = ms;
+				CM_Changed();
+			}
+		}
+		break;
+	}
+	case CM_DRAG_SPEED:
+	case CM_DRAG_SPEED_END:
+		if ( cm.tlDragIndex < c->numSpeeds ) {
+			cmSpeed_t *sp = &c->speeds[cm.tlDragIndex];
+			const int ms = cm.tlDrag == CM_DRAG_SPEED ? CM_TlSnap( at - cm.tlDragGrab ) : Q_max( CM_TL_MIN_MS, CM_TlSnap( at - sp->start ) );
+			int *field = cm.tlDrag == CM_DRAG_SPEED ? &sp->start : &sp->ms;
+
+			if ( ms != *field ) {
+				*field = ms;
+				CM_Changed();
+			}
+		}
+		break;
+	case CM_DRAG_MAPLOOK:
+	case CM_DRAG_MAPLOOK_END:
+		if ( cm.tlDragIndex < c->numMapLooks ) {
+			cmMapLook_t *m = &c->mapLooks[cm.tlDragIndex];
+			const int ms = cm.tlDrag == CM_DRAG_MAPLOOK ? CM_TlSnap( at - cm.tlDragGrab ) : Q_max( CM_TL_MIN_MS, CM_TlSnap( at - m->start ) );
+			int *field = cm.tlDrag == CM_DRAG_MAPLOOK ? &m->start : &m->ms;
+
+			if ( ms != *field ) {
+				*field = ms;
+				CM_Changed();
+			}
+		}
+		break;
+	case CM_DRAG_SCREEN:
+	case CM_DRAG_SCREEN_END:
+		if ( cm.tlDragIndex < c->numScreens ) {
+			cmScreen_t *sc = &c->screens[cm.tlDragIndex];
+			const int ms = cm.tlDrag == CM_DRAG_SCREEN ? CM_TlSnap( at - cm.tlDragGrab ) : Q_max( CM_TL_MIN_MS, CM_TlSnap( at - sc->start ) );
+			int *field = cm.tlDrag == CM_DRAG_SCREEN ? &sc->start : &sc->ms;
+
+			if ( ms != *field ) {
+				*field = ms;
+				CM_Changed();
+			}
+		}
+		break;
+	case CM_DRAG_TXT:
+	case CM_DRAG_TXT_END:
+		if ( cm.tlDragIndex < c->numTxt ) {
+			cmTxt_t *x = &c->txt[cm.tlDragIndex];
+			const int ms = cm.tlDrag == CM_DRAG_TXT ? CM_TlSnap( at - cm.tlDragGrab ) : Q_max( CM_TL_MIN_MS, CM_TlSnap( at - x->start ) );
+			int *field = cm.tlDrag == CM_DRAG_TXT ? &x->start : &x->ms;
+
+			if ( ms != *field ) {
+				*field = ms;
+				CM_Changed();
+			}
+		}
+		break;
 	case CM_DRAG_CLIP:
 	case CM_DRAG_CLIP_END:
 		if ( cm.tlDragIndex < c->numClips ) {
@@ -6489,7 +9589,8 @@ static void CM_TlDrag( const cmTrack_t *t ) {
 
 static void CM_DrawTimeline( void ) {
 	cmCine_t *c = &cm.cine;
-	const int fxRow = 1 + c->numEnts * 2, sndRow = fxRow + 1, numRows = sndRow + 1, visRows = Q_min( CM_TL_ROWS, numRows );
+	const int fxRow = 1 + c->numEnts * 2, sndRow = fxRow + 1, txtRow = sndRow + 1, propRow = txtRow + 1, lightRow = propRow + 1, screenRow = lightRow + 1;
+	const int mapRow = screenRow + 1, speedRow = mapRow + 1, numRows = speedRow + 1, visRows = Q_min( CM_TL_ROWS, numRows );
 	const float x = CM_TL_X, w = CM_TL_W;
 	const float boxH = CM_TL_RULER_H + Q_max( 2, visRows ) * CM_ROW_H + 3, boxY = CM_TL_BOTTOM - boxH, headY = boxY - CM_CTRL_H - 2;
 	const float rowsY = boxY + 1 + CM_TL_RULER_H;
@@ -6503,6 +9604,7 @@ static void CM_DrawTimeline( void ) {
 	t.span = cm.tlDrag ? cm.tlDragSpan : Q_max( 1000, total );
 	CM_EditPlans( qfalse );
 	CM_TlDrag( &t );
+	CM_MultiDrag();
 	if ( !cm.tlDrag )
 		cm.tlMs = Com_Clampi( 0, t.span, cm.tlMs );
 
@@ -6513,6 +9615,15 @@ static void CM_DrawTimeline( void ) {
 		CM_Text( x, headY + 2, va( "Timeline" S_COLOR_GREY "  %.1f s: click a moment to see it", total / 1000.0f ), cmWhite );
 	if ( CM_Button( x + w - 44, headY, 44, "Let go", qfalse, cm.tlPinned ) )
 		CM_TlLetGo();
+	if ( CM_Button( x + w - 44 - 4 - 104 - 4 - 50, headY, 50, cm.tlPinned && CM_MarkNear( cm.tlMs, 0 ) >= 0 ? "Unmark" : "+ Mark", qfalse, cm.tlPinned ) )
+		CM_ToggleMark();
+	// a second more or less at the moment, and previews going round between the marks
+	if ( CM_Button( x + w - 44 - 4 - 104 - 4 - 50 - 4 - 30, headY, 30, "-1 s", qfalse, cm.tlPinned ) )
+		CM_ChangeTime( -1000 );
+	if ( CM_Button( x + w - 44 - 4 - 104 - 4 - 50 - 4 - 30 - 4 - 30, headY, 30, "+1 s", qfalse, cm.tlPinned ) )
+		CM_ChangeTime( 1000 );
+	if ( CM_Button( x + w - 44 - 4 - 104 - 4 - 50 - 4 - 30 - 4 - 30 - 4 - 34, headY, 34, "Loop", cm.loop, qtrue ) )
+		cm.loop = (qboolean)!cm.loop;
 	if ( CM_Button( x + w - 44 - 4 - 104, headY, 104, cm.tlCam ? "Seen: the cinematic's" : "Seen: free camera", qfalse, cm.tlPinned ) ) {
 		cm.tlCam = (qboolean)!cm.tlCam;
 		if ( cm.tlCam )
@@ -6613,6 +9724,67 @@ static void CM_DrawTimeline( void ) {
 
 				CM_TlBar( CM_TlX( &t, s->start ), CM_TlX( &t, CM_SndEnd( s ) ), ry, sndBar, COM_SkipPath( (char *)s->path ), (qboolean)( i == cm.snd && cm.tab == CM_TAB_SOUNDS ) );
 			}
+		} else if ( row == txtRow ) {
+			static const vec4_t txtBar = { 0.6f, 0.4f, 0.8f, 0.85f };
+
+			CM_TextClipped( x + 3, ry, CM_TL_LABEL_W - 6, "Text", cm.tab == CM_TAB_TEXT ? cmTlSel : cmWhite );
+			for ( int i = 0; i < c->numTxt; i++ ) {
+				const cmTxt_t *e = &c->txt[i];
+
+				CM_TlBar( CM_TlX( &t, e->start ), CM_TlX( &t, e->start + e->ms ), ry, txtBar, e->text[0] ? e->text : "nothing yet",
+					(qboolean)( i == cm.txt && cm.tab == CM_TAB_TEXT ) );
+			}
+		} else if ( row == propRow ) {
+			static const vec4_t propBar = { 0.55f, 0.5f, 0.35f, 0.85f };
+
+			CM_TextClipped( x + 3, ry, CM_TL_LABEL_W - 6, "Props", cm.tab == CM_TAB_WORLD && cm.worldPage == 0 ? cmTlSel : cmWhite );
+			for ( int i = 0; i < c->numProps; i++ ) {
+				const cmProp_t *pr = &c->props[i];
+
+				CM_TlBar( CM_TlX( &t, pr->start ), CM_TlX( &t, CM_PropEnd( c, pr ) ), ry, propBar, pr->model[0] ? COM_SkipPath( (char *)pr->model ) : "no model yet",
+					(qboolean)( i == cm.prop && cm.tab == CM_TAB_WORLD && cm.worldPage == 0 ) );
+				// its keys, along the bottom
+				for ( int k = 0; k < pr->numKeys; k++ )
+					CM_Fill( CM_TlX( &t, pr->start + pr->keys[k].ms ) - 2, ry + CM_ROW_H - 6, 5, 5, i == cm.prop && k == cm.propKey ? cmTlHead : cmWhite );
+			}
+		} else if ( row == speedRow ) {
+			static const vec4_t slowBar = { 0.3f, 0.45f, 0.6f, 0.85f }, fastBar = { 0.65f, 0.4f, 0.25f, 0.85f };
+
+			CM_TextClipped( x + 3, ry, CM_TL_LABEL_W - 6, "Time", cm.tab == CM_TAB_WORLD && cm.worldPage == 4 ? cmTlSel : cmWhite );
+			for ( int i = 0; i < c->numSpeeds; i++ ) {
+				const cmSpeed_t *sp = &c->speeds[i];
+
+				CM_TlBar( CM_TlX( &t, sp->start ), CM_TlX( &t, sp->start + sp->ms ), ry, sp->speed < 100 ? slowBar : fastBar, va( "%i%%", sp->speed ),
+					(qboolean)( i == cm.speed && cm.tab == CM_TAB_WORLD && cm.worldPage == 4 ) );
+			}
+		} else if ( row == mapRow ) {
+			CM_TextClipped( x + 3, ry, CM_TL_LABEL_W - 6, "Map", cm.tab == CM_TAB_WORLD && cm.worldPage == 3 ? cmTlSel : cmWhite );
+			for ( int i = 0; i < c->numMapLooks; i++ ) {
+				const cmMapLook_t *m = &c->mapLooks[i];
+				const vec4_t bar = { 0.2f + m->lightColor[0] * 0.3f * m->light / 100.0f, 0.2f + m->lightColor[1] * 0.3f * m->light / 100.0f,
+					0.2f + m->lightColor[2] * 0.3f * m->light / 100.0f, 0.85f };
+
+				CM_TlBar( CM_TlX( &t, m->start ), CM_TlX( &t, CM_MapLookEnd( c, m ) ), ry, bar, va( "light %i%%%s", m->light, m->fogDepth > 0.0f ? ", fog" : "" ),
+					(qboolean)( i == cm.mapLook && cm.tab == CM_TAB_WORLD && cm.worldPage == 3 ) );
+			}
+		} else if ( row == screenRow ) {
+			CM_TextClipped( x + 3, ry, CM_TL_LABEL_W - 6, "Screen", cm.tab == CM_TAB_WORLD && cm.worldPage == 2 ? cmTlSel : cmWhite );
+			for ( int i = 0; i < c->numScreens; i++ ) {
+				const cmScreen_t *sc = &c->screens[i];
+				const vec4_t bar = { 0.25f + sc->color[0] * 0.5f, 0.25f + sc->color[1] * 0.5f, 0.25f + sc->color[2] * 0.5f, 0.85f };
+
+				CM_TlBar( CM_TlX( &t, sc->start ), CM_TlX( &t, sc->start + sc->ms ), ry, bar, cmScreenKinds[sc->kind],
+					(qboolean)( i == cm.screen && cm.tab == CM_TAB_WORLD && cm.worldPage == 2 ) );
+			}
+		} else if ( row == lightRow ) {
+			CM_TextClipped( x + 3, ry, CM_TL_LABEL_W - 6, "Lights", cm.tab == CM_TAB_WORLD && cm.worldPage == 1 ? cmTlSel : cmWhite );
+			for ( int i = 0; i < c->numLights; i++ ) {
+				const cmLight_t *l = &c->lights[i];
+				const vec4_t bar = { l->color[0] * 0.75f, l->color[1] * 0.75f, l->color[2] * 0.75f, 0.85f };
+
+				CM_TlBar( CM_TlX( &t, l->start ), CM_TlX( &t, CM_LightEnd( c, l ) ), ry, bar, cmLightFx[l->fx],
+					(qboolean)( i == cm.light && cm.tab == CM_TAB_WORLD && cm.worldPage == 1 ) );
+			}
 		} else {
 			const int e = ( row - 1 ) / 2, lane = ( row - 1 ) & 1;
 
@@ -6647,6 +9819,12 @@ static void CM_DrawTimeline( void ) {
 				else if ( clip->kind == CM_CLIP_EMOTE )
 					CM_TlBar( CM_TlX( &t, clip->start ), CM_TlX( &t, CM_ClipEnd( i, t.span ) ), ry, cmTlEmote,
 						clip->emote[0] ? va( "/%s", clip->emote ) : "no emote yet", sel );
+				else if ( clip->kind == CM_CLIP_LOOK )
+					CM_TlBar( CM_TlX( &t, clip->start ), CM_TlX( &t, CM_ClipEnd( i, t.span ) ), ry, cmTlEmote, CM_LookSummary( clip ), sel );
+				else if ( clip->kind == CM_CLIP_FORCE )
+					CM_TlBar( CM_TlX( &t, clip->start ), CM_TlX( &t, CM_ClipEnd( i, t.span ) ), ry, cmTlAct,
+						clip->target >= 0 && clip->target < c->numEnts ? va( "%s at %s", cmForces[clip->power].name, c->ents[clip->target].who )
+						: cmForces[clip->power].name, sel );
 				else if ( clip->kind == CM_CLIP_SAY )
 					CM_TlBar( CM_TlX( &t, clip->start ), CM_TlX( &t, CM_ClipEnd( i, t.span ) ), ry, cmTlSay,
 						clip->text[0] ? va( "\"%s\"", clip->text ) : "says nothing yet", sel );
@@ -6655,10 +9833,22 @@ static void CM_DrawTimeline( void ) {
 			}
 		}
 	}
-	if ( !c->numEnts && !c->numFx && !c->numSnd )
-		CM_Text( t.x + 3, rowsY + CM_ROW_H, S_COLOR_GREY "Who's in it: the Entities tab. Effects and sounds: their tabs", cmWhite );
+	if ( !c->numEnts && !c->numFx && !c->numSnd && !c->numTxt && !c->numProps && !c->numLights && !c->numScreens && !c->numMapLooks )
+		CM_Text( t.x + 3, rowsY + CM_ROW_H, S_COLOR_GREY "Who's in it: the Entities tab. Effects, sounds, text, props and lights: their tabs", cmWhite );
 	else if ( numRows > visRows )
 		CM_Text( x + 3, boxY, va( S_COLOR_GREY "%i of %i", cm.tlScroll / 2 + 1, c->numEnts ), cmWhite );
+
+	CM_MultiOutline( &t, rowsY, visRows );
+
+	// the marked moments, a line down the rows and their number on the ruler
+	for ( int i = 0; i < c->numMarks; i++ ) {
+		static const vec4_t markColor = { 1.0f, 0.8f, 0.2f, 0.7f };
+		const float mx = CM_TlX( &t, c->marks[i] );
+
+		CM_Fill( mx, boxY + 1, 1, boxH - 2, markColor );
+		CM_Fill( mx - 2, boxY + 1, 5, 4, markColor );
+		CM_Text( mx + 3, boxY, va( S_COLOR_YELLOW "%i", i + 1 ), cmWhite );
+	}
 
 	// the moment, or the green camera's in the view running along
 	if ( cm.tlPinned ) {
@@ -6705,7 +9895,7 @@ static void CM_DrawGuides( void ) {
 	const float cx = SCREEN_WIDTH * 0.5f, cy = SCREEN_HEIGHT * 0.5f;
 
 	if ( cm.cine.bars ) {
-		const float h = RC_BAR_FRAC * SCREEN_HEIGHT;
+		const float h = CM_BarFrac( &cm.cine ) * SCREEN_HEIGHT;
 
 		CM_Fill( 0, 0, SCREEN_WIDTH, h, cmBarGuide );
 		CM_Fill( 0, SCREEN_HEIGHT - h, SCREEN_WIDTH, h, cmBarGuide );
@@ -6752,6 +9942,26 @@ static void CM_DrawFileList( float x, float y, float w ) {
 		cm.listing = qfalse;
 }
 
+// the actions to add, over the panel: it takes the click it was given
+static void CM_DrawAddPopup( void ) {
+	const float *r = cm.addPop;
+	const float third = ( r[2] - 6 - 8 ) / 3.0f;
+
+	cm.click = cm.popClick;
+	cm.popHover = qfalse;
+	CM_Fill( r[0] + 2, r[1] + 2, r[2], r[3], cmPanel );
+	CM_Box( r[0], r[1], r[2], r[3], cmPanelLight );
+	CM_Fill( r[0] + 1, r[1] + 1, r[2] - 2, r[3] - 2, cmPanel );
+	for ( int k = 0; k < (int)ARRAY_LEN( cmAdds ); k++ ) {
+		if ( CM_Button( r[0] + 3 + ( k % 3 ) * ( third + 4 ), r[1] + 3 + ( k / 3 ) * ( CM_CTRL_H + 1 ), third, cmAdds[k].label, qfalse, qtrue ) ) {
+			cm.addOpen = qfalse;
+			CM_AddClip( cmAdds[k].kind, cmAdds[k].tele );
+			break;
+		}
+	}
+	cm.click = qfalse;
+}
+
 static void CM_DrawEditor( void ) {
 	const float x = CM_PANEL_X + 6, w = CM_PANEL_W - 12;
 	const float half = ( w - 4 ) * 0.5f, third = ( w - 8 ) / 3.0f;
@@ -6761,9 +9971,30 @@ static void CM_DrawEditor( void ) {
 	float y = 8;
 
 	if ( cm.preview ) {
-		CM_Text( 8, SCREEN_HEIGHT - 16, S_COLOR_GREY "Preview: Esc, P or a click stops it", cmWhite );
+		// nothing of the manager's in a video
+		if ( !cmVideo )
+			CM_Text( 8, SCREEN_HEIGHT - 16, S_COLOR_GREY "Preview: Esc, P or a click stops it", cmWhite );
 		return;
 	}
+
+	// the actions' popup, placed last frame: a click in it is its own, and nothing under it lights
+	// up; a click anywhere else but its button closes it
+	cm.popClick = qfalse;
+	cm.popHover = qfalse;
+	if ( cm.addOpen && cm.addPlaced ) {
+		const float *r = cm.addPop, *b = cm.addBtn;
+
+		cm.popHover = (qboolean)( !cm.flying && cm.cursorX >= r[0] && cm.cursorX < r[0] + r[2] && cm.cursorY >= r[1] && cm.cursorY < r[1] + r[3] );
+		if ( cm.popHover )
+			cm.wheel = 0;
+		if ( cm.click && cm.clickX >= r[0] && cm.clickX < r[0] + r[2] && cm.clickY >= r[1] && cm.clickY < r[1] + r[3] ) {
+			cm.popClick = qtrue;
+			cm.click = qfalse;
+		} else if ( cm.click && !( cm.clickX >= b[0] && cm.clickX < b[0] + b[2] && cm.clickY >= b[1] && cm.clickY < b[1] + b[3] ) ) {
+			cm.addOpen = qfalse;
+		}
+	}
+	cm.addPlaced = qfalse;
 
 	// through the cinematic's camera at the timeline's moment: its fade or wipe then
 	if ( CM_TlLooking() ) {
@@ -6771,6 +10002,24 @@ static void CM_DrawEditor( void ) {
 		const int shot = CM_ShotAt( &cm.cine, cm.tlMs, &local );
 
 		RC_DrawTransitions( &cm.cine.shots[shot], local );
+	}
+	// the texts then, seen through its camera or written on the Text tab
+	if ( cm.tlPinned && ( CM_TlLooking() || cm.tab == CM_TAB_TEXT || cm.tab == CM_TAB_WORLD ) ) {
+		CM_DrawScreens( &cm.cine, cm.tlMs );
+		CM_DrawTexts( &cm.cine, cm.tlMs );
+	}
+	// a picture being taken: the bars as they'll be, and nothing else
+	if ( cm.pictureFrames > 0 ) {
+		if ( cm.cine.bars ) {
+			static const vec4_t black = { 0, 0, 0, 1 };
+			const float h = CM_BarFrac( &cm.cine ) * SCREEN_HEIGHT;
+
+			CM_Fill( 0, 0, SCREEN_WIDTH, h, black );
+			CM_Fill( 0, SCREEN_HEIGHT - h, SCREEN_WIDTH, h, black );
+			// the texts over the bars
+			CM_DrawTexts( &cm.cine, cm.tlMs );
+		}
+		return;
 	}
 	CM_DrawGuides();
 	CM_DrawFocusCircle();
@@ -6838,9 +10087,12 @@ static void CM_DrawEditor( void ) {
 			cm.tab == CM_TAB_ENTITIES ? "Click someone to pick them   Enter adds a move's spot or a position's key, a click picks one, drag moves it   Del takes it off"
 				: cm.tab == CM_TAB_EFFECTS ? "Click an effect to pick it, drag it over walls and floors   J move arrows   Del deletes it   P preview"
 				: cm.tab == CM_TAB_SOUNDS ? "Click a sound's spot to pick it, drag it over walls and floors   J move arrows   Del deletes it   P preview"
+				: cm.tab == CM_TAB_TEXT ? "Pick a moment on the timeline to see the texts then   Del deletes the one picked   P preview"
+				: cm.tab == CM_TAB_WORLD ? "Click a prop's key or a light to pick it, drag it over walls and floors   J move arrows   Del deletes it   P preview"
 				: "Enter add a spot   Del delete   Up/Down pick   F look through it   P preview",
 			cm.tlHidden ? "T shows the timeline" : "Timeline: click or drag a moment, drag bars to retime   P plays from it   T hides it",
-			cm.tlPinned ? "Esc lets go of the moment" : "Esc back"
+			cm.tlPinned ? "Ctrl+Z undo   Ctrl+Y redo   Ctrl+C copy what's picked   Ctrl+V paste it at the moment   Esc lets go of the moment"
+				: "Ctrl+Z undo   Ctrl+Y redo   Ctrl+C copy what's picked   Ctrl+V paste it   Esc back"
 		};
 
 		for ( int i = 0; i < CM_HELP_LINES; i++ )
@@ -6874,15 +10126,29 @@ static void CM_DrawEditor( void ) {
 	if ( cm.listing ) {
 		CM_DrawFileList( x, y + 6, w );
 	} else {
-		static const char *tabs[] = { "Camera", "Entities", "Effects", "Sounds" };
+		static const char *tabs[] = { "Camera", "Entities", "Effects", "Sounds", "Text", "World" };
 
 		// how it looks to everyone
-		if ( CM_Switch( x, y, half, "Bars", cm.cine.bars ? "on" : "off" ) ) {
-			cm.cine.bars = (qboolean)!cm.cine.bars;
+		// off, thin, as they were, wide
+		if ( CM_Switch( x, y, half, "Bars", !cm.cine.bars ? "off" : cm.cine.barSize == 0 ? "thin" : cm.cine.barSize == 2 ? "wide" : "on" ) ) {
+			if ( !cm.cine.bars ) {
+				cm.cine.bars = qtrue;
+				cm.cine.barSize = 0;
+			} else if ( cm.cine.barSize < 2 ) {
+				cm.cine.barSize++;
+			} else {
+				cm.cine.bars = qfalse;
+				cm.cine.barSize = 1;
+			}
 			CM_Changed();
 		}
 		if ( CM_Switch( x + half + 4, y, half, "HUD", cm.cine.hud ? "shown" : "hidden" ) ) {
 			cm.cine.hud = (qboolean)!cm.cine.hud;
+			CM_Changed();
+		}
+		y += CM_CTRL_H + CM_GAP;
+		if ( CM_Switch( x, y, w, "Seen", cm.cine.onlyCast ? "only those in it" : "everyone" ) ) {
+			cm.cine.onlyCast = (qboolean)!cm.cine.onlyCast;
 			CM_Changed();
 		}
 		y += CM_CTRL_H + CM_GAP + 6;
@@ -6902,17 +10168,26 @@ static void CM_DrawEditor( void ) {
 			CM_DrawEffectsTab( x, y, w );
 		else if ( cm.tab == CM_TAB_SOUNDS )
 			CM_DrawSoundsTab( x, y, w );
+		else if ( cm.tab == CM_TAB_TEXT )
+			CM_DrawTextTab( x, y, w );
+		else if ( cm.tab == CM_TAB_WORLD )
+			CM_DrawWorldTab( x, y, w );
 		else
 			CM_DrawCameraTab( x, y, w );
 
 		// try it
-		y = SCREEN_HEIGHT - 4 - ( CM_CTRL_H + CM_GAP ) * 2 - CM_ROW_H;
+		y = CM_BOTTOM_Y;
 		CM_Fill( x, y - 4, w, 1, cmBorder );
 		CM_Text( x, y, CL_RpHooks_Experimental() ? va( S_COLOR_GREY "%.1f s, %i shot%s, %i in it", total / 1000.0f, cm.cine.numShots, cm.cine.numShots == 1 ? "" : "s", cm.cine.numEnts )
 			: S_COLOR_GREY "For everyone: " RP_EXPERIMENTAL_LABEL, cmWhite );
 		y += CM_ROW_H;
-		if ( CM_Button( x, y, w, cm.tlPinned && cm.tlMs < total ? va( "Preview from %.1f s (P)", cm.tlMs / 1000.0f ) : "Preview (P)", qfalse, (qboolean)( total > 0 ) ) )
+		if ( CM_Button( x, y, third, cm.loop ? "Preview, loop" : cm.tlPinned && cm.tlMs < total ? va( "Preview %.1f s", cm.tlMs / 1000.0f ) : "Preview (P)", qfalse,
+			(qboolean)( total > 0 ) ) )
 			CM_Preview();
+		if ( CM_Button( x + third + 4, y, third, va( "Video %i fps", cl_aviFrameRate->integer ), qfalse, (qboolean)( total > 0 && !CL_VideoRecording() ) ) )
+			CM_RecordVideo();
+		if ( CM_Button( x + ( third + 4 ) * 2, y, third, "Picture", qfalse, (qboolean)( total > 0 ) ) )
+			CM_Picture();
 		y += CM_CTRL_H + CM_GAP;
 		if ( CM_PartsLeft() ) {
 			CM_Text( x, y + 2, va( S_COLOR_GREEN "Sending it, %i part%s to go", CM_PartsLeft(), CM_PartsLeft() == 1 ? "" : "s" ), cmWhite );
@@ -6926,6 +10201,13 @@ static void CM_DrawEditor( void ) {
 		}
 	}
 
+	// over everything else
+	if ( cm.addOpen && cm.addPlaced )
+		CM_DrawAddPopup();
+	else
+		cm.addOpen = qfalse;
+	cm.popHover = qfalse;
+
 	// a click in the view picks a spot or someone; on nothing it leaves the box typed in
 	if ( cm.click && cm.clickX < CM_PANEL_X && !cm.listing )
 		CM_ViewClick();
@@ -6933,6 +10215,7 @@ static void CM_DrawEditor( void ) {
 	CM_FocusDrag();
 	CM_FxDrag();
 	CM_SndDrag();
+	CM_WorldDrag();
 	if ( cm.click )
 		cm.typing = CM_TYPE_NONE;
 	cm.click = qfalse;
@@ -7483,7 +10766,7 @@ static void CM_Hits( const cmBody_t *bodies, int numBodies ) {
 		const int num = bodies[i].num;
 		vec3_t low, high;
 
-		if ( cls.realtime - cmLastHit[num] < CM_HIT_MS )
+		if ( num < 0 || num >= MAX_GENTITIES || cls.realtime - cmLastHit[num] < CM_HIT_MS )
 			continue;
 		VectorCopy( bodies[i].pos, low );
 		VectorCopy( bodies[i].pos, high );
@@ -7554,12 +10837,1009 @@ static void CM_Clashes( void ) {
 /*
 ===============================================================================
 
+Looks: how people are drawn while a look of theirs lasts, on this screen
+
+===============================================================================
+*/
+
+#define CM_MAX_LOOKS		32
+#define CM_LOOK_BODIES		( MAX_CLIENTS + 128 )
+#define CM_BODY_REACH		48.0f	// a body drawn this near someone is theirs
+#define CM_BLADE_REACH		96.0f	// and a blade, from its hilt
+
+typedef struct {
+	int				num;
+	const cmClip_t	*clip;
+	vec3_t			org;
+} cmLookNow_t;
+
+static cmLookNow_t	cmLooks[CM_MAX_LOOKS];
+static int			cmNumLooks, cmLooksFrame = -1;
+static qboolean		cmOnlyCast;			// everyone else left out
+static int			cmTalk[CM_MAX_CLIPS], cmNumTalk;	// saying a line now, their mouths going
+static int			cmFaced[64], cmNumFaced;			// given a face, to stop it after
+static int			cmCast[CM_MAX_ENTS * CM_MAX_GROUP], cmNumCast;
+static int			cmBodyNums[CM_LOOK_BODIES];
+static vec3_t		cmBodyOrgs[CM_LOOK_BODIES];
+static int			cmNumBodies;
+
+// the looks going on now, and where everyone is, once a frame
+static void CM_LooksFrame( void ) {
+	const cmCine_t *c = NULL;
+	int t = 0;
+
+	if ( cmLooksFrame == cls.framecount )
+		return;
+	cmLooksFrame = cls.framecount;
+	cmNumLooks = cmNumBodies = cmNumCast = cmNumTalk = 0;
+	cmOnlyCast = qfalse;
+	if ( cmp.playing ) {
+		c = &cmp.cine;
+		t = cmp.t;
+	} else if ( cm.open && cm.tlPinned ) {
+		c = &cm.cine;
+		t = cm.tlMs;
+	}
+	if ( !c || cls.state != CA_ACTIVE )
+		return;
+	// those in it, when no one else is to be seen
+	if ( c->onlyCast ) {
+		cmOnlyCast = qtrue;
+		for ( int e = 0; e < c->numEnts; e++ )
+			cmNumCast += CM_Resolve( c->ents[e].who, cmCast + cmNumCast, CM_MAX_GROUP );
+	}
+	// those saying a line now
+	for ( int i = 0; i < c->numClips && cmNumTalk < CM_MAX_CLIPS; i++ ) {
+		const cmClip_t *clip = &c->clips[i];
+
+		if ( clip->kind == CM_CLIP_SAY && clip->text[0] && t >= clip->start && t < clip->start + CM_SAY_MS )
+			cmNumTalk += CM_Resolve( c->ents[clip->ent].who, cmTalk + cmNumTalk, Q_min( CM_MAX_GROUP, CM_MAX_CLIPS - cmNumTalk ) );
+	}
+	// the one that started last, for each of them
+	for ( int i = 0; i < c->numClips; i++ ) {
+		const cmClip_t *clip = &c->clips[i];
+		int nums[CM_MAX_GROUP], n;
+
+		if ( clip->kind != CM_CLIP_LOOK || t < clip->start || t >= clip->start + ( clip->a.ms > 0 ? clip->a.ms : CM_Total( c ) - clip->start + 1 )
+			|| CM_GoneAt( c, clip->ent, t ) )
+			continue;
+		n = CM_Resolve( c->ents[clip->ent].who, nums, CM_MAX_GROUP );
+		for ( int m = 0; m < n; m++ ) {
+			int j;
+
+			for ( j = 0; j < cmNumLooks && cmLooks[j].num != nums[m]; j++ )
+				;
+			if ( j < cmNumLooks ) {
+				if ( clip->start >= cmLooks[j].clip->start )
+					cmLooks[j].clip = clip;
+			} else if ( cmNumLooks < CM_MAX_LOOKS && RC_EntityOrigin( nums[m], cmLooks[j].org ) ) {
+				cmLooks[j].num = nums[m];
+				cmLooks[j].clip = clip;
+				cmNumLooks++;
+			}
+		}
+	}
+	if ( !cmNumLooks && !cmOnlyCast && !cmNumTalk && !cmNumFaced )
+		return;
+	// everyone drawn, to tell whose a body or a blade is
+	if ( RC_EntityOrigin( clc.clientNum, cmBodyOrgs[0] ) )
+		cmBodyNums[cmNumBodies++] = clc.clientNum;
+	for ( int i = 0; i < cl.snap.numEntities && cmNumBodies < CM_LOOK_BODIES; i++ ) {
+		const entityState_t *es = &cl.parseEntities[( cl.snap.parseEntitiesNum + i ) & ( MAX_PARSE_ENTITIES - 1 )];
+
+		if ( ( es->eType == ET_PLAYER || es->eType == ET_NPC ) && es->number != clc.clientNum && RC_EntityOrigin( es->number, cmBodyOrgs[cmNumBodies] ) )
+			cmBodyNums[cmNumBodies++] = es->number;
+	}
+	cmNumBodies += CL_Extras_Bodies( cmBodyNums + cmNumBodies, cmBodyOrgs + cmNumBodies, CM_LOOK_BODIES - cmNumBodies );
+}
+
+// the look of whoever is nearest the point, if they're that near and have one
+static const cmLookNow_t *CM_LookAt( const vec3_t p, float reach, qboolean *leaveOut, int *who ) {
+	float best = reach;
+	int num = -1;
+
+	*leaveOut = qfalse;
+	*who = -1;
+	for ( int i = 0; i < cmNumBodies; i++ ) {
+		const float d = Distance( p, cmBodyOrgs[i] );
+
+		if ( d < best ) {
+			best = d;
+			num = cmBodyNums[i];
+		}
+	}
+	*who = num;
+	// someone not in it, when only those in it are seen
+	if ( cmOnlyCast && num >= 0 ) {
+		int i = 0;
+
+		while ( i < cmNumCast && cmCast[i] != num )
+			i++;
+		if ( i == cmNumCast ) {
+			*leaveOut = qtrue;
+			return NULL;
+		}
+	}
+	for ( int i = 0; num >= 0 && i < cmNumLooks; i++ ) {
+		if ( cmLooks[i].num == num )
+			return &cmLooks[i];
+	}
+	return NULL;
+}
+
+static void CM_LookScalePoint( vec3_t p, const vec3_t feet, float k ) {
+	vec3_t d;
+
+	VectorSubtract( p, feet, d );
+	VectorMA( feet, k, d, p );
+}
+
+// someone's face as it's drawn: one of the game's faces, or talking while they say a line; one
+// given a face before goes back to the cgame's when it's done
+static void CM_Face( const refEntity_t *body, int num, int face ) {
+	CGhoul2Info_v &g2 = *(CGhoul2Info_v *)body->ghoul2;
+	const rcAnimDef_t *d;
+	const char *gla, *anim;
+	int faced = 0;
+
+	if ( !face ) {
+		for ( int i = 0; i < cmNumTalk && !face; i++ ) {
+			if ( cmTalk[i] == num )
+				face = CM_FACE_TALK;
+		}
+	}
+	while ( faced < cmNumFaced && cmFaced[faced] != num )
+		faced++;
+	if ( !re->G2API_HaveWeGhoul2Models( g2 ) )
+		return;
+	if ( !face ) {
+		// done with: a face at rest, until the cgame gives its own
+		if ( faced < cmNumFaced ) {
+			cmFaced[faced] = cmFaced[--cmNumFaced];
+			face = -1;
+		} else {
+			return;
+		}
+	} else if ( faced == cmNumFaced && cmNumFaced < (int)ARRAY_LEN( cmFaced ) ) {
+		cmFaced[cmNumFaced++] = num;
+	}
+	// talking: one mouth shape after another
+	anim = face < 0 ? "FACE_TALK0" : cmFaces[face].anim;
+	if ( face == CM_FACE_TALK )
+		anim = va( "FACE_TALK%i", 1 + ( cls.realtime / 220 + num ) % 4 );
+	gla = re->G2API_GetGLAName( g2, 0 );
+	if ( !gla || !gla[0] || !( d = RC_FindAnim( RC_AnimCfg( gla ), anim ) ) || d->num <= 0 || !d->fps )
+		return;
+	re->G2API_SetBoneAnim( g2, 0, "face", d->first, d->first + d->num, face == 5 ? BONE_ANIM_OVERRIDE_FREEZE : BONE_ANIM_OVERRIDE_LOOP,
+		fabsf( d->fps ) / 20.0f, re->G2API_GetTime( cl.serverTime ), -1, 100 );
+}
+
+// a model in someone's hand, where the hand's bolt is on the body as it's drawn, turned in it
+static void CM_LookHold( const refEntity_t *body, const cmClip_t *clip, float k ) {
+	CGhoul2Info_v &g2 = *(CGhoul2Info_v *)body->ghoul2;
+	refEntity_t held;
+	matrix3_t boltAxis, turn;
+	mdxaBone_t m;
+	vec3_t angles;
+	qhandle_t h;
+	int bolt;
+
+	if ( !re->G2API_HaveWeGhoul2Models( g2 ) || !( h = re->RegisterModel( clip->hold ) ) )
+		return;
+	if ( ( bolt = re->G2API_AddBolt( g2, 0, clip->holdHand ? "*l_hand" : "*r_hand" ) ) < 0 )
+		return;
+	vectoangles( body->axis[0], angles );
+	if ( !re->G2API_GetBoltMatrix( g2, 0, bolt, &m, angles, body->origin, cl.serverTime, NULL, (float *)body->modelScale ) )
+		return;
+	memset( &held, 0, sizeof( held ) );
+	held.reType = RT_MODEL;
+	held.hModel = h;
+	VectorSet( held.origin, m.matrix[0][3], m.matrix[1][3], m.matrix[2][3] );
+	VectorCopy( held.origin, held.oldorigin );
+	VectorCopy( held.origin, held.lightingOrigin );
+	for ( int i = 0; i < 3; i++ ) {
+		VectorSet( boltAxis[i], m.matrix[0][i], m.matrix[1][i], m.matrix[2][i] );
+		VectorNormalize( boltAxis[i] );
+	}
+	AnglesToAxis( clip->holdAng, turn );
+	MatrixMultiply( turn, boltAxis, held.axis );
+	if ( k != 1.0f ) {
+		for ( int i = 0; i < 3; i++ )
+			VectorScale( held.axis[i], k, held.axis[i] );
+		held.nonNormalizedAxes = qtrue;
+	}
+	held.shaderRGBA[0] = held.shaderRGBA[1] = held.shaderRGBA[2] = held.shaderRGBA[3] = 255;
+	re->AddRefEntityToScene( &held );
+}
+
+// what cgame draws, as a look has it: a body hidden, scaled, drawn as a hologram or with a shell
+// over it; a blade hidden, coloured, longer or shorter, and where a scaled hand holds it. NULL
+// leaves it out
+const refEntity_t *CM_LookEntity( const refEntity_t *ent, refEntity_t *copy ) {
+	const qboolean body = (qboolean)( ent->ghoul2 && ent->reType == RT_MODEL );
+	const qboolean glow = (qboolean)( ent->reType == RT_SABER_GLOW ), line = (qboolean)( ent->reType == RT_LINE );
+	const cmLookNow_t *l;
+	const cmClip_t *clip;
+	float k;
+
+	if ( !body && !glow && !line )
+		return ent;
+	CM_LooksFrame();
+	if ( !cmNumLooks && !cmOnlyCast && !cmNumTalk && !cmNumFaced )
+		return ent;
+	{
+		qboolean leaveOut;
+		int who;
+
+		l = CM_LookAt( line ? ent->oldorigin : ent->origin, body ? CM_BODY_REACH : CM_BLADE_REACH, &leaveOut, &who );
+		if ( leaveOut )
+			return NULL;
+		// a face: the look's, or talking while they say a line
+		if ( body && who >= 0 )
+			CM_Face( ent, who, l && !l->clip->hidden ? l->clip->face : 0 );
+		if ( !l )
+			return ent;
+	}
+	clip = l->clip;
+	if ( clip->hidden || ( !body && clip->saber == CM_SABER_OFF ) )
+		return NULL;
+	if ( copy != ent )
+		*copy = *ent;
+	k = clip->size / 100.0f;
+	if ( body ) {
+		if ( clip->size != 100 ) {
+			const float was = ent->modelScale[2] > 0.0f ? ent->modelScale[2] : 1.0f;
+
+			// as cgame scales a model: its bones' places, and its axes
+			for ( int i = 0; i < 3; i++ ) {
+				copy->modelScale[i] = ( ent->modelScale[i] > 0.0f ? ent->modelScale[i] : 1.0f ) * k;
+				VectorScale( copy->axis[i], k, copy->axis[i] );
+			}
+			copy->nonNormalizedAxes = qtrue;
+			// standing on the same floor
+			copy->origin[2] += CM_LOOK_UP * was * ( k - 1.0f );
+		}
+		if ( clip->hold[0] )
+			CM_LookHold( copy, clip, k );
+		if ( clip->shell ) {
+			const cmShell_t *sh = &cmShells[clip->shell];
+			const qhandle_t h = re->RegisterShader( sh->shader );
+
+			if ( h && sh->over ) {
+				refEntity_t over = *copy;
+
+				over.customShader = h;
+				over.renderfx &= ~RF_RGB_TINT;
+				over.shaderRGBA[0] = over.shaderRGBA[1] = over.shaderRGBA[2] = over.shaderRGBA[3] = 255;
+				re->AddRefEntityToScene( &over );
+			} else if ( h ) {
+				copy->customShader = h;
+				copy->renderfx &= ~RF_RGB_TINT;
+				copy->shaderRGBA[0] = copy->shaderRGBA[1] = copy->shaderRGBA[2] = copy->shaderRGBA[3] = 255;
+			}
+		}
+		return copy;
+	}
+
+	// a blade: its length, its colour, then where it is in a hand scaled about their feet
+	if ( glow )
+		copy->saberLength *= clip->blade / 100.0f;
+	else if ( clip->blade != 100 ) {
+		vec3_t d;
+
+		// the core: origin its tip, oldorigin the hilt
+		VectorSubtract( copy->origin, copy->oldorigin, d );
+		VectorMA( copy->oldorigin, clip->blade / 100.0f, d, copy->origin );
+	}
+	if ( clip->saber >= CM_SABER_COLORS ) {
+		const qhandle_t h = re->RegisterShader( va( "gfx/effects/sabers/%s_%s", cmSaberLooks[clip->saber], glow ? "glow" : "line" ) );
+
+		if ( h ) {
+			copy->customShader = h;
+			copy->shaderRGBA[0] = copy->shaderRGBA[1] = copy->shaderRGBA[2] = 255;
+		}
+	}
+	if ( clip->size != 100 ) {
+		vec3_t feet;
+
+		VectorCopy( l->org, feet );
+		feet[2] -= CM_LOOK_UP;
+		CM_LookScalePoint( copy->origin, feet, k );
+		if ( line )
+			CM_LookScalePoint( copy->oldorigin, feet, k );
+		else
+			copy->saberLength *= k;
+		copy->radius *= k;
+	}
+	return copy;
+}
+
+/*
+===============================================================================
+
 Every frame, and the command
 
 ===============================================================================
 */
 
+/*
+===============================================================================
+
+The camera flown and kept as a shot
+
+===============================================================================
+*/
+
+static void CM_CamRecStart( void ) {
+	cm.camRec = qtrue;
+	cm.camRecStart = cls.realtime;
+	cm.camRecNext = 0;
+	cm.camRecCount = 0;
+	cm.through = qfalse;
+	CM_Message( "Recording the camera: fly it (hold right mouse), then Stop or Enter; a minute at most" );
+}
+
+// the take as a shot after the one shown: its spots spread over it, each as far in as it was flown
+static void CM_CamRecStop( void ) {
+	cmCine_t *c = &cm.cine;
+	const int n = cm.camRecCount;
+	rcShot_t *s;
+	int at, keys, prev = 0;
+
+	cm.camRec = qfalse;
+	if ( n < 2 ) {
+		CM_Message( S_COLOR_YELLOW "Too short to keep" );
+		return;
+	}
+	if ( c->numShots >= CM_MAX_SHOTS ) {
+		CM_Message( S_COLOR_YELLOW "A cinematic has 16 shots at most" );
+		return;
+	}
+	at = c->numShots ? cm.cur + 1 : 0;
+	CM_ShiftClips( CM_ShotStart( c, at ), cm.camRecMs[n - 1] );
+	memmove( &c->shots[at + 1], &c->shots[at], ( c->numShots - at ) * sizeof( c->shots[0] ) );
+	c->numShots++;
+	s = &c->shots[at];
+	memset( s, 0, sizeof( *s ) );
+	keys = Q_min( RC_MAX_KEYS, n );
+	for ( int k = 0; k < keys; k++ ) {
+		const int i = k * ( n - 1 ) / ( keys - 1 );
+		rcKey_t *key = &s->keys[k];
+
+		VectorCopy( cm.camRecOrg[i], key->org );
+		VectorCopy( cm.camRecAng[i], key->ang );
+		key->fov = cm.camRecFov[i];
+		key->ms = k ? cm.camRecMs[i] - prev : 0;
+		prev = cm.camRecMs[i];
+		// turned the short way from the one before, so the curve doesn't spin
+		if ( k ) {
+			for ( int j = 0; j < 3; j++ )
+				key->ang[j] = s->keys[k - 1].ang[j] + AngleNormalize180( key->ang[j] - s->keys[k - 1].ang[j] );
+		}
+	}
+	s->numKeys = keys;
+	s->linear = qtrue;		// as fast as it was flown
+	CM_SeeShots();
+	cm.cur = -1;
+	CM_SelectShot( at );
+	CM_Changed();
+	CM_Message( va( S_COLOR_GREEN "Kept %.1f s as shot %i, %i spots; Track page: Handheld for a camera held by hand", cm.camRecMs[n - 1] / 1000.0f, at + 1, keys ) );
+}
+
+static void CM_CamRecFrame( void ) {
+	const int ms = cls.realtime - cm.camRecStart;
+
+	if ( !cm.camRec || cls.realtime < cm.camRecNext )
+		return;
+	if ( cm.camRecCount >= CM_CAMREC_MAX ) {
+		CM_CamRecStop();
+		return;
+	}
+	cm.camRecNext = cls.realtime + CM_CAMREC_EVERY;
+	VectorCopy( cm.camOrg, cm.camRecOrg[cm.camRecCount] );
+	VectorCopy( cm.camAng, cm.camRecAng[cm.camRecCount] );
+	cm.camRecFov[cm.camRecCount] = cm.camFov;
+	cm.camRecMs[cm.camRecCount] = ms;
+	cm.camRecCount++;
+}
+
+/*
+===============================================================================
+
+Undo, redo; copy and paste
+
+===============================================================================
+*/
+
+static std::string CM_CineText( void ) {
+	char *buf = (char *)Z_Malloc( CM_TEXT_MAX, TAG_GENERAL, qfalse );
+	std::string text;
+
+	CM_ToText( &cm.cine, buf, CM_TEXT_MAX );
+	text = buf;
+	Z_Free( buf );
+	return text;
+}
+
+// a cinematic opened or begun: nothing to go back to
+static void CM_UndoReset( void ) {
+	cmUndo.clear();
+	cmRedo.clear();
+	cmUndoBase = CM_CineText();
+	cmUndoPending = qfalse;
+}
+
+// a change kept once it's settled, or at once with force
+static void CM_UndoKeep( qboolean force ) {
+	std::string now;
+
+	if ( !cmUndoPending )
+		return;
+	if ( !force && ( cm.held[A_MOUSE1] || cls.realtime - cmUndoTime < CM_UNDO_SETTLE_MS ) )
+		return;
+	cmUndoPending = qfalse;
+	now = CM_CineText();
+	if ( now == cmUndoBase )
+		return;
+	cmUndo.push_back( cmUndoBase );
+	if ( (int)cmUndo.size() > CM_UNDO_MAX )
+		cmUndo.erase( cmUndo.begin() );
+	cmRedo.clear();
+	cmUndoBase = now;
+}
+
+static void CM_UndoFrame( void ) {
+	CM_UndoKeep( qfalse );
+}
+
+// the cinematic as it was, or as it was again; what's picked kept where it still can be
+static void CM_Undo( qboolean redo ) {
+	std::vector<std::string> &from = redo ? cmRedo : cmUndo, &to = redo ? cmUndo : cmRedo;
+	char *buf;
+
+	CM_UndoKeep( qtrue );
+	if ( from.empty() ) {
+		CM_Message( redo ? S_COLOR_YELLOW "Nothing to redo" : S_COLOR_YELLOW "Nothing to undo" );
+		return;
+	}
+	to.push_back( cmUndoBase );
+	cmUndoBase = from.back();
+	from.pop_back();
+	buf = (char *)Z_Malloc( cmUndoBase.size() + 1, TAG_GENERAL, qfalse );
+	memcpy( buf, cmUndoBase.c_str(), cmUndoBase.size() + 1 );
+	CM_Parse( buf, &cm.cine );
+	Z_Free( buf );
+	cmUndoPending = qfalse;
+	cm.dirty = qtrue;
+	cm.typing = CM_TYPE_NONE;
+	cm.tlDrag = CM_DRAG_NONE;
+	cm.numMulti = 0;
+	cm.cur = Com_Clampi( 0, Q_max( 0, cm.cine.numShots - 1 ), cm.cur );
+	cm.sel = -1;
+	if ( cm.ent >= cm.cine.numEnts )
+		cm.ent = -1;
+	if ( cm.clip >= cm.cine.numClips )
+		cm.clip = -1;
+	cm.seenShots = -1;
+	CM_SeeShots();
+	CM_Message( va( "%s: %i more to %s, %i to %s", redo ? "Redone" : "Undone", (int)from.size(), redo ? "redo" : "undo", (int)to.size(), redo ? "undo" : "redo" ) );
+}
+
+// what Ctrl+C keeps
+typedef enum {
+	CM_BOARD_NONE,
+	CM_BOARD_SHOT,
+	CM_BOARD_CLIPS,			// an action, or all someone's
+	CM_BOARD_FX,
+	CM_BOARD_SND,
+	CM_BOARD_TXT,
+	CM_BOARD_PROP,
+	CM_BOARD_LIGHT,
+	CM_BOARD_SCREEN,
+	CM_BOARD_MAPLOOK
+} cmBoardKind_t;
+
+static struct {
+	int			kind;
+	char		what[64];
+	rcShot_t	shot;
+	int			numClips;
+	cmClip_t	clips[CM_MAX_CLIPS];
+	int			recOf[CM_MAX_CLIPS];	// a recording's in recs, -1 none
+	cmRec_t		recs[CM_MAX_RECS];
+	int			numRecs;
+	cmFx_t		fx;
+	cmSnd_t		snd;
+	cmTxt_t		txt;
+	cmProp_t	prop;
+	cmLight_t	light;
+	cmScreen_t	screen;
+	cmMapLook_t	mapLook;
+} cmBoard;
+
+static void CM_BoardClip( const cmClip_t *clip ) {
+	const cmRec_t *r;
+
+	if ( cmBoard.numClips >= CM_MAX_CLIPS )
+		return;
+	cmBoard.clips[cmBoard.numClips] = *clip;
+	cmBoard.recOf[cmBoard.numClips] = -1;
+	// a recording goes with its moments, for another cinematic too
+	if ( clip->kind == CM_CLIP_RECORD && ( r = CM_Rec( &cm.cine, clip ) ) != NULL && cmBoard.numRecs < CM_MAX_RECS ) {
+		cmBoard.recs[cmBoard.numRecs] = *r;
+		cmBoard.recOf[cmBoard.numClips] = cmBoard.numRecs++;
+	}
+	cmBoard.numClips++;
+}
+
+// the shot, the action (or all of someone's), the effect, sound, text, prop or light picked
+static void CM_Copy( void ) {
+	cmClip_t *clip = CM_Clip();
+
+	cmBoard.kind = CM_BOARD_NONE;
+	cmBoard.numClips = cmBoard.numRecs = 0;
+	switch ( cm.tab ) {
+	case CM_TAB_CAMERA:
+		if ( CM_Shot() ) {
+			cmBoard.kind = CM_BOARD_SHOT;
+			cmBoard.shot = *CM_Shot();
+			Com_sprintf( cmBoard.what, sizeof( cmBoard.what ), "shot %i", cm.cur + 1 );
+		}
+		break;
+	case CM_TAB_ENTITIES:
+		if ( clip && cm.ent >= 0 && clip->ent == cm.ent ) {
+			CM_BoardClip( clip );
+			Q_strncpyz( cmBoard.what, "the action", sizeof( cmBoard.what ) );
+		} else if ( cm.ent >= 0 && cm.ent < cm.cine.numEnts ) {
+			for ( int i = 0; i < cm.cine.numClips; i++ ) {
+				if ( cm.cine.clips[i].ent == cm.ent )
+					CM_BoardClip( &cm.cine.clips[i] );
+			}
+			Com_sprintf( cmBoard.what, sizeof( cmBoard.what ), "all %s does", cm.cine.ents[cm.ent].who );
+		}
+		if ( cmBoard.numClips )
+			cmBoard.kind = CM_BOARD_CLIPS;
+		break;
+	case CM_TAB_EFFECTS:
+		if ( CM_Fx() ) {
+			cmBoard.kind = CM_BOARD_FX;
+			cmBoard.fx = *CM_Fx();
+			Q_strncpyz( cmBoard.what, "the effect", sizeof( cmBoard.what ) );
+		}
+		break;
+	case CM_TAB_SOUNDS:
+		if ( CM_Snd() ) {
+			cmBoard.kind = CM_BOARD_SND;
+			cmBoard.snd = *CM_Snd();
+			Q_strncpyz( cmBoard.what, "the sound", sizeof( cmBoard.what ) );
+		}
+		break;
+	case CM_TAB_TEXT:
+		if ( CM_Txt() ) {
+			cmBoard.kind = CM_BOARD_TXT;
+			cmBoard.txt = *CM_Txt();
+			Q_strncpyz( cmBoard.what, "the text", sizeof( cmBoard.what ) );
+		}
+		break;
+	case CM_TAB_WORLD:
+		if ( cm.worldPage == 0 && CM_Prop() ) {
+			cmBoard.kind = CM_BOARD_PROP;
+			cmBoard.prop = *CM_Prop();
+			Q_strncpyz( cmBoard.what, "the prop", sizeof( cmBoard.what ) );
+		} else if ( cm.worldPage == 1 && CM_Light() ) {
+			cmBoard.kind = CM_BOARD_LIGHT;
+			cmBoard.light = *CM_Light();
+			Q_strncpyz( cmBoard.what, "the light", sizeof( cmBoard.what ) );
+		} else if ( cm.worldPage == 3 && CM_MapLook() ) {
+			cmBoard.kind = CM_BOARD_MAPLOOK;
+			cmBoard.mapLook = *CM_MapLook();
+			Q_strncpyz( cmBoard.what, "the map's look", sizeof( cmBoard.what ) );
+		} else if ( cm.worldPage == 2 && CM_Screen() ) {
+			cmBoard.kind = CM_BOARD_SCREEN;
+			cmBoard.screen = *CM_Screen();
+			Q_strncpyz( cmBoard.what, va( "%s", cmScreenKinds[cmBoard.screen.kind] ), sizeof( cmBoard.what ) );
+		}
+		break;
+	default:
+		break;
+	}
+	if ( cmBoard.kind == CM_BOARD_NONE )
+		CM_Message( S_COLOR_YELLOW "Nothing picked to copy here" );
+	else
+		CM_Message( va( "Copied %s: Ctrl+V puts it in at the moment picked", cmBoard.what ) );
+}
+
+// a recording slot no action uses, -1 none
+static int CM_FreeRec( const cmCine_t *c ) {
+	for ( int r = 0; r < CM_MAX_RECS; r++ ) {
+		qboolean used = qfalse;
+
+		for ( int i = 0; i < c->numClips && !used; i++ )
+			used = (qboolean)( c->clips[i].kind == CM_CLIP_RECORD && c->clips[i].rec == r );
+		if ( !used )
+			return r;
+	}
+	return -1;
+}
+
+// a moment for something pasted: the one picked on the timeline, else when it was
+static int CM_PasteAt( int was ) {
+	return cm.tlPinned ? cm.tlMs : was;
+}
+
+static void CM_Paste( void ) {
+	cmCine_t *c = &cm.cine;
+
+	switch ( cmBoard.kind ) {
+	case CM_BOARD_SHOT: {
+		const int at = c->numShots ? cm.cur + 1 : 0;
+
+		if ( c->numShots >= CM_MAX_SHOTS ) {
+			CM_Message( S_COLOR_YELLOW "A cinematic has 16 shots at most" );
+			return;
+		}
+		CM_ShiftClips( CM_ShotStart( c, at ), CM_ShotLen( &cmBoard.shot ) );
+		memmove( &c->shots[at + 1], &c->shots[at], ( c->numShots - at ) * sizeof( c->shots[0] ) );
+		c->shots[at] = cmBoard.shot;
+		c->numShots++;
+		CM_SeeShots();
+		cm.cur = -1;
+		CM_SelectShot( at );
+		cm.tab = CM_TAB_CAMERA;
+		break;
+	}
+	case CM_BOARD_CLIPS: {
+		int first = cmBoard.clips[0].start, pasted = 0;
+
+		if ( cm.ent < 0 || cm.ent >= c->numEnts ) {
+			CM_Message( S_COLOR_YELLOW "Pick who it's for first, someone in the cinematic" );
+			return;
+		}
+		for ( int i = 1; i < cmBoard.numClips; i++ )
+			first = Q_min( first, cmBoard.clips[i].start );
+		for ( int i = 0; i < cmBoard.numClips && c->numClips < CM_MAX_CLIPS; i++ ) {
+			cmClip_t *clip = &c->clips[c->numClips];
+
+			*clip = cmBoard.clips[i];
+			clip->ent = cm.ent;
+			clip->start = Q_max( 0, clip->start - first + CM_PasteAt( first ) );
+			if ( clip->kind == CM_CLIP_RECORD ) {
+				const int r = cmBoard.recOf[i] >= 0 ? CM_FreeRec( c ) : -1;
+
+				if ( r < 0 )
+					continue;
+				c->recs[r] = cmBoard.recs[cmBoard.recOf[i]];
+				clip->rec = r;
+			}
+			cm.clip = c->numClips++;
+			pasted++;
+		}
+		if ( pasted > 1 )
+			cm.clip = -1;
+		cm.tab = CM_TAB_ENTITIES;
+		if ( pasted < cmBoard.numClips )
+			CM_Message( S_COLOR_YELLOW "Not all of it fitted: 64 actions and 6 recordings at most" );
+		break;
+	}
+	case CM_BOARD_FX:
+		if ( c->numFx >= CM_MAX_FX )
+			return;
+		c->fx[c->numFx] = cmBoard.fx;
+		c->fx[c->numFx].start = CM_PasteAt( cmBoard.fx.start );
+		cm.fx = c->numFx++;
+		cm.tab = CM_TAB_EFFECTS;
+		break;
+	case CM_BOARD_SND:
+		if ( c->numSnd >= CM_MAX_SND )
+			return;
+		c->snd[c->numSnd] = cmBoard.snd;
+		c->snd[c->numSnd].start = CM_PasteAt( cmBoard.snd.start );
+		cm.snd = c->numSnd++;
+		cm.tab = CM_TAB_SOUNDS;
+		break;
+	case CM_BOARD_TXT:
+		if ( c->numTxt >= CM_MAX_TXT )
+			return;
+		c->txt[c->numTxt] = cmBoard.txt;
+		c->txt[c->numTxt].start = CM_PasteAt( cmBoard.txt.start );
+		cm.txt = c->numTxt++;
+		cm.tab = CM_TAB_TEXT;
+		break;
+	case CM_BOARD_PROP:
+		if ( c->numProps >= CM_MAX_PROPS )
+			return;
+		c->props[c->numProps] = cmBoard.prop;
+		c->props[c->numProps].start = CM_PasteAt( cmBoard.prop.start );
+		cm.prop = c->numProps++;
+		cm.propKey = 0;
+		cm.tab = CM_TAB_WORLD;
+		cm.worldPage = 0;
+		break;
+	case CM_BOARD_LIGHT:
+		if ( c->numLights >= CM_MAX_LIGHTS )
+			return;
+		c->lights[c->numLights] = cmBoard.light;
+		c->lights[c->numLights].start = CM_PasteAt( cmBoard.light.start );
+		cm.light = c->numLights++;
+		cm.tab = CM_TAB_WORLD;
+		cm.worldPage = 1;
+		break;
+	case CM_BOARD_MAPLOOK:
+		if ( c->numMapLooks >= CM_MAX_MAPLOOKS )
+			return;
+		c->mapLooks[c->numMapLooks] = cmBoard.mapLook;
+		c->mapLooks[c->numMapLooks].start = CM_PasteAt( cmBoard.mapLook.start );
+		cm.mapLook = c->numMapLooks++;
+		cm.tab = CM_TAB_WORLD;
+		cm.worldPage = 3;
+		break;
+	case CM_BOARD_SCREEN:
+		if ( c->numScreens >= CM_MAX_SCREENS )
+			return;
+		c->screens[c->numScreens] = cmBoard.screen;
+		c->screens[c->numScreens].start = CM_PasteAt( cmBoard.screen.start );
+		cm.screen = c->numScreens++;
+		cm.tab = CM_TAB_WORLD;
+		cm.worldPage = 2;
+		break;
+	default:
+		CM_Message( S_COLOR_YELLOW "Nothing copied yet: Ctrl+C copies what's picked" );
+		return;
+	}
+	CM_Changed();
+	CM_Message( va( "Pasted %s%s", cmBoard.what, cm.tlPinned ? va( " at %.1f s", cm.tlMs / 1000.0f ) : "" ) );
+}
+
+/*
+===============================================================================
+
+Props and lights: in the scene while they last, on this screen
+
+===============================================================================
+*/
+
+// the props and lights of the cinematic playing, or of the one being made at the moment picked
+// (all of them, the props at their first key, with no moment picked)
+void CL_Cinematic_AddToScene( const refdef_t *fd ) {
+	const cmCine_t *c;
+	int t;
+
+	if ( ( fd->rdflags & ( RDF_NOWORLDMODEL | RDF_SKYBOXPORTAL | RDF_AUTOMAP ) ) || cls.state != CA_ACTIVE )
+		return;
+	if ( cmp.playing ) {
+		c = &cmp.cine;
+		t = cmp.t;
+	} else if ( cm.open ) {
+		c = &cm.cine;
+		t = cm.tlPinned ? cm.tlMs : -1;
+	} else {
+		return;
+	}
+	for ( int i = 0; i < c->numProps; i++ ) {
+		const cmProp_t *pr = &c->props[i];
+		refEntity_t ent;
+		vec3_t org, ang;
+		qhandle_t h;
+
+		if ( !pr->model[0] || !CM_PropAt( c, pr, t, org, ang ) || !( h = re->RegisterModel( pr->model ) ) )
+			continue;
+		memset( &ent, 0, sizeof( ent ) );
+		ent.reType = RT_MODEL;
+		ent.hModel = h;
+		VectorCopy( org, ent.origin );
+		VectorCopy( org, ent.oldorigin );
+		VectorCopy( org, ent.lightingOrigin );
+		AnglesToAxis( ang, ent.axis );
+		if ( pr->scale != 1.0f ) {
+			for ( int j = 0; j < 3; j++ )
+				VectorScale( ent.axis[j], pr->scale, ent.axis[j] );
+			ent.nonNormalizedAxes = qtrue;
+		}
+		ent.shaderRGBA[0] = ent.shaderRGBA[1] = ent.shaderRGBA[2] = ent.shaderRGBA[3] = 255;
+		re->AddRefEntityToScene( &ent );
+	}
+	for ( int i = 0; i < c->numLights; i++ ) {
+		const cmLight_t *l = &c->lights[i];
+		const int end = CM_LightEnd( c, l );
+		float a;
+		vec3_t org;
+
+		if ( t >= 0 && ( t < l->start || t >= end ) )
+			continue;
+		a = t < 0 ? 1.0f : CM_LightNow( l, t - l->start, end - l->start );
+		if ( a < 0.01f )
+			continue;
+		CM_LightOrg( l, org );
+		re->AddLightToScene( org, l->radius, l->color[0] * a, l->color[1] * a, l->color[2] * a );
+	}
+}
+
+/*
+===============================================================================
+
+The map's look: its light, the sky, fog; the game's own sounds
+
+===============================================================================
+*/
+
+static struct {
+	int			frame;
+	qboolean	any;				// a look going on
+	float		light;
+	vec3_t		lightColor, skyColor, fogColor;
+	float		fogDepth;
+	const char	*layout;			// the map editor layout shown now, NULL none
+} cmMapNow = { -1 };
+
+static float CM_Lerp( float a, float b, float w ) {
+	return a + ( b - a ) * w;
+}
+
+// the map's look now, once a frame: the cinematic playing, or the one being made at the moment
+// picked; each look going on blended over the ones before it, as far as it's faded in
+static void CM_MapNow( void ) {
+	const cmCine_t *c = NULL;
+	int t = 0, order[CM_MAX_MAPLOOKS], n = 0;
+
+	if ( cmMapNow.frame == cls.framecount )
+		return;
+	cmMapNow.frame = cls.framecount;
+	cmMapNow.any = qfalse;
+	cmMapNow.light = 1.0f;
+	VectorSet( cmMapNow.lightColor, 1, 1, 1 );
+	VectorSet( cmMapNow.skyColor, 1, 1, 1 );
+	VectorSet( cmMapNow.fogColor, 0.5f, 0.5f, 0.5f );
+	cmMapNow.fogDepth = CM_FOG_NONE;
+	cmMapNow.layout = NULL;
+	if ( cmp.playing ) {
+		c = &cmp.cine;
+		t = cmp.t;
+	} else if ( cm.open && cm.tlPinned ) {
+		c = &cm.cine;
+		t = cm.tlMs;
+	}
+	if ( !c || cls.state != CA_ACTIVE )
+		return;
+	for ( int i = 0; i < c->numMapLooks; i++ ) {
+		int j = n++;
+
+		for ( ; j > 0 && c->mapLooks[order[j - 1]].start > c->mapLooks[i].start; j-- )
+			order[j] = order[j - 1];
+		order[j] = i;
+	}
+	for ( int k = 0; k < n; k++ ) {
+		const cmMapLook_t *m = &c->mapLooks[order[k]];
+		const int in = t - m->start, len = CM_MapLookEnd( c, m ) - m->start;
+		float w = 1.0f;
+
+		if ( in < 0 || in >= len )
+			continue;
+		if ( m->fade > 0 ) {
+			w = Q_min( w, (float)in / m->fade );
+			if ( m->ms > 0 )
+				w = Q_min( w, (float)( len - in ) / m->fade );
+		}
+		cmMapNow.any = qtrue;
+		if ( m->layout[0] )
+			cmMapNow.layout = m->layout;
+		cmMapNow.light = CM_Lerp( cmMapNow.light, m->light / 100.0f, w );
+		for ( int j = 0; j < 3; j++ ) {
+			cmMapNow.lightColor[j] = CM_Lerp( cmMapNow.lightColor[j], m->lightColor[j], w );
+			cmMapNow.skyColor[j] = CM_Lerp( cmMapNow.skyColor[j], m->skyColor[j], w );
+			if ( m->fogDepth > 0.0f )
+				cmMapNow.fogColor[j] = CM_Lerp( cmMapNow.fogColor[j], m->fogColor[j], w );
+		}
+		cmMapNow.fogDepth = CM_Lerp( cmMapNow.fogDepth, m->fogDepth > 0.0f ? m->fogDepth : CM_FOG_NONE, w );
+	}
+}
+
+// a light style as the cgame sets it, darker, brighter or coloured as the map's look has it
+int CL_Cinematic_LightStyle( int style, int color ) {
+	byteAlias_t ba;
+
+	CM_MapNow();
+	if ( !cmMapNow.any )
+		return color;
+	ba.i = color;
+	for ( int j = 0; j < 3; j++ )
+		ba.b[j] = (byte)Com_Clampi( 0, 255, (int)( ba.b[j] * cmMapNow.light * cmMapNow.lightColor[j] + 0.5f ) );
+	return ba.i;
+}
+
+// the sky's colour as the map's look has it; qfalse if it's as it is
+qboolean CL_Cinematic_SkyTint( vec3_t tint ) {
+	CM_MapNow();
+	if ( !cmMapNow.any || ( fabsf( cmMapNow.skyColor[0] - 1.0f ) < 0.01f && fabsf( cmMapNow.skyColor[1] - 1.0f ) < 0.01f && fabsf( cmMapNow.skyColor[2] - 1.0f ) < 0.01f ) )
+		return qfalse;
+	VectorCopy( cmMapNow.skyColor, tint );
+	return qtrue;
+}
+
+// fog over everything as the map's look has it; qfalse if there's none
+qboolean CL_Cinematic_Fog( vec3_t color, float *depth ) {
+	CM_MapNow();
+	if ( !cmMapNow.any || cmMapNow.fogDepth >= CM_FOG_NONE - 1.0f )
+		return qfalse;
+	VectorCopy( cmMapNow.fogColor, color );
+	*depth = cmMapNow.fogDepth;
+	return qtrue;
+}
+
+// the game's own sounds quieter while a cinematic plays, s_volume put back after; kept in a cvar
+// too, so a crash meanwhile doesn't leave it low
+static cvar_t *rpc_cinVolume;
+
+static void CM_WorldVolume( const cmCine_t *c ) {
+	if ( !rpc_cinVolume )
+		rpc_cinVolume = Cvar_Get( "rpc_cinVolume", "", CVAR_ARCHIVE_ND | CVAR_INTERNAL, "s_volume while a cinematic has it quieter" );
+	if ( c && c->worldVolume < 100 ) {
+		if ( !rpc_cinVolume->string[0] )
+			Cvar_Set( "rpc_cinVolume", Cvar_VariableString( "s_volume" ) );
+		Cvar_SetValue( "s_volume", (float)atof( rpc_cinVolume->string ) * c->worldVolume / 100.0f );
+	} else if ( rpc_cinVolume->string[0] ) {
+		Cvar_Set( "s_volume", rpc_cinVolume->string );
+		Cvar_Set( "rpc_cinVolume", "" );
+	}
+}
+
+// the extras of the cinematic playing, or being made: defined for cl_extras, shown from their
+// spawn, if they have one, until they're taken out
+static void CM_SyncExtras( void ) {
+	const cmCine_t *c = cmp.playing ? &cmp.cine : cm.open ? &cm.cine : NULL;
+	const int t = cmp.playing ? cmp.t : cm.tlPinned ? cm.tlMs : -1;
+	qboolean keep[CL_MAX_EXTRAS] = { qfalse };
+
+	if ( c && cls.state == CA_ACTIVE ) {
+		for ( int e = 0; e < c->numEnts && e < CL_MAX_EXTRAS; e++ ) {
+			const cmEnt_t *ent = &c->ents[e];
+			const cmClip_t *spawn = NULL;
+			vec3_t home;
+			float yaw = ent->yaw;
+
+			if ( !CM_IsExtra( ent->who ) )
+				continue;
+			VectorCopy( ent->home, home );
+			for ( int i = 0; i < c->numClips && !spawn; i++ ) {
+				if ( c->clips[i].ent == e && c->clips[i].kind == CM_CLIP_SPAWN && c->clips[i].numKeys )
+					spawn = &c->clips[i];
+			}
+			if ( spawn ) {
+				VectorCopy( spawn->keys[0].org, home );
+				home[2] += CM_LOOK_UP;
+				yaw = spawn->keys[0].ang[YAW];
+			}
+			// standing on the floor under its spot
+			{
+				trace_t tr;
+				vec3_t from, to;
+
+				VectorCopy( home, from );
+				VectorCopy( home, to );
+				from[2] += 16.0f;
+				to[2] -= 1024.0f;
+				CM_BoxTrace( &tr, from, to, vec3_origin, vec3_origin, 0, CONTENTS_SOLID | CONTENTS_TERRAIN, qfalse );
+				if ( !tr.startsolid && tr.fraction < 1.0f )
+					home[2] = tr.endpos[2] + CM_LOOK_UP;
+			}
+			CL_Extras_Define( e, ent->who, ent->model, ent->saber, ent->color, home, yaw,
+				(qboolean)( t < 0 || ( ( !spawn || t >= spawn->start ) && !CM_GoneAt( c, e, t ) ) ) );
+			keep[e] = qtrue;
+		}
+	}
+	CL_Extras_Keep( keep );
+}
+
 void CM_Frame( void ) {
+	CM_SyncExtras();
+	// a look's map edits shown while it lasts, what was there back after
+	CM_MapNow();
+	CL_MapEditor_CineLayout( cmMapNow.layout );
+	if ( cm.open ) {
+		CM_UndoFrame();
+		CM_CamRecFrame();
+		if ( cm.pictureFrames > 0 )
+			cm.pictureFrames--;
+	}
 	CM_PickFxFrame();
 	CM_PickSndFrame();
 	CM_PreviewFx();
@@ -7578,7 +11858,8 @@ void CM_Draw( void ) {
 		CM_DrawRecording();
 }
 
-// cinematicmanager [name]: the manager; play <name>: on this screen; send <name>: for everyone;
+// cinematicmanager [name]: the manager; play <name>: on this screen; video <name>: on this screen
+// into a video; send <name>: for everyone;
 // stop [all]
 static void CM_Cinematic_f( void ) {
 	const char *arg = Cmd_Argv( 1 );
@@ -7590,6 +11871,18 @@ static void CM_Cinematic_f( void ) {
 			Com_Printf( "No cinematic called \"%s\" in %s/\n", Cmd_Argv( 2 ), CM_DIR );
 		else
 			CM_Send( c );
+		Z_Free( c );
+		return;
+	}
+	if ( !Q_stricmp( arg, "video" ) ) {
+		cmCine_t *c = (cmCine_t *)Z_Malloc( sizeof( cmCine_t ), TAG_GENERAL, qtrue );
+
+		if ( cls.state != CA_ACTIVE )
+			Com_Printf( "Not connected to a server.\n" );
+		else if ( !CM_Load( Cmd_Argv( 2 ), c ) )
+			Com_Printf( "No cinematic called \"%s\" in %s/\n", Cmd_Argv( 2 ), CM_DIR );
+		else if ( !CM_VideoPlay( c, Cmd_Argv( 2 ) ) )
+			Com_Printf( "Couldn't record it: already recording, or it has no shots\n" );
 		Z_Free( c );
 		return;
 	}
@@ -7616,6 +11909,7 @@ static void CM_Cinematic_f( void ) {
 	if ( !Q_stricmp( arg, "help" ) || !Q_stricmp( arg, "?" ) ) {
 		Com_Printf( "cinematicmanager [name] : the cinematic manager, to make cinematics in\n"
 			"cinematicmanager play <name> : plays one on your screen only\n"
+			"cinematicmanager video <name> : plays one on your screen, kept as videos/<name>-<n>.avi (cl_aviFrameRate)\n"
 			"cinematicmanager send <name> : plays one for everyone with this client\n"
 			"cinematicmanager stop [all] : stops it on your screen, or for everyone\n" );
 		return;
@@ -7640,8 +11934,9 @@ void CM_Init( void ) {
 	cm.tlCam = qtrue;
 	rpc_cinNoPredict = Cvar_Get( "rpc_cinNoPredict", "0", CVAR_ARCHIVE_ND | CVAR_INTERNAL, "" );
 	cl_cinRecordKey = Cvar_Get( "cl_cinRecordKey", "F10", CVAR_ARCHIVE_ND, "The key that ends a recording in the cinematic manager" );
-	// a cinematic moving you was cut short by a crash: prediction back
+	// a cinematic moving you was cut short by a crash: prediction back, and the game's sounds
 	CM_HoldSelf( qfalse );
+	CM_WorldVolume( NULL );
 	Cmd_AddCommand( CM_TOGGLE_CMD, CM_Cinematic_f, "The cinematic manager: make cinematics of camera shots and what players and NPCs do, and play them" );
 }
 

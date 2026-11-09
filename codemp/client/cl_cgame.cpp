@@ -497,6 +497,15 @@ qboolean CL_GetServerCommand( int serverCommandNumber ) {
 				CL_ConfigstringModified();
 				Cmd_TokenizeString( clOwnCmds[own].text );
 			}
+			// NPC talk come through C1B3R: chat as it is from the server, in a language, kept in the log
+			if ( !strcmp( Cmd_Argv( 0 ), "chat" ) ) {
+				if ( CL_Storyteller_ChatLine() ) {
+					Cmd_TokenizeString( "print \"\"" );
+					return qtrue;
+				}
+				CL_Languages_ServerCommand();
+				CL_ChatLog_ServerCommand();
+			}
 			return qtrue;
 		}
 		clLastCgameCommand = serverCommandNumber;
@@ -554,6 +563,7 @@ rescan:
 			}
 			// NPC talk is chat too: in a language, as the character playing hears it
 			CL_Languages_ServerCommand();
+			CL_ChatLog_ServerCommand();
 			return qtrue;
 		}
 	}
@@ -694,6 +704,8 @@ rescan:
 	CL_Languages_ServerCommand();
 	// chat from far away stays out of the console
 	CL_ChatRange_ServerCommand();
+	// the chat log keeps it as it's shown
+	CL_ChatLog_ServerCommand();
 	// during a cinematic with the HUD hidden, chat is a subtitle
 	CL_RpHooks_ChatSubtitle();
 
@@ -718,10 +730,13 @@ void CL_ShutdownCGame( void ) {
 	CL_SoundManager_Shutdown();
 	CL_AnimManager_Shutdown();
 	CL_Presets_Shutdown();
+	CL_EscMenu_Close();
+	CL_SpecialMoves_Shutdown();
 	CL_AssetManager_Shutdown();
 	CL_RadialMenu_Shutdown();
 	CL_Languages_Shutdown();
 	CL_EmotePreview_Shutdown();
+	CL_Extras_Shutdown();
 	CL_RpCinematic_Reset();
 	CL_NpcWalk_Reset();
 	CL_FighterAssist_Shutdown();

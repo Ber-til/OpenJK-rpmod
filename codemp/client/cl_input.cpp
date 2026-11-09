@@ -632,6 +632,13 @@ void IN_UpUp(void)
 		IN_KeyUp(&in_up);
 	}
 }
+// crouch for this long from now, as if the key were tapped (cl_datapad.cpp ends its emote with it)
+static int clCrouchTapUntil;
+
+void CL_TapCrouch( int ms ) {
+	clCrouchTapUntil = cls.realtime + ms;
+}
+
 void IN_DownDown(void)
 {
 	if (g_clAutoMapMode)
@@ -1034,6 +1041,9 @@ void CL_KeyMove( usercmd_t *cmd ) {
 
 	up += movespeed * CL_KeyState (&in_up);
 	up -= movespeed * CL_KeyState (&in_down);
+	// a moment's crouch the client asked for: it ends an emote, as pressing crouch does
+	if ( cls.realtime < clCrouchTapUntil )
+		up = -movespeed;
 
 	// hanging on a wall with cl_wallstick: jump held for them, then released as they press it again
 	{
@@ -1104,6 +1114,14 @@ void CL_MouseEvent( int dx, int dy, int time ) {
 		CL_AnimManager_MouseEvent( dx, dy );
 	} else if ( Key_GetCatcher( ) & KEYCATCH_PRESETS ) {
 		CL_Presets_MouseEvent( dx, dy );
+	} else if ( Key_GetCatcher( ) & KEYCATCH_ESCMENU ) {
+		CL_EscMenu_MouseEvent( dx, dy );
+	} else if ( Key_GetCatcher( ) & KEYCATCH_SPECIALMOVES ) {
+		CL_SpecialMoves_MouseEvent( dx, dy );
+	} else if ( Key_GetCatcher( ) & KEYCATCH_CHATLOG ) {
+		CL_ChatLog_MouseEvent( dx, dy );
+	} else if ( Key_GetCatcher( ) & KEYCATCH_DATAPAD ) {
+		CL_Datapad_MouseEvent( dx, dy );
 	} else if ( Key_GetCatcher( ) & KEYCATCH_ASSETMANAGER ) {
 		CL_AssetManager_MouseEvent( dx, dy );
 	} else if ( Key_GetCatcher( ) & KEYCATCH_CINEDITOR ) {
@@ -1529,6 +1547,9 @@ usercmd_t CL_CreateCmd( void ) {
 
 	// get basic movement from joystick
 	CL_JoystickMove( &cmd );
+
+	// a special move playing: its keys in place of the player's
+	CL_SpecialMoves_FilterCmd( &cmd );
 
 	// fighters share jump between takeoff and boost
 	CL_FighterAssist_FilterCmd( &cmd, in_vehboost.active );

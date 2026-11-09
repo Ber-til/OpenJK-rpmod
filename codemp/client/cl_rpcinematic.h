@@ -38,6 +38,8 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define RC_DOF_MAX_BLUR		10.0f
 #define RC_DOF_POINT		-2.0f		// a shot's focus on a spot that moves from key to key
 #define RC_MAX_FOCUS		8
+#define RC_MAX_SHAKES		8
+#define RC_MAX_HANDHELD		3
 #define RC_TRANS_MS			1000
 
 // an NPC walking a route while an old shot plays
@@ -57,6 +59,8 @@ typedef struct {
 	// its own depth of field, or the one before's
 	qboolean	dofSet;
 	float		dofFocus, dofRange, dofBlur;
+
+	qboolean	stops;		// the camera slows to a stop at it, and sets off slowly from it
 } rcKey_t;
 
 // how a shot comes in or goes: cut, faded from or to a colour, or wiped across from a side
@@ -102,6 +106,13 @@ typedef struct {
 	float		range;
 } rcFocus_t;
 
+// a jolt of the camera ms into its shot, strength 1-10, dying away over len ms
+typedef struct {
+	int			ms;
+	int			strength;
+	int			len;
+} rcShake_t;
+
 // a camera shot: a path through spots, one spot held (a still, its ms long), or an orbit
 typedef struct {
 	qboolean	orbit;
@@ -133,6 +144,18 @@ typedef struct {
 	float		radius, height, fromYaw, degrees;
 	float		fov, endFov;
 	int			ms;				// an orbit's, or a still's
+
+	// someone kept in frame: a path turns to them wherever they go, an orbit circles them; with
+	// trackTurn an orbit's from yaw is from the way they face, so it stays behind them, beside them...
+	char		trackWho[MAX_QPATH];
+	qboolean	trackTurn;
+	qboolean	dolly;			// zoomed as it moves so what it looks at stays the same size
+	char		stopsAt[RC_MAX_KEYS * 4];	// as the hook has them, while it's read
+
+	// the camera shaken: held by hand all along (0 not, up to RC_MAX_HANDHELD), and jolts
+	int			handheld;
+	rcShake_t	shakes[RC_MAX_SHAKES];
+	int			numShakes;
 } rcShot_t;
 
 typedef enum {
@@ -171,6 +194,10 @@ float RC_Seconds( int ms );
 // shots
 int RC_ShotMs( const rcShot_t *s );
 void RC_EvalShot( const rcShot_t *s, int ms, vec3_t org, vec3_t ang, float *fov );
+void RC_SetBarFrac( float frac );
+void RC_SetShotTime( int msIn );
+void RC_EvalShotLive( const rcShot_t *s, int ms, vec3_t org, vec3_t ang, float *fov, qboolean smooth );
+qboolean RC_TrackTarget( const char *who, vec3_t at, float *yaw );
 void RC_FillFov( rcShot_t *s, float fov );
 qboolean RC_ParseShot( char **argv, int argc, rcShot_t *s, const vec3_t ang );
 void RC_WriteShot( const rcShot_t *s, char *out, int size );
@@ -204,6 +231,7 @@ int RC_AnimTargets( const char *who, int *nums, int max );
 int RC_AnimMs( const rcAnim_t *a, int shotMs );
 int RC_EntCfg( int num );
 const rcAnimDef_t *RC_FindAnim( int cfg, const char *name );
+int RC_AnimCfg( const char *gla );
 const rcAnimDef_t *RC_AnimDefs( int cfg, int *count );
 // a cinematic's animations now: each of nums on its animation, elapsed ms into it; the others it
 // had let go
@@ -218,6 +246,9 @@ qboolean CM_EditorCamera( vec3_t org, vec3_t ang, float *fov );
 int CM_EditorFilter( void );
 void CM_Frame( void );
 void CM_Draw( void );
+void CM_DrawPlayingTexts( void );
+const refEntity_t *CM_LookEntity( const refEntity_t *ent, refEntity_t *copy );
+qboolean RC_EntityOrigin( int num, vec3_t out );
 void CM_Init( void );
 void CM_Shutdown( void );
 void CM_Reset( void );

@@ -344,6 +344,7 @@ typedef struct {
 	int			fogScroll;
 	qboolean	fogAdded;			// the tab shows ours, not the map's
 	unsigned	fogItemsSum;		// ours as they were last applied
+	unsigned	cineFogKey;			// a cinematic's fog as it was last applied
 	qhandle_t	hidden[ME_MAX_HIDDEN];
 	int			numHidden;
 	qboolean	dirty;
@@ -483,6 +484,11 @@ typedef struct {
 	qboolean	showLayouts;
 	char		layoutName[MAX_QPATH];
 	char		layouts[ME_MAX_LAYOUTS][MAX_QPATH];
+
+	// a cinematic's layout shown meanwhile, and what was shown before it, kept to put back
+	char		cineLayout[MAX_QPATH];
+	qboolean	cineKept, cineWasShared, cineWasDirty;
+	char		cineWasName[MAX_QPATH];
 	int			numLayouts, layoutScroll, layoutSel;
 	int			confirmTime;
 	qboolean	experimentalBox;	// the warning before turning experimental features on
@@ -537,6 +543,18 @@ static int ME_Round( float f ) {
 static void ME_Message( const char *text ) {
 	Q_strncpyz( me.message, text, sizeof( me.message ) );
 	me.messageTime = cls.realtime;
+}
+
+// the warning before experimental features go on, unless they can't be on here
+static void ME_AskExperimental( void ) {
+	const char *blocked = CL_RpHooks_ExperimentalBlocked();
+
+	if ( blocked ) {
+		ME_Message( va( S_COLOR_YELLOW "%s", blocked ) );
+		return;
+	}
+	me.experimentalBox = qtrue;
+	me.field = ME_FIELD_NONE;
 }
 
 static void ME_Changed( void ) {
@@ -2051,6 +2069,16 @@ static unsigned ME_FogItemsSum( void ) {
 	return sum;
 }
 
+// a cinematic's fog as it is, to tell when it's changed
+static unsigned ME_CineFogKey( void ) {
+	vec3_t color;
+	float depth;
+
+	if ( !CL_Cinematic_Fog( color, &depth ) )
+		return 0;
+	return 1 + ( (unsigned)( depth / 8.0f ) * 31 + (unsigned)( color[0] * 64 ) ) * 961 + (unsigned)( color[1] * 64 ) * 31 + (unsigned)( color[2] * 64 );
+}
+
 // ours to the renderer, or the map's back: its fogs as we have them, and our volumes
 static void ME_ApplyFogs( void ) {
 	me.fogsDirty = qfalse;
@@ -2066,6 +2094,15 @@ static void ME_ApplyFogs( void ) {
 	if ( !re->ext.AddFog || !re->ext.ClearAddedFogs || cls.state != CA_ACTIVE )
 		return;
 	re->ext.ClearAddedFogs();
+	// a cinematic's fog, over everything
+	{
+		vec3_t color, mins = { -65536.0f, -65536.0f, -65536.0f }, maxs = { 65536.0f, 65536.0f, 65536.0f };
+		float depth;
+
+		me.cineFogKey = ME_CineFogKey();
+		if ( CL_Cinematic_Fog( color, &depth ) )
+			re->ext.AddFog( mins, maxs, color, depth );
+	}
 	if ( !me.fogsShown )
 		return;
 	for ( int i = 0; i < me.numItems; i++ ) {
@@ -2511,6 +2548,66 @@ static void ME_LiftProp( qboolean removed, qboolean grab ) {
 		ME_Grab();
 }
 
+static void ME_ItemBounds( meItem_t *it, vec3_t mins, vec3_t maxs );
+
+// the chosen prop, lifted or not, swapped for the model picked in the list: the prop hidden,
+// the model standing where it stood, as big as fits in the space it took
+static void ME_SwapProp( void ) {
+	meItem_t *prop, *it;
+	vec3_t mins, maxs, m0, m1;
+	float fit = 0.0f;
+	qhandle_t h;
+
+	if ( !me.pickModel[0] || me.pickModel[0] == '#' ) {
+		ME_Message( S_COLOR_YELLOW "Pick a model in the list first" );
+		return;
+	}
+	if ( !( h = re->RegisterModel( me.pickModel ) ) ) {
+		ME_Message( S_COLOR_YELLOW "That model couldn't be loaded" );
+		return;
+	}
+	if ( me.selKind == ME_SEL_PROP ) {
+		VectorCopy( me.candMins, mins );
+		VectorCopy( me.candMaxs, maxs );
+		ME_LiftProp( qtrue, qfalse );
+		if ( !( prop = ME_SelectedItem() ) || prop->kind != ME_ITEM_PROP )
+			return;
+	} else {
+		if ( !( prop = ME_SelectedItem() ) || prop->kind != ME_ITEM_PROP )
+			return;
+		ME_ItemBounds( prop, mins, maxs );
+		prop->removed = qtrue;
+		me.propsDirty = qtrue;
+	}
+	if ( me.numItems >= ME_MAX_ITEMS ) {
+		ME_Changed();
+		ME_Message( S_COLOR_YELLOW "Hidden, but there's no room for another model" );
+		return;
+	}
+	re->ModelBounds( h, m0, m1 );
+	for ( int i = 0; i < 3; i++ ) {
+		if ( m1[i] - m0[i] > 1.0f && maxs[i] - mins[i] > 1.0f ) {
+			const float f = ( maxs[i] - mins[i] ) / ( m1[i] - m0[i] );
+
+			if ( fit <= 0.0f || f < fit )
+				fit = f;
+		}
+	}
+	fit = fit > 0.0f ? Com_Clamp( 0.05f, 50.0f, floorf( fit * 100.0f + 0.5f ) / 100.0f ) : 1.0f;
+	it = ME_NewItem( ME_ITEM_MODEL );
+	Q_strncpyz( it->model, me.pickModel, sizeof( it->model ) );
+	it->scale = fit;
+	// its bottom middle on the prop's
+	it->org[0] = ( mins[0] + maxs[0] ) * 0.5f - ( m0[0] + m1[0] ) * 0.5f * fit;
+	it->org[1] = ( mins[1] + maxs[1] ) * 0.5f - ( m0[1] + m1[1] ) * 0.5f * fit;
+	it->org[2] = mins[2] - m0[2] * fit;
+	me.numItems++;
+	ME_Select( ME_SEL_ITEM, me.numItems - 1 );
+	me.tab = ME_TAB_MODELS;
+	ME_Changed();
+	ME_Message( va( "Swapped for %s: turn or scale it to fit; the prop is hidden in the list", ME_ShownName( it->model ) ) );
+}
+
 /*
 ===============================================================================
 
@@ -2944,6 +3041,51 @@ static void ME_LoadLayout( const char *name ) {
 	me.dirty = qfalse;
 	Q_strncpyz( me.layoutName, name, sizeof( me.layoutName ) );
 	ME_Message( va( S_COLOR_GREEN "Loaded %s: Share shows it to everyone", name ) );
+}
+
+#define ME_CINE_KEPT		"_before-cinematic"
+
+// a cinematic's map edits: a layout of this map shown while it wants it ("" or NULL: done), what
+// was shown before saved aside and put back after
+void CL_MapEditor_CineLayout( const char *name ) {
+	if ( !name )
+		name = "";
+	if ( !Q_stricmp( name, me.cineLayout ) || cls.state != CA_ACTIVE || !me.map[0] )
+		return;
+	if ( !me.cineLayout[0] ) {
+		// what's there now, kept aside
+		me.cineKept = (qboolean)( ME_SaveTo( ME_LayoutPath( ME_CINE_KEPT ) ) >= 0 );
+		me.cineWasShared = me.shared;
+		me.cineWasDirty = me.dirty;
+		Q_strncpyz( me.cineWasName, me.layoutName, sizeof( me.cineWasName ) );
+	}
+	Q_strncpyz( me.cineLayout, name, sizeof( me.cineLayout ) );
+	if ( name[0] ) {
+		if ( !ME_LayoutNameOk( name ) || !ME_LoadFrom( ME_LayoutPath( name ) ) )
+			ME_Load();
+		return;
+	}
+	// done: what was there back
+	if ( me.cineKept && ME_LoadFrom( ME_LayoutPath( ME_CINE_KEPT ) ) )
+		FS_HomeRemove( ME_LayoutPath( ME_CINE_KEPT ) );
+	else
+		ME_Load();
+	me.cineKept = qfalse;
+	me.shared = me.cineWasShared;
+	me.dirty = me.cineWasDirty;
+	Q_strncpyz( me.layoutName, me.cineWasName, sizeof( me.layoutName ) );
+}
+
+// this map's layouts, by name
+int CL_MapEditor_Layouts( char ( *out )[MAX_QPATH], int max ) {
+	int n = 0;
+
+	ME_ListLayouts();
+	for ( int i = 0; i < me.numLayouts && n < max; i++ ) {
+		if ( Q_stricmp( me.layouts[i], ME_CINE_KEPT ) )
+			Q_strncpyz( out[n++], me.layouts[i], MAX_QPATH );
+	}
+	return n;
 }
 
 static void ME_DeleteLayout( const char *name ) {
@@ -3507,6 +3649,8 @@ void CL_MapEditor_Open( void ) {
 	CL_SoundManager_Close();
 	CL_AnimManager_Close();
 	CL_Presets_Close();
+	CL_SpecialMoves_Close();
+	CL_ChatLog_Close();
 	ME_CheckMap();
 	if ( !me.indexed )
 		ME_IndexModels();
@@ -4465,7 +4609,7 @@ void CL_MapEditor_Frame( void ) {
 		ME_ApplyTextures();
 	if ( !me.fogsRead )
 		ME_ReadFogs();
-	if ( me.fogsDirty || me.fogsShown != ME_Shown() || me.fogItemsSum != ME_FogItemsSum() )
+	if ( me.fogsDirty || me.fogsShown != ME_Shown() || me.fogItemsSum != ME_FogItemsSum() || me.cineFogKey != ME_CineFogKey() )
 		ME_ApplyFogs();
 	ME_RunTriggers();
 	ME_RunShare();
@@ -5497,6 +5641,15 @@ static meItem_t *ME_DrawItemList( float *py, float x, float w, int kind, const c
 	return it;
 }
 
+// swap the chosen prop for the model picked in the list below
+static void ME_SwapButton( float *py, float x, float w ) {
+	const qboolean picked = (qboolean)( me.pickModel[0] && me.pickModel[0] != '#' );
+
+	if ( ME_Button( x, *py, w, picked ? va( "Swap for %s", COM_SkipPath( me.pickModel ) ) : "Swap: pick a model below", qfalse, picked ) )
+		ME_SwapProp();
+	*py += ME_CTRL_H + ME_GAP;
+}
+
 // a prop of the map's, chosen with a click: lift it out, or take it away
 static void ME_DrawPropChoice( float *py, float x, float w ) {
 	const float third = ( w - 8 ) / 3.0f;
@@ -5522,6 +5675,7 @@ static void ME_DrawPropChoice( float *py, float x, float w ) {
 	}
 	ME_Text( x, y, ME_CandIsBrush() ? S_COLOR_GREY "One brush of the map's: the faces on it" : S_COLOR_GREY "Take more adds loose pieces inside it", meWhite );
 	y += ME_ROW_H + 6;
+	ME_SwapButton( &y, x, w );
 	*py = y;
 }
 
@@ -5545,6 +5699,10 @@ static void ME_DrawModelsTab( float x, float y, float w ) {
 		if ( ME_Button( x + half + 4, y, half, "Take more", qfalse, (qboolean)( it->numSeeds < ME_MAX_SEEDS ) ) )
 			ME_TakeTouching();
 		y += ME_CTRL_H + ME_GAP;
+		ME_SwapButton( &y, x, w );
+		it = ME_SelectedItem();
+		if ( it && it->kind != ME_ITEM_MODEL && it->kind != ME_ITEM_PROP )
+			it = NULL;
 	}
 
 	if ( it ) {
@@ -5602,7 +5760,10 @@ static void ME_DrawModelsTab( float x, float y, float w ) {
 		}
 	}
 	y += rows * ME_ROW_H + 4;
-	ME_TextTail( x, y, w, me.pickModel[0] ? va( "Adds %s", ME_ShownName( me.pickModel ) ) : "Pick a model or a map (type map), then Add puts it at the crosshair", meDim );
+	if ( me.selKind == ME_SEL_PROP || ( it && it->kind == ME_ITEM_PROP ) )
+		ME_TextTail( x, y, w, "Pick a model, then Swap puts it in the prop's place", meDim );
+	else
+		ME_TextTail( x, y, w, me.pickModel[0] ? va( "Adds %s", ME_ShownName( me.pickModel ) ) : "Pick a model or a map (type map), then Add puts it at the crosshair", meDim );
 }
 
 static void ME_DrawLightsTab( float x, float y, float w ) {
@@ -6545,8 +6706,7 @@ static void ME_DrawLayouts( float x, float y, float w ) {
 			CL_RpHooks_SetExperimental( qfalse );
 			ME_Message( "Experimental features off" );
 		} else {
-			me.experimentalBox = qtrue;
-			me.field = ME_FIELD_NONE;
+			ME_AskExperimental();
 		}
 	}
 	y += ME_CTRL_H + ME_GAP;
@@ -6555,13 +6715,13 @@ static void ME_DrawLayouts( float x, float y, float w ) {
 		if ( experimental )
 			ME_Share();
 		else
-			me.experimentalBox = qtrue;
+			ME_AskExperimental();
 	}
 	if ( ME_Button( x + half + 4, y, half, "Unshare", qfalse, qtrue ) ) {
 		if ( experimental )
 			ME_Unshare();
 		else
-			me.experimentalBox = qtrue;
+			ME_AskExperimental();
 	}
 	y += ME_CTRL_H + ME_GAP;
 	if ( me.shared ) {
@@ -6609,8 +6769,8 @@ static void ME_DrawExperimentalBox( void ) {
 		ly += ME_ROW_H;
 	}
 	if ( ME_Button( x + 8, y + h - 24, 80, "OK", qfalse, qtrue ) ) {
-		CL_RpHooks_SetExperimental( qtrue );
-		ME_Message( S_COLOR_YELLOW "Experimental features on, for this session" );
+		ME_Message( CL_RpHooks_SetExperimental( qtrue ) ? S_COLOR_YELLOW "Experimental features on, for this session"
+			: va( S_COLOR_YELLOW "%s", CL_RpHooks_ExperimentalBlocked() ) );
 		me.experimentalBox = qfalse;
 		return;
 	}

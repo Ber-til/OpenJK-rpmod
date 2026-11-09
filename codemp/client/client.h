@@ -690,7 +690,11 @@ void CL_ModelManager_Draw( void );
 #define KEYCATCH_PRESETS		0x10000	// engine only, the presets own keyboard and mouse
 #define KEYCATCH_FEEDBACK		0x20000	// engine only, the feedback window owns keyboard and mouse
 #define KEYCATCH_ASSETMANAGER	0x40000	// engine only, the asset manager owns keyboard and mouse
-#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELMANAGER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER | KEYCATCH_MAPEDITOR | KEYCATCH_STORYTELLER | KEYCATCH_CINEDITOR | KEYCATCH_SOUNDMANAGER | KEYCATCH_RADIALMENU | KEYCATCH_LANGUAGES | KEYCATCH_CONSETTINGS | KEYCATCH_ANIMMANAGER | KEYCATCH_PRESETS | KEYCATCH_FEEDBACK | KEYCATCH_ASSETMANAGER )	// mods never see or clear these
+#define KEYCATCH_SPECIALMOVES	0x80000	// engine only, the special moves menu owns keyboard and mouse
+#define KEYCATCH_CHATLOG		0x100000	// engine only, the chat log window owns keyboard and mouse
+#define KEYCATCH_DATAPAD		0x200000	// engine only, the datapad, open, owns keyboard and mouse
+#define KEYCATCH_ESCMENU		0x400000	// engine only, the Esc menu (Modern or KOTOR) owns keyboard and mouse
+#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELMANAGER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER | KEYCATCH_MAPEDITOR | KEYCATCH_STORYTELLER | KEYCATCH_CINEDITOR | KEYCATCH_SOUNDMANAGER | KEYCATCH_RADIALMENU | KEYCATCH_LANGUAGES | KEYCATCH_CONSETTINGS | KEYCATCH_ANIMMANAGER | KEYCATCH_PRESETS | KEYCATCH_FEEDBACK | KEYCATCH_ASSETMANAGER | KEYCATCH_SPECIALMOVES | KEYCATCH_CHATLOG | KEYCATCH_DATAPAD | KEYCATCH_ESCMENU )	// mods never see or clear these
 
 void CL_NpcManager_Init( void );
 void CL_NpcManager_Shutdown( void );
@@ -748,6 +752,35 @@ typedef struct {
 } npcPoseState_t;
 void CL_NpcWalk_PoseEvent( int num, int event, int parm );
 void CL_NpcWalk_PoseEx( int num, const vec3_t pos, const vec3_t angles, int pace, qboolean free, const npcPoseState_t *st, qboolean tilt );
+
+// cl_extras.cpp: people only this client draws, for a cinematic, by entity numbers past any real one
+#define CL_MAX_EXTRAS			12
+#define CL_EXTRA_NUM_BASE		4096
+#define CL_EXTRA_NUM_COLORS		6
+typedef enum {
+	CL_EXTRA_SABER_NONE,
+	CL_EXTRA_SABER_SINGLE,
+	CL_EXTRA_SABER_STAFF,
+	CL_EXTRA_SABER_TWO
+} clExtraSaber_t;
+qboolean CL_Extras_IsNum( int num );
+void CL_Extras_Clear( void );
+void CL_Extras_Shutdown( void );
+void CL_Extras_Define( int slot, const char *name, const char *model, int saber, int color, const vec3_t home, float yaw, qboolean shown );
+void CL_Extras_Keep( const qboolean *keep );
+int CL_Extras_Find( const char *name );
+void CL_Extras_ResetPoses( void );
+void CL_Extras_Pose( int num, const vec3_t pos, const vec3_t angles, int pace, const npcPoseState_t *st );
+void CL_Extras_Show( int num, qboolean shown );
+qboolean CL_Extras_Origin( int num, vec3_t out );
+qboolean CL_Extras_Yaw( int num, float *yaw );
+int CL_Extras_Bodies( int *nums, vec3_t *orgs, int max );
+void CL_Extras_AddToScene( const refdef_t *fd );
+void CL_Cinematic_AddToScene( const refdef_t *fd );
+int CL_Cinematic_LightStyle( int style, int color );
+qboolean CL_Cinematic_SkyTint( vec3_t tint );
+qboolean CL_Cinematic_Fog( vec3_t color, float *depth );
+const char *CL_EmotePreview_AnimName( int anim );
 int CL_NpcWalk_Tilts( vec3_t *pos, vec3_t *angles, int max );
 int CL_EmotePreview_Count( void );
 const char *CL_EmotePreview_Name( int index );
@@ -848,6 +881,7 @@ void CL_ShaderManager_MineHook( char **argv, int argc, const char *message );
 void CL_EffectManager_Init( void );
 void CL_EffectManager_Shutdown( void );
 void CL_EffectManager_f( void );
+void CL_EffectReplacer_f( void );
 qboolean CL_EffectManager_Active( void );
 void CL_EffectManager_Close( void );
 void CL_EffectManager_OpenForStory( void );
@@ -869,6 +903,8 @@ float CL_EffectManager_FxScale( const char *effect, const vec3_t org );
 void CL_EffectManager_OpenForCinematic( void );
 qboolean CL_Cinematic_CaptureEffect( const char *cmd, float scale );
 qboolean CL_Cinematic_CaptureSound( const char *cmd );
+void CL_MusicManager_OpenForCinematic( void );
+void CL_SoundManager_RestoreMusic( void );
 void CL_SoundManager_OpenForCinematic( void );
 qboolean CL_Cinematic_PickingEffect( void );
 void CL_EffectManager_ScaleHook( char **argv, int argc, const char *message );
@@ -901,6 +937,8 @@ void CL_MapEditor_Frame( void );
 void CL_MapEditor_Draw( void );
 void CL_MapEditor_Sounds( const vec3_t ear );
 void CL_MapEditor_AddToScene( const refdef_t *fd );
+void CL_MapEditor_CineLayout( const char *name );
+int CL_MapEditor_Layouts( char ( *out )[MAX_QPATH], int max );
 qboolean CL_MapEditor_RenderScene( const refdef_t *fd );
 qboolean CL_MapEditor_Camera( vec3_t origin, vec3_t angles );
 qboolean CL_MapEditor_FilterEntity( const refEntity_t *ent );
@@ -909,6 +947,11 @@ int CL_MapEditor_LightStyle( int style, int color );
 
 // cl_rphooks.cpp
 qboolean CL_RpHooks_ServerCommand( qboolean *replaced );
+void CL_RpHooks_Deliver( const char *text );
+int CL_Feedback_Account( const char **name, int *answerTime );	// 1 in, 0 logged out, -2 asking, -3 no answer, -1 not asked
+void CL_Feedback_AskAccount( void );
+const char *CL_RpAdmin_Rank( void );		// "" none, NULL not known yet
+const char *CL_Feedback_Key( void );
 qboolean CL_RpHooks_AllowCommand( const char *cmd );
 int CL_RpHooks_LongestWord( const char *text );
 void CL_RpHooks_Init( void );
@@ -916,15 +959,21 @@ void CL_RpHooks_Shutdown( void );
 void CL_RpHooks_Disconnect( void );
 void CL_RpHooks_Draw( void );
 void CL_RpHooks_DrawSubtitles( void );
+int CL_RpHooks_Font( void );
+int CL_RpHooks_TextWidth( const char *text, int font, float scale );
+void CL_RpHooks_DrawText( float x, float y, const char *text, const float *color, int font, float scale );
 void CL_RpHooks_ChatSubtitle( void );
 // the features sent as cmd: hooks, which only players with this client see: off until turned on
 // in a tool's TOGGLE EXPERIMENTAL, for the session, or with rpexperimental, for good
 #define RP_EXPERIMENTAL_LABEL	"TOGGLE EXPERIMENTAL"
-#define RP_EXPERIMENTAL_WARNING	"These features are a work in progress. They should not be used on Temple, and can only be viewed by the people currently in-game with OpenJK-rpmod installed and up to date."
+// On Temple only Department Heads, Council and God may have them on (CL_RpAdmin_TempleRank)
+#define RP_EXPERIMENTAL_WARNING	"These features are a work in progress. On Temple only Department Heads, Council and God may turn them on. They can only be viewed by the people in-game with OpenJK-rpmod installed and up to date."
 #define RP_EXPERIMENTAL_OFF		"Experimental: turn it on with " RP_EXPERIMENTAL_LABEL
 qboolean CL_RpHooks_Experimental( void );
+const char *CL_RpHooks_ExperimentalBlocked( void );
+void CL_RpHooks_ExperimentalFrame( void );
 void CL_MapEditor_Hook( char **argv, int argc, const char *message );
-void CL_RpHooks_SetExperimental( qboolean on );
+qboolean CL_RpHooks_SetExperimental( qboolean on );
 void CL_RpHooks_Unescape( char *s );
 const char *CL_RpHooks_NpcTalkCommand( const char *npc, const char *name, const char *color, const char *emote, const char *text );
 
@@ -954,7 +1003,7 @@ void CL_AnimManager_MouseEvent( int dx, int dy );
 void CL_AnimManager_Escape( void );
 void CL_AnimManager_Frame( void );
 void CL_AnimManager_Draw( void );
-void CL_AnimManager_Entity( const refEntity_t *ent );
+const refEntity_t *CL_AnimManager_Entity( const refEntity_t *ent, refEntity_t *copy );
 void CL_AnimManager_Hook( char **argv, int argc, const char *message );
 
 // cl_rendermenu.cpp: the camera follows right behind with the camera settings on
@@ -990,6 +1039,58 @@ void CL_Presets_MouseEvent( int dx, int dy );
 void CL_Presets_CharEvent( int ch );
 void CL_Presets_Escape( void );
 void CL_Presets_Draw( void );
+
+// cl_specialmoves.cpp
+// cl_effectswap.cpp: a player's own effects played as others, the effect manager's Mine tab
+void CL_EffectSwap_Init( void );
+void CL_EffectSwap_Frame( void );
+void CL_EffectSwap_Reset( void );
+int CL_EffectSwap_Play( int owner, int id, const char *name );
+void CL_EffectSwap_Hook( char **argv, int argc, const char *message );
+int CL_EffectSwap_Count( void );
+qboolean CL_EffectSwap_Get( int i, const char **from, const char **to );
+int CL_EffectSwap_Find( const char *from );
+qboolean CL_EffectSwap_Set( const char *from, const char *to );
+void CL_EffectSwap_Remove( int i );
+void CL_EffectSwap_Clear( void );
+int CL_EffectSwap_NumRecent( void );
+const char *CL_EffectSwap_Recent( int i, int *count, int *msAgo );
+qboolean CL_EffectSwap_Shared( void );
+void CL_EffectSwap_SetShared( qboolean on );
+
+void CL_SpecialMoves_Init( void );
+void CL_SpecialMoves_Shutdown( void );
+void CL_SpecialMoves_Close( void );
+void CL_SpecialMoves_KeyEvent( int key, qboolean down );
+void CL_SpecialMoves_MouseEvent( int dx, int dy );
+void CL_SpecialMoves_Escape( void );
+void CL_SpecialMoves_Draw( void );
+void CL_SpecialMoves_FilterCmd( usercmd_t *cmd );
+
+// cl_chatlog.cpp
+// cl_datapad.cpp: the datapad, folded in the corner or open on the right
+void CL_Datapad_Init( void );
+void CL_Datapad_Close( void );
+void CL_Datapad_Disconnect( void );
+void CL_Datapad_KeyEvent( int key, qboolean down );
+void CL_Datapad_MouseEvent( int dx, int dy );
+void CL_Datapad_CharEvent( int ch );
+void CL_Pazaak_Frame( void );		// cl_pazaak.cpp
+void CL_DatapadWeb_Frame( void );	// cl_holonet.cpp: the HoloNet, the Comport and their pictures
+void CL_Datapad_Escape( void );
+void CL_Datapad_Draw( void );
+void CL_TapCrouch( int ms );		// cl_input.cpp
+
+void CL_ChatLog_Init( void );
+void CL_ChatLog_Close( void );
+void CL_ChatLog_KeyEvent( int key, qboolean down );
+void CL_ChatLog_MouseEvent( int dx, int dy );
+void CL_ChatLog_Escape( void );
+void CL_ChatLog_Draw( void );
+void CL_ChatLog_Frame( void );
+void CL_ChatLog_Disconnect( void );
+void CL_ChatLog_ServerCommand( void );
+void CL_ChatLog_OutgoingCommand( const char *cmd );
 void CL_RpCinematic_Draw( void );
 void CL_RpCinematic_Frame( void );
 qboolean CL_RpCinematic_ShotHook( const char *name, char *hook, int size, int *ms );
@@ -1055,6 +1156,12 @@ void CL_ConSettings_RendererRestarted( void );
 void CL_Feedback_Init( void );
 void CL_Feedback_Shutdown( void );
 void CL_Feedback_Frame( void );
+// cl_presence.cpp: the tools' hooks only to the players with this client
+void CL_Presence_Init( void );
+void CL_Presence_Shutdown( void );
+void CL_Presence_Frame( void );
+void CL_Presence_Disconnect( void );
+qboolean CL_Presence_Outgoing( const char *cmd );
 qboolean CL_Feedback_Active( void );
 void CL_Feedback_Close( void );
 void CL_Feedback_Draw( void );
@@ -1131,12 +1238,35 @@ qboolean CL_RpAdmin_ServerPrint( const char *text );
 qboolean CL_RpAdmin_IsAdmin( void );
 void CL_RpAdmin_AskQuietly( void );
 void CL_RpAdmin_Frame( void );
+typedef enum {
+	RA_TEMPLE_UNKNOWN,	// being asked, or the server didn't answer
+	RA_TEMPLE_NO,
+	RA_TEMPLE_YES
+} raTemple_t;
+qboolean CL_RpAdmin_OnTemple( void );
+raTemple_t CL_RpAdmin_TempleRank( void );
 
 // cl_update.cpp
 void CL_Update_Init( void );
 void CL_Update_Shutdown( void );
 // cl_rendermenu.cpp: the RENDERER page in the Setup menu
 void CL_RenderMenu_Init( void );
+qboolean CL_RenderMenu_Route( const char *page );	// controls, setup or renderer: that page of JKA's own menus
+// the camera panel's rows, i from 0: the cvar (NULL past the last), its label, default and range, or an on/off
+const char *CL_RenderMenu_CameraRow( int i, const char **label, float *def, float *min, float *max, qboolean *toggle );
+
+// cl_escmenu.cpp: the menu Esc opens in game, Modern or KOTOR
+void CL_EscMenu_Init( void );
+qboolean CL_EscMenu_OpenFromEscape( void );	// Esc in game: qfalse when Classic is picked (JKA's own then)
+void CL_EscMenu_Close( void );
+void CL_EscMenu_Draw( void );
+void CL_EscMenu_KeyEvent( int key, qboolean down );
+void CL_EscMenu_CharEvent( int ch );
+void CL_EscMenu_MouseEvent( int dx, int dy );
+void CL_EscMenu_Escape( void );
+int CL_QuickConnect_Count( void );			// cl_quickconnect.cpp: JEDI's servers
+const char *CL_QuickConnect_Name( int i );
+void CL_Presets_DrawPortrait( float x, float y, float w, float h, float yaw );	// cl_presets.cpp: you, as you are
 void CL_RenderMenu_Shutdown( void );
 void CL_Update_Frame( void );
 void CL_Update_Draw( void );
@@ -1204,4 +1334,6 @@ void CL_TakeVideoFrame( void );
 void CL_WriteAVIVideoFrame( const byte *imageBuffer, int size );
 void CL_WriteAVIAudioFrame( const byte *pcmBuffer, int size );
 qboolean CL_CloseAVI( void );
+void CL_CloseAVILater( void );
+qboolean CL_CloseAVIDue( void );
 qboolean CL_VideoRecording( void );

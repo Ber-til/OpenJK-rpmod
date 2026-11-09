@@ -968,6 +968,8 @@ static void LG_Open( void ) {
 	CL_SoundManager_Close();
 	CL_AnimManager_Close();
 	CL_Presets_Close();
+	CL_SpecialMoves_Close();
+	CL_ChatLog_Close();
 	CL_RadialMenu_CloseSettings();
 	LG_Load();
 

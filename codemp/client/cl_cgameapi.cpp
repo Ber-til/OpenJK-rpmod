@@ -325,8 +325,14 @@ static void CL_R_AddRefEntityToScene( const refEntity_t *ent ) {
 	ent = CL_RpCinematic_Entity( ent, &copy );
 	if ( !ent )
 		return;
-	// someone playing a custom emote
-	CL_AnimManager_Entity( ent );
+	// someone playing a custom emote: a copy of their body playing it, drawn in its place
+	{
+		static refEntity_t emoteCopy;
+		const refEntity_t *swapped = CL_AnimManager_Entity( ent, &emoteCopy );
+
+		if ( swapped )
+			ent = swapped;
+	}
 	// the shader manager's player shaders on each player's own sabers and shells
 	ent = CL_ShaderManager_MineEntity( ent, &copy );
 	CL_ShaderManager_AddEntity( ent );
@@ -381,6 +387,10 @@ static void CL_R_RenderScene( const refdef_t *fd ) {
 	CL_ShaderManager_SkyLook();
 	// the map editor's models and lights are in every main view
 	CL_MapEditor_AddToScene( fd );
+	// a cinematic's extras, people only this client draws
+	CL_Extras_AddToScene( fd );
+	// and its props and lights
+	CL_Cinematic_AddToScene( fd );
 	// where the stories armed wait, for the storyteller
 	CL_Storyteller_AddToScene( fd );
 	// where the crosshair looks, for an NPC's name under it
@@ -413,7 +423,7 @@ static void CL_R_Font_DrawString( int ox, int oy, const char *text, const float 
 
 // the map editor's light styles over the server's
 static void CL_R_SetLightStyle( int style, int color ) {
-	re->SetLightStyle( style, CL_MapEditor_LightStyle( style, color ) );
+	re->SetLightStyle( style, CL_Cinematic_LightStyle( style, CL_MapEditor_LightStyle( style, color ) ) );
 }
 
 // effects are culled against cgame's view; with a tool's free camera looking

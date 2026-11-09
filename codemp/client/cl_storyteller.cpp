@@ -199,7 +199,7 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ "Name", ST_K_TEXT, "", NULL } } },
 	{ "command", "Run a command", "Flow", "Runs it as if typed in the console, e.g. rpcinematic intro, or exec mission.cfg. Separate several with ;", -1, -1, 1, {
 		{ "Command", ST_K_TEXT, "", NULL } } },
-	{ "say", "Say", "Speech", "Says this in chat, as you, or as one of the players on the server: by their number or a part of their name. As a player it shows in chat as theirs for everyone with this client (sent hidden in an rpnotify; others see the raw line in their console).", -1, -1, 3, {
+	{ "say", "Say", "Speech", "Says this in chat, as you, or as one of the players on the server: by their number or a part of their name. As a player it shows in chat as theirs for everyone with this client (sent through C1B3R).", -1, -1, 3, {
 		{ "Text", ST_K_TEXT, "", NULL },
 		{ "As", ST_K_CHOICE, "me", "me|a player" },
 		{ "Player", ST_K_TEXT, "", NULL } } },
@@ -217,13 +217,13 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ "Seconds", ST_K_NUMBER, "10", NULL },
 		{ "Text", ST_K_TEXT, "", NULL },
 		{ "Countdown", ST_K_CHOICE, "no", "no|after the text|before the text" } } },
-	{ "npctalk", "NPC talk", "Speech", "The NPC says it in chat, as a player would, for everyone with this client (sent hidden in an rpnotify; others see the raw line in their console). The emote is played on the NPC with npc emote.", -1, -1, 5, {
+	{ "npctalk", "NPC talk", "Speech", "The NPC says it in chat, as a player would, for everyone with this client (sent through C1B3R). The emote is played on the NPC with npc emote.", -1, -1, 5, {
 		{ "NPC", ST_K_TEXT, "", NULL },
 		{ "Name", ST_K_TEXT, "", NULL },
 		{ "Name color", ST_K_TEXT, "^7", NULL },
 		{ "Emote", ST_K_TEXT, "none", NULL },
 		{ "Text", ST_K_TEXT, "", NULL } } },
-	{ "objective", "Objective", "Speech", "Adds to the mission's objectives, listed on the left while Esc is up, for everyone with this client (sent hidden in an rpnotify). Done strikes one through; it and undone and remove take its number or its text. Clear takes them all, or with done only the struck ones.", -1, -1, 2, {
+	{ "objective", "Objective", "Speech", "Adds to the mission's objectives, listed on the left while Esc is up, for everyone with this client (sent through C1B3R). Done strikes one through; it and undone and remove take its number or its text. Clear takes them all, or with done only the struck ones.", -1, -1, 2, {
 		{ "Do", ST_K_CHOICE, "add", "add|done|undone|remove|clear|title" },
 		{ "Text", ST_K_TEXT, "", NULL } } },
 	{ "npcspawn", "Spawn NPC", "NPCs", "Spawns an NPC at the spot, as the NPC manager does. Give it a targetname to command it in later steps.", 6, 9, 10, {
@@ -287,7 +287,7 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ "Y", ST_K_NUMBER, "", NULL },
 		{ "Width", ST_K_NUMBER, "", NULL },
 		{ "Height", ST_K_NUMBER, "", NULL } } },
-	{ "sky", "Sky look", "World", "Tints the map's sky (red green blue, 255 as it is), spins it round (degrees a second) and turns it, as the shader manager's Sky tab does; a 3D skybox's view also moves. For everyone with this client, until the map changes (sent hidden in an rpnotify).", -1, -1, 7, {
+	{ "sky", "Sky look", "World", "Tints the map's sky (red green blue, 255 as it is), spins it round (degrees a second) and turns it, as the shader manager's Sky tab does; a 3D skybox's view also moves. For everyone with this client, until the map changes (sent through C1B3R).", -1, -1, 7, {
 		{ "Do", ST_K_CHOICE, "set", "set|reset" },
 		{ "Colour", ST_K_TEXT, "255 255 255", NULL },
 		{ "Spin", ST_K_NUMBER, "0", NULL },
@@ -3197,6 +3197,8 @@ static qboolean ST_Open( void ) {
 	CL_SoundManager_Close();
 	CL_AnimManager_Close();
 	CL_Presets_Close();
+	CL_SpecialMoves_Close();
+	CL_ChatLog_Close();
 	CL_MapEditor_Close();
 
 	st.font = re->RegisterFont( "arialnb" );
@@ -4477,6 +4479,8 @@ static void ST_PickFrame( void ) {
 	CL_SoundManager_Close();
 	CL_AnimManager_Close();
 	CL_Presets_Close();
+	CL_SpecialMoves_Close();
+	CL_ChatLog_Close();
 	if ( st.pick == ST_PICK_LOCK || st.pick == ST_PICK_TRIGGER )
 		CL_MapEditor_Close();
 	// a trigger clicked: the step's
@@ -5787,8 +5791,8 @@ static void ST_DrawExperimentalPopup( void ) {
 	ST_Text( x + 8, y + 8, S_COLOR_YELLOW "Experimental features", stWhite );
 	ST_TextWrapped( x + 8, y + 26, w - 16, RP_EXPERIMENTAL_WARNING, stWhite, 5 );
 	if ( ST_Button( x + 8, y + h - 22, 80, "OK", qfalse, qtrue ) ) {
-		CL_RpHooks_SetExperimental( qtrue );
-		ST_Message( S_COLOR_YELLOW "Experimental features on, for this session" );
+		ST_Message( CL_RpHooks_SetExperimental( qtrue ) ? S_COLOR_YELLOW "Experimental features on, for this session"
+			: va( S_COLOR_YELLOW "%s", CL_RpHooks_ExperimentalBlocked() ) );
 		st.popup = ST_POPUP_NONE;
 	}
 	if ( ST_Button( x + w - 88, y + h - 22, 80, "Cancel", qfalse, qtrue ) )
@@ -6714,6 +6718,8 @@ void CL_Storyteller_Draw( void ) {
 		if ( CL_RpHooks_Experimental() ) {
 			CL_RpHooks_SetExperimental( qfalse );
 			ST_Message( "Experimental features off" );
+		} else if ( CL_RpHooks_ExperimentalBlocked() ) {
+			ST_Message( va( S_COLOR_YELLOW "%s", CL_RpHooks_ExperimentalBlocked() ) );
 		} else {
 			st.popup = ST_POPUP_EXPERIMENTAL;
 			st.focus = ST_F_NONE;

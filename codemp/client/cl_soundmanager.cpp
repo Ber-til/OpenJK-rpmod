@@ -942,6 +942,8 @@ static qboolean SM_Open( smOpen_t which ) {
 	CL_MapEditor_Close();
 	CL_AnimManager_Close();
 	CL_Presets_Close();
+	CL_SpecialMoves_Close();
+	CL_ChatLog_Close();
 
 	sm.font = re->RegisterFont( "arialnb" );
 	if ( !sm.font )
@@ -988,6 +990,20 @@ void CL_SoundManager_OpenForCinematic( void ) {
 		sm.tab = SM_TAB_SOUNDS;
 		SM_Message( S_COLOR_GREEN "For the cinematic: pick a sound and add it; it goes in the cinematic, not to the server" );
 	}
+}
+
+// opened from the cinematic manager's Sounds tab, for its music
+void CL_MusicManager_OpenForCinematic( void ) {
+	if ( SM_Open( SM_MUSIC ) ) {
+		sm.forStory = qtrue;
+		sm.forCine = qtrue;
+		SM_Message( S_COLOR_GREEN "For the cinematic: pick a track and add it; it plays in it in place of the map's music" );
+	}
+}
+
+// the map's own music back, after a cinematic's
+void CL_SoundManager_RestoreMusic( void ) {
+	SM_RestoreMusic();
 }
 
 void CL_MusicManager_OpenForStory( void ) {
