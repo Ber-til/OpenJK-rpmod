@@ -2928,6 +2928,12 @@ static struct {
 	qboolean	dirty;
 
 	int			tab;				// cmTab_t
+	// the open tab's part of the panel: scrolled when it holds more than fits, nothing drawn or
+	// clicked outside it (clipTop..clipBottom, while clipping)
+	qboolean	clipping;
+	float		clipTop, clipBottom;
+	float		clipLowest;			// how far down this frame's tab went, unscrolled
+	int			tabScroll;			// pixels
 	int			page;				// cmPage_t, of the Camera tab
 	int			cur;				// the shot shown on the Camera tab
 	int			sel;				// its spot, -1 none
@@ -5116,6 +5122,18 @@ The panel's controls
 */
 
 static void CM_Fill( float x, float y, float w, float h, const float *color ) {
+	// in the open tab's part: cut to it
+	if ( cm.clipping ) {
+		cm.clipLowest = Q_max( cm.clipLowest, y + h );
+		if ( y < cm.clipTop ) {
+			h -= cm.clipTop - y;
+			y = cm.clipTop;
+		}
+		if ( y + h > cm.clipBottom )
+			h = cm.clipBottom - y;
+		if ( h <= 0.0f )
+			return;
+	}
 	re->SetColor( color );
 	re->DrawStretchPic( x, y, w, h, 0, 0, 0, 0, cls.whiteShader );
 	re->SetColor( NULL );
@@ -5133,7 +5151,17 @@ static float CM_TextWidth( const char *text ) {
 	return (float)re->Font_StrLenPixels( text, cm.font, CM_TEXT_SCALE );
 }
 
+// a line wholly inside the open tab's part (always, when not clipping)
+static qboolean CM_Inside( float y, float h ) {
+	if ( !cm.clipping )
+		return qtrue;
+	cm.clipLowest = Q_max( cm.clipLowest, y + h );
+	return (qboolean)( y >= cm.clipTop - 1.0f && y + h <= cm.clipBottom + 1.0f );
+}
+
 static void CM_Text( float x, float y, const char *text, const float *color ) {
+	if ( !CM_Inside( y, CM_ROW_H ) )
+		return;
 	re->Font_DrawString( (int)x, (int)y, text, color, cm.font | STYLE_DROPSHADOW, -1, CM_TEXT_SCALE );
 }
 
@@ -5154,12 +5182,16 @@ static void CM_TextClipped( float x, float y, float w, const char *text, const f
 }
 
 static qboolean CM_InRect( float x, float y, float w, float h ) {
+	if ( cm.clipping && ( cm.cursorY < cm.clipTop || cm.cursorY >= cm.clipBottom ) )
+		return qfalse;
 	return (qboolean)( !cm.flying && !cm.popHover && cm.cursorX >= x && cm.cursorX < x + w && cm.cursorY >= y && cm.cursorY < y + h );
 }
 
 // eats this frame's click if it landed in the rect
 static qboolean CM_Clicked( float x, float y, float w, float h ) {
 	if ( !cm.click || cm.clickX < x || cm.clickX >= x + w || cm.clickY < y || cm.clickY >= y + h )
+		return qfalse;
+	if ( cm.clipping && ( cm.clickY < cm.clipTop || cm.clickY >= cm.clipBottom ) )
 		return qfalse;
 	cm.click = qfalse;
 	return qtrue;
@@ -5242,9 +5274,11 @@ static float CM_TextBox( float x, float y, float w, char *text, const char *empt
 	float h;
 
 	CM_FieldStyle( &style, color );
+	h = WG_FieldHeight( &style, w, CM_CTRL_H, text, on );
+	if ( !CM_Inside( y, h ) )
+		return h;
 	CM_Box( x, y, w, CM_CTRL_H, on ? cmFocusBox : cmPanelLight );
 	WG_Field( &style, x, y, w, CM_CTRL_H, text, on, empty, cm.cursorX, cm.cursorY );
-	h = WG_FieldHeight( &style, w, CM_CTRL_H, text, on );
 	if ( CM_Clicked( x, y, w, h ) ) {
 		if ( !on )
 			cm.pickScroll = 0;
@@ -5259,6 +5293,8 @@ static float CM_TextBox( float x, float y, float w, char *text, const char *empt
 static float CM_ListBar( float x, float y, float w, float h, int count, int rows, int *scroll ) {
 	if ( count <= rows )
 		return w;
+	if ( !CM_Inside( y, h ) )
+		return w - WG_SCROLL_W - 1;
 	WG_Scrollbar( x + w - WG_SCROLL_W - 1, y + 1, h - 2, count, rows, scroll, cm.cursorX, cm.cursorY, &cm.click, cm.clickX, cm.clickY );
 	return w - WG_SCROLL_W - 1;
 }
@@ -10159,21 +10195,52 @@ static void CM_DrawEditor( void ) {
 				cm.tab = tab;
 				cm.typing = CM_TYPE_NONE;
 				cm.through = qfalse;
+				cm.tabScroll = 0;
 			}
 		}
 		y += CM_CTRL_H + 8;
-		if ( cm.tab == CM_TAB_ENTITIES )
-			CM_DrawEntitiesTab( x, y, w );
-		else if ( cm.tab == CM_TAB_EFFECTS )
-			CM_DrawEffectsTab( x, y, w );
-		else if ( cm.tab == CM_TAB_SOUNDS )
-			CM_DrawSoundsTab( x, y, w );
-		else if ( cm.tab == CM_TAB_TEXT )
-			CM_DrawTextTab( x, y, w );
-		else if ( cm.tab == CM_TAB_WORLD )
-			CM_DrawWorldTab( x, y, w );
-		else
-			CM_DrawCameraTab( x, y, w );
+		// the tab, in the part between the tabs and the bottom's buttons: scrolled when it's longer
+		{
+			const float top = y, bottom = CM_BOTTOM_Y - 8, view = bottom - top;
+			const qboolean bar = (qboolean)( cm.clipLowest - top > view + 1.0f );
+			const float tw = bar ? w - WG_SCROLL_W - 3 : w;
+			const float ty = top - cm.tabScroll;
+			float lowest;
+
+			cm.clipping = qtrue;
+			cm.clipTop = top;
+			cm.clipBottom = bottom;
+			cm.clipLowest = top;
+			if ( cm.tab == CM_TAB_ENTITIES )
+				CM_DrawEntitiesTab( x, ty, tw );
+			else if ( cm.tab == CM_TAB_EFFECTS )
+				CM_DrawEffectsTab( x, ty, tw );
+			else if ( cm.tab == CM_TAB_SOUNDS )
+				CM_DrawSoundsTab( x, ty, tw );
+			else if ( cm.tab == CM_TAB_TEXT )
+				CM_DrawTextTab( x, ty, tw );
+			else if ( cm.tab == CM_TAB_WORLD )
+				CM_DrawWorldTab( x, ty, tw );
+			else
+				CM_DrawCameraTab( x, ty, tw );
+			cm.clipping = qfalse;
+			// how long it is, unscrolled: next frame's scrollbar
+			lowest = cm.clipLowest + cm.tabScroll;
+			cm.clipLowest = lowest;
+			{
+				const int most = Q_max( 0, (int)( lowest - top - view + 4.0f ) );
+
+				// the wheel over it that nothing in it took
+				if ( cm.wheel && cm.cursorX >= x && cm.cursorX < x + w && cm.cursorY >= top && cm.cursorY < bottom ) {
+					cm.tabScroll += cm.wheel * 24;
+					cm.wheel = 0;
+				}
+				if ( most > 0 )
+					WG_Scrollbar( x + w - WG_SCROLL_W, top, view, most + (int)view, (int)view, &cm.tabScroll,
+						cm.cursorX, cm.cursorY, &cm.click, cm.clickX, cm.clickY );
+				cm.tabScroll = Com_Clampi( 0, most, cm.tabScroll );
+			}
+		}
 
 		// try it
 		y = CM_BOTTOM_Y;
