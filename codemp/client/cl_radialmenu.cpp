@@ -1070,6 +1070,7 @@ void CL_RadialMenu_CloseSettings( void ) {
 	if ( !rs.open )
 		return;
 	RS_SetFocus( RS_F_NONE );
+	WG_PopupClose();
 	rs.open = qfalse;
 	rs.binding = qfalse;
 	rs.picking = qfalse;
@@ -1160,6 +1161,10 @@ void CL_RadialMenu_KeyEvent( int key, qboolean down ) {
 		return;
 	}
 
+	// an open number field takes its keys
+	if ( WG_PopupKey( key ) )
+		return;
+
 	// binds don't run while this holds the keys, so honour the one that toggles it here
 	binding = Key_GetBinding( key );
 	if ( !( rs.focus != RS_F_NONE && key >= A_SPACE && key <= A_TILDE ) && VALIDSTRING( binding ) && !Q_stricmp( binding, RM_COMMAND ) ) {
@@ -1213,6 +1218,8 @@ void CL_RadialMenu_CharEvent( int ch ) {
 	char *text;
 	int size;
 
+	if ( rs.open && WG_PopupChar( ch ) )
+		return;
 	text = RS_FieldText( rs.focus, &size );
 	if ( !rs.open || !text )
 		return;
@@ -1231,6 +1238,8 @@ void CL_RadialMenu_SettingsEscape( void ) {
 		rs.binding = qfalse;
 	else if ( rs.picking )
 		rs.picking = qfalse;
+	else if ( WG_PopupOpen() )
+		WG_PopupClose();
 	else if ( rs.focus != RS_F_NONE )
 		RS_SetFocus( RS_F_NONE );
 	else
@@ -1238,6 +1247,8 @@ void CL_RadialMenu_SettingsEscape( void ) {
 }
 
 static qboolean RS_InRect( float x, float y, float w, float h ) {
+	if ( WG_PopupHover( rs.cursorX, rs.cursorY ) )
+		return qfalse;
 	return (qboolean)( rs.cursorX >= x && rs.cursorX < x + w && rs.cursorY >= y && rs.cursorY < y + h );
 }
 
@@ -1394,14 +1405,14 @@ static void RS_DrawItemRow( int row, float x, float y, float w ) {
 	RS_TextClipped( x + 108, y, w - 108, item->cmd[0] ? item->cmd : "(no command)", rmDim );
 }
 
-static int RS_Stepper( float x, float y, const char *value, qboolean enabled );
+static qboolean RS_Size( const void *id, float x, float y, const char *shown, int *size, int from, qboolean enabled );
 static void RS_Swatches( float x, float y, char *color );
 
 static void RS_DrawMenus( void ) {
 	rmMenu_t *m = RS_Menu();
 	const char *keys;
 	float y = RS_EDIT_Y;
-	int clicked, delta;
+	int clicked;
 
 	RS_Label( RS_MENU_X, 48, "Menus" );
 	RS_List( &rs.menuList, rmNumMenus, RS_MENU_X, RS_LIST_Y, RS_MENU_W, RS_LIST_H, RS_DrawMenuRow, &clicked );
@@ -1441,18 +1452,12 @@ static void RS_DrawMenus( void ) {
 	}
 	y += 20;
 	RS_Label( RS_MENU_X, y, "Size" );
-	delta = RS_Stepper( RS_MENU_X + 66, y, m ? va( "%i%%", m->size ) : "", (qboolean)( m != NULL ) );
-	if ( delta ) {
-		m->size = RM_ClampSize( m->size + delta * RM_SIZE_STEP );
+	if ( RS_Size( m ? &m->size : NULL, RS_MENU_X + 66, y, m ? va( "%i%%", m->size ) : "", m ? &m->size : NULL, m ? m->size : 0, (qboolean)( m != NULL ) ) )
 		RS_Changed();
-	}
 	y += 20;
 	RS_Label( RS_MENU_X, y, "Text size" );
-	delta = RS_Stepper( RS_MENU_X + 66, y, m ? va( "%i%%", m->textSize ) : "", (qboolean)( m != NULL ) );
-	if ( delta ) {
-		m->textSize = RM_ClampSize( m->textSize + delta * RM_SIZE_STEP );
+	if ( RS_Size( m ? &m->textSize : NULL, RS_MENU_X + 66, y, m ? va( "%i%%", m->textSize ) : "", m ? &m->textSize : NULL, m ? m->textSize : 0, (qboolean)( m != NULL ) ) )
 		RS_Changed();
-	}
 	y += 20;
 	RS_Label( RS_MENU_X, y, "Text color" );
 	RS_Field( RS_F_MENUCOLOR, RS_MENU_X + 66, y, RS_MENU_W - 66, m ? "white" : "" );
@@ -1461,16 +1466,36 @@ static void RS_DrawMenus( void ) {
 		RS_Swatches( RS_MENU_X, y, m->textColor );
 }
 
-// "-  value  +"; -1 or 1 when one is clicked
-static int RS_Stepper( float x, float y, const char *value, qboolean enabled ) {
-	int delta = 0;
+// a size in percent, "-  value  +": - and + by a step, the value clicked typed in; from is what
+// it steps from (an item's text size of 0 steps from the menu's). qtrue when *size changed
+static qboolean RS_Size( const void *id, float x, float y, const char *shown, int *size, int from, qboolean enabled ) {
+	const float w = 84.0f;
+	wgStyle_t style;
+	wgMouse_t m;
+	float v = (float)from;
 
-	if ( RS_Button( x, y, 16, "-", qfalse, enabled ) )
-		delta = -1;
-	RS_Text( x + 18 + ( 48 - RS_TextWidth( value ) ) * 0.5f, y + 2, value, enabled ? rmWhite : rmDim );
-	if ( RS_Button( x + 68, y, 16, "+", qfalse, enabled ) )
-		delta = 1;
-	return delta;
+	if ( !enabled || !size ) {
+		RS_Button( x, y, 16, "-", qfalse, qfalse );
+		RS_Text( x + 18 + ( 48 - RS_TextWidth( shown ) ) * 0.5f, y + 2, shown, rmDim );
+		RS_Button( x + 68, y, 16, "+", qfalse, qfalse );
+		return qfalse;
+	}
+	RS_FieldStyle( &style );
+	style.fill = rsPanelLight;
+	{
+		const qboolean over = WG_PopupHover( rs.cursorX, rs.cursorY );
+
+		m.cursorX = over ? -1.0f : rs.cursorX;
+		m.cursorY = over ? -1.0f : rs.cursorY;
+	}
+	m.click = &rs.click;
+	m.clickX = rs.clickX;
+	m.clickY = rs.clickY;
+	m.wheel = NULL;		// the wheel scrolls the lists here, three a notch
+	if ( !WG_NumberAt( id, &style, &m, x, y, w, RS_CTRL_H, &v, (float)RM_SIZE_STEP, (float)RM_SIZE_MIN, (float)RM_SIZE_MAX, 1.0f, shown ) )
+		return qfalse;
+	*size = RM_ClampSize( (int)floorf( v + 0.5f ) );
+	return qtrue;
 }
 
 // a row of colours to click, the first the usual one; the one in use framed
@@ -1664,12 +1689,10 @@ static void RS_DrawItems( void ) {
 	RS_Label( RS_ITEM_X, y, "Text size" );
 	{
 		rmItem_t *item = RS_Item();
-		const int delta = RS_Stepper( RS_ITEM_X + 58, y, !item ? "" : item->textSize ? va( "%i%%", item->textSize ) : "menu's", hasItem );
 
-		if ( delta ) {
-			item->textSize = RM_ClampSize( ( item->textSize ? item->textSize : m->textSize ) + delta * RM_SIZE_STEP );
+		if ( RS_Size( item ? &item->textSize : NULL, RS_ITEM_X + 58, y, !item ? "" : item->textSize ? va( "%i%%", item->textSize ) : "menu's",
+			item ? &item->textSize : NULL, item ? ( item->textSize ? item->textSize : m->textSize ) : 0, hasItem ) )
 			RS_Changed();
-		}
 		if ( RS_Button( RS_ITEM_X + 148, y, 58, "Menu's", (qboolean)( item && !item->textSize ), hasItem ) ) {
 			item->textSize = 0;
 			RS_Changed();
@@ -1698,6 +1721,21 @@ void CL_RadialMenu_DrawSettings( void ) {
 	if ( !rs.open )
 		return;
 	m = RS_Menu();
+	// the shared controls' open number field: a click on it is its own, one elsewhere closes it;
+	// no text box is typed in meanwhile
+	{
+		wgMouse_t pm;
+
+		pm.cursorX = rs.cursorX;
+		pm.cursorY = rs.cursorY;
+		pm.click = &rs.click;
+		pm.clickX = rs.clickX;
+		pm.clickY = rs.clickY;
+		pm.wheel = NULL;
+		WG_PopupBegin( &pm );
+		if ( WG_PopupTyping() && rs.focus != RS_F_NONE )
+			RS_SetFocus( RS_F_NONE );
+	}
 
 	RM_Fill( 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, rsPanel );
 	RS_Text( RS_MENU_X, 14, "Radial Menus", rmWhite );

@@ -2809,6 +2809,7 @@ static qboolean NM_Open( nmTab_t tab ) {
 void CL_NpcManager_Close( void ) {
 	if ( !nm.open )
 		return;
+	WG_PopupClose();
 	nm.open = qfalse;
 	nm.pick = NM_PICK_NONE;
 	nm.picker = NM_PICKER_NONE;
@@ -3146,6 +3147,8 @@ INPUT
 */
 
 static qboolean NM_InRect( float x, float y, float w, float h ) {
+	if ( WG_PopupHover( nm.cursorX, nm.cursorY ) )
+		return qfalse;
 	return (qboolean)( nm.cursorX >= x && nm.cursorX < x + w && nm.cursorY >= y && nm.cursorY < y + h );
 }
 
@@ -3391,6 +3394,13 @@ void CL_NpcManager_KeyEvent( int key, qboolean down ) {
 		CL_NpcManager_Close();
 		return;
 	}
+	// an open list: the wheel scrolls it, the keys are its
+	if ( WG_PopupOpen() && ( key == A_MWHEELUP || key == A_MWHEELDOWN ) ) {
+		nm.wheel += key == A_MWHEELUP ? -1 : 1;
+		return;
+	}
+	if ( WG_PopupKey( key ) )
+		return;
 
 	if ( nm.pick != NM_PICK_NONE ) {
 		switch ( key ) {
@@ -3551,6 +3561,8 @@ void CL_NpcManager_CharEvent( int ch ) {
 
 	if ( !nm.open || nm.pick != NM_PICK_NONE || nm.experimentalBox || ( nm.preview && nm.picker == NM_PICKER_NONE ) )
 		return;
+	if ( WG_PopupChar( ch ) )
+		return;
 	f = NM_ActiveField();
 	if ( WG_EditChar( nm.fields[f], NM_FIELD_LEN, ch, NM_AllowChar ) )
 		NM_FieldChanged( f );
@@ -3568,7 +3580,9 @@ void CL_NpcManager_MouseEvent( int dx, int dy ) {
 
 // escape backs out one level: picker, picking, a text box, then the manager
 void CL_NpcManager_Escape( void ) {
-	if ( nm.experimentalBox )
+	if ( WG_PopupOpen() )
+		WG_PopupClose();
+	else if ( nm.experimentalBox )
 		nm.experimentalBox = qfalse;
 	else if ( nm.picker != NM_PICKER_NONE )
 		nm.picker = NM_PICKER_NONE;
@@ -4403,9 +4417,25 @@ static void NM_DrawManage( void ) {
 		NM_Box( NM_CTRL_X, y, w * 2 + 4, NM_CTRL_H, nmPanelLight );
 		NM_TextClipped( NM_CTRL_X + 4, y + 2, w * 2 - 4, npc ? NM_TalkName( npc ) : "name", nmDim );
 	}
-	// a click takes the next colour
-	if ( NM_Button( NM_CTRL_X + ( w + 4 ) * 2, y, 40, experimental ? va( "^%cColor", nmTalkColors[nm.talkColor] ) : "Color", qfalse, experimental ) )
-		nm.talkColor = ( nm.talkColor + 1 ) % ( ARRAY_LEN( nmTalkColors ) - 1 );
+	// the name's colour: picked from a list, or stepped
+	if ( experimental ) {
+		static const char *names[] = { "^7White", "^1Red", "^2Green", "^3Yellow", "^4Blue", "^5Cyan", "^6Magenta", "^8Orange", "^9Grey", "^0Black" };
+		const qboolean under = WG_PopupHover( nm.cursorX, nm.cursorY );
+		wgStyle_t style;
+		wgMouse_t m;
+
+		NM_FieldStyle( &style );
+		style.fill = nmPanelLight;
+		m.cursorX = under ? -1.0f : nm.cursorX;
+		m.cursorY = under ? -1.0f : nm.cursorY;
+		m.click = ( nm.experimentalBox || nm.picker != NM_PICKER_NONE || nm.saving != NM_SAVING_NONE || nm.teleBox ) ? NULL : &nm.click;
+		m.clickX = nm.clickX;
+		m.clickY = nm.clickY;
+		m.wheel = under ? NULL : &nm.wheel;
+		WG_ChoiceBox( &style, &m, NM_CTRL_X + ( w + 4 ) * 2, y, 40, NM_CTRL_H, &nm.talkColor, names, (int)ARRAY_LEN( names ) );
+	} else {
+		NM_Button( NM_CTRL_X + ( w + 4 ) * 2, y, 40, "Color", qfalse, qfalse );
+	}
 	if ( NM_Button( NM_CTRL_X + ( w + 4 ) * 2 + 44, y, w, "emtalk", (qboolean)( experimental && nm.talkEmote ), experimental ) )
 		nm.talkEmote = (qboolean)!nm.talkEmote;
 
@@ -4953,6 +4983,20 @@ void CL_NpcManager_Draw( void ) {
 	if ( nm.pick != NM_PICK_NONE ) {
 		NM_DrawPick();
 		return;
+	}
+	// an open list (the talk colour): a click on it is its own, one elsewhere closes it
+	{
+		wgMouse_t m;
+
+		m.cursorX = nm.cursorX;
+		m.cursorY = nm.cursorY;
+		m.click = &nm.click;
+		m.clickX = nm.clickX;
+		m.clickY = nm.clickY;
+		m.wheel = &nm.wheel;
+		WG_PopupBegin( &m );
+		if ( WG_PopupTyping() )
+			nm.focus = NM_F_NONE;
 	}
 
 	// the warning, the picker, the name box and the preview sit on top and get the clicks first,

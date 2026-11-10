@@ -137,6 +137,7 @@ void CL_ConSettings_Close( void ) {
 		return;
 	cs.open = qfalse;
 	cs.typing = qfalse;
+	WG_PopupClose();
 	Key_SetCatcher( Key_GetCatcher() & ~KEYCATCH_CONSETTINGS );
 }
 
@@ -215,6 +216,8 @@ static void CS_TextClipped( float x, float y, float w, const char *text, const f
 }
 
 static qboolean CS_In( float x, float y, float w, float h ) {
+	if ( WG_PopupHover( cs.cursorX, cs.cursorY ) )
+		return qfalse;
 	return (qboolean)( cs.cursorX >= x && cs.cursorX < x + w && cs.cursorY >= y && cs.cursorY < y + h );
 }
 
@@ -243,29 +246,75 @@ static qboolean CS_Button( float x, float y, float w, const char *label, qboolea
 	return CS_Clicked( x, y, w, CS_CTRL_H );
 }
 
-// a value with - and + either side, the wheel over it too; how many steps it went
-static int CS_Stepper( float x, float y, float w, const char *label, const char *value ) {
-	const float lw = 86.0f, vx = x + lw + 18, vw = w - lw - 36;
-	int steps = 0;
+// the shared - value + controls' look, and the mouse as they have it (none over the open list)
+static const wgStyle_t *CS_CtlStyle( void ) {
+	static wgStyle_t style;
 
-	CS_Text( x, y + 2, label, csDim );
-	if ( CS_Button( x + lw, y, 16, "-", qfalse ) )
-		steps--;
-	CS_Box( vx, y, vw, CS_CTRL_H, csLight );
-	CS_Text( vx + ( vw - CS_TextWidth( value ) ) * 0.5f, y + 2, value, csWhite );
-	if ( CS_Button( x + w - 16, y, 16, "+", qfalse ) )
-		steps++;
-	if ( cs.wheel && CS_In( x, y, w, CS_CTRL_H ) ) {
-		steps -= cs.wheel;
-		cs.wheel = 0;
-	}
-	return steps;
+	CS_FieldStyle( &style );
+	style.fill = csLight;
+	return &style;
 }
 
-static void CS_Step( cvar_t *cv, int steps, float step, float min, float max ) {
-	if ( !steps )
+static void CS_CtlMouse( wgMouse_t *m ) {
+	const qboolean over = WG_PopupHover( cs.cursorX, cs.cursorY );
+
+	m->cursorX = over ? -1.0f : cs.cursorX;
+	m->cursorY = over ? -1.0f : cs.cursorY;
+	m->click = &cs.click;
+	m->clickX = cs.clickX;
+	m->clickY = cs.clickY;
+	m->wheel = over ? NULL : &cs.wheel;
+}
+
+#define CS_LABEL_W		86.0f
+
+// a cvar's number: - and + by step, the wheel over it, its value clicked typed in (as value * scale)
+static void CS_Num( float x, float y, float w, const char *label, const char *shown, cvar_t *cv, float step, float min, float max, float scale ) {
+	float v = cv->value;
+	wgMouse_t m;
+
+	CS_Text( x, y + 2, label, csDim );
+	CS_CtlMouse( &m );
+	if ( !WG_NumberAt( cv, CS_CtlStyle(), &m, x + CS_LABEL_W, y, w - CS_LABEL_W, CS_CTRL_H, &v, step, min, max, scale, shown ) )
 		return;
-	Cvar_SetValue( cv->name, Com_Clamp( min, max, floorf( ( cv->value + steps * step ) / step + 0.5f ) * step ) );
+	// to the step (whole steps stay whole), or to a hundredth for small ones
+	{
+		const float grain = step >= 1.0f ? step : 0.01f;
+
+		Cvar_SetValue( cv->name, Com_Clamp( min, max, floorf( v / grain + 0.5f ) * grain ) );
+	}
+}
+
+// one of a list: - and + go round, its value clicked lists them all. Each has its own slot (the
+// open list knows it by it); qtrue when *index changed
+static int csSlots[16];
+
+static qboolean CS_ChoiceFn( int slot, float x, float y, float w, const char *label, int *index, int count, wgLabel_t names, void *ctx ) {
+	wgMouse_t m;
+
+	CS_Text( x, y + 2, label, csDim );
+	CS_CtlMouse( &m );
+	csSlots[slot] = *index;
+	if ( !WG_Choice( CS_CtlStyle(), &m, x + CS_LABEL_W, y, w - CS_LABEL_W, CS_CTRL_H, &csSlots[slot], count, names, ctx, qtrue ) )
+		return qfalse;
+	*index = csSlots[slot];
+	return qtrue;
+}
+
+static const char *CS_ListName( int i, void *ctx ) {
+	return ( (const char **)ctx )[i];
+}
+
+static qboolean CS_Choice( int slot, float x, float y, float w, const char *label, int *index, const char **names, int count ) {
+	return CS_ChoiceFn( slot, x, y, w, label, index, count, CS_ListName, (void *)names );
+}
+
+// a cvar that's one of count, its names in a list
+static void CS_CvarChoice( int slot, float x, float y, float w, const char *label, cvar_t *cv, const char **names, int count ) {
+	int n = Com_Clampi( 0, count - 1, cv->integer );
+
+	if ( CS_Choice( slot, x, y, w, label, &n, names, count ) )
+		Cvar_SetValue( cv->name, (float)n );
 }
 
 static void CS_SetBackground( const char *name ) {
@@ -292,10 +341,15 @@ static int CS_TextColor( void ) {
 	return -1;
 }
 
-// one of a few: steps go round
-static void CS_Cycle( cvar_t *cv, int steps, int count ) {
-	if ( steps )
-		Cvar_SetValue( cv->name, (float)( ( ( cv->integer + steps ) % count + count ) % count ) );
+static const char *CS_FontName( int i, void *ctx ) {
+	return Con_FontName( i );
+}
+
+// the text colours by name, and the one typed in (/con_textColor) after them
+static const char *CS_TextColorName( int i, void *ctx ) {
+	extern cvar_t *con_textColor;
+
+	return i < (int)ARRAY_LEN( csTextColors ) ? csTextColors[i].name : va( "%s (typed)", con_textColor->string );
 }
 
 // a chat's capitals: none, each sentence's first letter, the emotes', both
@@ -306,23 +360,24 @@ static void CS_DrawTyping( float x, float y, float w ) {
 	const int capitals = ( Cvar_VariableIntegerValue( "cl_chatCapital" ) ? 1 : 0 ) + ( Cvar_VariableIntegerValue( "cl_chatCapitalEmotes" ) ? 2 : 0 );
 	const int key = Key_ConsoleKey();
 	const qboolean tilde = (qboolean)( Cvar_VariableIntegerValue( "cl_consoleTildeKey" ) != 0 );
-	const float lw = 86.0f;
-	int steps;
+	static const char *lines[] = { "as it was", "on more lines, selects" };
+	static const char *chats[] = { "cut by the server", "sent in parts, --" };
+	static const char *tildes[] = { "a key as others", "opens the console" };
+	const float lw = CS_LABEL_W;
+	int n;
 
 	CS_Text( x, y, "Typing", csWhite );
 	y += CS_ROW_H + 4;
-	steps = CS_Stepper( x, y, w, "Console line", Cvar_VariableIntegerValue( "con_modernInput" ) ? "on more lines, selects" : "as it was" );
-	if ( steps )
-		Cvar_Set( "con_modernInput", Cvar_VariableIntegerValue( "con_modernInput" ) ? "0" : "1" );
+	n = Cvar_VariableIntegerValue( "con_modernInput" ) ? 1 : 0;
+	if ( CS_Choice( 0, x, y, w, "Console line", &n, lines, 2 ) )
+		Cvar_Set( "con_modernInput", n ? "1" : "0" );
 	y += CS_CTRL_H + CS_GAP;
-	steps = CS_Stepper( x, y, w, "Long chat", Cvar_VariableIntegerValue( "cl_chatSplit" ) ? "sent in parts, --" : "cut by the server" );
-	if ( steps )
-		Cvar_Set( "cl_chatSplit", Cvar_VariableIntegerValue( "cl_chatSplit" ) ? "0" : "1" );
+	n = Cvar_VariableIntegerValue( "cl_chatSplit" ) ? 1 : 0;
+	if ( CS_Choice( 1, x, y, w, "Long chat", &n, chats, 2 ) )
+		Cvar_Set( "cl_chatSplit", n ? "1" : "0" );
 	y += CS_CTRL_H + CS_GAP;
-	steps = CS_Stepper( x, y, w, "Capitals", csCapitals[capitals] );
-	if ( steps ) {
-		const int n = ( ( capitals + steps ) % 4 + 4 ) % 4;
-
+	n = capitals;
+	if ( CS_Choice( 2, x, y, w, "Capitals", &n, csCapitals, (int)ARRAY_LEN( csCapitals ) ) ) {
 		Cvar_Set( "cl_chatCapital", ( n & 1 ) ? "1" : "0" );
 		Cvar_Set( "cl_chatCapitalEmotes", ( n & 2 ) ? "1" : "0" );
 	}
@@ -344,12 +399,12 @@ static void CS_DrawTyping( float x, float y, float w ) {
 		CS_Message( "The console opens with the key under Esc" );
 	}
 	y += CS_CTRL_H + CS_GAP;
-	steps = CS_Stepper( x, y, w, "Key under Esc", tilde ? "opens the console" : "a key as others" );
-	if ( steps ) {
-		if ( tilde && key < 0 )
+	n = tilde ? 1 : 0;
+	if ( CS_Choice( 3, x, y, w, "Key under Esc", &n, tildes, 2 ) ) {
+		if ( !n && key < 0 )
 			CS_Message( "Pick the console's own key first" );
 		else
-			Cvar_Set( "cl_consoleTildeKey", tilde ? "0" : "1" );
+			Cvar_Set( "cl_consoleTildeKey", n ? "1" : "0" );
 	}
 	y += CS_CTRL_H + 2;
 	CS_TextClipped( x + lw, y, w - lw, S_COLOR_GREY "Shift+Esc always opens it. /con_keybind <key> too", csWhite );
@@ -364,14 +419,31 @@ void CL_ConSettings_Draw( void ) {
 	static const char *contrasts[] = { "As sent", "Dark colours lit", "All in the text colour" };
 	static const char *blinds[] = { "Off", "Red-green", "Blue-yellow" };
 	const float x = CS_X + 10, w = CS_COL_W, x2 = CS_X + CS_W - 10 - CS_COL_W;
+	static const char *stamps[] = { "hidden", "shown" };
+	static const char *fades[] = { "far chat faded", "nothing faded" };
 	float y = CS_Y + 6, y2;
-	int steps;
 
 	if ( !cs.open )
 		return;
 	if ( !( Key_GetCatcher() & KEYCATCH_CONSETTINGS ) ) {
 		cs.open = qfalse;
+		WG_PopupClose();
 		return;
+	}
+	// the shared controls' open list or number field: a click on it is its own, one elsewhere
+	// closes it; the picture's name isn't typed in meanwhile
+	{
+		wgMouse_t m;
+
+		m.cursorX = cs.cursorX;
+		m.cursorY = cs.cursorY;
+		m.click = &cs.click;
+		m.clickX = cs.clickX;
+		m.clickY = cs.clickY;
+		m.wheel = &cs.wheel;
+		WG_PopupBegin( &m );
+		if ( WG_PopupTyping() )
+			cs.typing = qfalse;
 	}
 	CS_Box( CS_X, CS_Y, CS_W, CS_H, csPanel );
 	CS_Text( x, y, "Console settings", csWhite );
@@ -396,29 +468,27 @@ void CL_ConSettings_Draw( void ) {
 	y2 = y;
 
 	// left: how it's laid out and drawn
-	steps = CS_Stepper( x, y, w, "See-through", va( "%i%% solid", (int)( Com_Clamp( 0.0f, 1.0f, con_opacity->value ) * 100.0f + 0.5f ) ) );
-	CS_Step( con_opacity, steps, 0.05f, 0.0f, 1.0f );
+	CS_Num( x, y, w, "See-through", va( "%i%% solid", (int)( Com_Clamp( 0.0f, 1.0f, con_opacity->value ) * 100.0f + 0.5f ) ), con_opacity, 0.05f, 0.0f, 1.0f, 100.0f );
 	y += CS_CTRL_H + CS_GAP;
-	steps = CS_Stepper( x, y, w, "Letters", va( "x%.1f", con_scale->value > 0.0f ? con_scale->value : 1.0f ) );
-	CS_Step( con_scale, steps, 0.1f, 0.5f, 3.0f );
+	CS_Num( x, y, w, "Letters", va( "x%.1f", con_scale->value > 0.0f ? con_scale->value : 1.0f ), con_scale, 0.1f, 0.5f, 3.0f, 1.0f );
 	y += CS_CTRL_H + CS_GAP;
-	steps = CS_Stepper( x, y, w, "Font", Con_FontName( con_font->integer ) );
-	CS_Cycle( con_font, steps, Con_NumFonts() );
+	{
+		int font = Com_Clampi( 0, Q_max( 0, Con_NumFonts() - 1 ), con_font->integer );
+
+		if ( CS_ChoiceFn( 4, x, y, w, "Font", &font, Con_NumFonts(), CS_FontName, NULL ) )
+			Cvar_SetValue( con_font->name, (float)font );
+	}
 	y += CS_CTRL_H + CS_GAP;
-	steps = CS_Stepper( x, y, w, "Behind letters", shadows[Com_Clampi( 0, 2, con_textShadow->integer )] );
-	CS_Cycle( con_textShadow, steps, 3 );
+	CS_CvarChoice( 5, x, y, w, "Behind letters", con_textShadow, shadows, 3 );
 	y += CS_CTRL_H + CS_GAP;
-	steps = CS_Stepper( x, y, w, "Line spacing", con_lineSpacing->value > 0.0f ? va( "+%i%% of a letter", (int)( con_lineSpacing->value * 100.0f + 0.5f ) ) : "none" );
-	CS_Step( con_lineSpacing, steps, 0.1f, 0.0f, 1.5f );
+	CS_Num( x, y, w, "Line spacing", con_lineSpacing->value > 0.0f ? va( "+%i%% of a letter", (int)( con_lineSpacing->value * 100.0f + 0.5f ) ) : "none",
+		con_lineSpacing, 0.1f, 0.0f, 1.5f, 100.0f );
 	y += CS_CTRL_H + CS_GAP;
-	steps = CS_Stepper( x, y, w, "Margins", con_margin->integer > 0 ? va( "%i letters each side", con_margin->integer ) : "none" );
-	CS_Step( con_margin, steps, 1.0f, 0.0f, 30.0f );
+	CS_Num( x, y, w, "Margins", con_margin->integer > 0 ? va( "%i letters each side", con_margin->integer ) : "none", con_margin, 1.0f, 0.0f, 30.0f, 1.0f );
 	y += CS_CTRL_H + CS_GAP;
-	steps = CS_Stepper( x, y, w, "Comes down", va( "%i%% of the screen", (int)( Com_Clamp( 0.1f, 1.0f, con_height->value ) * 100.0f + 0.5f ) ) );
-	CS_Step( con_height, steps, 0.05f, 0.1f, 1.0f );
+	CS_Num( x, y, w, "Comes down", va( "%i%% of the screen", (int)( Com_Clamp( 0.1f, 1.0f, con_height->value ) * 100.0f + 0.5f ) ), con_height, 0.05f, 0.1f, 1.0f, 100.0f );
 	y += CS_CTRL_H + CS_GAP;
-	steps = CS_Stepper( x, y, w, "Timestamps", con_timestamps->integer ? "shown" : "hidden" );
-	CS_Cycle( con_timestamps, steps, 2 );
+	CS_CvarChoice( 6, x, y, w, "Timestamps", con_timestamps, stamps, 2 );
 	y += CS_CTRL_H + CS_GAP + 4;
 
 	// the picture behind it
@@ -481,33 +551,29 @@ void CL_ConSettings_Draw( void ) {
 		CS_DrawTyping( x2, y, w );
 		goto done;
 	}
-	steps = CS_Stepper( x2, y, w, "Text colour", CS_TextColor() >= 0 ? csTextColors[CS_TextColor()].name : con_textColor->string );
-	if ( steps ) {
-		const int n = (int)ARRAY_LEN( csTextColors );
+	{
+		// the named ones; one typed in shows after them, as itself
+		const int named = (int)ARRAY_LEN( csTextColors ), now = CS_TextColor();
+		int color = now >= 0 ? now : named;
 
-		Cvar_Set( "con_textColor", csTextColors[( ( Q_max( 0, CS_TextColor() ) + steps ) % n + n ) % n].rgb );
+		if ( CS_ChoiceFn( 7, x2, y, w, "Text colour", &color, now >= 0 ? named : named + 1, CS_TextColorName, NULL ) && color < named )
+			Cvar_Set( "con_textColor", csTextColors[color].rgb );
 	}
 	y += CS_CTRL_H + CS_GAP;
-	steps = CS_Stepper( x2, y, w, "Contrast", contrasts[Com_Clampi( 0, 2, con_contrast->integer )] );
-	CS_Cycle( con_contrast, steps, 3 );
+	CS_CvarChoice( 8, x2, y, w, "Contrast", con_contrast, contrasts, 3 );
 	y += CS_CTRL_H + CS_GAP;
-	steps = CS_Stepper( x2, y, w, "Colour-blind", blinds[Com_Clampi( 0, 2, con_colorblind->integer )] );
-	CS_Cycle( con_colorblind, steps, 3 );
+	CS_CvarChoice( 9, x2, y, w, "Colour-blind", con_colorblind, blinds, 3 );
 	y += CS_CTRL_H + CS_GAP;
-	steps = CS_Stepper( x2, y, w, "Fading", con_noFade->integer ? "nothing faded" : "far chat faded" );
-	CS_Cycle( con_noFade, steps, 2 );
+	CS_CvarChoice( 10, x2, y, w, "Fading", con_noFade, fades, 2 );
 	y += CS_CTRL_H + CS_GAP;
-	steps = CS_Stepper( x2, y, w, "Darker behind", con_bgDarken->value > 0.0f ? va( "%i%%", (int)( con_bgDarken->value * 100.0f + 0.5f ) ) : "no" );
-	CS_Step( con_bgDarken, steps, 0.1f, 0.0f, 0.9f );
+	CS_Num( x2, y, w, "Darker behind", con_bgDarken->value > 0.0f ? va( "%i%%", (int)( con_bgDarken->value * 100.0f + 0.5f ) ) : "no", con_bgDarken, 0.1f, 0.0f, 0.9f, 100.0f );
 	y += CS_CTRL_H + CS_GAP + 8;
 
 	CS_Text( x2, y, "Lines over the game", csWhite );
 	y += CS_ROW_H + 4;
-	steps = CS_Stepper( x2, y, w, "Letters", con_notifyScale->value > 0.0f ? va( "x%.2g", con_notifyScale->value ) : "as the console's" );
-	CS_Step( con_notifyScale, steps, 0.25f, 0.0f, 4.0f );
+	CS_Num( x2, y, w, "Letters", con_notifyScale->value > 0.0f ? va( "x%.2g", con_notifyScale->value ) : "as the console's", con_notifyScale, 0.25f, 0.0f, 4.0f, 1.0f );
 	y += CS_CTRL_H + CS_GAP;
-	steps = CS_Stepper( x2, y, w, "Stay", va( "%i s", con_notifytime->integer ) );
-	CS_Step( con_notifytime, steps, 1.0f, 1.0f, 30.0f );
+	CS_Num( x2, y, w, "Stay", va( "%i s", con_notifytime->integer ), con_notifytime, 1.0f, 1.0f, 30.0f, 1.0f );
 	y += CS_CTRL_H + CS_GAP + 8;
 
 	CS_TextClipped( x2, y, w, S_COLOR_GREY "The console behind this window shows each change", csWhite );
@@ -541,6 +607,9 @@ void CL_ConSettings_KeyEvent( int key, qboolean down ) {
 	}
 	if ( key == A_MOUSE1 )
 		cs.pickingKey = qfalse;
+	// an open list or number field takes its keys
+	if ( WG_PopupKey( key ) )
+		return;
 	if ( cs.typing && key != A_MOUSE1 && key != A_MWHEELUP && key != A_MWHEELDOWN
 		&& WG_EditKey( cs.typed, sizeof( cs.typed ), key, CS_AllowChar ) )
 		return;
@@ -571,6 +640,8 @@ void CL_ConSettings_KeyEvent( int key, qboolean down ) {
 }
 
 void CL_ConSettings_CharEvent( int ch ) {
+	if ( cs.open && WG_PopupChar( ch ) )
+		return;
 	if ( !cs.open || !cs.typing )
 		return;
 	WG_EditChar( cs.typed, sizeof( cs.typed ), ch, CS_AllowChar );
@@ -584,6 +655,8 @@ void CL_ConSettings_MouseEvent( int dx, int dy ) {
 void CL_ConSettings_Escape( void ) {
 	if ( cs.pickingKey )
 		cs.pickingKey = qfalse;
+	else if ( WG_PopupOpen() )
+		WG_PopupClose();
 	else if ( cs.typing )
 		cs.typing = qfalse;
 	else

@@ -46,5 +46,6 @@ qboolean	EscUI_Clicked( float x, float y, float w, float h );
 void		EscUI_StyleWG( wgStyle_t *style, const float *text, float scale );
 void		EscUI_Mouse( float *cursorX, float *cursorY, qboolean **click, float *clickX, float *clickY );
 void		EscUI_Sound( qboolean click );
+int			*EscUI_Wheel( void );			// the wheel over an open list (the shared controls')
 const float	*EscUI_Color( int which );		// 0 text, 1 dim, 2 accent, 3 row picked, 4 row hovered, 5 line, 6 danger
 void		EscUI_Restarting( void );		// the video restarts: the menu closes

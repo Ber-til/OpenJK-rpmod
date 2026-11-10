@@ -18,10 +18,13 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 ===========================================================================
 */
 
-// cl_widgets.cpp -- what the tools' windows share: a scrollbar a list can be dragged by, and
-// text fields with a cursor, a selection, the clipboard, and long text going on below.
+// cl_widgets.cpp -- what the tools' windows share: a scrollbar a list can be dragged by, text
+// fields with a cursor, a selection, the clipboard, and long text going on below, and the
+// - value + control: its value opens a list to pick from, or a field to type a number in.
 // Everything is in the 640x480 screen the tools draw in.
 
+#include <string>
+#include <vector>
 #include "client.h"
 #include "keys.h"
 #include "cl_widgets.h"
@@ -495,11 +498,14 @@ void WG_Field( const wgStyle_t *style, float x, float y, float w, float h, char 
 	WG_DrawLines( buf, &l, 0, 1, x, y );
 }
 
+static void WG_DrawPopList( void );
+
 void WG_DrawOverlay( void ) {
 	wgLines_t l;
 	int shown;
 	float h;
 
+	WG_DrawPopList();
 	if ( !wg.overlay )
 		return;
 	wg.overlay = qfalse;
@@ -829,4 +835,497 @@ qboolean WG_EditChar( char *buf, int size, int ch, wgAllow_t allow ) {
 		return qfalse;
 	wg.blinkFrom = cls.realtime;
 	return WG_Insert( buf, size, &c, 1, allow );
+}
+
+/*
+===============================================================================
+
+THE - VALUE + CONTROL
+
+A choice or a number, stepped with - and + (and the wheel over it). Its value, clicked, opens a
+list of every choice under it (over it near the screen's bottom), or turns into a field the number
+is typed in. One is open at a time, known by the value's address; its list is drawn over
+everything by WG_DrawOverlay. A pick or a typed number is taken when the control is drawn next.
+
+===============================================================================
+*/
+
+#define WG_POP_ROWS		10			// a list's rows shown; it scrolls for more
+#define WG_POP_MAX		1024		// choices listed
+#define WG_POP_MAX_W	300.0f
+
+enum { WG_POP_NONE, WG_POP_LIST, WG_POP_NUMBER };
+
+static const vec4_t wgPopBack = { 0.05f, 0.06f, 0.08f, 0.97f };
+static const vec4_t wgPopHover = { 1.0f, 1.0f, 1.0f, 0.12f };
+
+static struct {
+	int			kind;
+	const void	*id;
+	int			seenFrame;			// the control was drawn then
+	wgStyle_t	style;
+	float		bx, by, bw, bh;		// its value box
+
+	// a list
+	std::vector<std::string>	labels;
+	int			current;			// the value now
+	int			sel;				// lit: the keys move it, the mouse over a row too
+	int			scroll;
+	int			pick;				// picked, taken when the control is drawn next; -1 none
+	float		lx, ly, lw, lh, rowH;
+	int			rows;
+	qboolean	held;				// a click on it, held from the tool for it
+	float		heldX, heldY;
+	float		cursorX, cursorY, lastX, lastY;
+
+	// a number
+	char		buf[32];
+	qboolean	apply;				// typed: set when the control is drawn next
+} wgPop;
+
+static void WG_PopClose( void ) {
+	if ( wgPop.kind == WG_POP_NUMBER && wg.buf == wgPop.buf )
+		WG_EditReset();
+	wgPop.kind = WG_POP_NONE;
+	wgPop.id = NULL;
+	wgPop.labels.clear();
+	wgPop.held = qfalse;
+	wgPop.apply = qfalse;
+	wgPop.pick = -1;
+}
+
+static qboolean WG_PtIn( float px, float py, float x, float y, float w, float h ) {
+	return (qboolean)( px >= x && px < x + w && py >= y && py < y + h );
+}
+
+qboolean WG_PopupOpen( void ) {
+	return (qboolean)( wgPop.kind != WG_POP_NONE );
+}
+
+qboolean WG_PopupTyping( void ) {
+	return (qboolean)( wgPop.kind == WG_POP_NUMBER );
+}
+
+qboolean WG_PopupHover( float x, float y ) {
+	return (qboolean)( wgPop.kind == WG_POP_LIST && WG_PtIn( x, y, wgPop.lx, wgPop.ly, wgPop.lw, wgPop.lh ) );
+}
+
+void WG_PopupClose( void ) {
+	WG_PopClose();
+}
+
+void WG_PopupBegin( wgMouse_t *m ) {
+	if ( wgPop.kind == WG_POP_NONE )
+		return;
+	// its control not drawn last frame (another page, the tool closed): gone
+	if ( wgPop.seenFrame < cls.framecount - 1 ) {
+		WG_PopClose();
+		return;
+	}
+	wgPop.cursorX = m->cursorX;
+	wgPop.cursorY = m->cursorY;
+	if ( wgPop.kind == WG_POP_LIST ) {
+		const qboolean over = WG_PtIn( m->cursorX, m->cursorY, wgPop.lx, wgPop.ly, wgPop.lw, wgPop.lh );
+
+		if ( over && m->wheel && *m->wheel ) {
+			wgPop.scroll += *m->wheel;
+			*m->wheel = 0;
+		}
+		if ( m->click && *m->click ) {
+			if ( WG_PtIn( m->clickX, m->clickY, wgPop.lx, wgPop.ly, wgPop.lw, wgPop.lh ) ) {
+				wgPop.held = qtrue;
+				wgPop.heldX = m->clickX;
+				wgPop.heldY = m->clickY;
+				*m->click = qfalse;
+			} else if ( !WG_PtIn( m->clickX, m->clickY, wgPop.bx, wgPop.by, wgPop.bw, wgPop.bh ) ) {
+				// elsewhere: closed, and the click goes on to what's there
+				WG_PopClose();
+			}
+		}
+	} else if ( m->click && *m->click && !WG_PtIn( m->clickX, m->clickY, wgPop.bx, wgPop.by, wgPop.bw, wgPop.bh ) ) {
+		// a number: a click elsewhere sets what was typed
+		wgPop.apply = qtrue;
+	}
+}
+
+// the lit row kept in view
+static void WG_PopShowSel( void ) {
+	const int count = (int)wgPop.labels.size();
+
+	wgPop.sel = Com_Clampi( 0, Q_max( 0, count - 1 ), wgPop.sel );
+	if ( wgPop.sel < wgPop.scroll )
+		wgPop.scroll = wgPop.sel;
+	else if ( wgPop.sel >= wgPop.scroll + wgPop.rows )
+		wgPop.scroll = wgPop.sel - wgPop.rows + 1;
+}
+
+static qboolean WG_NumberChar( int ch ) {
+	return (qboolean)( ( ch >= '0' && ch <= '9' ) || ch == '.' || ch == '-' || ch == ',' );
+}
+
+qboolean WG_PopupKey( int key ) {
+	if ( wgPop.kind == WG_POP_NONE )
+		return qfalse;
+	// the mouse is the tool's: its clicks come to the popup through WG_PopupBegin
+	if ( ( key >= A_MOUSE1 && key <= A_MOUSE5 ) || key == A_MWHEELUP || key == A_MWHEELDOWN )
+		return qfalse;
+	if ( key == A_ESCAPE ) {
+		WG_PopClose();
+		return qtrue;
+	}
+	if ( wgPop.kind == WG_POP_NUMBER ) {
+		if ( key == A_ENTER || key == A_KP_ENTER || key == A_TAB )
+			wgPop.apply = qtrue;
+		else
+			WG_EditKey( wgPop.buf, sizeof( wgPop.buf ), key, WG_NumberChar );
+		return qtrue;
+	}
+	switch ( key ) {
+	case A_CURSOR_UP:	case A_KP_8:	wgPop.sel--; break;
+	case A_CURSOR_DOWN:	case A_KP_2:	wgPop.sel++; break;
+	case A_PAGE_UP:		case A_KP_9:	wgPop.sel -= wgPop.rows; break;
+	case A_PAGE_DOWN:	case A_KP_3:	wgPop.sel += wgPop.rows; break;
+	case A_HOME:		case A_KP_7:	wgPop.sel = 0; break;
+	case A_END:			case A_KP_1:	wgPop.sel = (int)wgPop.labels.size() - 1; break;
+	case A_ENTER:
+	case A_KP_ENTER:
+		wgPop.pick = wgPop.sel;
+		return qtrue;
+	case A_TAB:
+		WG_PopClose();
+		return qtrue;
+	default:
+		return qtrue;
+	}
+	WG_PopShowSel();
+	return qtrue;
+}
+
+// a label's first letter or digit, past colours and spaces
+static int WG_FirstLetter( const char *s ) {
+	while ( *s ) {
+		if ( Q_IsColorString( s ) ) {
+			s += 2;
+			continue;
+		}
+		if ( isalnum( (unsigned char)*s ) )
+			return tolower( (unsigned char)*s );
+		s++;
+	}
+	return 0;
+}
+
+qboolean WG_PopupChar( int ch ) {
+	if ( wgPop.kind == WG_POP_NONE )
+		return qfalse;
+	if ( wgPop.kind == WG_POP_NUMBER ) {
+		if ( ch >= 32 && ch < 127 )
+			WG_EditChar( wgPop.buf, sizeof( wgPop.buf ), ch, WG_NumberChar );
+		return qtrue;
+	}
+	// a letter: the next one starting with it
+	ch = tolower( ch & 255 );
+	if ( isalnum( ch ) ) {
+		const int count = (int)wgPop.labels.size();
+
+		for ( int n = 1; n <= count; n++ ) {
+			const int i = ( wgPop.sel + n ) % count;
+
+			if ( WG_FirstLetter( wgPop.labels[i].c_str() ) == ch ) {
+				wgPop.sel = i;
+				WG_PopShowSel();
+				break;
+			}
+		}
+	}
+	return qtrue;
+}
+
+// text in w, cut with ... when it's longer
+static void WG_PopText( const wgStyle_t *s, float x, float y, float w, const char *text, const float *color, qboolean center ) {
+	char buf[256];
+	int len;
+	float tw;
+
+	Q_strncpyz( buf, text, sizeof( buf ) );
+	len = (int)strlen( buf );
+	tw = (float)re->Font_StrLenPixels( buf, s->font, s->scale );
+	while ( len > 3 && tw > w ) {
+		len--;
+		buf[len - 3] = '.';
+		buf[len - 2] = '.';
+		buf[len - 1] = '.';
+		buf[len] = '\0';
+		tw = (float)re->Font_StrLenPixels( buf, s->font, s->scale );
+	}
+	if ( center )
+		x += ( w - tw ) * 0.5f;
+	re->Font_DrawString( (int)x, (int)y, buf, color, s->font, -1, s->scale );
+}
+
+static void WG_PopBox( float x, float y, float w, float h, const float *fill, const float *border ) {
+	if ( fill )
+		WG_Fill( x, y, w, h, fill );
+	if ( border ) {
+		WG_Fill( x, y, w, 1, border );
+		WG_Fill( x, y + h - 1, w, 1, border );
+		WG_Fill( x, y, 1, h, border );
+		WG_Fill( x + w - 1, y, 1, h, border );
+	}
+}
+
+// a choice drawn as one box, no - and + (WG_ChoiceBox): its value opens the list
+static qboolean wgBare;
+
+// - and +, the value between; how many steps they (or the wheel) went, and whether the value
+// was clicked
+static int WG_Steps( const wgStyle_t *st, const wgMouse_t *m, float x, float y, float w, float h, const char *shown,
+	qboolean open, qboolean *valueClicked ) {
+	const float bw = wgBare ? 0.0f : h, vx = wgBare ? x : x + bw + 1, vw = wgBare ? w : w - bw * 2 - 2;
+	const qboolean live = (qboolean)( m->click != NULL );
+	int steps = 0;
+
+	*valueClicked = qfalse;
+	for ( int b = 0; b < 2 && !wgBare; b++ ) {
+		const float bx = b ? x + w - bw : x;
+
+		WG_PopBox( bx, y, bw, h, st->fill, st->border );
+		if ( live && WG_PtIn( m->cursorX, m->cursorY, bx, y, bw, h ) )
+			WG_Fill( bx + 1, y + 1, bw - 2, h - 2, wgPopHover );
+		WG_PopText( st, bx, y + st->padY, bw, b ? "+" : "-", st->text, qtrue );
+		if ( live && *m->click && WG_PtIn( m->clickX, m->clickY, bx, y, bw, h ) ) {
+			*m->click = qfalse;
+			steps += b ? 1 : -1;
+		}
+	}
+	WG_PopBox( vx, y, vw, h, open ? wgPopBack : st->fill, st->border );
+	if ( live && !open && WG_PtIn( m->cursorX, m->cursorY, vx, y, vw, h ) )
+		WG_Fill( vx + 1, y + 1, vw - 2, h - 2, wgPopHover );
+	if ( shown )
+		WG_PopText( st, vx + 2, y + st->padY, vw - 4, shown, st->text, qtrue );
+	if ( live && *m->click && WG_PtIn( m->clickX, m->clickY, vx, y, vw, h ) ) {
+		*m->click = qfalse;
+		*valueClicked = qtrue;
+	}
+	// the wheel over it
+	if ( live && !open && m->wheel && *m->wheel && WG_PtIn( m->cursorX, m->cursorY, x, y, w, h ) ) {
+		steps -= *m->wheel;
+		*m->wheel = 0;
+	}
+	return steps;
+}
+
+static void WG_PopPlace( const wgStyle_t *st, float x, float y, float w, float h ) {
+	const float bw = wgBare ? 0.0f : h;
+
+	wgPop.style = *st;
+	wgPop.bx = wgBare ? x : x + bw + 1;
+	wgPop.by = y;
+	wgPop.bw = wgBare ? w : w - bw * 2 - 2;
+	wgPop.bh = h;
+	wgPop.seenFrame = cls.framecount;
+}
+
+qboolean WG_Choice( const wgStyle_t *st, const wgMouse_t *m, float x, float y, float w, float h,
+	int *index, int count, wgLabel_t label, void *ctx, qboolean wrap ) {
+	const qboolean open = (qboolean)( wgPop.kind == WG_POP_LIST && wgPop.id == index );
+	const int before = *index;
+	qboolean valueClicked;
+	int steps;
+
+	if ( open ) {
+		// what's listed, as it is now
+		const int n = Q_min( count, WG_POP_MAX );
+
+		WG_PopPlace( st, x, y, w, h );
+		wgPop.labels.resize( n );
+		for ( int i = 0; i < n; i++ ) {
+			const char *l = label( i, ctx );
+
+			wgPop.labels[i] = l ? l : "";
+		}
+		if ( wgPop.pick >= 0 ) {
+			if ( wgPop.pick < count )
+				*index = wgPop.pick;
+			WG_PopClose();
+		}
+	}
+	steps = WG_Steps( st, m, x, y, w, h, *index >= 0 && *index < count ? label( *index, ctx ) : "", open, &valueClicked );
+	if ( steps && count > 0 ) {
+		if ( wrap )
+			*index = ( ( *index + steps ) % count + count ) % count;
+		else
+			*index = Com_Clampi( 0, count - 1, *index + steps );
+	}
+	if ( valueClicked && count > 0 ) {
+		if ( wgPop.kind == WG_POP_LIST && wgPop.id == index ) {
+			WG_PopClose();
+		} else {
+			const int n = Q_min( count, WG_POP_MAX );
+			float widest = 0.0f;
+
+			WG_PopClose();
+			wgPop.kind = WG_POP_LIST;
+			wgPop.id = index;
+			wgPop.pick = -1;
+			wgPop.labels.resize( n );
+			for ( int i = 0; i < n; i++ ) {
+				const char *l = label( i, ctx );
+
+				wgPop.labels[i] = l ? l : "";
+				widest = Q_max( widest, (float)re->Font_StrLenPixels( wgPop.labels[i].c_str(), st->font, st->scale ) );
+			}
+			WG_PopPlace( st, x, y, w, h );
+			wgPop.current = wgPop.sel = Com_Clampi( 0, n - 1, *index );
+			wgPop.rows = Q_min( n, WG_POP_ROWS );
+			wgPop.rowH = h;
+			wgPop.lw = Com_Clamp( wgPop.bw, WG_POP_MAX_W, widest + st->padX * 2 + 6 + ( n > wgPop.rows ? WG_SCROLL_W + 2 : 0 ) );
+			wgPop.lh = wgPop.rows * wgPop.rowH + 2;
+			wgPop.lx = Q_min( wgPop.bx, SCREEN_WIDTH - 2 - wgPop.lw );
+			wgPop.ly = wgPop.by + wgPop.bh + 1;
+			if ( wgPop.ly + wgPop.lh > SCREEN_HEIGHT - 2 )
+				wgPop.ly = Q_max( 2.0f, wgPop.by - wgPop.lh - 1 );
+			wgPop.scroll = 0;
+			wgPop.lastX = m->cursorX;
+			wgPop.lastY = m->cursorY;
+			WG_PopShowSel();
+			// the current one in the middle when there's room
+			wgPop.scroll = Com_Clampi( 0, Q_max( 0, n - wgPop.rows ), wgPop.sel - wgPop.rows / 2 );
+		}
+	}
+	return (qboolean)( *index != before );
+}
+
+typedef struct {
+	const char	**names;
+} wgNames_t;
+
+static const char *WG_NameAt( int i, void *ctx ) {
+	return ( (wgNames_t *)ctx )->names[i];
+}
+
+qboolean WG_ChoiceList( const wgStyle_t *st, const wgMouse_t *m, float x, float y, float w, float h,
+	int *index, const char **names, int count, qboolean wrap ) {
+	wgNames_t ctx = { names };
+
+	return WG_Choice( st, m, x, y, w, h, index, count, WG_NameAt, &ctx, wrap );
+}
+
+// a choice as one box, no - and +: clicking it opens the list (the wheel over it still steps)
+qboolean WG_ChoiceBox( const wgStyle_t *st, const wgMouse_t *m, float x, float y, float w, float h,
+	int *index, const char **names, int count ) {
+	qboolean changed;
+
+	wgBare = qtrue;
+	changed = WG_ChoiceList( st, m, x, y, w, h, index, names, count, qtrue );
+	wgBare = qfalse;
+	return changed;
+}
+
+qboolean WG_NumberAt( const void *id, const wgStyle_t *st, const wgMouse_t *m, float x, float y, float w, float h,
+	float *v, float step, float min, float max, float scale, const char *shown ) {
+	const qboolean open = (qboolean)( wgPop.kind == WG_POP_NUMBER && wgPop.id == id );
+	const float before = *v;
+	qboolean valueClicked;
+	int steps;
+
+	if ( !scale )
+		scale = 1.0f;
+	if ( open ) {
+		WG_PopPlace( st, x, y, w, h );
+		if ( wgPop.apply ) {
+			char text[sizeof( wgPop.buf )];
+
+			Q_strncpyz( text, wgPop.buf, sizeof( text ) );
+			for ( char *c = text; *c; c++ ) {
+				if ( *c == ',' )
+					*c = '.';
+			}
+			if ( text[0] && text[0] != '.' && strcmp( text, "-" ) )
+				*v = Com_Clamp( min, max, (float)atof( text ) / scale );
+			WG_PopClose();
+		}
+	}
+	if ( wgPop.kind == WG_POP_NUMBER && wgPop.id == id ) {
+		const float bw = h, vx = x + bw + 1, vw = w - bw * 2 - 2;
+
+		// typed in: - and + still step it; a click in it moves the cursor
+		steps = WG_Steps( st, m, x, y, w, h, NULL, qtrue, &valueClicked );
+		WG_Field( st, vx, y, vw, h, wgPop.buf, qtrue, NULL, m->cursorX, m->cursorY );
+		if ( valueClicked )
+			WG_FieldClick( wgPop.buf, m->clickX, m->clickY );
+		if ( steps ) {
+			*v = Com_Clamp( min, max, *v + steps * step );
+			Com_sprintf( wgPop.buf, sizeof( wgPop.buf ), "%g", *v * scale );
+			WG_EditReset();
+		}
+		return (qboolean)( *v != before );
+	}
+	steps = WG_Steps( st, m, x, y, w, h, shown, qfalse, &valueClicked );
+	if ( steps )
+		*v = Com_Clamp( min, max, *v + steps * step );
+	if ( valueClicked ) {
+		int len;
+
+		WG_PopClose();
+		wgPop.kind = WG_POP_NUMBER;
+		wgPop.id = id;
+		WG_PopPlace( st, x, y, w, h );
+		Com_sprintf( wgPop.buf, sizeof( wgPop.buf ), "%g", *v * scale );
+		// all of it chosen: what's typed takes its place
+		WG_Focus( wgPop.buf );
+		len = (int)strlen( wgPop.buf );
+		wg.anchor = 0;
+		wg.cursor = len;
+	}
+	return (qboolean)( *v != before );
+}
+
+qboolean WG_Number( const wgStyle_t *st, const wgMouse_t *m, float x, float y, float w, float h,
+	float *v, float step, float min, float max, float scale, const char *shown ) {
+	return WG_NumberAt( v, st, m, x, y, w, h, v, step, min, max, scale, shown );
+}
+
+// an open list, over everything: drawn by WG_DrawOverlay
+static void WG_DrawPopList( void ) {
+	const wgStyle_t *st = &wgPop.style;
+	const int count = (int)wgPop.labels.size();
+	const qboolean bar = (qboolean)( count > wgPop.rows );
+	const float rw = wgPop.lw - 2 - ( bar ? WG_SCROLL_W + 1 : 0 );
+	int scroll;
+
+	if ( wgPop.kind != WG_POP_LIST || wgPop.seenFrame != cls.framecount || !count )
+		return;
+	wgPop.scroll = Com_Clampi( 0, Q_max( 0, count - wgPop.rows ), wgPop.scroll );
+	WG_PopBox( wgPop.lx, wgPop.ly, wgPop.lw, wgPop.lh, wgPopBack, st->border );
+	if ( bar ) {
+		scroll = wgPop.scroll;
+		WG_Scrollbar( wgPop.lx + wgPop.lw - WG_SCROLL_W - 1, wgPop.ly + 1, wgPop.lh - 2, count, wgPop.rows, &scroll,
+			wgPop.cursorX, wgPop.cursorY, &wgPop.held, wgPop.heldX, wgPop.heldY );
+		wgPop.scroll = scroll;
+	}
+	// the mouse moved over a row: it's lit
+	if ( ( wgPop.cursorX != wgPop.lastX || wgPop.cursorY != wgPop.lastY )
+		&& WG_PtIn( wgPop.cursorX, wgPop.cursorY, wgPop.lx + 1, wgPop.ly + 1, rw, wgPop.rows * wgPop.rowH ) ) {
+		wgPop.sel = wgPop.scroll + (int)( ( wgPop.cursorY - wgPop.ly - 1 ) / wgPop.rowH );
+		wgPop.sel = Com_Clampi( 0, count - 1, wgPop.sel );
+	}
+	wgPop.lastX = wgPop.cursorX;
+	wgPop.lastY = wgPop.cursorY;
+	for ( int r = 0; r < wgPop.rows && wgPop.scroll + r < count; r++ ) {
+		const int i = wgPop.scroll + r;
+		const float ry = wgPop.ly + 1 + r * wgPop.rowH;
+
+		if ( i == wgPop.current )
+			WG_Fill( wgPop.lx + 1, ry, rw, wgPop.rowH, wgSelect );
+		if ( i == wgPop.sel )
+			WG_Fill( wgPop.lx + 1, ry, rw, wgPop.rowH, wgPopHover );
+		WG_PopText( st, wgPop.lx + 1 + st->padX, ry + st->padY, rw - st->padX * 2, wgPop.labels[i].c_str(),
+			i == wgPop.current ? st->text : st->dim ? st->dim : st->text, qfalse );
+		if ( wgPop.held && WG_PtIn( wgPop.heldX, wgPop.heldY, wgPop.lx + 1, ry, rw, wgPop.rowH ) ) {
+			wgPop.held = qfalse;
+			wgPop.pick = i;
+		}
+	}
+	wgPop.held = qfalse;
 }

@@ -164,6 +164,7 @@ static struct {
 	int			cat;				// Modern's category, or KOTOR's tab
 	int			sel;				// in the shown list
 	float		scroll, content;
+	int			wheel;				// the wheel's steps over an open list (the shared controls')
 	char		search[48];
 	qboolean	typing;
 	emPanel_t	panel;
@@ -259,6 +260,8 @@ static void EM_Upper( const char *in, char *out, int size ) {
 }
 
 static qboolean EM_In( float x, float y, float w, float h ) {
+	if ( WG_PopupHover( em.cursorX, em.cursorY ) )
+		return qfalse;
 	return (qboolean)( em.cursorX >= x && em.cursorX < x + w && em.cursorY >= y && em.cursorY < y + h );
 }
 
@@ -344,6 +347,9 @@ void EscUI_Mouse( float *cursorX, float *cursorY, qboolean **click, float *click
 	*click = &em.click;
 	*clickX = em.clickX;
 	*clickY = em.clickY;
+}
+int *EscUI_Wheel( void ) {
+	return &em.wheel;
 }
 void EscUI_Sound( qboolean click ) {
 	S_StartLocalSound( click ? em.clickSound : em.moveSound, CHAN_LOCAL_SOUND );
@@ -447,6 +453,7 @@ static int EM_Page( void ) {
 }
 
 static void EM_SetPanel( emPanel_t panel ) {
+	WG_PopupClose();
 	if ( EM_Page() >= 0 )
 		CL_EscPages_Close();
 	em.panel = panel;
@@ -458,6 +465,7 @@ static void EM_Close( void ) {
 	em.route[0] = '\0';
 	if ( !em.open )
 		return;
+	WG_PopupClose();
 	if ( EM_Page() >= 0 )
 		CL_EscPages_Close();
 	em.open = qfalse;
@@ -870,7 +878,6 @@ static void EM_DrawModern( void ) {
 		EM_Text( cx, SCREEN_HEIGHT - 22, cw, em.message, mdAccent, em.font, 0.62f, 0 );
 	else
 		EM_Text( cx, SCREEN_HEIGHT - 22, cw, "Enter: open   Up / Down: pick   Tab: next category   type: search   Esc: close", mdDim, em.font, 0.58f, 0 );
-	WG_DrawOverlay();
 }
 
 /*
@@ -1071,11 +1078,29 @@ void CL_EscMenu_Draw( void ) {
 		EM_Close();
 		return;
 	}
+	// a page's open list: a click on it is its own, one elsewhere closes it
+	{
+		wgMouse_t m;
+
+		m.cursorX = em.cursorX;
+		m.cursorY = em.cursorY;
+		m.click = &em.click;
+		m.clickX = em.clickX;
+		m.clickY = em.clickY;
+		m.wheel = &em.wheel;
+		WG_PopupBegin( &m );
+		if ( WG_PopupTyping() )
+			em.typing = qfalse;
+	}
 	if ( em.style == EM_KOTOR )
 		EM_DrawKotor();
 	else
 		EM_DrawModern();
+	// a field grown past its box, and an open list, over everything
+	if ( em.open )
+		WG_DrawOverlay();
 	em.click = qfalse;
+	em.wheel = 0;
 	if ( em.open )
 		re->DrawStretchPic( em.cursorX, em.cursorY, 32, 32, 0, 0, 1, 1, cls.cursorShader );
 }
@@ -1104,6 +1129,13 @@ void CL_EscMenu_KeyEvent( int key, qboolean down ) {
 	const int num = em.style == EM_KOTOR ? KT_NUM : MC_NUM;
 
 	if ( !em.open || !down || em.route[0] )
+		return;
+	// an open list: the wheel scrolls it, the keys are its
+	if ( WG_PopupOpen() && ( key == A_MWHEELUP || key == A_MWHEELDOWN ) ) {
+		em.wheel += key == A_MWHEELUP ? -1 : 1;
+		return;
+	}
+	if ( WG_PopupKey( key ) )
 		return;
 	// a page: a key it waits for (a bind), the field typed in, its rows picked and changed
 	if ( EM_Page() >= 0 && CL_EscPages_Key( EM_Page(), key ) )
@@ -1180,6 +1212,8 @@ void CL_EscMenu_KeyEvent( int key, qboolean down ) {
 
 // typing anywhere in Modern searches
 void CL_EscMenu_CharEvent( int ch ) {
+	if ( em.open && WG_PopupChar( ch ) )
+		return;
 	if ( em.open && EM_Page() >= 0 ) {
 		CL_EscPages_Char( EM_Page(), ch );
 		return;
@@ -1206,6 +1240,11 @@ void CL_EscMenu_MouseEvent( int dx, int dy ) {
 
 // Esc: the search cleared, then a panel put away, then the menu
 void CL_EscMenu_Escape( void ) {
+	// an open list or number: closed first
+	if ( WG_PopupOpen() ) {
+		WG_PopupClose();
+		return;
+	}
 	// a page's bind waited for, or its field typed in: given up first
 	if ( EM_Page() >= 0 && CL_EscPages_Escape() )
 		return;

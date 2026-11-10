@@ -3588,6 +3588,7 @@ static void EM_Open( void ) {
 }
 
 static void EM_Close( void ) {
+	WG_PopupClose();
 	em.state = EM_OFF;
 	em.picker = EM_PICKER_NONE;
 	em.naming = EM_NAMING_NONE;
@@ -3817,6 +3818,8 @@ INPUT
 */
 
 static qboolean EM_InRect( float x, float y, float w, float h ) {
+	if ( WG_PopupHover( em.cursorX, em.cursorY ) )
+		return qfalse;
 	return (qboolean)( em.cursorX >= x && em.cursorX < x + w && em.cursorY >= y && em.cursorY < y + h );
 }
 
@@ -4465,6 +4468,8 @@ void CL_EffectManager_KeyEvent( int key, qboolean down ) {
 		EM_Close();
 		return;
 	}
+	if ( em.state == EM_BROWSE && WG_PopupKey( key ) )
+		return;
 
 	if ( em.naming != EM_NAMING_NONE && EM_NamingKey( key ) )
 		return;
@@ -4495,6 +4500,8 @@ void CL_EffectManager_KeyEvent( int key, qboolean down ) {
 void CL_EffectManager_CharEvent( int ch ) {
 	emField_t f;
 
+	if ( WG_PopupChar( ch ) )
+		return;
 	if ( em.state != EM_BROWSE && em.naming == EM_NAMING_NONE )
 		return;
 	f = EM_ActiveField();
@@ -4516,7 +4523,9 @@ void CL_EffectManager_MouseEvent( int dx, int dy ) {
 
 // escape backs out one level: picker, a text box, the world, then the manager
 void CL_EffectManager_Escape( void ) {
-	if ( em.naming != EM_NAMING_NONE )
+	if ( WG_PopupOpen() )
+		WG_PopupClose();
+	else if ( em.naming != EM_NAMING_NONE )
 		em.naming = EM_NAMING_NONE;
 	else if ( em.state == EM_PLACE && em.carrying )
 		EM_CancelCarry();
@@ -4957,6 +4966,59 @@ static void EM_FieldStyle( wgStyle_t *style ) {
 	style->dim = emDim;
 }
 
+// the shared - value + control's look here
+static const wgStyle_t *EM_CtlStyle( void ) {
+	static wgStyle_t style;
+
+	EM_FieldStyle( &style );
+	style.fill = emPanelLight;
+	return &style;
+}
+
+// a size, - and + by EM_SCALE_STEP times, typed as it's shown: qtrue when it changed, with how many
+// steps it went (*steps) or the size typed (*typed, *to). The wheel's notches are a step each
+static qboolean EM_ScaleCtl( const void *id, float x, float y, float w, float now, const char *shown, qboolean enabled,
+	int *steps, qboolean *typed, float *to ) {
+	const qboolean over = WG_PopupHover( em.cursorX, em.cursorY );
+	const qboolean wasTyping = WG_PopupTyping();
+	const float d = now * 0.25f;
+	int wheel = em.wheel > 0 ? 1 : em.wheel < 0 ? -1 : 0;
+	float v = now;
+	wgMouse_t m;
+
+	m.cursorX = enabled && !over ? em.cursorX : -1.0f;
+	m.cursorY = enabled && !over ? em.cursorY : -1.0f;
+	m.click = enabled ? &em.click : NULL;
+	m.clickX = em.clickX;
+	m.clickY = em.clickY;
+	m.wheel = enabled && !over ? &wheel : NULL;
+	*steps = 0;
+	*typed = qfalse;
+	*to = now;
+	if ( !WG_NumberAt( id, EM_CtlStyle(), &m, x, y, w, EM_CTRL_H, &v, d, EM_SCALE_MIN, EM_SCALE_MAX, 1.0f, shown ) ) {
+		if ( em.wheel && !wheel )
+			em.wheel = 0;
+		return qfalse;
+	}
+	if ( em.wheel && !wheel )
+		em.wheel = 0;
+	if ( wasTyping && !WG_PopupTyping() ) {
+		*typed = qtrue;
+		*to = EM_ClampScale( v );
+	} else {
+		*steps = (int)floorf( ( v - now ) / d + 0.5f );
+	}
+	return (qboolean)( *typed || *steps );
+}
+
+static float EM_ScaleStepped( float now, int steps ) {
+	for ( ; steps > 0; steps-- )
+		now *= EM_SCALE_STEP;
+	for ( ; steps < 0; steps++ )
+		now /= EM_SCALE_STEP;
+	return EM_ClampScale( now );
+}
+
 static void EM_Field( emField_t f, float x, float y, float w, const char *placeholder ) {
 	const qboolean focused = (qboolean)( EM_ActiveField() == f );
 	wgStyle_t style;
@@ -5394,11 +5456,17 @@ static void EM_DrawEffects( void ) {
 	if ( EM_Button( EM_CTRL_X + 78, y, 74, "Loop (add)", em.loop, qtrue ) )
 		em.loop = qtrue;
 	// how big, experimental
-	if ( EM_Button( EM_CTRL_X + 158, y, 16, "-", qfalse, (qboolean)( em.where != EM_WHERE_BOLT ) ) )
-		em.scale = EM_ClampScale( EM_ClampScale( em.scale ) / EM_SCALE_STEP );
-	EM_TextClipped( EM_CTRL_X + 176, y + 2, 36, em.where == EM_WHERE_BOLT ? S_COLOR_GREY "size" : va( "%sx%.2g", fabsf( EM_ClampScale( em.scale ) - 1.0f ) > 0.001f ? S_COLOR_CYAN : S_COLOR_GREY, EM_ClampScale( em.scale ) ), emWhite );
-	if ( EM_Button( EM_CTRL_X + 212, y, 16, "+", qfalse, (qboolean)( em.where != EM_WHERE_BOLT ) ) )
-		em.scale = EM_ClampScale( EM_ClampScale( em.scale ) * EM_SCALE_STEP );
+	{
+		const float now = EM_ClampScale( em.scale );
+		int steps;
+		qboolean typed;
+		float to;
+
+		if ( EM_ScaleCtl( &em.scale, EM_CTRL_X + 158, y, 70, now, em.where == EM_WHERE_BOLT ? S_COLOR_GREY "size"
+				: va( "%sx%.2g", fabsf( now - 1.0f ) > 0.001f ? S_COLOR_CYAN : S_COLOR_GREY, now ),
+				(qboolean)( em.where != EM_WHERE_BOLT ), &steps, &typed, &to ) )
+			em.scale = typed ? to : EM_ScaleStepped( now, steps );
+	}
 
 	y += 20;
 	EM_Label( EM_RIGHT_X, y, "Where" );
@@ -5683,11 +5751,15 @@ static void EM_DrawActive( void ) {
 		const float shown = a ? EM_ScaleAt( a->path, a->origin ) : 1.0f;
 		int dir = 0;
 
-		if ( EM_Button( cx, y, 20, "-", qfalse, (qboolean)( checked > 0 || a ) ) )
-			dir = -1;
-		EM_TextClipped( cx + 24, y + 2, w * 2 - 28, va( "x%.2g  " S_COLOR_GREY "%s", shown, checked ? va( "the %i checked", checked ) : a ? "this one" : "check some" ), emWhite );
-		if ( EM_Button( cx + w * 2, y, 20, "+", qfalse, (qboolean)( checked > 0 || a ) ) )
-			dir = 1;
+		int steps = 0;
+		qboolean typed = qfalse;
+		float to = 1.0f;
+
+		// - and + step it, its value typed sets it, x1 puts it back
+		if ( EM_ScaleCtl( &em.active, cx, y, w * 2 + 20, shown, va( "x%.2g  " S_COLOR_GREY "%s", shown,
+				checked ? va( "the %i checked", checked ) : a ? "this one" : "check some" ),
+				(qboolean)( checked > 0 || a ), &steps, &typed, &to ) )
+			dir = typed ? 3 : steps > 0 ? 1 : -1;
 		if ( EM_Button( cx + w * 2 + 24, y, w - 20, "x1", qfalse, (qboolean)( checked > 0 || a ) ) )
 			dir = 2;
 		for ( int i = 0; dir && i < em.numActive; i++ ) {
@@ -5697,7 +5769,7 @@ static void EM_DrawActive( void ) {
 			if ( checked ? !t->checked : t != a )
 				continue;
 			now = EM_ScaleAt( t->path, t->origin );
-			EM_SetScale( t->path, t->origin, dir == 2 ? 1.0f : now * ( dir > 0 ? EM_SCALE_STEP : 1.0f / EM_SCALE_STEP ), qfalse );
+			EM_SetScale( t->path, t->origin, dir == 2 ? 1.0f : dir == 3 ? to : EM_ScaleStepped( now, steps ), qfalse );
 		}
 	}
 
@@ -5875,6 +5947,24 @@ static void EM_DrawNaming( void ) {
 static void EM_DrawBrowse( void ) {
 	char buf[MAX_STRING_CHARS];
 	const qboolean window = (qboolean)( em.tab == EM_TAB_MINE || ( em.tab == EM_TAB_EFFECTS && em.where != EM_WHERE_BOLT ) );
+
+	// the shared controls' open list or number field: a click on it is its own, one elsewhere
+	// closes it; a picker over everything closes it too
+	{
+		wgMouse_t m;
+
+		m.cursorX = em.cursorX;
+		m.cursorY = em.cursorY;
+		m.click = &em.click;
+		m.clickX = em.clickX;
+		m.clickY = em.clickY;
+		m.wheel = &em.wheel;
+		if ( em.picker != EM_PICKER_NONE )
+			WG_PopupClose();
+		WG_PopupBegin( &m );
+		if ( WG_PopupTyping() )
+			em.focus = EM_F_NONE;
+	}
 
 	// the picker sits on top and gets the clicks first, but is drawn last
 	qboolean pickerOpen = (qboolean)( em.picker != EM_PICKER_NONE );

@@ -27,6 +27,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 // settings of JKA's Controls page (ui/jamp/ingame_controls.menu). Labels are the game's own strings
 // where it has them. The Classic menu keeps the game's own pages.
 
+#include <map>
 #include <string>
 #include <vector>
 #include "client.h"
@@ -623,6 +624,15 @@ static qboolean PR_VideoPending( void ) {
 	return qfalse;
 }
 
+// a choice row's pick, kept where the shared control knows it by (its address), one a cvar
+static std::map<std::string, int> prPicks;
+
+static const char *PR_ChoiceLabel( int i, void *ctx ) {
+	const std::vector<std::string> &labels = *(const std::vector<std::string> *)ctx;
+
+	return i >= 0 && i < (int)labels.size() ? labels[i].c_str() : "";
+}
+
 static void PR_DrawControl( const prRow_t *row, int index, float x, float y, float w ) {
 	float cursorX, cursorY, clickX, clickY;
 	qboolean *click;
@@ -636,11 +646,36 @@ static void PR_DrawControl( const prRow_t *row, int index, float x, float y, flo
 		const std::string now = PR_Value( row );
 		const float aw = EscUI_Wide( 16 );
 		const char *shown = now.c_str();
+		int at = -1;
 
 		for ( int i = 0; i < n; i++ ) {
-			if ( PR_Same( now.c_str(), values[i].c_str() ) )
+			if ( PR_Same( now.c_str(), values[i].c_str() ) ) {
 				shown = labels[i].c_str();
+				at = i;
+			}
 		}
+		// a value of its list: < and > step it, a click on it opens the list to pick from
+		if ( at >= 0 ) {
+			int *pick = &prPicks[row->cvar];
+			const qboolean under = WG_PopupHover( cursorX, cursorY );
+			wgStyle_t style;
+			wgMouse_t m;
+
+			*pick = at;
+			EscUI_StyleWG( &style, EscUI_Color( 2 ), 0.66f );
+			m.cursorX = under ? -1.0f : cursorX;
+			m.cursorY = under ? -1.0f : cursorY;
+			m.click = click;
+			m.clickX = clickX;
+			m.clickY = clickY;
+			m.wheel = under ? NULL : EscUI_Wheel();
+			if ( WG_Choice( &style, &m, x, y, w, h, pick, n, PR_ChoiceLabel, &labels, qtrue ) && *pick >= 0 && *pick < n ) {
+				PR_Set( row, values[*pick].c_str() );
+				EscUI_Sound( qtrue );
+			}
+			break;
+		}
+		// not one of its list (typed in the console): stepped into it
 		if ( EscUI_Button( x, y, aw, h, "<", 0 ) )
 			PR_Step( row, -1 );
 		EscUI_Text( x + aw, y + 2, w - aw * 2, shown, EscUI_Color( 2 ), 0.66f, 1 );
