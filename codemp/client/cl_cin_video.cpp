@@ -673,7 +673,78 @@ void CIN_VideoRewind( cinVideo_t *v ) {
 	v->pushed = 0;
 }
 
+/*
+===============================================================================
+
+PICTURES
+
+===============================================================================
+*/
+
+// a WebP picture (the datapad's web pages) decoded to RGBA, top row first, with the decoders the
+// videos use; *rgba from Z_Malloc, the caller frees it. qfalse without FFmpeg or on any error
+qboolean CIN_DecodeImage( const byte *data, int len, byte **rgba, int *width, int *height ) {
+	const AVCodec *codec;
+	AVCodecContext *ctx = NULL;
+	AVPacket *pkt = NULL;
+	AVFrame *frame = NULL;
+	struct SwsContext *sws = NULL;
+	qboolean ok = qfalse;
+
+	*rgba = NULL;
+	if ( !data || len <= 0 || !FF_Load() || !( codec = ff.avcodec_find_decoder( AV_CODEC_ID_WEBP ) ) )
+		return qfalse;
+	ctx = ff.avcodec_alloc_context3( codec );
+	pkt = ff.av_packet_alloc();
+	frame = ff.av_frame_alloc();
+	if ( ctx && pkt && frame && ff.avcodec_open2( ctx, codec, NULL ) >= 0 ) {
+		// the packet's own copy, with the padding the decoders read past the end
+		uint8_t *copy = (uint8_t *)ff.av_malloc( len + AV_INPUT_BUFFER_PADDING_SIZE );
+
+		if ( copy ) {
+			memcpy( copy, data, len );
+			memset( copy + len, 0, AV_INPUT_BUFFER_PADDING_SIZE );
+			pkt->data = copy;
+			pkt->size = len;
+			if ( ff.avcodec_send_packet( ctx, pkt ) >= 0 ) {
+				ff.avcodec_send_packet( ctx, NULL );
+				if ( ff.avcodec_receive_frame( ctx, frame ) >= 0 && frame->width > 0 && frame->height > 0
+					&& frame->width <= 8192 && frame->height <= 8192 ) {
+					sws = ff.sws_getCachedContext( NULL, frame->width, frame->height, (AVPixelFormat)frame->format,
+						frame->width, frame->height, AV_PIX_FMT_RGBA, SWS_BILINEAR, NULL, NULL, NULL );
+					if ( sws ) {
+						// room past the end: swscale's SIMD writes a little past the last row
+						byte *out = (byte *)Z_Malloc( frame->width * frame->height * 4 + 256, TAG_TEMP_WORKSPACE, qtrue );
+						uint8_t *dst[4] = { out, NULL, NULL, NULL };
+						int stride[4] = { frame->width * 4, 0, 0, 0 };
+
+						ff.sws_scale( sws, frame->data, frame->linesize, 0, frame->height, dst, stride );
+						*rgba = out;
+						*width = frame->width;
+						*height = frame->height;
+						ok = qtrue;
+					}
+				}
+			}
+			pkt->data = NULL;
+			pkt->size = 0;
+			ff.av_free( copy );
+		}
+	}
+	if ( sws )
+		ff.sws_freeContext( sws );
+	if ( frame )
+		ff.av_frame_free( &frame );
+	if ( pkt )
+		ff.av_packet_free( &pkt );
+	if ( ctx )
+		ff.avcodec_free_context( &ctx );
+	return ok;
+}
+
 #else // !USE_FFMPEG_VIDEO
+
+qboolean CIN_DecodeImage( const byte *data, int len, byte **rgba, int *width, int *height ) { *rgba = NULL; return qfalse; }
 
 cinVideo_t *CIN_VideoOpen( const char *name ) { return NULL; }
 void CIN_VideoClose( cinVideo_t *v ) { }

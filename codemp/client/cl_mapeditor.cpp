@@ -3689,6 +3689,7 @@ void CL_MapEditor_Close( void ) {
 	if ( !me.open )
 		return;
 	ME_CancelGrab();
+	WG_PopupClose();
 	me.open = qfalse;
 	me.field = ME_FIELD_NONE;
 	me.storyPick = -1;
@@ -4181,6 +4182,9 @@ void CL_MapEditor_KeyEvent( int key, qboolean down ) {
 		CL_MapEditor_Close();
 		return;
 	}
+	// an open list or number field of the panel's takes its keys
+	if ( !me.flying && !me.experimentalBox && WG_PopupKey( key ) )
+		return;
 	// the warning only takes clicks
 	if ( me.experimentalBox ) {
 		if ( key == A_MOUSE1 ) {
@@ -4317,6 +4321,8 @@ void CL_MapEditor_CharEvent( int ch ) {
 	int size;
 	char *buf;
 
+	if ( me.open && !me.flying && !me.experimentalBox && WG_PopupChar( ch ) )
+		return;
 	if ( !me.open || !me.field || me.flying || me.experimentalBox )
 		return;
 	if ( me.field == ME_FIELD_PATTERN && ch >= 'A' && ch <= 'Z' )
@@ -4342,12 +4348,14 @@ void CL_MapEditor_MouseEvent( int dx, int dy ) {
 // escape backs out one level: the text box, carrying, the selection, then the editor
 void CL_MapEditor_Escape( void ) {
 	// picking for the storyteller: straight back to it
-	if ( me.storyPick >= 0 && !me.field && !me.experimentalBox ) {
+	if ( me.storyPick >= 0 && !me.field && !me.experimentalBox && !WG_PopupOpen() ) {
 		CL_MapEditor_Close();
 		return;
 	}
 	if ( me.experimentalBox ) {
 		me.experimentalBox = qfalse;
+	} else if ( WG_PopupOpen() ) {
+		WG_PopupClose();
 	} else if ( me.field ) {
 		me.field = ME_FIELD_NONE;
 	} else if ( me.grabbing ) {
@@ -5203,6 +5211,8 @@ static void ME_TextTail( float x, float y, float w, const char *text, const floa
 }
 
 static qboolean ME_InRect( float x, float y, float w, float h ) {
+	if ( WG_PopupHover( me.cursorX, me.cursorY ) )
+		return qfalse;
 	return (qboolean)( !me.flying && me.cursorX >= x && me.cursorX < x + w && me.cursorY >= y && me.cursorY < y + h );
 }
 
@@ -5222,23 +5232,75 @@ static qboolean ME_Button( float x, float y, float w, const char *label, qboolea
 	return (qboolean)( ME_Clicked( x, y, w, ME_CTRL_H ) && enabled );
 }
 
-// a value with - and + either side, the wheel over it too; how many steps it went
-static int ME_Stepper( float x, float y, float w, const char *label, const char *value ) {
-	const float lw = 62.0f, vx = x + lw + 17, vw = w - lw - 34;
-	int steps = 0;
+// the shared - value + controls' look: the panel's boxes and text
+static const wgStyle_t *ME_CtlStyle( void ) {
+	static wgStyle_t style;
+
+	style.font = me.font;
+	style.scale = ME_TEXT_SCALE;
+	style.lineH = ME_ROW_H;
+	style.padX = 4.0f;
+	style.padY = 2.0f;
+	style.fill = mePanelLight;
+	style.border = meBorder;
+	style.text = meWhite;
+	style.dim = meDim;
+	return &style;
+}
+
+// the mouse as the controls have it: none while flying or over the open list
+static void ME_CtlMouse( wgMouse_t *m ) {
+	const qboolean off = (qboolean)( me.flying || WG_PopupHover( me.cursorX, me.cursorY ) );
+
+	m->cursorX = off ? -1.0f : me.cursorX;
+	m->cursorY = off ? -1.0f : me.cursorY;
+	m->click = me.flying ? NULL : &me.click;
+	m->clickX = me.clickX;
+	m->clickY = me.clickY;
+	m->wheel = off ? NULL : &me.wheel;
+}
+
+static float ME_Step( float step );
+
+// a number with - and + either side (Shift more, Ctrl less), the wheel over it too; its value
+// clicked is typed in, as *v * scale. qtrue when it changed (the caller marks the edits changed)
+static qboolean ME_NumAt( const void *id, float x, float y, float w, const char *label, const char *shown,
+	float *v, float step, float min, float max, float scale ) {
+	const float lw = 62.0f;
+	wgMouse_t m;
 
 	ME_Text( x, y + 2, label, meDim );
-	if ( ME_Button( x + lw, y, 16, "-", qfalse, qtrue ) )
-		steps--;
-	ME_Box( vx, y, vw, ME_CTRL_H, mePanelLight );
-	ME_Text( vx + ( vw - ME_TextWidth( value ) ) * 0.5f, y + 2, value, meWhite );
-	if ( ME_Button( x + w - 16, y, 16, "+", qfalse, qtrue ) )
-		steps++;
-	if ( me.wheel && ME_InRect( x, y, w, ME_CTRL_H ) ) {
-		steps -= me.wheel;
-		me.wheel = 0;
-	}
-	return steps;
+	ME_CtlMouse( &m );
+	return WG_NumberAt( id, ME_CtlStyle(), &m, x + lw, y, w - lw, ME_CTRL_H, v, ME_Step( step ), min, max, scale, shown );
+}
+
+// a float of an edit, kept in min..max, the edits changed with it
+static qboolean ME_Num( float x, float y, float w, const char *label, const char *shown, float *v, float step, float min, float max, float scale ) {
+	if ( !ME_NumAt( v, x, y, w, label, shown, v, step, min, max, scale ) )
+		return qfalse;
+	ME_Changed();
+	return qtrue;
+}
+
+// a whole number, in min..max; the caller marks what changed
+static qboolean ME_NumInt( float x, float y, float w, const char *label, const char *shown, int *n, int step, int min, int max ) {
+	float v = (float)*n;
+
+	if ( !ME_NumAt( n, x, y, w, label, shown, &v, (float)step, (float)min, (float)max, 1.0f ) )
+		return qfalse;
+	*n = Com_Clampi( min, max, (int)floorf( v + 0.5f ) );
+	return qtrue;
+}
+
+// an angle, typed as shown (yaw 0..360, pitch and roll -180..180), kept 0..360
+static qboolean ME_NumAngle( float x, float y, float w, const char *label, float *ang, qboolean half ) {
+	float v = half ? AngleNormalize180( *ang ) : *ang;
+
+	if ( !ME_NumAt( ang, x, y, w, label, va( "%i", ME_Round( v ) ), &v, 15.0f, -3600.0f, 3600.0f, 1.0f ) )
+		return qfalse;
+	*ang = AngleNormalize360( v );
+	ME_Changed();
+	return qtrue;
 }
 
 // Shift goes in big steps, Ctrl in small ones
@@ -5248,20 +5310,6 @@ static float ME_Step( float step ) {
 	if ( ME_CtrlDown() )
 		return step * 0.2f;
 	return step;
-}
-
-static void ME_Adjust( float *value, int steps, float step, float min, float max ) {
-	if ( !steps )
-		return;
-	*value = Com_Clamp( min, max, *value + steps * ME_Step( step ) );
-	ME_Changed();
-}
-
-static void ME_AdjustAngle( float *value, int steps, float step ) {
-	if ( !steps )
-		return;
-	*value = AngleNormalize360( *value + steps * ME_Step( step ) );
-	ME_Changed();
 }
 
 static void ME_FieldStyle( wgStyle_t *style ) {
@@ -5413,7 +5461,6 @@ static void ME_DrawLocksTab( float x, float y, float w ) {
 		qboolean allLockable;
 		const int alike = ME_NamedAlike( e, &allLockable );
 		vec3_t center, size;
-		int steps;
 
 		ME_TextClipped( x, y, w, va( "%s " S_COLOR_GREY "%s", e->classname, !target ? "number not known: Trace on, then use it"
 			: alike > 1 && allLockable ? va( "%s, with the %i named alike", target, alike - 1 ) : Q_isanumber( target ) ? va( "entity %s", target ) : target ), meWhite );
@@ -5424,9 +5471,7 @@ static void ME_DrawLocksTab( float x, float y, float w ) {
 			ME_TextClipped( x, y, w, ml.haveList ? S_COLOR_GREEN "Not locked" : S_COLOR_GREY "Asking the server...", meWhite );
 		y += ME_ROW_H + 2;
 
-		steps = ME_Stepper( x, y, w, "Rank", ml.rank < 0 ? "-1: no one" : ml.rank ? va( "%i", ml.rank ) : "0: no rank" );
-		if ( steps )
-			ml.rank = Com_Clampi( -1, 15, ml.rank + steps );
+		ME_NumInt( x, y, w, "Rank", ml.rank < 0 ? "-1: no one" : ml.rank ? va( "%i", ml.rank ) : "0: no rank", &ml.rank, 1, -1, 15 );
 		y += ME_CTRL_H + ME_GAP;
 		ME_TextBox( x, y, w, ME_FIELD_LOCKNAME, ml.name, "lock name, shown when it's refused" );
 		y += ME_CTRL_H + ME_GAP;
@@ -5634,11 +5679,7 @@ static meItem_t *ME_DrawItemList( float *py, float x, float w, int kind, const c
 		if ( ME_Button( x + half + 4, y, half, "Go to it", qfalse, qtrue ) )
 			ME_GoTo( it->org, VectorLength( size ) * 0.5f );
 		y += ME_CTRL_H + ME_GAP;
-		{
-			const int steps = ME_Stepper( x, y, w, "Height", va( "%i", ME_Round( it->org[2] ) ) );
-
-			ME_Adjust( &it->org[2], steps, 4.0f, -65536.0f, 65536.0f );
-		}
+		ME_Num( x, y, w, "Height", va( "%i", ME_Round( it->org[2] ) ), &it->org[2], 4.0f, -65536.0f, 65536.0f, 1.0f );
 		y += ME_CTRL_H + ME_GAP;
 	}
 	*py = y;
@@ -5712,21 +5753,16 @@ static void ME_DrawModelsTab( float x, float y, float w ) {
 	if ( it ) {
 		vec3_t pivot, pivotAt;
 		const qboolean isMap = ME_MapPivot( it, pivot );
-		int steps;
 
 		if ( isMap )
 			ME_ItemPoint( it, pivot, pivotAt );
-		steps = ME_Stepper( x, y, w, "Yaw", va( "%i", ME_Round( it->ang[YAW] ) ) );
-		ME_AdjustAngle( &it->ang[YAW], steps, 15.0f );
+		ME_NumAngle( x, y, w, "Yaw", &it->ang[YAW], qfalse );
 		y += ME_CTRL_H + ME_GAP;
-		steps = ME_Stepper( x, y, w, "Pitch", va( "%i", ME_Round( AngleNormalize180( it->ang[PITCH] ) ) ) );
-		ME_AdjustAngle( &it->ang[PITCH], steps, 15.0f );
+		ME_NumAngle( x, y, w, "Pitch", &it->ang[PITCH], qtrue );
 		y += ME_CTRL_H + ME_GAP;
-		steps = ME_Stepper( x, y, w, "Roll", va( "%i", ME_Round( AngleNormalize180( it->ang[ROLL] ) ) ) );
-		ME_AdjustAngle( &it->ang[ROLL], steps, 15.0f );
+		ME_NumAngle( x, y, w, "Roll", &it->ang[ROLL], qtrue );
 		y += ME_CTRL_H + ME_GAP;
-		steps = ME_Stepper( x, y, w, "Scale", va( "%.2f", it->scale ) );
-		ME_Adjust( &it->scale, steps, 0.1f, 0.05f, 50.0f );
+		ME_Num( x, y, w, "Scale", va( "%.2f", it->scale ), &it->scale, 0.1f, 0.05f, 50.0f, 1.0f );
 		y += ME_CTRL_H + ME_GAP + 4;
 		// a map turned or scaled stays where it was put
 		if ( isMap )
@@ -5773,24 +5809,19 @@ static void ME_DrawModelsTab( float x, float y, float w ) {
 static void ME_DrawLightsTab( float x, float y, float w ) {
 	meItem_t *it = ME_DrawItemList( &y, x, w, ME_ITEM_LIGHT, "Add" );
 	const float sw = ( w - 4.0f * ( ARRAY_LEN( meLightColors ) - 1 ) ) / ARRAY_LEN( meLightColors );
-	int steps;
 
 	if ( !it ) {
 		ME_Text( x, y + 4, S_COLOR_GREY "Add puts a light at the crosshair", meWhite );
 		ME_Text( x, y + 4 + ME_ROW_H, S_COLOR_GREY "Only dynamic lights can be added at runtime", meWhite );
 		return;
 	}
-	steps = ME_Stepper( x, y, w, "Reach", va( "%i", ME_Round( it->radius ) ) );
-	ME_Adjust( &it->radius, steps, 25.0f, 8.0f, 2000.0f );
+	ME_Num( x, y, w, "Reach", va( "%i", ME_Round( it->radius ) ), &it->radius, 25.0f, 8.0f, 2000.0f, 1.0f );
 	y += ME_CTRL_H + ME_GAP;
-	steps = ME_Stepper( x, y, w, "Red", va( "%i", ME_Round( it->color[0] * 255 ) ) );
-	ME_Adjust( &it->color[0], steps, 0.1f, 0.0f, 1.0f );
+	ME_Num( x, y, w, "Red", va( "%i", ME_Round( it->color[0] * 255 ) ), &it->color[0], 0.1f, 0.0f, 1.0f, 255.0f );
 	y += ME_CTRL_H + ME_GAP;
-	steps = ME_Stepper( x, y, w, "Green", va( "%i", ME_Round( it->color[1] * 255 ) ) );
-	ME_Adjust( &it->color[1], steps, 0.1f, 0.0f, 1.0f );
+	ME_Num( x, y, w, "Green", va( "%i", ME_Round( it->color[1] * 255 ) ), &it->color[1], 0.1f, 0.0f, 1.0f, 255.0f );
 	y += ME_CTRL_H + ME_GAP;
-	steps = ME_Stepper( x, y, w, "Blue", va( "%i", ME_Round( it->color[2] * 255 ) ) );
-	ME_Adjust( &it->color[2], steps, 0.1f, 0.0f, 1.0f );
+	ME_Num( x, y, w, "Blue", va( "%i", ME_Round( it->color[2] * 255 ) ), &it->color[2], 0.1f, 0.0f, 1.0f, 255.0f );
 	y += ME_CTRL_H + ME_GAP;
 	// the colours most lights are
 	for ( int i = 0; i < (int)ARRAY_LEN( meLightColors ); i++ ) {
@@ -5807,11 +5838,8 @@ static void ME_DrawLightsTab( float x, float y, float w ) {
 		}
 	}
 	y += ME_CTRL_H + ME_GAP;
-	steps = ME_Stepper( x, y, w, "Style", it->style >= 0 ? va( "%i", it->style ) : "none" );
-	if ( steps ) {
-		it->style = Com_Clampi( -1, MAX_LIGHT_STYLES - 1, it->style + steps );
+	if ( ME_NumInt( x, y, w, "Style", it->style >= 0 ? va( "%i", it->style ) : "none", &it->style, 1, -1, MAX_LIGHT_STYLES - 1 ) )
 		ME_Changed();
-	}
 	y += ME_CTRL_H + ME_GAP;
 	ME_Text( x, y, S_COLOR_GREY "With a style it flickers or pulses as that does;", meWhite );
 	ME_Text( x, y + ME_ROW_H, S_COLOR_GREY "set the style's pattern in Styles", meWhite );
@@ -5820,7 +5848,6 @@ static void ME_DrawLightsTab( float x, float y, float w ) {
 static void ME_DrawTriggersTab( float x, float y, float w ) {
 	meItem_t *it = ME_DrawItemList( &y, x, w, ME_ITEM_TRIGGER, "Add" );
 	const float half = ( w - 4 ) * 0.5f;
-	int steps;
 
 	if ( !it ) {
 		ME_Text( x, y + 4, S_COLOR_GREY "A box that runs a console command when you", meWhite );
@@ -5846,23 +5873,16 @@ static void ME_DrawTriggersTab( float x, float y, float w ) {
 		ME_TextBox( x + 52, y, w - 52, ME_FIELD_TRIGGERDISPLAY, it->display, "what players see: [key] ..." );
 		y += ME_CTRL_H + ME_GAP;
 		// JKA's usetime, in milliseconds
-		steps = ME_Stepper( x, y, w, "Hold use", it->usetime > 0 ? va( "%i ms (%.2g s)", it->usetime, it->usetime / 1000.0f ) : "no, a press" );
-		if ( steps ) {
-			float held = (float)it->usetime;
-
-			ME_Adjust( &held, steps, 250.0f, 0.0f, (float)ME_MAX_USETIME );
-			it->usetime = (int)( held + 0.5f );
-		}
+		if ( ME_NumInt( x, y, w, "Hold use", it->usetime > 0 ? va( "%i ms (%.2g s)", it->usetime, it->usetime / 1000.0f ) : "no, a press",
+			&it->usetime, (int)ME_Step( 250.0f ), 0, ME_MAX_USETIME ) )
+			ME_Changed();
 		y += ME_CTRL_H + ME_GAP;
 	}
-	steps = ME_Stepper( x, y, w, "Width", va( "%i", ME_Round( it->size[0] * 2 ) ) );
-	ME_Adjust( &it->size[0], steps, 8.0f, 1.0f, 4096.0f );
+	ME_Num( x, y, w, "Width", va( "%i", ME_Round( it->size[0] * 2 ) ), &it->size[0], 8.0f, 1.0f, 4096.0f, 2.0f );
 	y += ME_CTRL_H + ME_GAP;
-	steps = ME_Stepper( x, y, w, "Depth", va( "%i", ME_Round( it->size[1] * 2 ) ) );
-	ME_Adjust( &it->size[1], steps, 8.0f, 1.0f, 4096.0f );
+	ME_Num( x, y, w, "Depth", va( "%i", ME_Round( it->size[1] * 2 ) ), &it->size[1], 8.0f, 1.0f, 4096.0f, 2.0f );
 	y += ME_CTRL_H + ME_GAP;
-	steps = ME_Stepper( x, y, w, "Tall", va( "%i", ME_Round( it->size[2] * 2 ) ) );
-	ME_Adjust( &it->size[2], steps, 8.0f, 1.0f, 4096.0f );
+	ME_Num( x, y, w, "Tall", va( "%i", ME_Round( it->size[2] * 2 ) ), &it->size[2], 8.0f, 1.0f, 4096.0f, 2.0f );
 	y += ME_CTRL_H + ME_GAP + 4;
 	// a use trigger's doing is the storyteller's
 	if ( it->use ) {
@@ -6020,14 +6040,11 @@ static qboolean ME_DrawFogLook( float x, float *py, float w, vec3_t color, float
 	const float quarter = ( w - 12 ) / 4.0f;
 	qboolean changed = qfalse;
 	float y = *py;
-	int steps;
 
-	// how deep it takes to see nothing through it, in steps a tenth of it
-	steps = ME_Stepper( x, y, w, "Opaque at", *depth >= ME_FOG_NONE ? "none" : va( "%i", ME_Round( *depth ) ) );
-	if ( steps ) {
-		*depth = Com_Clamp( 16.0f, ME_FOG_NONE, *depth * powf( ME_ShiftDown() ? 1.5f : 1.1f, (float)steps ) );
+	// how deep it takes to see nothing through it: stepped by a fiftieth of it (Shift a tenth), typed as it is
+	if ( ME_NumAt( depth, x, y, w, "Opaque at", *depth >= ME_FOG_NONE ? "none" : va( "%i", ME_Round( *depth ) ), depth,
+		Q_max( 1.0f, *depth * ( ME_ShiftDown() ? 0.1f : 0.02f ) ), 16.0f, ME_FOG_NONE, 1.0f ) )
 		changed = qtrue;
-	}
 	y += ME_CTRL_H + ME_GAP;
 	for ( int i = 0; i < 4; i++ ) {
 		if ( ME_Button( x + i * ( quarter + 4 ), y, quarter, thick[i], (qboolean)( ME_Round( *depth ) == ME_Round( thickDepth[i] ) ), qtrue ) ) {
@@ -6040,11 +6057,8 @@ static qboolean ME_DrawFogLook( float x, float *py, float w, vec3_t color, float
 		static const char *names[3] = { "Red", "Green", "Blue" };
 
 		for ( int c = 0; c < 3; c++ ) {
-			steps = ME_Stepper( x, y, w, names[c], va( "%i", ME_Round( color[c] * 255 ) ) );
-			if ( steps ) {
-				ME_Adjust( &color[c], steps, 0.05f, 0.0f, 1.0f );
+			if ( ME_Num( x, y, w, names[c], va( "%i", ME_Round( color[c] * 255 ) ), &color[c], 0.05f, 0.0f, 1.0f, 255.0f ) )
 				changed = qtrue;
-			}
 			y += ME_CTRL_H + ME_GAP;
 		}
 	}
@@ -6159,9 +6173,7 @@ static void ME_DrawAddedFogs( float x, float y, float w ) {
 		static const char *names[3] = { "Width", "Depth", "Tall" };
 
 		for ( int a = 0; a < 3; a++ ) {
-			const int steps = ME_Stepper( x, y, w, names[a], va( "%i", ME_Round( it->size[a] * 2 ) ) );
-
-			ME_Adjust( &it->size[a], steps, 16.0f, 4.0f, 16384.0f );
+			ME_Num( x, y, w, names[a], va( "%i", ME_Round( it->size[a] * 2 ) ), &it->size[a], 16.0f, 4.0f, 16384.0f, 2.0f );
 			y += ME_CTRL_H + ME_GAP;
 		}
 	}
@@ -6301,21 +6313,19 @@ static void ME_DrawTexturesTab( float x, float y, float w ) {
 			const float cx = x + k * ( third + 4 );
 			const char *value = va( "%i", *values[k] );
 			const qboolean on = (qboolean)( me.texGrow[0] != '\0' );
-			int steps = 0;
 
 			ME_Text( cx, y + 2, labels[k], on ? meDim : meBorder );
-			if ( ME_Button( cx + third - 46, y, 14, "-", qfalse, on ) )
-				steps--;
-			ME_Text( cx + third - 23 - ME_TextWidth( value ) * 0.5f, y + 2, value, on ? meWhite : meBorder );
-			if ( ME_Button( cx + third - 14, y, 14, "+", qfalse, on ) )
-				steps++;
-			if ( on && me.wheel && ME_InRect( cx, y, third, ME_CTRL_H ) ) {
-				steps -= me.wheel;
-				me.wheel = 0;
-			}
-			if ( steps ) {
-				*values[k] = Com_Clampi( 4, 256, *values[k] + steps * (int)ME_Step( 4.0f ) );
-				me.texDirty = qtrue;
+			if ( !on ) {
+				ME_Text( cx + third - 23 - ME_TextWidth( value ) * 0.5f, y + 2, value, meBorder );
+			} else {
+				float v = (float)*values[k];
+				wgMouse_t m;
+
+				ME_CtlMouse( &m );
+				if ( WG_NumberAt( values[k], ME_CtlStyle(), &m, cx + third - 46, y, 46, ME_CTRL_H, &v, ME_Step( 4.0f ), 4.0f, 256.0f, 1.0f, value ) ) {
+					*values[k] = Com_Clampi( 4, 256, (int)floorf( v + 0.5f ) );
+					me.texDirty = qtrue;
+				}
 			}
 		}
 		y += ME_CTRL_H + ME_GAP;
@@ -6516,12 +6526,8 @@ static void ME_DrawStylesTab( float x, float y, float w ) {
 		static const char *names[3] = { "Red", "Green", "Blue" };
 
 		for ( int c = 0; c < 3; c++ ) {
-			const int steps = ME_Stepper( x, y, w, names[c], va( "%i%%", ME_Round( s->color[c] * 100 ) ) );
-
-			if ( steps ) {
-				ME_Adjust( &s->color[c], steps, 0.05f, 0.0f, 1.0f );
+			if ( ME_Num( x, y, w, names[c], va( "%i%%", ME_Round( s->color[c] * 100 ) ), &s->color[c], 0.05f, 0.0f, 1.0f, 100.0f ) )
 				s->override = qtrue;
-			}
 			y += ME_CTRL_H + ME_GAP;
 		}
 	}
@@ -6792,6 +6798,21 @@ static void ME_DrawEditor( void ) {
 
 	if ( popup )
 		me.click = qfalse, me.wheel = 0;
+	// the shared controls' open list or number field: a click on it is its own, one elsewhere
+	// closes it; no text box is typed in meanwhile
+	{
+		wgMouse_t m;
+
+		m.cursorX = me.cursorX;
+		m.cursorY = me.cursorY;
+		m.click = me.flying ? NULL : &me.click;
+		m.clickX = me.clickX;
+		m.clickY = me.clickY;
+		m.wheel = me.flying ? NULL : &me.wheel;
+		WG_PopupBegin( &m );
+		if ( WG_PopupTyping() )
+			me.field = ME_FIELD_NONE;
+	}
 
 	ME_DrawLabels();
 

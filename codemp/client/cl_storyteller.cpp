@@ -3228,6 +3228,7 @@ static qboolean ST_Open( void ) {
 void CL_Storyteller_Close( void ) {
 	if ( !st.open )
 		return;
+	WG_PopupClose();
 	st.open = qfalse;
 	st.popup = ST_POPUP_NONE;
 	st.focus = ST_F_NONE;
@@ -4679,6 +4680,8 @@ INPUT
 */
 
 static qboolean ST_InRect( float x, float y, float w, float h ) {
+	if ( WG_PopupHover( st.cursorX, st.cursorY ) )
+		return qfalse;
 	return (qboolean)( st.cursorX >= x && st.cursorX < x + w && st.cursorY >= y && st.cursorY < y + h );
 }
 
@@ -4758,6 +4761,8 @@ void CL_Storyteller_KeyEvent( int key, qboolean down ) {
 		return;
 	}
 	if ( st.popup == ST_POPUP_EXPERIMENTAL && key != A_MOUSE1 )
+		return;
+	if ( WG_PopupKey( key ) )
 		return;
 
 	switch ( key ) {
@@ -4901,6 +4906,8 @@ void CL_Storyteller_CharEvent( int ch ) {
 
 	if ( !st.open )
 		return;
+	if ( WG_PopupChar( ch ) )
+		return;
 	text = ST_FocusText( &size, &kind );
 	if ( text && WG_EditChar( text, size, ch, ST_AllowChar ) && st.focus != ST_F_SAVE_NAME )
 		ST_Changed();
@@ -4915,6 +4922,10 @@ void CL_Storyteller_MouseEvent( int dx, int dy ) {
 static void ST_DiagramBack( void );
 
 void CL_Storyteller_Escape( void ) {
+	if ( WG_PopupOpen() ) {
+		WG_PopupClose();
+		return;
+	}
 	if ( st.diagram && st.popup == ST_POPUP_NONE && st.focus != ST_F_NONE ) {
 		st.focus = ST_F_NONE;
 		return;
@@ -5088,6 +5099,68 @@ static void ST_FieldStyle( wgStyle_t *style ) {
 	style->border = stBorder;
 	style->text = stWhite;
 	style->dim = stDim;
+}
+
+// the shared - value + control, in the storyteller's look
+static const wgStyle_t *ST_CtlStyle( void ) {
+	static wgStyle_t style;
+
+	ST_FieldStyle( &style );
+	style.fill = stPanelLight;
+	return &style;
+}
+
+// the mouse as the controls have it: the wheel's notches a step each (*wheel, the caller's)
+static void ST_CtlMouse( wgMouse_t *m, int *wheel ) {
+	const qboolean over = WG_PopupHover( st.cursorX, st.cursorY );
+
+	*wheel = st.wheel > 0 ? 1 : st.wheel < 0 ? -1 : 0;
+	m->cursorX = over ? -1.0f : st.cursorX;
+	m->cursorY = over ? -1.0f : st.cursorY;
+	m->click = &st.click;
+	m->clickX = st.clickX;
+	m->clickY = st.clickY;
+	m->wheel = over ? NULL : wheel;
+}
+
+// a choice field's choices, by number
+static const char *ST_ChoiceLabel( int i, void *ctx ) {
+	return va( "%s", ST_Choice( (const char *)ctx, i ) );
+}
+
+// one of a field's '|' separated choices: - and + go round, the value opens the list
+static qboolean ST_ChoiceCtl( float x, float y, float w, const char *choices, char *value ) {
+	int at = ST_ChoiceIndex( choices, value ), wheel;
+	wgMouse_t m;
+
+	ST_CtlMouse( &m, &wheel );
+	if ( !WG_Choice( ST_CtlStyle(), &m, x, y, w, ST_CTRL_H, &at, ST_NumChoices( choices ), ST_ChoiceLabel, (void *)choices, qtrue ) ) {
+		if ( st.wheel && !wheel )
+			st.wheel = 0;
+		return qfalse;
+	}
+	if ( st.wheel && !wheel )
+		st.wheel = 0;
+	Q_strncpyz( value, ST_Choice( choices, at ), ST_VALUE_LEN );
+	return qtrue;
+}
+
+// a whole number in min..max, stepped by one or typed
+static qboolean ST_IntCtl( float x, float y, float w, int *n, int min, int max ) {
+	float v = (float)*n;
+	int wheel;
+	wgMouse_t m;
+
+	ST_CtlMouse( &m, &wheel );
+	if ( !WG_NumberAt( n, ST_CtlStyle(), &m, x, y, w, ST_CTRL_H, &v, 1.0f, (float)min, (float)max, 1.0f, va( "%i", *n ) ) ) {
+		if ( st.wheel && !wheel )
+			st.wheel = 0;
+		return qfalse;
+	}
+	if ( st.wheel && !wheel )
+		st.wheel = 0;
+	*n = Com_Clampi( min, max, (int)floorf( v + 0.5f ) );
+	return qtrue;
 }
 
 // a text box; its height now, grown down while it's typed in and long
@@ -5328,16 +5401,9 @@ static void ST_DrawEdit( void ) {
 
 		ST_Text( ST_EDIT_X, y + 2, ST_FieldLabel( s, i, f->label ), stDim );
 		if ( f->kind == ST_K_CHOICE ) {
-			// click for the next one, right side for the one before
-			const int n = ST_NumChoices( f->choices ), at = ST_ChoiceIndex( f->choices, s->values[i] );
-			if ( ST_Button( fx, y, fw - 20, s->values[i], qfalse, qtrue ) ) {
-				Q_strncpyz( s->values[i], ST_Choice( f->choices, ( at + 1 ) % n ), ST_VALUE_LEN );
+			// - and + for the one before and after, the value for the list of them all
+			if ( ST_ChoiceCtl( fx, y, fw, f->choices, s->values[i] ) )
 				ST_Changed();
-			}
-			if ( ST_Button( fx + fw - 18, y, 18, "<", qfalse, qtrue ) ) {
-				Q_strncpyz( s->values[i], ST_Choice( f->choices, ( at + n - 1 ) % n ), ST_VALUE_LEN );
-				ST_Changed();
-			}
 			continue;
 		}
 		const float fh = ST_TextBox( fx, y, fw, s->values[i], (qboolean)( st.focus == i ), f->kind == ST_K_NUMBER ? "number" : "type here" );
@@ -5760,12 +5826,8 @@ static void ST_DrawArmedPopup( void ) {
 			ST_Arm( name, st.steps, st.numSteps, 1, qfalse );
 		if ( ST_Button( x + 12 + bw, y + 54, bw, "Arm: every time", qfalse, qtrue ) )
 			ST_Arm( name, st.steps, st.numSteps, 0, qfalse );
-		// a number of times, set with - and +
-		if ( ST_Button( x + 8, y + 76, 22, "-", qfalse, (qboolean)( st.armTimes > 2 ) ) )
-			st.armTimes--;
-		ST_Text( x + 8 + ( bw - ST_TextWidth( va( "%i", st.armTimes ) ) ) * 0.5f, y + 78, va( "%i", st.armTimes ), stWhite );
-		if ( ST_Button( x + bw - 14, y + 76, 22, "+", qfalse, (qboolean)( st.armTimes < ST_MAX_ARM_TIMES ) ) )
-			st.armTimes++;
+		// a number of times, set with - and + or typed
+		ST_IntCtl( x + 8, y + 76, bw, &st.armTimes, 2, ST_MAX_ARM_TIMES );
 		if ( ST_Button( x + 12 + bw, y + 76, bw, va( "Arm: %i times", st.armTimes ), qfalse, qtrue ) )
 			ST_Arm( name, st.steps, st.numSteps, st.armTimes, qfalse );
 	}
@@ -6693,6 +6755,26 @@ void CL_Storyteller_Draw( void ) {
 	if ( !st.open ) {
 		ST_DrawPlaying();
 		return;
+	}
+
+	// the shared controls' open list or number field: a click on it is its own, one elsewhere
+	// closes it; a popup opening or closing closes it too
+	{
+		static int popupWas = ST_POPUP_NONE;
+		wgMouse_t m;
+
+		if ( st.popup != popupWas )
+			WG_PopupClose();
+		popupWas = st.popup;
+		m.cursorX = st.cursorX;
+		m.cursorY = st.cursorY;
+		m.click = &st.click;
+		m.clickX = st.clickX;
+		m.clickY = st.clickY;
+		m.wheel = &st.wheel;
+		WG_PopupBegin( &m );
+		if ( WG_PopupTyping() && st.focus != ST_F_NONE )
+			st.focus = ST_F_NONE;
 	}
 
 	// the popup sits on top and gets the clicks first, but is drawn last

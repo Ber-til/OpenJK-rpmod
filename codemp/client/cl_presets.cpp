@@ -864,6 +864,7 @@ static void PR_Close( void ) {
 		return;
 	pr.open = qfalse;
 	pr.typing = qfalse;
+	WG_PopupClose();
 	Key_SetCatcher( Key_GetCatcher() & ~KEYCATCH_PRESETS );
 }
 
@@ -1001,6 +1002,13 @@ void CL_Presets_KeyEvent( int key, qboolean down ) {
 		pr.clickY = pr.cursorY;
 		return;
 	}
+	// an open list of parts: the wheel scrolls it, the keys are its
+	if ( WG_PopupOpen() && ( key == A_MWHEELUP || key == A_MWHEELDOWN ) ) {
+		pr.wheel += key == A_MWHEELUP ? -1 : 1;
+		return;
+	}
+	if ( WG_PopupKey( key ) )
+		return;
 	// typed in the search
 	if ( pr.typing ) {
 		if ( key == A_ENTER || key == A_KP_ENTER ) {
@@ -1039,6 +1047,8 @@ void CL_Presets_KeyEvent( int key, qboolean down ) {
 }
 
 void CL_Presets_CharEvent( int ch ) {
+	if ( WG_PopupChar( ch ) )
+		return;
 	if ( pr.open && pr.typing && WG_EditChar( pr.search, sizeof( pr.search ), ch, NULL ) )
 		pr.page = 0;
 }
@@ -1050,6 +1060,10 @@ void CL_Presets_MouseEvent( int dx, int dy ) {
 
 // out of the search first, then a model's skins back to the models, then closed
 void CL_Presets_Escape( void ) {
+	if ( WG_PopupOpen() ) {
+		WG_PopupClose();
+		return;
+	}
 	if ( pr.typing ) {
 		pr.typing = qfalse;
 		return;
@@ -1146,6 +1160,8 @@ static void PR_ColorText( float x, float y, float w, const char *text, float sca
 }
 
 static qboolean PR_InRect( float x, float y, float w, float h ) {
+	if ( WG_PopupHover( pr.cursorX, pr.cursorY ) )
+		return qfalse;
 	return (qboolean)( pr.cursorX >= x && pr.cursorX < x + w && pr.cursorY >= y && pr.cursorY < y + h );
 }
 
@@ -1283,23 +1299,44 @@ static void PR_DrawViewCard( int slot, float x, float y, const char *value, cons
 	PR_Text( x + 4, y + 22 + PR_VIEW_H, PR_CARD_W - 8, under, prDim, 0.7f, qtrue );
 }
 
-// the parts card: a head, a torso and legs, each stepped through, worn together when clicked
+// a part's name in its list (ctx: the list)
+static const char *PR_PartName( int i, void *ctx ) {
+	return ( (const char (*)[MAX_QPATH])ctx )[i];
+}
+
+// the parts card: a head, a torso and legs, each stepped through or picked from a list, worn
+// together when clicked
 static void PR_DrawPartsCard( int slot, float x, float y ) {
-	const char *names[3] = { prHeads[pr.head], prTorsos[pr.torso], prLowers[pr.lower] };
+	void *lists[3] = { prHeads, prTorsos, prLowers };
 	const int counts[3] = { prNumHeads, prNumTorsos, prNumLowers };
 	int *picks[3] = { &pr.head, &pr.torso, &pr.lower };
+	const qboolean underList = WG_PopupHover( pr.cursorX, pr.cursorY );
 	char value[MAX_QPATH];
+	wgStyle_t style;
+	wgMouse_t m;
 
 	Q_strncpyz( value, PR_PartsValue(), sizeof( value ) );
 	PR_DrawViewCard( slot, x, y, value, "Put together", "", (qboolean)!Q_stricmp( Cvar_VariableString( "model" ), value ) );
+	style.font = pr.font;
+	style.scale = 0.7f;
+	style.lineH = 12.0f;
+	style.padX = 3.0f;
+	style.padY = 2.0f;
+	style.fill = prPanelLight;
+	style.border = prBorder;
+	style.text = prWhite;
+	style.dim = prDim;
+	m.cursorX = underList ? -1.0f : pr.cursorX;
+	m.cursorY = underList ? -1.0f : pr.cursorY;
+	m.click = &pr.click;
+	m.clickX = pr.clickX;
+	m.clickY = pr.clickY;
+	m.wheel = underList ? NULL : &pr.wheel;
 	for ( int k = 0; k < 3; k++ ) {
 		const float ry = y + 22 + PR_VIEW_H + k * ( PR_CTRL_H + 1 );
 
-		if ( PR_Button( x + 4, ry, 18, "<", prPanelLight ) )
-			*picks[k] = ( *picks[k] + counts[k] - 1 ) % counts[k];
-		PR_Text( x + 24, ry + 2, PR_CARD_W - 48, va( "%s " S_COLOR_GREY "%i/%i", names[k], *picks[k] + 1, counts[k] ), prWhite, 0.7f, qtrue );
-		if ( PR_Button( x + PR_CARD_W - 22, ry, 18, ">", prPanelLight ) )
-			*picks[k] = ( *picks[k] + 1 ) % counts[k];
+		if ( counts[k] > 0 )
+			WG_Choice( &style, &m, x + 4, ry, PR_CARD_W - 8, PR_CTRL_H, picks[k], counts[k], PR_PartName, lists[k], qtrue );
 	}
 	if ( PR_Clicked( x, y, PR_CARD_W, PR_CARD_H ) )
 		PR_SetModel( PR_PartsValue() );
@@ -1353,6 +1390,20 @@ void CL_Presets_Draw( void ) {
 
 	if ( !pr.open )
 		return;
+	// the parts' open list: a click on it is its own, one elsewhere closes it
+	{
+		wgMouse_t m;
+
+		m.cursorX = pr.cursorX;
+		m.cursorY = pr.cursorY;
+		m.click = &pr.click;
+		m.clickX = pr.clickX;
+		m.clickY = pr.clickY;
+		m.wheel = &pr.wheel;
+		WG_PopupBegin( &m );
+		if ( WG_PopupTyping() )
+			pr.typing = qfalse;
+	}
 	PR_Fill( 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, prPanel );
 
 	// the tabs: presets, the skins of a model
@@ -1455,6 +1506,7 @@ void CL_Presets_Draw( void ) {
 	if ( pr.click )
 		pr.typing = qfalse;
 	pr.click = qfalse;
+	pr.wheel = 0;
 	WG_DrawOverlay();
 	re->SetColor( NULL );
 	re->DrawStretchPic( pr.cursorX, pr.cursorY, 32, 32, 0, 0, 1, 1, cls.cursorShader );
