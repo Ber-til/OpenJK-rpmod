@@ -135,6 +135,26 @@ static void CR_PlainName( const char *in, char *out, int size ) {
 	out[len] = '\0';
 }
 
+// the name as written, colours kept, without the spaces at its ends (and a trailing ^7 the
+// server may add)
+static void CR_ExactName( const char *in, char *out, int size ) {
+	int len;
+
+	while ( *in == ' ' )
+		in++;
+	Q_strncpyz( out, in, size );
+	len = (int)strlen( out );
+	for ( ;; ) {
+		while ( len && out[len - 1] == ' ' )
+			len--;
+		if ( len >= 2 && out[len - 2] == Q_COLOR_ESCAPE && out[len - 1] == '7' )
+			len -= 2;
+		else
+			break;
+	}
+	out[len] = '\0';
+}
+
 // how far the player whose name starts this line ("name\x19 ...") is, in units; qfalse if
 // nobody playing goes by it. With more than one by that name, it's you only when a /me of
 // yours is waiting to come back, else the nearest of the others in sight
@@ -150,6 +170,41 @@ static qboolean CR_FindSender( const char *line, float *distance ) {
 	CR_PlainName( said, name, sizeof( name ) );
 	if ( !name[0] )
 		return qfalse;
+	// first by the name as it's written, colours and all: ^3. and . are two players
+	{
+		char exact[256], theirs[256];
+		int found = -1, count = 0;
+
+		CR_ExactName( said, exact, sizeof( exact ) );
+		for ( int c = 0; c < MAX_CLIENTS; c++ ) {
+			const int ofs = cl.gameState.stringOffsets[CS_PLAYERS + c];
+
+			if ( !ofs )
+				continue;
+			CR_ExactName( Info_ValueForKey( cl.gameState.stringData + ofs, "n" ), theirs, sizeof( theirs ) );
+			if ( !Q_stricmp( theirs, exact ) ) {
+				found = c;
+				count++;
+			}
+		}
+		if ( count == 1 ) {
+			if ( found == cl.snap.ps.clientNum ) {
+				*distance = 0.0f;
+				return qtrue;
+			}
+			*distance = CR_OUT_OF_SIGHT;
+			for ( int i = 0; i < cl.snap.numEntities; i++ ) {
+				const entityState_t *es = &cl.parseEntities[( cl.snap.parseEntitiesNum + i ) & ( MAX_PARSE_ENTITIES - 1 )];
+
+				if ( es->number == found ) {
+					*distance = Distance( cl.snap.ps.origin, es->pos.trBase );
+					break;
+				}
+			}
+			return qtrue;
+		}
+	}
+	// the same name, colours aside: guessed among them, below
 	for ( int c = 0; c < MAX_CLIENTS; c++ ) {
 		const int ofs = cl.gameState.stringOffsets[CS_PLAYERS + c];
 
