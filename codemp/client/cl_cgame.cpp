@@ -741,6 +741,7 @@ void CL_ShutdownCGame( void ) {
 	CL_Languages_Shutdown();
 	CL_EmotePreview_Shutdown();
 	CL_Extras_Shutdown();
+	CL_WorldItems_Shutdown();
 	CL_RpCinematic_Reset();
 	CL_NpcWalk_Reset();
 	CL_FighterAssist_Shutdown();

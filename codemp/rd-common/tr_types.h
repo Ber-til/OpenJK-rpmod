@@ -85,6 +85,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define RDF_AUTOMAP			32		//means this scene is to draw the automap -rww
 #define	RDF_NOFOG			64		//no global fog in this scene (but still brush fog) -rww
 #define RDF_ForceSightOn	128		//using force sight
+#define RDF_UIGLOW			256		// an RDF_NOWORLDMODEL scene that still wants dynamic glow (a lit blade in a preview)
 
 extern int	skyboxportal;
 extern int	drawskyboxportal;

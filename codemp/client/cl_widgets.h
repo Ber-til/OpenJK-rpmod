@@ -72,6 +72,15 @@ scrolled to the cursor when focused. A click in it goes to WG_FieldClick, as a f
 void		WG_TextBox( const wgStyle_t *style, float x, float y, float w, float h, char *buf, qboolean focused,
 				const char *placeholder, float cursorX, float cursorY );
 
+/*
+A text area: many lines typed in, Enter a new line in it, PgUp and PgDn a page. Wrapped to its width,
+its scrollbar on the right (dragged: it takes the click, *click false) and the wheel through
+WG_TextAreaScroll; scrolled to the cursor when it moves. A click in it goes to WG_FieldClick.
+*/
+void		WG_TextArea( const wgStyle_t *style, float x, float y, float w, float h, char *buf, qboolean focused,
+				const char *placeholder, float cursorX, float cursorY, qboolean *click, float clickX, float clickY );
+void		WG_TextAreaScroll( int lines );		// the focused area's view, lines down (up when negative)
+
 // text to read, wrapped to w: how many lines it takes, and those from first on drawn at x, y
 // (count of them). A ^ is drawn as itself
 int			WG_TextLines( const wgStyle_t *style, const char *text, float w );

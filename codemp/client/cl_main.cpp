@@ -2418,6 +2418,7 @@ void CL_Frame ( int msec ) {
 	CL_Presence_Frame();
 	CL_EffectSwap_Frame();
 	CL_Pazaak_Frame();
+	CL_Notes_Frame();
 	CL_Inventory_Frame();
 	CL_Inspect_Frame();
 	CL_Holster_PollFrame();
@@ -2541,6 +2542,7 @@ void CL_InitRenderer( void ) {
 	CL_Inventory_RendererRestarted();
 	CL_Presets_RendererRestarted();
 	CL_Holster_RendererRestarted();
+	CL_WorldItems_RendererRestarted();
 	g_console_field_width = cls.glconfig.vidWidth / SMALLCHAR_WIDTH - 2;
 	g_consoleField.widthInChars = g_console_field_width;
 
@@ -2973,6 +2975,7 @@ void CL_Init( void ) {
 	CL_Inventory_Init();
 	CL_Inspect_Init();
 	CL_Holster_Init();
+	CL_WorldItems_Init();
 	CL_Characters_Init();
 	CL_Datapad_Init ();
 	CL_EscMenu_Init ();

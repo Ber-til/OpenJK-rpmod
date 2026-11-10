@@ -52,6 +52,8 @@ void		DP_Text( float x, float y, float w, const char *text, const float *color, 
 qboolean	DP_InRect( float x, float y, float w, float h );
 qboolean	DP_Clicked( float x, float y, float w, float h );		// the click in it, taken
 qboolean	DP_Button( float x, float y, float w, const char *label, qboolean on );
+// the click not taken yet, and where: for a widget that takes it itself (a scrollbar, a text field)
+qboolean	*DP_Click( float *clickX, float *clickY );
 
 // web pages' blocks (cl_html.h) laid out to w from y; only what's between top and bottom drawn, a
 // picture cut to them. Their height, drawn or not
@@ -82,3 +84,10 @@ qboolean	CL_Pazaak_Key( int key );				// a key for its text field: qtrue if take
 void		CL_Pazaak_Char( int ch );
 void		CL_Pazaak_Frame( void );
 void		CL_Pazaak_Init( void );
+
+// cl_notes.cpp: the Notes app, a character's notes or a datapad item's, kept by C1B3R
+void		CL_Notes_Draw( const dpRect_t *screen );
+void		CL_Notes_Shown( qboolean shown );
+qboolean	CL_Notes_Key( int key );
+void		CL_Notes_Char( int ch );
+void		CL_Notes_Owner( int item, int world, const char *name );	// whose: your character's (0, 0), a datapad item's or a placed one's

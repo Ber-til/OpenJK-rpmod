@@ -402,10 +402,13 @@ static void CL_R_RenderScene( const refdef_t *fd ) {
 	CL_Cinematic_AddToScene( fd );
 	// where the stories armed wait, for the storyteller
 	CL_Storyteller_AddToScene( fd );
+	// things in the world: dropped items, objects, bodies
+	CL_WorldItems_AddToScene( fd );
 	// where the crosshair looks, for an NPC's name under it
 	CL_NpcNames_View( fd );
 	CL_Aim_View( fd );
-	if ( !CL_NpcManager_RenderScene( fd ) && !CL_ShaderManager_RenderScene( fd ) && !CL_EffectManager_RenderScene( fd )
+	// the holster's live editing first: it closes the managers as it opens
+	if ( !CL_WorldItems_RenderScene( fd ) && !CL_Holster_RenderScene( fd ) && !CL_NpcManager_RenderScene( fd ) && !CL_ShaderManager_RenderScene( fd ) && !CL_EffectManager_RenderScene( fd )
 		&& !CL_MapEditor_RenderScene( fd ) && !CL_RpCinematic_RenderScene( fd ) )
 		CL_ModelManager_RenderScene( fd );
 }

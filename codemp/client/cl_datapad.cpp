@@ -32,6 +32,8 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 //   datapad              opens it, or puts it away
 //   datapad open|close
 //   datapad settings     open, on Settings
+//   datapad notes        open, on Notes: your character's, kept by C1B3R
+//   datapad place|remove|drop  old names: what's in the world is /world's now (cl_worlditems.cpp)
 //   datapad pos <x> <y>  where it opens, on the 640x480 screen; datapad pos alone: back above the
 //                        HUD (cl_datapadX, cl_datapadY)
 //
@@ -74,11 +76,12 @@ typedef enum {
 	DP_PAZAAK,
 	DP_HOLONET,
 	DP_COMPORT,
+	DP_NOTES,
 	DP_NUM_APPS
 } dpApp_t;
 
 // an app that needs the room has the datapad bigger while it's on its screen
-static const qboolean dpAppFull[DP_NUM_APPS] = { qfalse, qfalse, qtrue, qtrue, qtrue };
+static const qboolean dpAppFull[DP_NUM_APPS] = { qfalse, qfalse, qtrue, qtrue, qtrue, qtrue };
 
 // the apps in files of their own: what each is told and given
 static void DP_AppShown( dpApp_t app, qboolean shown ) {
@@ -88,6 +91,8 @@ static void DP_AppShown( dpApp_t app, qboolean shown ) {
 		CL_HoloNet_Shown( shown );
 	else if ( app == DP_COMPORT )
 		CL_Comport_Shown( shown );
+	else if ( app == DP_NOTES )
+		CL_Notes_Shown( shown );
 }
 
 typedef enum {
@@ -135,6 +140,8 @@ static struct {
 	int			appTime;
 	dpBind_t	binding;			// a key being picked in Settings
 	qboolean	emoting;			// the emote's on: ended as it folds or closes
+	qboolean	itemMode;			// a datapad item's (or one in the world): its Notes alone
+	qboolean	openingItem;
 
 	int			font, titleFont;
 	sfxHandle_t	openSound, closeSound, clickSound;
@@ -145,7 +152,7 @@ static struct {
 	int			messageTime;
 } dp;
 
-static cvar_t *cl_datapadX, *cl_datapadY, *cl_datapadColor, *cl_datapadEmote;
+static cvar_t *cl_datapadX, *cl_datapadY, *cl_datapadColor, *cl_datapadEmote, *cl_datapadHand;
 
 /*
 ===============================================================================
@@ -334,6 +341,12 @@ static void DP_Set( dpState_t state ) {
 		CL_Characters_Close();
 		CL_RadialMenu_CloseSettings();
 		CL_Languages_Close();
+		// opened as yours again: the datapad item's notes left
+		if ( dp.itemMode && !dp.openingItem ) {
+			dp.itemMode = qfalse;
+			dp.app = dp.appFrom = DP_HOME;
+			CL_Notes_Owner( 0, 0, NULL );
+		}
 		DP_OpenRect( &r );
 		dp.cursorX = r.x + r.w * 0.5f;
 		dp.cursorY = r.y + ( SCREEN_HEIGHT - r.y ) * 0.4f;
@@ -343,9 +356,14 @@ static void DP_Set( dpState_t state ) {
 		Key_SetCatcher( Key_GetCatcher() & ~KEYCATCH_DATAPAD );
 		DP_Emote( qfalse );
 		DP_AppShown( dp.app, qfalse );
-		// put away: on the home screen next time
-		if ( state == DP_CLOSED )
+		// put away: on the home screen next time, yours
+		if ( state == DP_CLOSED ) {
 			dp.app = dp.appFrom = DP_HOME;
+			if ( dp.itemMode ) {
+				dp.itemMode = qfalse;
+				CL_Notes_Owner( 0, 0, NULL );
+			}
+		}
 	}
 }
 
@@ -355,8 +373,14 @@ void CL_Datapad_Close( void ) {
 }
 
 void CL_Datapad_Disconnect( void ) {
-	// on the next server as it was, but never holding the keys
+	// on the next server as it was, but never holding the keys, nor a datapad item's
 	dp.emoting = qfalse;
+	if ( dp.itemMode ) {
+		dp.itemMode = qfalse;
+		dp.app = dp.appFrom = DP_HOME;
+	}
+	CL_Notes_Disconnect();
+	CL_WorldItems_Disconnect();
 	dp.binding = DP_BIND_NONE;
 	if ( dp.state == DP_OPEN ) {
 		dp.state = DP_FOLDED;
@@ -520,6 +544,12 @@ qboolean DP_Clicked( float x, float y, float w, float h ) {
 	dp.click = qfalse;
 	DP_Sound( dp.clickSound );
 	return qtrue;
+}
+
+qboolean *DP_Click( float *clickX, float *clickY ) {
+	*clickX = dp.clickX;
+	*clickY = dp.clickY;
+	return &dp.click;
 }
 
 qboolean DP_Button( float x, float y, float w, const char *label, qboolean on ) {
@@ -778,6 +808,13 @@ static void DP_ComportPicture( float x, float y, float w, float h ) {
 	DP_Fill( x + w * 0.7f, y + h * 0.78f, w * 0.1f, h * 0.1f, dpWhite );
 }
 
+// Notes' picture: a page with its lines
+static void DP_NotesPicture( float x, float y, float w, float h ) {
+	DP_Fill( x + w * 0.26f, y + h * 0.16f, w * 0.48f, h * 0.66f, dpWhite );
+	for ( int i = 0; i < 4; i++ )
+		DP_Fill( x + w * 0.32f, y + h * ( 0.28f + 0.12f * i ), w * ( i == 3 ? 0.22f : 0.36f ), h * 0.04f, dpButton );
+}
+
 static void DP_DrawHome( const dpRect_t *s ) {
 	const float size = 34.0f;
 	const float x = s->x + DP_Wide( 10 ), y = s->y + DP_STATUS_H + 10;
@@ -791,6 +828,7 @@ static void DP_DrawHome( const dpRect_t *s ) {
 		{ DP_HOLONET,	"HoloNet",	DP_HoloNetPicture },
 		{ DP_COMPORT,	"Comport",	DP_ComportPicture },
 		{ DP_PAZAAK,	"Pazaak",	DP_PazaakPicture },
+		{ DP_NOTES,		"Notes",	DP_NotesPicture },
 		{ DP_SETTINGS,	"Settings",	DP_SettingsPicture },
 	};
 
@@ -868,8 +906,12 @@ static void DP_DrawSettings( const dpRect_t *s ) {
 		// at once, as it's open now
 		DP_Emote( (qboolean)( cl_datapadEmote->integer != 0 ) );
 	}
+	y += DP_CTRL_H + 3;
+	DP_Text( x, y + 3, label, "One in hand", dpText, dp.font, small, qfalse );
+	if ( DP_Button( x + label, y, w - label, cl_datapadHand->integer ? "On" : "Off", (qboolean)( cl_datapadHand->integer != 0 ) ) )
+		Cvar_Set( "cl_datapadHand", cl_datapadHand->integer ? "0" : "1" );
 	y += DP_CTRL_H + 2;
-	DP_Text( x, y, w, "/" DP_EMOTE " while it's open", dpDim, dp.font, 0.55f, qfalse );
+	DP_Text( x, y, w, "/" DP_EMOTE "; the one in hand seen by all with the client", dpDim, dp.font, 0.55f, qfalse );
 }
 
 // the screen's apps: the home screen, and one sliding in over it from the right
@@ -888,6 +930,8 @@ static void DP_DrawApps( const dpRect_t *s ) {
 			CL_HoloNet_Draw( s );
 		else if ( dp.app == DP_COMPORT )
 			CL_Comport_Draw( s );
+		else if ( dp.app == DP_NOTES )
+			CL_Notes_Draw( s );
 		return;
 	}
 	if ( t >= 1.0f || dp.app == dp.appFrom ) {
@@ -939,11 +983,19 @@ void CL_Datapad_Draw( void ) {
 		const float by = Q_min( r.y + r.h, (float)SCREEN_HEIGHT ) - DP_CTRL_H - 5;
 
 		DP_DrawApps( &s );
-		if ( DP_Button( r.x + pad, by, bw, "Home", (qboolean)( dp.app == DP_HOME ) ) )
-			DP_SetApp( DP_HOME );
-		if ( DP_Button( r.x + pad + bw + gap, by, bw, "Close", qfalse ) ) {
-			DP_Set( DP_CLOSED );
-			return;
+		// a datapad item's: its Notes alone, no home screen
+		if ( dp.itemMode ) {
+			if ( DP_Button( r.x + pad, by, bw * 2 + gap, "Close", qfalse ) ) {
+				DP_Set( DP_CLOSED );
+				return;
+			}
+		} else {
+			if ( DP_Button( r.x + pad, by, bw, "Home", (qboolean)( dp.app == DP_HOME ) ) )
+				DP_SetApp( DP_HOME );
+			if ( DP_Button( r.x + pad + bw + gap, by, bw, "Close", qfalse ) ) {
+				DP_Set( DP_CLOSED );
+				return;
+			}
 		}
 		if ( dp.message[0] && cls.realtime - dp.messageTime < 3000 )
 			DP_Text( s.x + 4, s.y + s.h - 14, s.w - 8, dp.message, dpText, dp.font, 0.62f, qfalse );
@@ -991,7 +1043,7 @@ void CL_Datapad_KeyEvent( int key, qboolean down ) {
 		return;
 	}
 	if ( ( dp.app == DP_PAZAAK && CL_Pazaak_Key( key ) ) || ( dp.app == DP_HOLONET && CL_HoloNet_Key( key ) )
-		|| ( dp.app == DP_COMPORT && CL_Comport_Key( key ) ) )
+		|| ( dp.app == DP_COMPORT && CL_Comport_Key( key ) ) || ( dp.app == DP_NOTES && CL_Notes_Key( key ) ) )
 		return;
 	// its keys work while it's open, as they do in the game
 	binding = Key_GetBinding( key );
@@ -1004,6 +1056,8 @@ void CL_Datapad_CharEvent( int ch ) {
 		CL_Pazaak_Char( ch );
 	else if ( dp.state == DP_OPEN && dp.app == DP_COMPORT )
 		CL_Comport_Char( ch );
+	else if ( dp.state == DP_OPEN && dp.app == DP_NOTES )
+		CL_Notes_Char( ch );
 }
 
 void CL_Datapad_MouseEvent( int dx, int dy ) {
@@ -1018,6 +1072,26 @@ void CL_Datapad_Escape( void ) {
 		return;
 	}
 	DP_Set( DP_CLOSED );
+}
+
+// a datapad item's, or one in the world's (world its number there, else 0): opened on its Notes alone
+void CL_Datapad_OpenItem( int item, const char *name, int world ) {
+	if ( dp.state == DP_OPEN && dp.app == DP_NOTES )
+		CL_Notes_Shown( qfalse );
+	CL_Notes_Owner( item, world, name );
+	dp.openingItem = qtrue;
+	DP_Set( DP_OPEN );
+	dp.openingItem = qfalse;
+	if ( dp.state != DP_OPEN )
+		return;
+	dp.itemMode = qtrue;
+	if ( dp.app == DP_NOTES ) {
+		CL_Notes_Shown( qtrue );
+	} else {
+		DP_SetApp( DP_NOTES );
+		// straight there, without sliding over the home screen
+		dp.appFrom = DP_NOTES;
+	}
 }
 
 /*
@@ -1035,11 +1109,15 @@ static void DP_Datapad_f( void ) {
 		DP_Set( dp.state == DP_OPEN ? DP_CLOSED : DP_OPEN );
 	} else if ( !Q_stricmp( arg, "open" ) ) {
 		DP_Set( DP_OPEN );
-	} else if ( !Q_stricmp( arg, "settings" ) || !Q_stricmp( arg, "pazaak" ) || !Q_stricmp( arg, "holonet" ) || !Q_stricmp( arg, "comport" ) ) {
+	} else if ( !Q_stricmp( arg, "settings" ) || !Q_stricmp( arg, "pazaak" ) || !Q_stricmp( arg, "holonet" ) || !Q_stricmp( arg, "comport" )
+		|| !Q_stricmp( arg, "notes" ) ) {
+		// yours, not a datapad item's
+		if ( dp.state == DP_OPEN && dp.itemMode )
+			DP_Set( DP_CLOSED );
 		DP_Set( DP_OPEN );
 		if ( dp.state == DP_OPEN )
 			DP_SetApp( !Q_stricmp( arg, "pazaak" ) ? DP_PAZAAK : !Q_stricmp( arg, "holonet" ) ? DP_HOLONET
-				: !Q_stricmp( arg, "comport" ) ? DP_COMPORT : DP_SETTINGS );
+				: !Q_stricmp( arg, "comport" ) ? DP_COMPORT : !Q_stricmp( arg, "notes" ) ? DP_NOTES : DP_SETTINGS );
 		// straight to an article, or a forum
 		if ( dp.state == DP_OPEN && Cmd_Argc() > 2 ) {
 			if ( !Q_stricmp( arg, "holonet" ) )
@@ -1047,6 +1125,8 @@ static void DP_Datapad_f( void ) {
 			else if ( !Q_stricmp( arg, "comport" ) )
 				CL_Comport_Open( Cmd_Argv( 2 ) );
 		}
+	} else if ( !Q_stricmp( arg, "place" ) || !Q_stricmp( arg, "remove" ) || !Q_stricmp( arg, "drop" ) ) {
+		CL_WorldItems_Command( arg, Cmd_Argc() > 2 ? Cmd_ArgsFrom( 2 ) : "" );
 	} else if ( !Q_stricmp( arg, "fold" ) ) {
 		DP_Set( DP_FOLDED );
 	} else if ( !Q_stricmp( arg, "close" ) ) {
@@ -1064,7 +1144,8 @@ static void DP_Datapad_f( void ) {
 		Com_Printf( "usage: " DP_CMD "                opens the datapad, or puts it away\n" );
 		Com_Printf( "       " DP_CMD " open|close\n" );
 		Com_Printf( "       " DP_CMD " settings       open on its Settings\n" );
-		Com_Printf( "       " DP_CMD " pazaak|holonet|comport   open on that app\n" );
+		Com_Printf( "       " DP_CMD " pazaak|holonet|comport|notes   open on that app\n" );
+		Com_Printf( "       (things in the world, datapads too: /world)\n" );
 		Com_Printf( "       " DP_CMD " pos <x> <y>    where it opens, on the 640x480 screen (its top left)\n" );
 		Com_Printf( "       " DP_CMD " pos            back in the bottom right corner, above the HUD\n" );
 	}
@@ -1076,6 +1157,7 @@ void CL_Datapad_Init( void ) {
 	cl_datapadY = Cvar_Get( "cl_datapadY", "-1", CVAR_ARCHIVE_ND, "Where the folded datapad goes, from the top of the 640x480 screen; -1: the bottom right corner, above the HUD" );
 	cl_datapadColor = Cvar_Get( "cl_datapadColor", "0", CVAR_ARCHIVE_ND, "The datapad's colour: 0 cyan, 1 blue, 2 green, 3 amber, 4 red, 5 violet, 6 white" );
 	cl_datapadEmote = Cvar_Get( "cl_datapadEmote", "0", CVAR_ARCHIVE_ND, "Your character holds a datapad (RPMod's /emlift) while yours is open" );
+	cl_datapadHand = Cvar_Get( "cl_datapadHand", "1", CVAR_ARCHIVE_ND, "A datapad model shows in your character's hand during the datapad emote (/emlift), seen by everyone with the client" );
 	Cmd_AddCommand( DP_CMD, DP_Datapad_f, "The datapad: open like a phone, folded in the corner, or put away" );
 	CL_Pazaak_Init();
 	CL_Comport_Init();

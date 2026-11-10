@@ -28,13 +28,16 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 // drawn on each player's body as the game draws it: each frame every player is paired with the body
 // nearest them of those drawn the frame before, one body each (as custom emotes are), so it follows
 // their animation and their custom emote. A model someone doesn't have isn't drawn for them. One
-// can hide while its player's saber is lit, or while it's in their hand (a hilt worn at the hip).
+// can hide while its player's saber is lit, or while it's in their hand (a hilt worn at the hip), or
+// show only while they hold a datapad up (RPMod's /emlift, BOTH_CIN_26 or 27): one in their hand.
 
 #include <string>
 #include <vector>
 #include "client.h"
+#include "qcommon/cm_public.h"
 #include "cl_presence.h"
 #include "cl_widgets.h"
+#include "cl_gizmo.h"
 
 #define HS_CMD				"holster"
 #define HS_MAX				8			// as C1B3R keeps
@@ -54,8 +57,20 @@ typedef struct {
 	char	source[64];				// the pk3 it's from, "base" for the game's own
 	vec3_t	off, ang;
 	float	scale;
-	int		hide;					// 0 never, 1 while the saber's lit, 2 while it's in hand
+	int		hide;					// 0 never, 1 while the saber's lit, 2 while it's in hand, 3 shown only in the datapad emote
 } hsItem_t;
+
+#define HS_HIDE_MODES		4
+#define HS_HIDE_DATAPAD		3
+
+// datapad models to hold in the hand or lay in the world: the first this game has is used
+static const char *hsDatapads[] = {
+	"models/items/datapad.md3",
+	"items/datapad.md3",
+};
+
+// how a body's player is shown: in the datapad emote or not, or everything (the editor's)
+enum { HS_EMOTE_NO, HS_EMOTE_DATAPAD, HS_EMOTE_ALL };
 
 // what's known of each player's
 typedef struct {
@@ -65,6 +80,7 @@ typedef struct {
 	qboolean	linked;				// as C1B3R's list said when it was asked: linked since, asked again
 	hsItem_t	items[HS_MAX];
 	int			num;
+	qboolean	hand;				// a datapad in hand during the datapad emote (their datapad setting)
 } hsClient_t;
 
 // a model worn, loaded once for everyone wearing it
@@ -88,6 +104,15 @@ static int		hsNumBodies;
 static void		*hsPaired[MAX_CLIENTS];
 static int		hsDrawnFrame[MAX_CLIENTS], hsFrame;
 static int		hsDebug;		// /holster debug: frames left to report what's drawn and why not
+
+// live editing: the tag the picked one is on, in the world, as it was last drawn (the gizmo's)
+static struct {
+	int		item;				// the one to keep, while it's drawn; -1 none
+	int		of;					// the one it was kept for
+	int		frame;				// cls.framecount it was
+	vec3_t	org;				// the tag, before the move
+	vec3_t	axis[3];			// its axes, the move's and the turn's
+} hsKeep = { -1, -1 };
 
 static httpRequest_t hsViewHttp, hsGetHttp, hsSetHttp;
 static int hsViewFor = -1;
@@ -147,8 +172,8 @@ static void HS_ToWorld( const refEntity_t *body, const vec3_t in, vec3_t out ) {
 		out[k] = body->axis[0][k] * in[0] + body->axis[1][k] * in[1] + body->axis[2][k] * in[2];
 }
 
-// each attachment put on the body as it's drawn now; saber: 0 put away, 1 in hand, 2 lit
-static void HS_AddItems( const hsItem_t *items, int num, void *ghoul2, const refEntity_t *body, int saber ) {
+// each attachment put on the body as it's drawn now; saber: 0 put away, 1 in hand, 2 lit; emote: HS_EMOTE_*
+static void HS_AddItems( const hsItem_t *items, int num, void *ghoul2, const refEntity_t *body, int saber, int emote ) {
 	vec3_t zero = { 0, 0, 0 };
 
 	if ( !ghoul2 )
@@ -164,9 +189,14 @@ static void HS_AddItems( const hsItem_t *items, int num, void *ghoul2, const ref
 		refEntity_t ent;
 		int bolt;
 
-		if ( ( it->hide == 1 && saber >= 2 ) || ( it->hide == 2 && saber >= 1 ) ) {
+		if ( emote != HS_EMOTE_ALL && ( ( it->hide == 1 && saber >= 2 ) || ( it->hide == 2 && saber >= 1 ) ) ) {
 			if ( hsDebug )
 				Com_Printf( "  %s: hidden (saber %s)\n", it->model, saber >= 2 ? "lit" : "in hand" );
+			continue;
+		}
+		if ( it->hide == HS_HIDE_DATAPAD && emote == HS_EMOTE_NO ) {
+			if ( hsDebug )
+				Com_Printf( "  %s: hidden (not in the datapad emote)\n", it->model );
 			continue;
 		}
 		if ( !( m = HS_Model( it->model ) ) ) {
@@ -185,6 +215,16 @@ static void HS_AddItems( const hsItem_t *items, int num, void *ghoul2, const ref
 		for ( int k = 0; k < 3; k++ ) {
 			VectorSet( axes[k], bm.matrix[0][k], bm.matrix[1][k], bm.matrix[2][k] );
 			VectorNormalize( axes[k] );
+		}
+		if ( i == hsKeep.item ) {
+			HS_ToWorld( body, at, v );
+			VectorAdd( body->origin, v, hsKeep.org );
+			for ( int k = 0; k < 3; k++ ) {
+				HS_ToWorld( body, axes[k], hsKeep.axis[k] );
+				VectorNormalize( hsKeep.axis[k] );
+			}
+			hsKeep.of = i;
+			hsKeep.frame = cls.framecount;
 		}
 		// moved and turned from the tag
 		for ( int k = 0; k < 3; k++ )
@@ -267,7 +307,7 @@ static int HS_ReadItems( const char *answer, hsItem_t *items, int max ) {
 		sscanf( f[4], "%f %f %f", &it->off[0], &it->off[1], &it->off[2] );
 		sscanf( f[5], "%f %f %f", &it->ang[0], &it->ang[1], &it->ang[2] );
 		it->scale = Com_Clamp( HS_SCALE_MIN, HS_SCALE_MAX, (float)atof( f[6] ) );
-		it->hide = Com_Clampi( 0, 2, atoi( f[7] ) );
+		it->hide = Com_Clampi( 0, HS_HIDE_MODES - 1, atoi( f[7] ) );
 	}
 	return num;
 }
@@ -310,6 +350,7 @@ static void HS_FetchFrame( void ) {
 
 		if ( hsViewHttp.status == 200 ) {
 			c->num = HS_ReadItems( hsViewHttp.answer, c->items, HS_MAX );
+			c->hand = (qboolean)( strstr( va( "\n%s\n", hsViewHttp.answer ), "\ndatapadhand\t1\n" ) != NULL );
 			c->state = 2;
 		} else {
 			c->state = 0;
@@ -317,7 +358,7 @@ static void HS_FetchFrame( void ) {
 		}
 		hsViewFor = -1;
 	}
-	if ( hsViewHttp.state == HTTP_BUSY || !CL_Presence_Session() || !cl_holster->integer )
+	if ( hsViewHttp.state == HTTP_BUSY || !CL_Presence_Session() )
 		return;
 	for ( int i = 0; i < MAX_CLIENTS; i++ ) {
 		hsClient_t *c;
@@ -381,6 +422,57 @@ static qboolean HS_PlayerState( int client, vec3_t origin, int *saber ) {
 	return qfalse;
 }
 
+// a player holding a datapad up (RPMod's /emlift, emlift2): their torso's animation
+static int HS_Emote( int client ) {
+	int torso = -1;
+	const char *name;
+
+	if ( client == clc.clientNum ) {
+		torso = cl.snap.ps.torsoAnim;
+	} else {
+		for ( int i = 0; i < cl.snap.numEntities; i++ ) {
+			const entityState_t *es = &cl.parseEntities[( cl.snap.parseEntitiesNum + i ) & ( MAX_PARSE_ENTITIES - 1 )];
+
+			if ( es->number == client && es->eType == ET_PLAYER ) {
+				torso = es->torsoAnim;
+				break;
+			}
+		}
+	}
+	name = CL_EmotePreview_AnimName( torso );
+	return name && ( !Q_stricmp( name, "BOTH_CIN_26" ) || !Q_stricmp( name, "BOTH_CIN_27" ) ) ? HS_EMOTE_DATAPAD : HS_EMOTE_NO;
+}
+
+// a datapad in a player's hand during the datapad emote: the datapad setting's (cl_datapadHand), not
+// the holster's, so it shows whatever they wear and with cl_holster 0. Where it sits on the hand is
+// cl_datapadHandPos, "<tag> <x y z> <pitch yaw roll> <scale>", the same for everyone this game draws
+static qboolean HS_Hand( int client ) {
+	if ( client == clc.clientNum )
+		return (qboolean)( Cvar_VariableIntegerValue( "cl_datapadHand" ) != 0 );
+	return (qboolean)( hsClients[client].state == 2 && hsClients[client].hand );
+}
+
+static qboolean HS_HandItem( hsItem_t *it ) {
+	static cvar_t *pos;
+	const char *model = CL_Holster_DatapadModel();
+	char tag[32];
+
+	if ( !model[0] )
+		return qfalse;
+	if ( !pos )
+		pos = Cvar_Get( "cl_datapadHandPos", "*r_hand 0 0 0 0 0 0 1", CVAR_ARCHIVE_ND,
+			"Where the datapad in hand sits: <tag> <x y z> <pitch yaw roll> <scale>, from the tag" );
+	memset( it, 0, sizeof( *it ) );
+	it->scale = 1.0f;
+	tag[0] = '\0';
+	sscanf( pos->string, "%31s %f %f %f %f %f %f %f", tag, &it->off[0], &it->off[1], &it->off[2],
+		&it->ang[0], &it->ang[1], &it->ang[2], &it->scale );
+	Q_strncpyz( it->bolt, tag[0] == '*' ? tag : "*r_hand", sizeof( it->bolt ) );
+	Q_strncpyz( it->model, model, sizeof( it->model ) );
+	it->scale = Com_Clamp( HS_SCALE_MIN, HS_SCALE_MAX, it->scale );
+	return qtrue;
+}
+
 // each frame, before it's drawn: every player wearing something paired with one of last frame's
 // bodies, the nearest pairs first
 void CL_Holster_Frame( void ) {
@@ -402,8 +494,9 @@ void CL_Holster_Frame( void ) {
 	}
 	for ( int c = 0; c < MAX_CLIENTS; c++ ) {
 		hsPaired[c] = NULL;
-		known[c] = (qboolean)( cl_holster->integer && cls.state == CA_ACTIVE
-			&& ( ( hsClients[c].num && hsClients[c].state == 2 ) || ( c == clc.clientNum && HE_Live() ) )
+		known[c] = (qboolean)( cls.state == CA_ACTIVE
+			&& ( ( cl_holster->integer && ( ( hsClients[c].num && hsClients[c].state == 2 ) || ( c == clc.clientNum && HE_Live() ) ) )
+				|| HS_Hand( c ) )
 			&& HS_PlayerState( c, org[c], &saber ) );
 		if ( hsDebug && CL_PlayerSlotName( c )[0] && ( c == clc.clientNum || hsClients[c].state ) )
 			Com_Printf( "  %2i %s" S_COLOR_WHITE ": state %i, %i worn, linked %i, %s\n", c, CL_PlayerSlotName( c ),
@@ -444,7 +537,7 @@ void CL_Holster_Frame( void ) {
 void CL_Holster_Entity( const refEntity_t *ent, void *bodyGhoul2 ) {
 	const char *gla;
 
-	if ( !cl_holster || !cl_holster->integer || !ent || ent->reType != RT_MODEL || !ent->ghoul2 || !bodyGhoul2 )
+	if ( !cl_holster || !ent || ent->reType != RT_MODEL || !ent->ghoul2 || !bodyGhoul2 )
 		return;
 	CGhoul2Info_v &g2 = *(CGhoul2Info_v *)ent->ghoul2;
 	if ( !re->G2API_HaveWeGhoul2Models( g2 ) || !( gla = re->G2API_GetGLAName( g2, 0 ) ) || !Q_stristr( gla, "humanoid" ) )
@@ -472,10 +565,22 @@ void CL_Holster_Entity( const refEntity_t *ent, void *bodyGhoul2 ) {
 		hsDrawnFrame[c] = hsFrame;
 		if ( hsDebug )
 			Com_Printf( "  drawing %i's on body (renderfx %i, gla %s)\n", c, ent->renderfx, gla );
-		if ( c == clc.clientNum && HE_Live() )
-			HE_AddLive( ent->ghoul2, ent, saber );
-		else
-			HS_AddItems( hsClients[c].items, hsClients[c].num, ent->ghoul2, ent, saber );
+		if ( cl_holster->integer ) {
+			if ( c == clc.clientNum && HE_Live() )
+				HE_AddLive( ent->ghoul2, ent, saber );
+			else
+				HS_AddItems( hsClients[c].items, hsClients[c].num, ent->ghoul2, ent, saber, HS_Emote( c ) );
+		}
+		if ( HS_Hand( c ) && HS_Emote( c ) == HS_EMOTE_DATAPAD ) {
+			const int keep = hsKeep.item;	// not the live editor's picked one
+			hsItem_t hand;
+
+			if ( HS_HandItem( &hand ) ) {
+				hsKeep.item = -1;
+				HS_AddItems( &hand, 1, ent->ghoul2, ent, saber, HS_EMOTE_ALL );
+				hsKeep.item = keep;
+			}
+		}
 	}
 }
 
@@ -484,7 +589,7 @@ void CL_Holster_DrawOn( void *ctx, void *ghoul2, const refEntity_t *body ) {
 	const int client = (int)(intptr_t)ctx;
 
 	if ( client >= 0 && client < MAX_CLIENTS && hsClients[client].state == 2 )
-		HS_AddItems( hsClients[client].items, hsClients[client].num, ghoul2, body, 0 );
+		HS_AddItems( hsClients[client].items, hsClients[client].num, ghoul2, body, 0, HS_EMOTE_NO );
 }
 
 // what a player wears that this game hasn't: "<model> (<pk3>), ..." for Inspect, "" none
@@ -503,6 +608,30 @@ const char *CL_Holster_Missing( int client ) {
 			it->source[0] ? it->source : "a custom pk3" ) );
 	}
 	return out;
+}
+
+// a datapad model this game has, to hold or to place in the world: "" none
+const char *CL_Holster_DatapadModel( void ) {
+	for ( int i = 0; i < (int)ARRAY_LEN( hsDatapads ); i++ ) {
+		if ( HS_Model( hsDatapads[i] ) )
+			return hsDatapads[i];
+	}
+	return "";
+}
+
+// a model of the cache set on ent (a ghoul2 one or not); qfalse when this game hasn't it
+qboolean CL_Holster_ModelEntity( const char *path, refEntity_t *ent ) {
+	const hsModel_t *m = HS_Model( path );
+
+	if ( !m )
+		return qfalse;
+	if ( m->g2 ) {
+		ent->ghoul2 = m->g2;
+		VectorSet( ent->modelScale, 1, 1, 1 );
+	} else {
+		ent->hModel = m->model;
+	}
+	return qtrue;
 }
 
 /*
@@ -624,7 +753,7 @@ static const struct {
 	{ "Size",		HS_SCALE_MIN, HS_SCALE_MAX, 0.05f },
 };
 
-static const char *heHideNames[3] = { "Always shown", "Hidden: saber lit", "Hidden: saber in hand" };
+static const char *heHideNames[HS_HIDE_MODES] = { "Always shown", "Hidden: saber lit", "Hidden: saber in hand", "Only in the datapad emote" };
 
 static struct {
 	qboolean	open;
@@ -662,7 +791,35 @@ static struct {
 	// live: a small panel, what's edited worn on you in the world, the camera turned around you
 	qboolean	live;
 	char		camWas[4][32];	// cg_thirdPerson, its angle, range and height as they were
+
+	// live, as the other editors: the keys held, the view the world was drawn from, a free camera,
+	// and the gizmo (arrows to move, rings to turn) on the picked one
+	qboolean	held[MAX_KEYS];
+	qboolean	haveView;
+	gzView_t	view;
+	int			viewFrame;
+	qboolean	freeCam;
+	vec3_t		camOrg, camAng;
+	int			lastFrameTime;
+	int			gzMode;			// HE_MOVE, HE_TURN
+	qboolean	gzWorldAxes;	// the world's, not the tag's
+	qboolean	gzHidden;
+	int			step;			// in heMoveSteps, heTurnSteps
+	int			gzHot, gzPart;	// under the mouse, and held; -1 none
+	gzDrag_t	gzDrag;
+	vec3_t		gzDir;			// the arrow's way, or the ring's axis, in the world
+	vec3_t		gzStartOff;		// the picked one as it was grabbed
+	vec3_t		gzStartAxes[3];	// its axes in the world then
+	float		gzTurned, gzLastAngle, gzSign;
 } he;
+
+enum { HE_MOVE, HE_TURN };
+#define HE_DRAG_GIZMO	-4
+#define HE_FLY_SPEED	120.0f		// units a second: near work
+static const float heMoveSteps[3] = { 0.25f, 1.0f, 4.0f };
+static const float heTurnSteps[3] = { 1.0f, 5.0f, 15.0f };
+static const vec3_t heWorldAxes[3] = { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } };
+static const char * const heTagNames[3] = { "Fwd", "Left", "Up" };	// as the sliders call them
 
 static const char *heCamCvars[4] = { "cg_thirdPerson", "cg_thirdPersonAngle", "cg_thirdPersonRange", "cg_thirdPersonVertOffset" };
 
@@ -782,7 +939,7 @@ static void HE_Save( void ) {
 
 // the preview's: what's being edited, on your body there
 static void HE_DrawOnPreview( void *ctx, void *ghoul2, const refEntity_t *body ) {
-	HS_AddItems( he.items, he.num, ghoul2, body, 0 );
+	HS_AddItems( he.items, he.num, ghoul2, body, 0, HS_EMOTE_ALL );
 }
 
 // a slider: its label, its track, its value; dragged, or clicked along
@@ -885,7 +1042,7 @@ static float HE_DrawWornOn( float x, float y, float w ) {
 		}
 		y += HE_CTRL_H + 6;
 		if ( HE_Button( x, y, w, heHideNames[it->hide], (qboolean)( it->hide != 0 ), qtrue ) ) {
-			it->hide = ( it->hide + 1 ) % 3;
+			it->hide = ( it->hide + 1 ) % HS_HIDE_MODES;
 			he.changed = qtrue;
 		}
 		y += HE_CTRL_H + 6;
@@ -1027,11 +1184,397 @@ static qboolean HE_Live( void ) {
 
 // what's being edited, on your body in the world
 static void HE_AddLive( void *ghoul2, const refEntity_t *body, int saber ) {
-	HS_AddItems( he.items, he.num, ghoul2, body, saber );
+	// the picked one's tag kept for the gizmo
+	hsKeep.item = he.sel;
+	HS_AddItems( he.items, he.num, ghoul2, body, saber, HS_EMOTE_ALL );
+	hsKeep.item = -1;
 }
 
 static void HE_LiveCam( int i, float value ) {
 	Cvar_Set( heCamCvars[i], va( "%g", value ) );
+}
+
+/*
+===============================================================================
+
+Live: the view, a free camera, the gizmo and the keys
+
+===============================================================================
+*/
+
+static qboolean HE_InPanel( float x, float y );
+
+static void HE_DropDrag( void ) {
+	if ( he.dragging == HE_DRAG_GIZMO )
+		he.dragging = -1;
+	he.gzPart = he.gzHot = -1;
+}
+
+static qboolean HE_ShiftDown( void ) {
+	return (qboolean)( he.held[A_SHIFT] || he.held[A_SHIFT2] );
+}
+
+static qboolean HE_CtrlDown( void ) {
+	return (qboolean)( he.held[A_CTRL] || he.held[A_CTRL2] );
+}
+
+// a step as G set it, Shift for 4 of them, Ctrl for a quarter
+static float HE_Step( qboolean keys ) {
+	float step = ( he.gzMode == HE_TURN ? heTurnSteps : heMoveSteps )[he.step];
+
+	if ( keys && HE_ShiftDown() )
+		step *= 4.0f;
+	if ( keys && HE_CtrlDown() )
+		step *= 0.25f;
+	return step;
+}
+
+static const char *HE_StepText( void ) {
+	return he.gzMode == HE_TURN ? va( "%g deg", heTurnSteps[he.step] ) : va( "%g unit%s", heMoveSteps[he.step], heMoveSteps[he.step] == 1.0f ? "" : "s" );
+}
+
+static void HE_KeepView( const refdef_t *fd ) {
+	VectorCopy( fd->vieworg, he.view.org );
+	for ( int k = 0; k < 3; k++ )
+		VectorCopy( fd->viewaxis[k], he.view.axis[k] );
+	he.view.fovX = fd->fov_x;
+	he.view.fovY = fd->fov_y;
+	he.haveView = qtrue;
+}
+
+// every cgame scene passes through here first: the world's view kept for the gizmo, or the free
+// camera's put in its place; qtrue if it was rendered
+qboolean CL_Holster_RenderScene( const refdef_t *fd ) {
+	refdef_t view;
+
+	if ( !HE_Live() || ( fd->rdflags & ( RDF_NOWORLDMODEL | RDF_AUTOMAP ) ) )
+		return qfalse;
+	if ( fd->rdflags & RDF_SKYBOXPORTAL ) {
+		// the sky portal keeps its own origin but looks the way the camera does
+		if ( !he.freeCam )
+			return qfalse;
+		view = *fd;
+		AnglesToAxis( he.camAng, view.viewaxis );
+		VectorCopy( he.camAng, view.viewangles );
+		re->RenderScene( &view );
+		return qtrue;
+	}
+	// the main view, once a frame
+	if ( he.viewFrame == cls.framecount )
+		return qfalse;
+	he.viewFrame = cls.framecount;
+	if ( !he.freeCam ) {
+		HE_KeepView( fd );
+		return qfalse;
+	}
+	view = *fd;
+	VectorCopy( he.camOrg, view.vieworg );
+	VectorCopy( he.camAng, view.viewangles );
+	AnglesToAxis( he.camAng, view.viewaxis );
+	view.viewContents = CM_PointContents( he.camOrg, 0 );
+	// the snapshot's area mask is from where you stand, the camera can be anywhere
+	memset( view.areamask, 0, sizeof( view.areamask ) );
+	HE_KeepView( &view );
+	re->RenderScene( &view );
+	return qtrue;
+}
+
+static void HE_FreeCam( qboolean on ) {
+	HE_DropDrag();
+	if ( on && !he.haveView ) {
+		HE_Message( "Wait a moment: the world isn't drawn yet", qtrue );
+		return;
+	}
+	he.freeCam = on;
+	if ( on ) {
+		// from where the camera is now
+		VectorCopy( he.view.org, he.camOrg );
+		vectoangles( he.view.axis[0], he.camAng );
+		he.camAng[ROLL] = 0.0f;
+		he.camAng[PITCH] = AngleNormalize180( he.camAng[PITCH] );
+	}
+}
+
+static void HE_UpdateCamera( float dt ) {
+	vec3_t forward, right, move;
+	float speed;
+
+	AngleVectors( he.camAng, forward, right, NULL );
+	VectorClear( move );
+	if ( he.held[A_CAP_W] )		VectorAdd( move, forward, move );
+	if ( he.held[A_CAP_S] )		VectorSubtract( move, forward, move );
+	if ( he.held[A_CAP_D] )		VectorAdd( move, right, move );
+	if ( he.held[A_CAP_A] )		VectorSubtract( move, right, move );
+	if ( he.held[A_SPACE] )		move[2] += 1.0f;
+	if ( he.held[A_CAP_C] )		move[2] -= 1.0f;
+	if ( VectorNormalize( move ) > 0.0f ) {
+		speed = HE_FLY_SPEED;
+		if ( HE_ShiftDown() )
+			speed *= 3.0f;
+		if ( HE_CtrlDown() )
+			speed *= 0.25f;
+		VectorMA( he.camOrg, speed * dt, move, he.camOrg );
+	}
+}
+
+// the picked one's tag as it was drawn this frame or the last; qfalse if it wasn't (hidden, not
+// in view, no tag)
+static qboolean HE_HaveTag( void ) {
+	return (qboolean)( HE_Live() && he.sel >= 0 && he.sel < he.num && he.haveView
+		&& hsKeep.of == he.sel && hsKeep.frame >= cls.framecount - 1 );
+}
+
+static void HE_Pivot( const hsItem_t *it, vec3_t pivot ) {
+	VectorCopy( hsKeep.org, pivot );
+	for ( int k = 0; k < 3; k++ )
+		VectorMA( pivot, it->off[k], hsKeep.axis[k], pivot );
+}
+
+// the picked one's own axes in the world, as HS_AddItems turns it
+static void HE_ItemAxes( const hsItem_t *it, vec3_t out[3] ) {
+	matrix3_t r;
+
+	AnglesToAxis( it->ang, r );
+	for ( int a = 0; a < 3; a++ ) {
+		for ( int k = 0; k < 3; k++ )
+			out[a][k] = r[a][0] * hsKeep.axis[0][k] + r[a][1] * hsKeep.axis[1][k] + r[a][2] * hsKeep.axis[2][k];
+	}
+}
+
+// the arrows' ways, or the rings' axes: the tag's (the item's own, for rings) or the world's
+static void HE_GizmoAxes( const hsItem_t *it, vec3_t out[3] ) {
+	if ( he.gzWorldAxes ) {
+		for ( int k = 0; k < 3; k++ )
+			VectorCopy( heWorldAxes[k], out[k] );
+	} else if ( he.gzMode == HE_TURN ) {
+		HE_ItemAxes( it, out );
+	} else {
+		for ( int k = 0; k < 3; k++ )
+			VectorCopy( hsKeep.axis[k], out[k] );
+	}
+}
+
+// moved by d in the world from where it was (from, along the tag's axes), held near the tag
+static void HE_MoveBy( hsItem_t *it, const vec3_t from, const vec3_t d ) {
+	qboolean limit = qfalse;
+
+	for ( int k = 0; k < 3; k++ ) {
+		float v = from[k] + DotProduct( d, hsKeep.axis[k] );
+
+		if ( fabsf( v ) > HS_OFFSET ) {
+			v = v > 0 ? HS_OFFSET : -HS_OFFSET;
+			limit = qtrue;
+		}
+		it->off[k] = roundf( v * 100.0f ) / 100.0f;
+	}
+	he.changed = qtrue;
+	if ( limit )
+		HE_Message( va( "At the limit: %g units from the tag", HS_OFFSET ), qtrue );
+}
+
+// turned by degrees round axis (in the world) from the axes it had (in the world)
+static void HE_TurnBy( hsItem_t *it, const vec3_t start[3], const vec3_t axis, float degrees ) {
+	matrix3_t r;
+	vec3_t n;
+
+	for ( int a = 0; a < 3; a++ ) {
+		RotatePointAroundVector( n, axis, start[a], degrees );
+		for ( int j = 0; j < 3; j++ )
+			r[a][j] = DotProduct( n, hsKeep.axis[j] );
+	}
+	GZ_AxisAngles( r, it->ang );
+	for ( int k = 0; k < 3; k++ )
+		it->ang[k] = AngleNormalize180( roundf( it->ang[k] * 10.0f ) / 10.0f );
+	he.changed = qtrue;
+}
+
+// the gizmo on the picked one: dragged, hovered, grabbed by a click outside the panel, drawn
+static void HE_GizmoFrame( void ) {
+	hsItem_t *it;
+	vec3_t pivot, axes[3];
+	int lit;
+
+	if ( he.gzHidden || !HE_HaveTag() ) {
+		HE_DropDrag();
+		return;
+	}
+	it = &he.items[he.sel];
+	HE_Pivot( it, pivot );
+	if ( he.dragging == HE_DRAG_GIZMO ) {
+		const float step = HE_Step( qfalse );
+
+		if ( he.gzMode == HE_MOVE ) {
+			vec3_t d;
+
+			VectorScale( he.gzDir, roundf( GZ_Amount( &he.gzDrag, he.cursorX, he.cursorY, 0 ) / step ) * step, d );
+			HE_MoveBy( it, he.gzStartOff, d );
+		} else {
+			const float now = GZ_ScreenAngle( &he.view, pivot, he.cursorX, he.cursorY );
+			float delta = now - he.gzLastAngle;
+
+			// added up a frame at a time, so it goes on round past half a turn
+			while ( delta > M_PI )
+				delta -= 2.0f * M_PI;
+			while ( delta < -M_PI )
+				delta += 2.0f * M_PI;
+			he.gzTurned += delta;
+			he.gzLastAngle = now;
+			HE_TurnBy( it, he.gzStartAxes, he.gzDir, roundf( he.gzSign * RAD2DEG( he.gzTurned ) / step ) * step );
+		}
+		HE_Pivot( it, pivot );
+	}
+	HE_GizmoAxes( it, axes );
+	he.gzHot = -1;
+	if ( he.dragging == -1 && !HE_InPanel( he.cursorX, he.cursorY ) )
+		he.gzHot = he.gzMode == HE_MOVE ? GZ_HitAxes( &he.view, pivot, axes, he.cursorX, he.cursorY )
+			: GZ_HitRings( &he.view, pivot, axes, he.cursorX, he.cursorY );
+	// grabbed
+	if ( he.click && he.dragging == -1 && !HE_InPanel( he.clickX, he.clickY ) ) {
+		const int part = he.gzMode == HE_MOVE ? GZ_HitAxes( &he.view, pivot, axes, he.clickX, he.clickY )
+			: GZ_HitRings( &he.view, pivot, axes, he.clickX, he.clickY );
+
+		if ( part >= 0 ) {
+			he.click = qfalse;
+			he.dragging = HE_DRAG_GIZMO;
+			he.gzPart = part;
+			VectorCopy( axes[part], he.gzDir );
+			VectorCopy( it->off, he.gzStartOff );
+			if ( he.gzMode == HE_MOVE ) {
+				GZ_BeginDir( &he.gzDrag, &he.view, pivot, he.gzDir, part, he.clickX, he.clickY );
+			} else {
+				HE_ItemAxes( it, he.gzStartAxes );
+				he.gzTurned = 0.0f;
+				he.gzLastAngle = GZ_ScreenAngle( &he.view, pivot, he.clickX, he.clickY );
+				he.gzSign = GZ_RingSign( &he.view, pivot, he.gzDir );
+			}
+		}
+	}
+	lit = he.dragging == HE_DRAG_GIZMO ? he.gzPart : he.gzHot;
+	if ( he.gzMode == HE_MOVE )
+		GZ_DrawAxes( &he.view, pivot, axes, lit, he.gzWorldAxes ? NULL : heTagNames );
+	else
+		GZ_DrawRings( &he.view, pivot, axes, lit );
+}
+
+// a step with the keys: moved toward where the camera looks (the tag's axis nearest it, or the
+// world's), or turned
+static void HE_KeyStep( int key ) {
+	hsItem_t *it;
+	const float step = HE_Step( qtrue );
+
+	if ( he.sel < 0 || he.sel >= he.num )
+		return;
+	it = &he.items[he.sel];
+	if ( he.gzMode == HE_TURN ) {
+		const int a = key == A_CURSOR_LEFT || key == A_CURSOR_RIGHT ? YAW : key == A_CURSOR_UP || key == A_CURSOR_DOWN ? PITCH : ROLL;
+		const float sign = key == A_CURSOR_LEFT || key == A_CURSOR_UP || key == A_PAGE_UP ? 1.0f : -1.0f;
+
+		it->ang[a] = AngleNormalize180( roundf( ( it->ang[a] + sign * step ) * 10.0f ) / 10.0f );
+		he.changed = qtrue;
+		return;
+	}
+	if ( !HE_HaveTag() ) {
+		// not drawn now: along the tag's axes as the sliders are
+		const int k = key == A_CURSOR_UP || key == A_CURSOR_DOWN ? 0 : key == A_CURSOR_LEFT || key == A_CURSOR_RIGHT ? 1 : 2;
+		const float sign = key == A_CURSOR_UP || key == A_CURSOR_LEFT || key == A_PAGE_UP ? 1.0f : -1.0f;
+
+		it->off[k] = Com_Clamp( -HS_OFFSET, HS_OFFSET, it->off[k] + sign * step );
+		he.changed = qtrue;
+		return;
+	}
+	{
+		vec3_t angles, forward, right, want, d;
+		float yaw;
+
+		// the camera's way, square to the world
+		vectoangles( he.view.axis[0], angles );
+		yaw = DEG2RAD( floorf( angles[YAW] / 90.0f + 0.5f ) * 90.0f );
+		VectorSet( forward, cosf( yaw ), sinf( yaw ), 0 );
+		VectorSet( right, sinf( yaw ), -cosf( yaw ), 0 );
+		switch ( key ) {
+		case A_CURSOR_UP:		VectorCopy( forward, want ); break;
+		case A_CURSOR_DOWN:		VectorScale( forward, -1.0f, want ); break;
+		case A_CURSOR_RIGHT:	VectorCopy( right, want ); break;
+		case A_CURSOR_LEFT:		VectorScale( right, -1.0f, want ); break;
+		case A_PAGE_UP:			VectorSet( want, 0, 0, 1 ); break;
+		default:				VectorSet( want, 0, 0, -1 ); break;
+		}
+		if ( he.gzWorldAxes ) {
+			VectorScale( want, step, d );
+		} else {
+			int best = 0;
+
+			for ( int k = 1; k < 3; k++ ) {
+				if ( fabsf( DotProduct( want, hsKeep.axis[k] ) ) > fabsf( DotProduct( want, hsKeep.axis[best] ) ) )
+					best = k;
+			}
+			VectorScale( hsKeep.axis[best], DotProduct( want, hsKeep.axis[best] ) >= 0.0f ? step : -step, d );
+		}
+		HE_MoveBy( it, it->off, d );
+	}
+}
+
+// the live keys; qtrue if it was one
+static qboolean HE_LiveKey( int key ) {
+	switch ( key ) {
+	case A_TAB:
+		HE_DropDrag();
+		if ( HE_ShiftDown() ) {
+			if ( he.num > 1 )
+				he.sel = ( he.sel + 1 ) % he.num;
+		} else {
+			he.gzMode = he.gzMode == HE_MOVE ? HE_TURN : HE_MOVE;
+		}
+		return qtrue;
+	case A_CAP_L:
+		HE_DropDrag();
+		he.gzWorldAxes = (qboolean)!he.gzWorldAxes;
+		return qtrue;
+	case A_CAP_G:
+		he.step = ( he.step + 1 ) % 3;
+		return qtrue;
+	case GZ_KEY:
+		HE_DropDrag();
+		he.gzHidden = (qboolean)!he.gzHidden;
+		return qtrue;
+	case A_CAP_F:
+		HE_FreeCam( (qboolean)!he.freeCam );
+		return qtrue;
+	case A_OPEN_BRACKET:
+	case A_CLOSE_BRACKET:
+		if ( he.sel >= 0 && he.sel < he.num ) {
+			float *v = &he.items[he.sel].scale;
+			const float step = heSliders[HS_SIZE].step * ( HE_ShiftDown() ? 4.0f : 1.0f );
+
+			*v = Com_Clamp( HS_SCALE_MIN, HS_SCALE_MAX, roundf( ( *v + ( key == A_OPEN_BRACKET ? -step : step ) ) * 100.0f ) / 100.0f );
+			he.changed = qtrue;
+		}
+		return qtrue;
+	case A_CURSOR_LEFT:
+	case A_CURSOR_RIGHT:
+	case A_CURSOR_UP:
+	case A_CURSOR_DOWN:
+	case A_PAGE_UP:
+	case A_PAGE_DOWN:
+		HE_KeyStep( key );
+		return qtrue;
+	case A_MWHEELUP:
+	case A_MWHEELDOWN:
+		if ( he.freeCam ) {
+			vec3_t forward;
+
+			AngleVectors( he.camAng, forward, NULL, NULL );
+			VectorMA( he.camOrg, key == A_MWHEELUP ? 8.0f : -8.0f, forward, he.camOrg );
+		} else {
+			HE_LiveCam( 2, Com_Clamp( 25.0f, 200.0f, Cvar_VariableValue( "cg_thirdPersonRange" ) + ( key == A_MWHEELUP ? -8 : 8 ) ) );
+		}
+		return qtrue;
+	case A_CAP_W: case A_CAP_A: case A_CAP_S: case A_CAP_D: case A_CAP_C: case A_SPACE:
+	case A_MOUSE2:
+		return qtrue;		// held: the free camera's
+	default:
+		return qfalse;
+	}
 }
 
 static void HE_LiveEnter( void ) {
@@ -1042,6 +1585,9 @@ static void HE_LiveEnter( void ) {
 	he.live = qtrue;
 	he.typing = qfalse;
 	he.dragging = -1;
+	he.freeCam = qfalse;
+	he.haveView = qfalse;
+	he.gzHot = he.gzPart = -1;
 	// in front of you, a little to the side, near
 	HE_LiveCam( 0, 1 );
 	HE_LiveCam( 1, 150 );
@@ -1055,6 +1601,8 @@ static void HE_LiveLeave( void ) {
 		return;
 	he.live = qfalse;
 	he.dragging = -1;
+	he.freeCam = qfalse;
+	he.gzHot = he.gzPart = -1;
 	for ( int i = 0; i < 4; i++ )
 		Cvar_Set( heCamCvars[i], he.camWas[i] );
 }
@@ -1074,6 +1622,8 @@ static void HE_DrawLive( void ) {
 	const float x = HE_LIVE_X + 8, w = HE_LIVE_W - 16;
 	float y = HE_LIVE_Y + 8;
 
+	// first, under the panel: a click outside it on an arrow or a ring is the gizmo's
+	HE_GizmoFrame();
 	HE_Box( HE_LIVE_X, HE_LIVE_Y, HE_LIVE_W, HE_LIVE_H, hePanel );
 	HE_Text( x, y, w, "HOLSTER  " S_COLOR_WHITE "live", heOrange, he.titleFont, HE_ITEM, qfalse );
 	y += 22;
@@ -1116,11 +1666,29 @@ static void HE_DrawLive( void ) {
 			it->scale = 1.0f;
 			he.changed = qtrue;
 		}
-		y += HE_CTRL_H + 10;
+		y += HE_CTRL_H + 6;
 	}
-	HE_Text( x, y, w, "Drag outside this panel to turn the", heDim, he.font, 0.55f, qfalse );
-	HE_Text( x, y + 10, w, "camera, the wheel to come nearer.", heDim, he.font, 0.55f, qfalse );
-	HE_Text( x, y + 20, w, "Arrows: left/right nudge the last slider.", heDim, he.font, 0.55f, qfalse );
+	// the gizmo's mode, its axes, the camera
+	{
+		const float bw = ( w - 8 ) / 3;
+
+		if ( HE_Button( x, y, bw, he.gzMode == HE_MOVE ? "Move" : "Turn", qfalse, qtrue ) ) {
+			HE_DropDrag();
+			he.gzMode = he.gzMode == HE_MOVE ? HE_TURN : HE_MOVE;
+		}
+		if ( HE_Button( x + bw + 4, y, bw, he.gzWorldAxes ? "World axes" : "Tag axes", he.gzWorldAxes, qtrue ) ) {
+			HE_DropDrag();
+			he.gzWorldAxes = (qboolean)!he.gzWorldAxes;
+		}
+		if ( HE_Button( x + 2 * ( bw + 4 ), y, bw, he.freeCam ? "Free cam" : "Orbit cam", he.freeCam, qtrue ) )
+			HE_FreeCam( (qboolean)!he.freeCam );
+		y += HE_CTRL_H + 6;
+	}
+	HE_Text( x, y, w, he.gzHidden ? "Gizmo hidden: J shows it" : "Drag an arrow to move, a ring to turn", heDim, he.font, 0.55f, qfalse );
+	HE_Text( x, y + 10, w, va( "Tab move/turn, L axes, G step (%s)", HE_StepText() ), heDim, he.font, 0.55f, qfalse );
+	HE_Text( x, y + 20, w, "Arrows, PgUp/PgDn a step; [ ] size", heDim, he.font, 0.55f, qfalse );
+	HE_Text( x, y + 30, w, he.freeCam ? "F orbit; hold RMB to look, WASD Space C" : "F free camera; drag the world to turn,", heDim, he.font, 0.55f, qfalse );
+	HE_Text( x, y + 40, w, he.freeCam ? "to fly (Shift fast, Ctrl slow)" : "the wheel to come nearer", heDim, he.font, 0.55f, qfalse );
 
 	// the bottom: what saving said, Revert and Save
 	{
@@ -1138,8 +1706,8 @@ static void HE_DrawLive( void ) {
 			HE_Save();
 	}
 
-	// a drag on the world: the camera turned round you
-	if ( he.click && !HE_InPanel( he.clickX, he.clickY ) ) {
+	// a drag on the world: the camera turned round you (the free camera looks with the right button)
+	if ( he.click && !he.freeCam && !HE_InPanel( he.clickX, he.clickY ) ) {
 		he.click = qfalse;
 		he.dragging = -3;
 	}
@@ -1158,6 +1726,7 @@ static void HE_Close( void ) {
 	he.open = qfalse;
 	he.typing = qfalse;
 	he.dragging = -1;
+	memset( he.held, 0, sizeof( he.held ) );
 	CL_Presets_FreeCharacter();
 	Key_SetCatcher( Key_GetCatcher() & ~KEYCATCH_HOLSTER );
 }
@@ -1173,6 +1742,11 @@ void CL_Holster_Draw( void ) {
 		he.dragging = -1;
 	HE_LoadTags();
 	if ( he.live && CL_Presence_Session() && !he.refused ) {
+		const float dt = Com_Clamp( 0.0f, 0.1f, ( cls.realtime - he.lastFrameTime ) / 1000.0f );
+
+		he.lastFrameTime = cls.realtime;
+		if ( he.freeCam )
+			HE_UpdateCamera( dt );
 		HE_DrawLive();
 		he.click = qfalse;
 		re->SetColor( NULL );
@@ -1319,6 +1893,8 @@ static qboolean HE_IsToggleKey( int key ) {
 void CL_Holster_KeyEvent( int key, qboolean down ) {
 	if ( !he.open )
 		return;
+	if ( key >= 0 && key < MAX_KEYS )
+		he.held[key] = down;
 	if ( key == A_MOUSE1 ) {
 		he.mouseDown = down;
 		if ( down ) {
@@ -1345,6 +1921,8 @@ void CL_Holster_KeyEvent( int key, qboolean down ) {
 		HE_Close();
 		return;
 	}
+	if ( HE_Live() && HE_LiveKey( key ) )
+		return;
 	switch ( key ) {
 	case A_MWHEELUP:
 	case A_MWHEELDOWN:
@@ -1384,6 +1962,12 @@ void CL_Holster_CharEvent( int ch ) {
 }
 
 void CL_Holster_MouseEvent( int dx, int dy ) {
+	// the free camera looks while the right button's held, the cursor stays
+	if ( HE_Live() && he.freeCam && he.held[A_MOUSE2] ) {
+		he.camAng[YAW] -= dx * cl_sensitivity->value * m_yaw->value;
+		he.camAng[PITCH] = Com_Clamp( -89.0f, 89.0f, he.camAng[PITCH] + dy * cl_sensitivity->value * m_pitch->value );
+		return;
+	}
 	he.cursorX = Com_Clamp( 0, SCREEN_WIDTH, he.cursorX + dx );
 	he.cursorY = Com_Clamp( 0, SCREEN_HEIGHT, he.cursorY + dy );
 }
@@ -1440,7 +2024,8 @@ static void HS_Holster_f( void ) {
 		hsDebug = 2;
 	} else {
 		Com_Printf( "usage: " HS_CMD "          opens the holster editor, or closes it\n" );
-		Com_Printf( "       " HS_CMD " live     the editor's small panel, what you edit worn on you in the world\n" );
+		Com_Printf( "       " HS_CMD " live     the editor's small panel, what you edit worn on you in the world:\n" );
+		Com_Printf( "                    arrows to move it and rings to turn it, a free camera (F)\n" );
 		Com_Printf( "       " HS_CMD " list     who wears something here\n" );
 		Com_Printf( "cl_holster 0|1: everyone's holster drawn, yours too\n" );
 	}
@@ -1449,6 +2034,8 @@ static void HS_Holster_f( void ) {
 void CL_Holster_Init( void ) {
 	memset( &he, 0, sizeof( he ) );
 	he.sel = he.dragging = he.lastSlider = -1;
+	he.gzHot = he.gzPart = -1;
+	he.step = 1;
 	cl_holster = Cvar_Get( "cl_holster", "1", CVAR_ARCHIVE_ND, "Models players wear on their character (/holster), drawn on them; 0 none" );
 	Cmd_AddCommand( HS_CMD, HS_Holster_f, "Models worn on your character (a hilt at the hip), seen by everyone with this client" );
 }

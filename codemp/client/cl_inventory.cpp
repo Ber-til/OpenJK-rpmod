@@ -24,8 +24,9 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 //
 // Every account gets a datapad, a commlink and the hilt of the saber it carries; staff give more,
 // in Discord (/item) or here, on the Staff page, when the server says you're an RPMod admin. An item
-// can be used (the datapad opens), shown on Inspect, and given to another player on the server
-// whose game is linked.
+// can be used (the datapad opens; another datapad on its own notes), shown on Inspect, and given to
+// another player on the server whose game is linked. An admin can put a datapad in the world, its
+// notes in it, for anyone to pick up (cl_worlditems.cpp).
 //
 // C1B3R tells every game on the server when a character changes (cmd:char/<client>/<version>):
 // yours is asked again then.
@@ -85,6 +86,7 @@ typedef struct {
 	char		desc[320];
 	char		model[MAX_QPATH];
 	char		saber[MAX_QPATH];	// a hilt's saber
+	qboolean	starter;		// one every character's given
 } invItem_t;
 
 static struct {
@@ -260,7 +262,13 @@ static int INV_ReadItems( const char *answer, invItem_t *items, int max ) {
 		Q_strncpyz( it->name, CL_Presence_Unfield( f[4] ).c_str(), sizeof( it->name ) );
 		Q_strncpyz( it->desc, CL_Presence_Unfield( f[5] ).c_str(), sizeof( it->desc ) );
 		Q_strncpyz( it->model, CL_Presence_Unfield( f[6] ).c_str(), sizeof( it->model ) );
-		INV_JsonString( CL_Presence_Unfield( f[7] ).c_str(), "saber", it->saber, sizeof( it->saber ) );
+		{
+			const std::string data = CL_Presence_Unfield( f[7] );
+
+			INV_JsonString( data.c_str(), "saber", it->saber, sizeof( it->saber ) );
+			it->starter = (qboolean)( strstr( data.c_str(), "\"starter\": 1" ) || strstr( data.c_str(), "\"starter\":1" )
+				|| strstr( data.c_str(), "\"starter\": true" ) || strstr( data.c_str(), "\"starter\":true" ) );
+		}
 	}
 	return num;
 }
@@ -351,6 +359,9 @@ static const char *INV_ModelOf( const invItem_t *it ) {
 
 	if ( it->model[0] )
 		return it->model;
+	// a datapad: the one held in the hand (the holster's)
+	if ( !Q_stricmp( it->kind, "datapad" ) )
+		return CL_Holster_DatapadModel();
 	if ( Q_stricmp( it->kind, "hilt" ) )
 		return "";
 	if ( Q_stricmp( INV_SaberOf( it ), saberOf ) ) {
@@ -609,11 +620,20 @@ static qboolean INV_Usable( const invItem_t *it ) {
 	return (qboolean)!Q_stricmp( it->kind, "datapad" );
 }
 
+// your own datapad opens as it is; another opens on its own notes
 static void INV_Use( const invItem_t *it ) {
 	if ( !Q_stricmp( it->kind, "datapad" ) ) {
 		INV_Close();
-		Cbuf_AddText( "datapad open\n" );
+		if ( it->starter )
+			Cbuf_AddText( "datapad open\n" );
+		else
+			CL_Datapad_OpenItem( it->id, it->name, 0 );
 	}
+}
+
+// one anyone can drop in the world (not the ones every character has)
+static qboolean INV_Placeable( const invItem_t *it ) {
+	return (qboolean)!it->starter;
 }
 
 // whom to give it to: the players here, then the button
@@ -686,12 +706,24 @@ static void INV_DrawDetail( void ) {
 				ivDim, inv.font, IV_TEXT, qfalse );
 			ty += 14;
 		}
-		ty = y + IV_VIEW - 3 * ( IV_CTRL_H + 4 ) + 4;
-		if ( INV_Usable( it ) && INV_Button( tx, ty, tw, "Use", qfalse, qtrue ) ) {
+		ty = y + IV_VIEW - ( INV_Placeable( it ) ? 4 : 3 ) * ( IV_CTRL_H + 4 ) + 4;
+		if ( INV_Usable( it ) && INV_Button( tx, ty, tw, Q_stricmp( it->kind, "datapad" ) || it->starter ? "Use" : "Open its notes", qfalse, qtrue ) ) {
 			INV_Use( it );
 			return;
 		}
 		ty += IV_CTRL_H + 4;
+		if ( INV_Placeable( it ) ) {
+			if ( INV_Button( tx, ty, tw, "Drop", qfalse, qtrue ) ) {
+				const int id = it->id;
+				char name[64];
+
+				Q_strncpyz( name, it->name, sizeof( name ) );
+				INV_Close();
+				CL_WorldItems_Drop( id, name );
+				return;
+			}
+			ty += IV_CTRL_H + 4;
+		}
 		if ( INV_Button( tx, ty, tw, it->shown ? "Shown on Inspect" : "Hidden from Inspect", it->shown, qtrue ) )
 			INV_Act( "show", "/v2/inv/show", va( ",\"item\":%i,\"shown\":%i", it->id, it->shown ? 0 : 1 ) );
 		ty += IV_CTRL_H + 4;
@@ -1032,6 +1064,16 @@ void CL_Inventory_Escape( void ) {
 		return;
 	}
 	INV_Close();
+}
+
+// the item picked in the window (not one every character has): its id, and its name in name; 0 none
+int CL_Inventory_Picked( char *name, int size ) {
+	const invItem_t *it = INV_Item( inv.sel );
+
+	if ( !it || it->starter || inv.page != INV_MINE )
+		return 0;
+	Q_strncpyz( name, it->name, size );
+	return it->id;
 }
 
 void CL_Inventory_Disconnect( void ) {

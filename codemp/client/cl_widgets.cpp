@@ -122,7 +122,7 @@ What was typed is shown as it is: a ^ is drawn as itself, not taken for a colour
 ===============================================================================
 */
 
-#define WG_MAX_LINES		128		// a field's wrapped lines
+#define WG_MAX_LINES		1024	// a field's wrapped lines (a text area's can be long)
 #define WG_SHOWN_LINES		10		// grown no taller than this; it scrolls to the cursor
 #define WG_DOUBLECLICK_MS	350
 
@@ -179,6 +179,12 @@ static void WG_DrawRun( const wgStyle_t *s, float x, float y, const char *text, 
 	while ( len > 0 && *text ) {
 		int n = 0;
 
+		// a new line isn't drawn
+		if ( (byte)*text < 32 ) {
+			text++;
+			len--;
+			continue;
+		}
 		if ( *text == Q_COLOR_ESCAPE ) {
 			re->Font_DrawString( (int)x, (int)y, "^", color, s->font, -1, s->scale );
 			x += WG_CharW( s, Q_COLOR_ESCAPE );
@@ -186,7 +192,7 @@ static void WG_DrawRun( const wgStyle_t *s, float x, float y, const char *text, 
 			len--;
 			continue;
 		}
-		while ( n < len && text[n] && text[n] != Q_COLOR_ESCAPE && n < (int)sizeof( seg ) - 1 ) {
+		while ( n < len && text[n] && text[n] != Q_COLOR_ESCAPE && (byte)text[n] >= 32 && n < (int)sizeof( seg ) - 1 ) {
 			seg[n] = text[n];
 			n++;
 		}
@@ -198,7 +204,7 @@ static void WG_DrawRun( const wgStyle_t *s, float x, float y, const char *text, 
 	}
 }
 
-// the text in lines of width w: broken after a space where it can be, else where it must
+// the text in lines of width w: broken after a new line, after a space where it can be, else where it must
 typedef struct {
 	int		start[WG_MAX_LINES + 1];	// start[num] is the length
 	int		num;
@@ -212,10 +218,18 @@ static void WG_Wrap( const wgStyle_t *s, const char *text, float w, wgLines_t *o
 	while ( out->num < WG_MAX_LINES - 1 ) {
 		float x = 0.0f;
 		int i = start, brk = -1;
+		qboolean hard = qfalse;
 
 		out->start[out->num++] = start;
 		while ( i < len ) {
-			const float cw = WG_CharW( s, (byte)text[i] );
+			float cw;
+
+			if ( text[i] == '\n' ) {
+				i++;
+				hard = qtrue;
+				break;
+			}
+			cw = WG_CharW( s, (byte)text[i] );
 
 			if ( x + cw > w && i > start )
 				break;
@@ -223,6 +237,11 @@ static void WG_Wrap( const wgStyle_t *s, const char *text, float w, wgLines_t *o
 			if ( text[i] == ' ' )
 				brk = i + 1;
 			i++;
+		}
+		// after a new line, the next starts there: an empty last one after a new line at the end
+		if ( hard ) {
+			start = i;
+			continue;
 		}
 		if ( i >= len ) {
 			out->start[out->num] = len;
@@ -249,8 +268,8 @@ static int WG_IndexAlong( const wgStyle_t *s, const char *text, const wgLines_t 
 	int end = b;
 	float at = 0.0f;
 
-	// the space a line broke after belongs to it, but the cursor goes before it
-	if ( line < l->num - 1 && end > a && text[end - 1] == ' ' )
+	// the space or new line a line broke after belongs to it, but the cursor goes before it
+	if ( line < l->num - 1 && end > a && ( text[end - 1] == ' ' || text[end - 1] == '\n' ) )
 		end--;
 	for ( int i = a; i < end; i++ ) {
 		const float cw = WG_CharW( s, (byte)text[i] );
@@ -284,6 +303,11 @@ static struct {
 	float		x, y, w, h;
 	qboolean	overlay;		// grown this frame: drawn last
 	int			overlayFrame;
+
+	// the text area typed in: new lines go in it, and it scrolls on its own
+	char		*areaBuf;
+	int			areaCursor, areaLen;	// as last drawn: moved since, it's scrolled to the cursor
+	int			areaRows;
 
 	// the last field drawn, focused or not, for a click on it
 	char		*lastBuf;
@@ -592,6 +616,82 @@ void WG_TextBox( const wgStyle_t *style, float x, float y, float w, float h, cha
 	}
 }
 
+void WG_TextArea( const wgStyle_t *style, float x, float y, float w, float h, char *buf, qboolean focused,
+	const char *placeholder, float cursorX, float cursorY, qboolean *click, float clickX, float clickY ) {
+	const int rows = Q_max( 1, (int)( ( h - style->padY * 2.0f ) / style->lineH ) );
+	const float textW = w - WG_SCROLL_W - 2;
+	wgLines_t l;
+
+	wg.lastBuf = buf;
+	wg.lastStyle = *style;
+	wg.lastX = x, wg.lastY = y, wg.lastW = textW, wg.lastH = h;
+
+	if ( !focused ) {
+		if ( wg.buf == buf )
+			WG_EditReset();
+		if ( wg.areaBuf == buf )
+			wg.areaBuf = NULL;
+		if ( !buf[0] ) {
+			if ( placeholder && placeholder[0] )
+				re->Font_DrawString( (int)( x + style->padX ), (int)( y + style->padY ), placeholder, style->dim, style->font, -1, style->scale );
+			return;
+		}
+		WG_Wrap( style, buf, WG_TextW( style, textW ), &l );
+		for ( int i = 0; i < rows && i < l.num; i++ )
+			WG_DrawRun( style, x + style->padX, y + style->padY + i * style->lineH, buf + l.start[i], l.start[i + 1] - l.start[i], style->text );
+		return;
+	}
+
+	if ( wg.areaBuf != buf ) {
+		wg.areaBuf = buf;
+		wg.areaCursor = -1;
+	}
+	WG_Focus( buf );
+	WG_Clamp( buf );
+	wg.style = *style;
+	wg.x = x, wg.y = y, wg.w = textW, wg.h = h;
+	wg.areaRows = rows;
+
+	if ( wg.dragging ) {
+		if ( WG_MouseDown() ) {
+			const int at = WG_IndexAt( buf, cursorX, cursorY );
+
+			if ( at != wg.cursor )
+				wg.blinkFrom = cls.realtime;
+			wg.cursor = at;
+		} else {
+			wg.dragging = qfalse;
+		}
+	}
+
+	WG_FocusLines( buf, &l );
+	// moved or typed in since: scrolled to the cursor; else where the wheel or the bar left it
+	if ( wg.cursor != wg.areaCursor || (int)strlen( buf ) != wg.areaLen ) {
+		const int line = WG_LineOf( &l, wg.cursor );
+
+		if ( line < wg.top )
+			wg.top = line;
+		else if ( line >= wg.top + rows )
+			wg.top = line - rows + 1;
+		wg.areaCursor = wg.cursor;
+		wg.areaLen = (int)strlen( buf );
+	}
+	{
+		float top = (float)wg.top;
+
+		if ( l.num > rows && WG_Bar( &wg.areaRows, x + w - WG_SCROLL_W - 1, y + 1, h - 2, (float)l.num, (float)rows, &top,
+			cursorX, cursorY, click, clickX, clickY ) && wgDrag.id == &wg.areaRows )
+			wg.top = (int)( top + 0.5f );
+	}
+	wg.top = Com_Clampi( 0, Q_max( 0, l.num - rows ), wg.top );
+	WG_DrawLines( buf, &l, wg.top, rows, x, y );
+}
+
+void WG_TextAreaScroll( int lines ) {
+	if ( wg.areaBuf && wg.buf == wg.areaBuf )
+		wg.top = Q_max( 0, wg.top + lines );
+}
+
 int WG_TextLines( const wgStyle_t *style, const char *text, float w ) {
 	wgLines_t l;
 
@@ -649,10 +749,18 @@ static qboolean WG_Insert( char *buf, int size, const char *text, int n, wgAllow
 	for ( int i = 0; i < n && len < size - 1; i++ ) {
 		int ch = (byte)text[i];
 
-		if ( ch == '\n' || ch == '\r' || ch == '\t' )
-			ch = ' ';
-		if ( !WG_Allowed( ch, allow ) )
+		// a text area keeps new lines; anywhere else they're spaces
+		if ( ch == '\r' && buf == wg.areaBuf )
 			continue;
+		if ( ch == '\n' && buf == wg.areaBuf ) {
+			if ( allow && !allow( ch ) )
+				continue;
+		} else {
+			if ( ch == '\n' || ch == '\r' || ch == '\t' )
+				ch = ' ';
+			if ( !WG_Allowed( ch, allow ) )
+				continue;
+		}
 		memmove( buf + wg.cursor + 1, buf + wg.cursor, len - wg.cursor + 1 );
 		buf[wg.cursor++] = (char)ch;
 		len++;
@@ -662,8 +770,10 @@ static qboolean WG_Insert( char *buf, int size, const char *text, int n, wgAllow
 	return changed;
 }
 
+#define WG_CLIP_MAX		16384		// a text area's whole text
+
 static void WG_Copy( const char *buf ) {
-	char text[MAX_STRING_CHARS * 2];
+	static char text[WG_CLIP_MAX];
 	const int a = Q_min( wg.cursor, wg.anchor ), b = Q_max( wg.cursor, wg.anchor );
 
 	if ( a == b )
@@ -673,7 +783,7 @@ static void WG_Copy( const char *buf ) {
 }
 
 static qboolean WG_Paste( char *buf, int size, wgAllow_t allow ) {
-	char text[MAX_STRING_CHARS * 2];
+	static char text[WG_CLIP_MAX];
 	char *clip = Sys_GetClipboardData(), *c;
 	int n = 0;
 
@@ -739,6 +849,27 @@ int WG_EditKey( char *buf, int size, int key, wgAllow_t allow ) {
 		return WG_Paste( buf, size, allow ) ? WG_EDIT_CHANGED : WG_EDIT_MOVED;
 	}
 
+	// a text area: Enter's a new line, the page keys a page
+	if ( buf == wg.areaBuf && ( key == A_ENTER || key == A_KP_ENTER ) ) {
+		wg.blinkFrom = cls.realtime;
+		return WG_Insert( buf, size, "\n", 1, allow ) ? WG_EDIT_CHANGED : WG_EDIT_MOVED;
+	}
+	if ( buf == wg.areaBuf && ( key == A_PAGE_UP || key == A_PAGE_DOWN || key == A_KP_9 || key == A_KP_3 ) && wg.style.font && wg.w > 0.0f ) {
+		wgLines_t l;
+		const int page = Q_max( 1, wg.areaRows - 1 );
+		int line, next;
+
+		WG_FocusLines( buf, &l );
+		line = WG_LineOf( &l, wg.cursor );
+		next = Com_Clampi( 0, l.num - 1, line + ( key == A_PAGE_UP || key == A_KP_9 ? -page : page ) );
+		to = WG_IndexAlong( &wg.style, buf, &l, next, WG_Width( &wg.style, buf + l.start[line], wg.cursor - l.start[line] ) );
+		wg.cursor = to;
+		if ( !shift )
+			wg.anchor = to;
+		wg.blinkFrom = cls.realtime;
+		return WG_EDIT_MOVED;
+	}
+
 	switch ( key ) {
 	case A_BACKSPACE:
 	case A_DELETE:
@@ -790,7 +921,7 @@ int WG_EditKey( char *buf, int size, int key, wgAllow_t allow ) {
 		if ( key == A_HOME ) {
 			to = ctrl ? 0 : l.start[line];
 		} else if ( key == A_END ) {
-			to = ctrl ? len : ( line < l.num - 1 ? l.start[line + 1] - ( buf[l.start[line + 1] - 1] == ' ' ? 1 : 0 ) : len );
+			to = ctrl ? len : ( line < l.num - 1 ? l.start[line + 1] - ( buf[l.start[line + 1] - 1] == ' ' || buf[l.start[line + 1] - 1] == '\n' ? 1 : 0 ) : len );
 		} else {
 			const int next = line + ( key == A_CURSOR_UP ? -1 : 1 );
 

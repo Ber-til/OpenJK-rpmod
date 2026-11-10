@@ -1126,6 +1126,8 @@ void CL_MouseEvent( int dx, int dy, int time ) {
 		CL_Inspect_MouseEvent( dx, dy );
 	} else if ( Key_GetCatcher( ) & KEYCATCH_HOLSTER ) {
 		CL_Holster_MouseEvent( dx, dy );
+	} else if ( Key_GetCatcher( ) & KEYCATCH_WORLD ) {
+		CL_WorldItems_MouseEvent( dx, dy );
 	} else if ( Key_GetCatcher( ) & KEYCATCH_CHARACTERS ) {
 		CL_Characters_MouseEvent( dx, dy );
 	} else if ( Key_GetCatcher( ) & KEYCATCH_DATAPAD ) {

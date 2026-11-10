@@ -569,7 +569,7 @@ static void PR_RenderView( prView_t *v, const char *red, const char *green, cons
 	AngleVectors( angles, forward, NULL, NULL );
 	VectorMA( center, -dist, forward, refdef.vieworg );
 	AnglesToAxis( angles, refdef.viewaxis );
-	refdef.rdflags = RDF_NOWORLDMODEL;
+	refdef.rdflags = RDF_NOWORLDMODEL | ( blade ? RDF_UIGLOW : 0 );		// lit blades glow, as in the world
 	refdef.time = cl.serverTime;
 
 	ent.reType = RT_MODEL;

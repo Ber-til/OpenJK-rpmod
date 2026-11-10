@@ -505,6 +505,8 @@ if(BuildMPEngine)
 		"${MPDir}/client/cl_effectswap.cpp"
 		"${MPDir}/client/cl_datapad.cpp"
 		"${MPDir}/client/cl_pazaak.cpp"
+		"${MPDir}/client/cl_notes.cpp"
+		"${MPDir}/client/cl_worlditems.cpp"
 		"${MPDir}/client/cl_inventory.cpp"
 		"${MPDir}/client/cl_inspect.cpp"
 		"${MPDir}/client/cl_holster.cpp"

@@ -76,13 +76,14 @@ static const float chGreen[4]		= { 0.4f, 1.0f, 0.4f, 1.0f };
 static const struct {
 	const char	*key, *cvar;
 } chDatapad[] = {
-	{ "x", "cl_datapadX" }, { "y", "cl_datapadY" }, { "color", "cl_datapadColor" }, { "emote", "cl_datapadEmote" },
+	{ "x", "cl_datapadX" }, { "y", "cl_datapadY" }, { "color", "cl_datapadColor" }, { "emote", "cl_datapadEmote" }, { "hand", "cl_datapadHand" },
 };
 
 typedef struct {
 	int			id;
 	char		name[CH_NAME_LEN];
 	qboolean	active;
+	char		tag[12];		// main, secondary or extra; "" C1B3R didn't say
 } chChar_t;
 
 typedef struct {
@@ -101,10 +102,26 @@ typedef struct {
 	std::vector<std::string>	fxFrom, fxTo, shFrom, shTo;
 	std::string					language, saberStyles;
 	qboolean					hasLanguage, hasStyles;
+	qboolean					inspect, hasInspect;	// others may Inspect it
 	std::string					has;		// the parts it keeps, by comma ("" none: a new, empty one)
 } chData_t;
 
 enum { CH_TYPE_NONE, CH_TYPE_NEW, CH_TYPE_RENAME, CH_TYPE_DELETE };
+
+// the right column: what the picked one keeps, sharing it, or its RPMod login typed in
+enum { CH_SIDE_SUITE, CH_SIDE_SHARE, CH_SIDE_LOGIN };
+
+#define CH_LOGIN_LEN		64
+#define CH_SHARE_MAX		16			// players at once, as C1B3R takes
+#define CH_OFFERS			8
+
+// a copy of someone's character offered to you
+typedef struct {
+	int		id;
+	char	name[CH_NAME_LEN];
+	char	from[MAX_NETNAME];
+	int		items;
+} chOffer_t;
 
 static struct {
 	qboolean	open;
@@ -127,6 +144,8 @@ static struct {
 
 	int			typing;			// CH_TYPE_*
 	char		field[CH_NAME_LEN];
+	qboolean	newExtra;		// a new one: tagged extra (shared, for missions), else secondary
+	qboolean	lit;			// the blades lit in its preview
 
 	std::string	lastSent;		// what was sent for the character played, to send it only when changed
 	int			nextSync;
@@ -135,9 +154,29 @@ static struct {
 	int			messageTime;
 	qboolean	messageBad;
 	float		yaw;
+
+	int			side;			// CH_SIDE_*
+
+	// the RPMod login kept on this PC for the picked one: only its username is ever read back
+	int			loginFor;		// the id it was read for, 0 none read
+	char		loginAcc[64];	// and the account
+	char		loginUser[CH_LOGIN_LEN];		// "" none kept
+	qboolean	loginAuto;		// run when it's played
+	int			loginAfter;		// played: its login run once its settings are on
+	char		typeUser[CH_LOGIN_LEN], typePass[CH_LOGIN_LEN];		// typed in; the password wiped once written
+	qboolean	typeAuto;
+	int			typeFocus;		// 0 the username, 1 the password
+
+	// sharing a copy: the players picked, and what C1B3R said for each
+	qboolean	picked[MAX_CLIENTS];
+	char		shareSaid[MAX_CLIENTS][48];
+	float		shareScroll;
+
+	chOffer_t	offers[CH_OFFERS];
+	int			numOffers;
 } ch;
 
-static httpRequest_t chListHttp, chGetHttp, chActHttp, chSyncHttp;
+static httpRequest_t chListHttp, chGetHttp, chActHttp, chSyncHttp, chShareHttp, chOffersHttp, chOfferActHttp;
 static char chActWhat[32];
 static int chActId;
 static cvar_t *cl_characterHeld;	// "<account>/<id>": the character this game's settings are
@@ -240,6 +279,141 @@ static void CH_AskData( int id ) {
 		CH_Post( &chGetHttp, "/v2/chars/get", va( ",\"id\":%i", id ) );
 }
 
+static void CH_AskOffers( void ) {
+	CH_Post( &chOffersHttp, "/v2/chars/offers", "" );
+}
+
+/*
+===============================================================================
+
+A character's RPMod login: a cfg on this PC only (characters/logins/), run with exec when it's
+played: rplogout, then rplogin. Never sent to C1B3R, never in the character's data, never printed;
+only its username is read back, to show it. The password typed in is wiped once it's written.
+
+===============================================================================
+*/
+
+// its file, by the account it's under and its id: "" when the account isn't known
+static const char *CH_LoginPath( int id ) {
+	static char path[MAX_QPATH];
+	char account[48];
+	int n = 0;
+
+	for ( const char *a = CH_Account(); *a && n < (int)sizeof( account ) - 1; a++ ) {
+		if ( isalnum( (unsigned char)*a ) || *a == '_' || *a == '-' )
+			account[n++] = (char)tolower( (unsigned char)*a );
+	}
+	account[n] = '\0';
+	if ( !n || !id )
+		return "";
+	Com_sprintf( path, sizeof( path ), "characters/logins/%s_%i.cfg", account, id );
+	return path;
+}
+
+static void CH_Wipe( char *text, int size ) {
+	volatile char *p = text;
+
+	for ( int i = 0; i < size; i++ )
+		p[i] = '\0';
+}
+
+// its username and whether it's run on play, read back (the password left in the file)
+static void CH_LoginRead( int id ) {
+	const char *path = CH_LoginPath( id );
+	char *text = NULL;
+	int len;
+
+	ch.loginFor = id;
+	Q_strncpyz( ch.loginAcc, CH_Account(), sizeof( ch.loginAcc ) );
+	ch.loginUser[0] = '\0';
+	ch.loginAuto = qtrue;
+	if ( !path[0] || ( len = FS_ReadFile( path, (void **)&text ) ) <= 0 || !text )
+		return;
+	if ( strstr( text, "// auto 0" ) )
+		ch.loginAuto = qfalse;
+	{
+		const char *at = strstr( text, "rplogin \"" );
+		int n = 0;
+
+		for ( at = at ? at + 9 : NULL; at && *at && *at != '"' && n < CH_LOGIN_LEN - 1; at++ )
+			ch.loginUser[n++] = *at;
+		ch.loginUser[n] = '\0';
+	}
+	CH_Wipe( text, len );
+	FS_FreeFile( text );
+}
+
+// a username or password a cfg can hold: no quotes, semicolons or line breaks
+static qboolean CH_LoginText( const char *text ) {
+	if ( !text[0] )
+		return qfalse;
+	for ( ; *text; text++ ) {
+		if ( *text == '"' || *text == ';' || *text == '\n' || *text == '\r' || (unsigned char)*text < ' ' )
+			return qfalse;
+	}
+	return qtrue;
+}
+
+static qboolean CH_LoginWrite( int id, const char *name ) {
+	const char *path = CH_LoginPath( id );
+	char text[512];
+
+	if ( !path[0] ) {
+		CH_Message( "Your RPMod account isn't known yet: log in first", qtrue );
+		return qfalse;
+	}
+	if ( !CH_LoginText( ch.typeUser ) || !CH_LoginText( ch.typePass ) ) {
+		CH_Message( "Both are needed, without quotes or semicolons", qtrue );
+		return qfalse;
+	}
+	Com_sprintf( text, sizeof( text ),
+		"// RPMod login for the character \"%s\": kept on this PC only, run when you play it (/characters)\r\n"
+		"// auto %i\r\n"
+		"rplogout\r\n"
+		"wait 30\r\n"
+		"rplogin \"%s\" \"%s\"\r\n",
+		name, ch.typeAuto ? 1 : 0, ch.typeUser, ch.typePass );
+	FS_WriteFile( path, text, (int)strlen( text ) );
+	CH_Wipe( text, sizeof( text ) );
+	CH_Wipe( ch.typePass, sizeof( ch.typePass ) );
+	CH_LoginRead( id );
+	CH_Message( va( "Login kept on this PC: %s", ch.loginUser ), qfalse );
+	return qtrue;
+}
+
+static void CH_LoginRemove( int id ) {
+	const char *path = CH_LoginPath( id );
+
+	if ( path[0] && FS_FileExists( path ) )
+		FS_HomeRemove( path );
+	if ( ch.loginFor == id )
+		ch.loginFor = 0;
+}
+
+// its login run: rplogout, then rplogin, from the file; qfalse when it hasn't one
+static qboolean CH_LoginRun( int id ) {
+	const char *path = CH_LoginPath( id );
+
+	if ( !path[0] || !FS_FileExists( path ) )
+		return qfalse;
+	Cbuf_AddText( va( "exec %s\n", path ) );
+	return qtrue;
+}
+
+// played, its settings on: its login run, when it has one to run on play and it's another account
+static void CH_LoginAfterPlay( int id ) {
+	if ( ch.loginAfter != id )
+		return;
+	ch.loginAfter = 0;
+	CH_LoginRead( id );
+	if ( !ch.loginUser[0] || !ch.loginAuto || !Q_stricmp( ch.loginUser, CH_Account() ) )
+		return;
+	if ( CH_LoginRun( id ) ) {
+		CH_Message( va( "Logging in to RPMod as %s", ch.loginUser ), qfalse );
+		Com_Printf( "Characters: logging in to RPMod as %s, this character's login\n", ch.loginUser );
+	}
+}
+
 /*
 ===============================================================================
 
@@ -315,7 +489,7 @@ static std::string CH_Snapshot( int id ) {
 	CL_Presence_Json( out, CL_Languages_Character() );
 	out += ",\"saberStyles\":";
 	CL_Presence_Json( out, Cvar_VariableString( "cl_saberStyles" ) );
-	out += "}";
+	out += va( ",\"inspect\":%i}", Cvar_VariableIntegerValue( "cl_inspectOthers" ) ? 1 : 0 );
 	return out;
 }
 
@@ -360,6 +534,8 @@ static void CH_ReadData( const char *answer ) {
 	d.language.clear();
 	d.saberStyles.clear();
 	d.hasLanguage = d.hasStyles = qfalse;
+	d.inspect = qtrue;
+	d.hasInspect = qfalse;
 	d.has.clear();
 	for ( int i = 0; i < (int)ARRAY_LEN( chDatapad ); i++ ) {
 		d.datapad[i].clear();
@@ -400,6 +576,9 @@ static void CH_ReadData( const char *answer ) {
 		} else if ( kind == "saberStyles" ) {
 			d.saberStyles = f.size() >= 2 ? f[1] : "";
 			d.hasStyles = qtrue;
+		} else if ( kind == "inspect" ) {
+			d.inspect = (qboolean)( f.size() < 2 || atoi( f[1].c_str() ) != 0 );
+			d.hasInspect = qtrue;
 		}
 	} );
 }
@@ -446,6 +625,8 @@ static void CH_Apply( const chData_t &d ) {
 		Cbuf_AddText( va( "language character %s\n", d.language.c_str() ) );
 	if ( d.hasStyles )
 		Cvar_Set( "cl_saberStyles", d.saberStyles.c_str() );
+	// kept from Inspect or not: one that never said is open to it
+	Cvar_Set( "cl_inspectOthers", !d.hasInspect || d.inspect ? "1" : "0" );
 }
 
 static const chChar_t *CH_Find( int id ) {
@@ -485,6 +666,7 @@ void CL_Characters_Frame( void ) {
 				c->id = atoi( f[1].c_str() );
 				Q_strncpyz( c->name, f[2].c_str(), sizeof( c->name ) );
 				c->active = (qboolean)( f[3] == "1" );
+				Q_strncpyz( c->tag, f.size() >= 6 ? f[5].c_str() : "", sizeof( c->tag ) );
 				if ( c->active )
 					ch.activeId = c->id;
 			} );
@@ -510,9 +692,12 @@ void CL_Characters_Frame( void ) {
 		if ( ch.data.id == ch.activeId && !ch.applyId && ch.data.has.empty() && !CH_Held( ch.activeId ) && CH_Account()[0] )
 			CH_Hold( ch.activeId );
 		if ( ch.applyId && ch.data.id == ch.applyId ) {
+			const int played = ch.applyId;
+
 			CH_Apply( ch.data );
-			CH_Hold( ch.applyId );
+			CH_Hold( played );
 			ch.applyId = 0;
+			CH_LoginAfterPlay( played );
 		}
 	}
 	if ( HTTP_Poll( &chActHttp ) ) {
@@ -526,18 +711,23 @@ void CL_Characters_Frame( void ) {
 		} else if ( !strcmp( chActWhat, "select" ) ) {
 			ch.activeId = chActId;
 			CH_Message( va( "You play %s now", CH_Find( chActId ) ? CH_Find( chActId )->name : "it" ), qfalse );
-			// its data put back once it's here
+			// its data put back once it's here, then its RPMod login run (the account it's under kept till then)
 			ch.applyId = chActId;
+			ch.loginAfter = chActId;
 			if ( ch.data.id == chActId ) {
 				CH_Apply( ch.data );
 				CH_Hold( chActId );
 				ch.applyId = 0;
+				CH_LoginAfterPlay( chActId );
 			} else {
 				CH_AskData( chActId );
 			}
 		} else if ( !strcmp( chActWhat, "delete" ) ) {
+			CH_LoginRemove( chActId );
 			CH_Message( "Deleted", qfalse );
 			ch.sel = 0;
+		} else if ( !strcmp( chActWhat, "tag" ) ) {
+			CH_Message( "Tag changed", qfalse );
 		} else if ( !strcmp( chActWhat, "capture" ) ) {
 			CH_Hold( chActId );
 			CH_Message( "Kept: what you wear and use now is this character's", qfalse );
@@ -549,6 +739,61 @@ void CL_Characters_Frame( void ) {
 		ch.data.id = 0;		// asked again
 	}
 	HTTP_Poll( &chSyncHttp );
+
+	// a copy shared: what C1B3R said for each player
+	if ( HTTP_Poll( &chShareHttp ) ) {
+		if ( chShareHttp.status != 200 ) {
+			CH_Message( chShareHttp.answer[0] ? chShareHttp.answer : "C1B3R didn't answer", qtrue );
+		} else {
+			int sent = 0, skipped = 0;
+
+			CH_Lines( chShareHttp.answer, [&]( const std::vector<std::string> &f ) {
+				const int c = f.size() >= 2 ? atoi( f[1].c_str() ) : -1;
+
+				if ( c < 0 || c >= MAX_CLIENTS )
+					return;
+				if ( f[0] == "sent" ) {
+					Q_strncpyz( ch.shareSaid[c], S_COLOR_GREEN "offered", sizeof( ch.shareSaid[c] ) );
+					ch.picked[c] = qfalse;
+					sent++;
+				} else if ( f[0] == "skip" ) {
+					Q_strncpyz( ch.shareSaid[c], va( S_COLOR_YELLOW "%s", f.size() >= 3 ? f[2].c_str() : "not sent" ), sizeof( ch.shareSaid[c] ) );
+					skipped++;
+				}
+			} );
+			CH_Message( skipped ? va( "Offered to %i, not to %i: see the list", sent, skipped ) : va( "Offered to %i: they choose to take it", sent ),
+				(qboolean)( skipped > 0 ) );
+		}
+	}
+
+	// copies offered to you
+	if ( HTTP_Poll( &chOffersHttp ) && chOffersHttp.status == 200 ) {
+		ch.numOffers = 0;
+		CH_Lines( chOffersHttp.answer, [&]( const std::vector<std::string> &f ) {
+			if ( f[0] != "offer" || f.size() < 5 || ch.numOffers >= CH_OFFERS )
+				return;
+			chOffer_t *o = &ch.offers[ch.numOffers++];
+
+			o->id = atoi( f[1].c_str() );
+			Q_strncpyz( o->name, f[2].c_str(), sizeof( o->name ) );
+			Q_strncpyz( o->from, f[3].c_str(), sizeof( o->from ) );
+			o->items = atoi( f[4].c_str() );
+		} );
+	}
+	if ( HTTP_Poll( &chOfferActHttp ) ) {
+		if ( chOfferActHttp.status != 200 ) {
+			CH_Message( chOfferActHttp.answer[0] ? chOfferActHttp.answer : "C1B3R didn't answer", qtrue );
+		} else if ( !strncmp( chOfferActHttp.answer, "ok\t", 3 ) ) {
+			const char *name = strchr( chOfferActHttp.answer + 3, '\t' );
+
+			ch.sel = atoi( chOfferActHttp.answer + 3 );
+			CH_Message( va( "Yours now: %s" S_COLOR_GREEN ". Play as it to become it", name ? CL_Presence_Unfield( name + 1 ).c_str() : "the copy" ), qfalse );
+			CH_AskList();
+		} else {
+			CH_Message( "Declined", qfalse );
+		}
+		CH_AskOffers();
+	}
 
 	// the character played, kept up to date when this game holds it
 	if ( session && ch.known && CH_Held( ch.activeId ) && cls.realtime >= ch.nextSync && chSyncHttp.state != HTTP_BUSY ) {
@@ -563,6 +808,13 @@ void CL_Characters_Frame( void ) {
 // the character played (its C1B3R id), 0 none known: Presets keeps presets by it
 int CL_Characters_ActiveId( void ) {
 	return ch.known ? ch.activeId : 0;
+}
+
+// the character played's name, "" none known
+const char *CL_Characters_ActiveName( void ) {
+	const chChar_t *c = ch.known ? CH_Find( ch.activeId ) : NULL;
+
+	return c ? c->name : "";
 }
 
 /*
@@ -648,6 +900,26 @@ static void CH_Type( int what, const char *start ) {
 	WG_EditReset();
 }
 
+static qboolean CH_IsMain( const chChar_t *c ) {
+	return (qboolean)( c && !Q_stricmp( c->tag, "main" ) );
+}
+
+static qboolean CH_IsExtra( const chChar_t *c ) {
+	return (qboolean)( c && !Q_stricmp( c->tag, "extra" ) );
+}
+
+// a tag as shown
+static const char *CH_TagLabel( const char *tag ) {
+	return !Q_stricmp( tag, "main" ) ? "Main" : !Q_stricmp( tag, "extra" ) ? "Extra" : !Q_stricmp( tag, "secondary" ) ? "Secondary" : "";
+}
+
+static void CH_Check( float x, float y, float w, const char *label, qboolean on, qboolean enabled ) {
+	CH_Box( x, y + 1, 12, 12, chField );
+	if ( on )
+		CH_Fill( x + 3, y + 4, 6, 6, enabled ? chOrange : chDim );
+	CH_Text( x + 18, y, w - 18, label, enabled ? chWhite : chDim, CH_SMALL, qfalse );
+}
+
 static void CH_DrawList( void ) {
 	const float x = CH_A_X, w = CH_A_W;
 	float y = CH_TOP;
@@ -666,12 +938,18 @@ static void CH_DrawList( void ) {
 		on = (qboolean)( c->id == ch.sel );
 		hover = CH_InRect( x, y, w, CH_ROW_H - 2 );
 		CH_Box( x, y, w, CH_ROW_H - 2, on ? chItemOn : hover ? chItemHover : chItem );
-		CH_Text( x + 4, y + 4, w - 60, c->name, on || hover ? chWhite : chOrange, CH_TEXT, qfalse );
+		CH_Text( x + 4, y + 4, w - 100, c->name, on || hover ? chWhite : chOrange, CH_TEXT, qfalse );
+		if ( c->tag[0] && Q_stricmp( c->tag, "secondary" ) )
+			CH_Text( x + w - 96, y + 5, 40, CH_TagLabel( c->tag ), CH_IsMain( c ) ? chOrange : chDim, CH_SMALL, qfalse );
 		if ( c->active )
 			CH_Text( x + w - 56, y + 5, 52, "playing", chGreen, CH_SMALL, qfalse );
 		if ( CH_Clicked( x, y, w, CH_ROW_H - 2 ) && ch.sel != c->id ) {
 			ch.sel = c->id;
 			ch.typing = CH_TYPE_NONE;
+			if ( ch.side == CH_SIDE_LOGIN )
+				CH_Wipe( ch.typePass, sizeof( ch.typePass ) );
+			if ( ch.side != CH_SIDE_SHARE )
+				ch.side = CH_SIDE_SUITE;
 			CH_AskData( c->id );
 		}
 	}
@@ -682,13 +960,26 @@ static void CH_DrawList( void ) {
 		CH_Text( x, y, w, "A new character, called:", chDim, CH_SMALL, qfalse );
 		CH_DrawField( x, y + 12, w, "its name" );
 		y += 12 + CH_CTRL_H + 4;
+		{
+			const float bw = ( w - 4 ) * 0.5f;
+
+			if ( CH_Button( x, y, bw, "Secondary", (qboolean)!ch.newExtra, qtrue ) )
+				ch.newExtra = qfalse;
+			if ( CH_Button( x + bw + 4, y, bw, "Extra", ch.newExtra, qtrue ) )
+				ch.newExtra = qtrue;
+			y += CH_CTRL_H + 1;
+			CH_Text( x, y, w, ch.newExtra ? "For missions: can be shared, items too" : "Yours alone: never shared", chDim, CH_SMALL, qfalse );
+			y += 13;
+		}
 		if ( CH_Button( x, y, w, "From what I wear and use now", qfalse, (qboolean)( ch.field[0] != 0 ) ) ) {
-			CH_Act( "create", 0, "/v2/chars/create", CH_Str( "name", ch.field ) + ",\"data\":" + CH_Snapshot( -1 ) );
+			CH_Act( "create", 0, "/v2/chars/create", CH_Str( "name", ch.field ) + CH_Str( "tag", ch.newExtra ? "extra" : "secondary" )
+				+ ",\"data\":" + CH_Snapshot( -1 ) );
 			ch.typing = CH_TYPE_NONE;
 		}
 		y += CH_CTRL_H + 3;
 		if ( CH_Button( x, y, w, "Only my look", qfalse, (qboolean)( ch.field[0] != 0 ) ) ) {
-			CH_Act( "create", 0, "/v2/chars/create", CH_Str( "name", ch.field ) + ",\"data\":" + CH_LookOnly() );
+			CH_Act( "create", 0, "/v2/chars/create", CH_Str( "name", ch.field ) + CH_Str( "tag", ch.newExtra ? "extra" : "secondary" )
+				+ ",\"data\":" + CH_LookOnly() );
 			ch.typing = CH_TYPE_NONE;
 		}
 		y += CH_CTRL_H + 3;
@@ -726,18 +1017,49 @@ static void CH_DrawList( void ) {
 	{
 		const float bw = ( w - 8 ) / 3.0f;
 
-		if ( CH_Button( x, y, bw, "New", qfalse, (qboolean)( ch.num < CH_MAX ) ) )
+		if ( CH_Button( x, y, bw, "New", qfalse, (qboolean)( ch.num < CH_MAX ) ) ) {
 			CH_Type( CH_TYPE_NEW, "" );
+			ch.newExtra = qfalse;
+		}
 		if ( CH_Button( x + bw + 4, y, bw, "Rename", qfalse, (qboolean)( sel != NULL ) ) )
 			CH_Type( CH_TYPE_RENAME, sel->name );
-		if ( CH_Button( x + 2 * ( bw + 4 ), y, bw, "Delete", qfalse, (qboolean)( sel && ch.num > 1 ) ) )
+		if ( CH_Button( x + 2 * ( bw + 4 ), y, bw, "Delete", qfalse, (qboolean)( sel && ch.num > 1 && !CH_IsMain( sel ) ) ) )
 			CH_Type( CH_TYPE_DELETE, "" );
 	}
+	y += CH_CTRL_H + 10;
+
+	// copies others offered you: taken as a new character of yours, or turned down
+	if ( ch.numOffers ) {
+		CH_Text( x, y, w, va( "Offered to you (%i)", ch.numOffers ), chOrange, CH_TEXT, qfalse );
+		y += 15;
+		for ( int i = 0; i < ch.numOffers && y + 30 <= CH_Y + CH_H - 24; i++, y += 34 ) {
+			const chOffer_t *o = &ch.offers[i];
+			const qboolean busy = (qboolean)( chOfferActHttp.state == HTTP_BUSY );
+
+			CH_Box( x, y, w, 32, chItem );
+			CH_Text( x + 4, y + 2, w - 8, va( "%s" S_COLOR_GREY "  from %s" S_COLOR_GREY "%s", o->name, o->from,
+				o->items ? va( ", %i item%s", o->items, o->items == 1 ? "" : "s" ) : "" ), chWhite, CH_SMALL, qfalse );
+			if ( CH_Button( x + 4, y + 14, ( w - 12 ) * 0.5f, "Take it", qfalse, (qboolean)( !busy && ch.num < CH_MAX ) ) )
+				CH_Post( &chOfferActHttp, "/v2/chars/accept", va( ",\"offer\":%i", o->id ) );
+			if ( CH_Button( x + 8 + ( w - 12 ) * 0.5f, y + 14, ( w - 12 ) * 0.5f, "No thanks", qfalse, (qboolean)!busy ) )
+				CH_Post( &chOfferActHttp, "/v2/chars/decline", va( ",\"offer\":%i", o->id ) );
+		}
+	}
+}
+
+// a saber colour (the color1 userinfo: 0 red .. 5 purple) as the preview lights it
+static void CH_BladeColor( const char *value, vec3_t rgb ) {
+	static const float colors[6][3] = {
+		{ 1.0f, 0.2f, 0.2f }, { 1.0f, 0.5f, 0.1f }, { 1.0f, 1.0f, 0.2f }, { 0.2f, 1.0f, 0.2f }, { 0.2f, 0.4f, 1.0f }, { 0.8f, 0.2f, 1.0f }
+	};
+	const int c = value && value[0] ? atoi( value ) : 4;
+
+	VectorCopy( colors[c >= 0 && c < 6 ? c : 4], rgb );
 }
 
 // the picked one: its look turning, and playing it
 static void CH_DrawPicked( void ) {
-	const float x = CH_B_X, w = CH_B_W, h = 250;
+	const float x = CH_B_X, w = CH_B_W, h = 180;
 	const chChar_t *sel = CH_Find( ch.sel );
 	float y = CH_TOP;
 
@@ -749,14 +1071,21 @@ static void CH_DrawPicked( void ) {
 	if ( ch.data.id != sel->id ) {
 		CH_Text( x, y + h * 0.5f - 6, w, "Asking C1B3R...", chDim, CH_TEXT, qtrue );
 	} else {
-		const int m = CH_KeyIndex( "model" ), s1 = CH_KeyIndex( "saber1" ), s2 = CH_KeyIndex( "saber2" );
+		const int m = CH_KeyIndex( "model" ), s1 = CH_KeyIndex( "saber1" ), s2 = CH_KeyIndex( "saber2" ), c1 = CH_KeyIndex( "color1" );
 		const char *model = m >= 0 && ch.data.look[m].size() ? ch.data.look[m].c_str() : NULL;
 
 		if ( model ) {
-			CL_Presets_DrawCharacter( model, s1 >= 0 ? ch.data.look[s1].c_str() : "", s2 >= 0 ? ch.data.look[s2].c_str() : "",
-				NULL, NULL, NULL, x + 1, y + 1, w - 2, h - 2, ch.yaw + (float)( cls.realtime % 24000 ) * 0.015f, NULL, NULL );
+			const char *saber1 = s1 >= 0 ? ch.data.look[s1].c_str() : "", *saber2 = s2 >= 0 ? ch.data.look[s2].c_str() : "";
+			const qboolean hilt = (qboolean)( ( saber1[0] && Q_stricmp( saber1, "none" ) ) || ( saber2[0] && Q_stricmp( saber2, "none" ) ) );
+			vec3_t rgb;
+
+			CH_BladeColor( c1 >= 0 ? ch.data.look[c1].c_str() : "", rgb );
+			CL_Presets_DrawCharacter( model, saber1, saber2, NULL, NULL, ch.lit && hilt ? rgb : NULL, x + 1, y + 1, w - 2, h - 2,
+				ch.yaw + (float)( cls.realtime % 24000 ) * 0.015f, NULL, NULL );
 			if ( CL_Presets_CharacterError() )
 				CH_Text( x, y + h - 26, w, CL_Presets_CharacterError(), chYellow, CH_SMALL, qtrue );
+			else if ( hilt && CH_Button( x + w - 64, y + h - CH_CTRL_H - 3, 61, ch.lit ? "Blades off" : "Light them", ch.lit, qtrue ) )
+				ch.lit = (qboolean)!ch.lit;
 		} else {
 			CH_Text( x, y + h * 0.5f - 6, w, "No look kept yet", chDim, CH_TEXT, qtrue );
 		}
@@ -780,6 +1109,73 @@ static void CH_DrawPicked( void ) {
 			CH_Post( &chSyncHttp, "/v2/chars/update", va( ",\"id\":%i,\"data\":%s", ch.activeId, CH_Snapshot( ch.activeId ).c_str() ) );
 		CH_Act( "select", sel->id, "/v2/chars/select", va( ",\"id\":%i", sel->id ) );
 	}
+
+	// its RPMod login, kept on this PC; its tag, and sharing a copy
+	y = CH_TOP + h + 6 + 18 + 50;
+	if ( ch.loginFor != sel->id || Q_stricmp( ch.loginAcc, CH_Account() ) )
+		CH_LoginRead( sel->id );
+	CH_Text( x, y, w, ch.loginUser[0] ? va( "RPMod login: " S_COLOR_WHITE "%s%s", ch.loginUser, ch.loginAuto ? "" : S_COLOR_GREY "  (by hand)" )
+		: "RPMod login: " S_COLOR_GREY "none", chOrange, CH_SMALL, qfalse );
+	y += 13;
+	{
+		const float bw = ( w - 4 ) * 0.5f;
+
+		if ( CH_Button( x, y, bw, ch.loginUser[0] ? "Change login" : "Set a login", (qboolean)( ch.side == CH_SIDE_LOGIN ), (qboolean)( CH_Account()[0] != 0 ) ) ) {
+			ch.side = ch.side == CH_SIDE_LOGIN ? CH_SIDE_SUITE : CH_SIDE_LOGIN;
+			Q_strncpyz( ch.typeUser, ch.loginUser, sizeof( ch.typeUser ) );
+			CH_Wipe( ch.typePass, sizeof( ch.typePass ) );
+			ch.typeAuto = ch.loginUser[0] ? ch.loginAuto : qtrue;
+			ch.typeFocus = ch.loginUser[0] ? 1 : 0;
+			WG_EditReset();
+		}
+		if ( ch.loginUser[0] ) {
+			if ( CH_Button( x + bw + 4, y, bw * 0.5f - 2, "Log in", qfalse, (qboolean)( Q_stricmp( ch.loginUser, CH_Account() ) != 0 ) ) && CH_LoginRun( sel->id ) )
+				CH_Message( va( "Logging in to RPMod as %s", ch.loginUser ), qfalse );
+			if ( CH_Button( x + bw + 4 + bw * 0.5f + 2, y, bw * 0.5f - 2, "Remove", qfalse, qtrue ) ) {
+				CH_LoginRemove( sel->id );
+				CH_Message( "Login removed from this PC", qfalse );
+			}
+		}
+	}
+	y += CH_CTRL_H + 6;
+
+	// main: the first, its own; secondary: its own too; extra: for missions, shared with its items
+	if ( CH_IsMain( sel ) || !sel->tag[0] ) {
+		CH_Text( x, y + 2, w, sel->tag[0] ? "Tag: " S_COLOR_WHITE "Main" S_COLOR_GREY "  your first, never shared" : "Tag: " S_COLOR_GREY "unknown",
+			chOrange, CH_SMALL, qfalse );
+	} else {
+		const float bw = ( w - 34 - 4 ) * 0.5f;
+		const qboolean extra = CH_IsExtra( sel ), busy = (qboolean)( chActHttp.state == HTTP_BUSY );
+
+		CH_Text( x, y + 2, 32, "Tag:", chOrange, CH_SMALL, qfalse );
+		if ( CH_Button( x + 34, y, bw, "Secondary", (qboolean)!extra, (qboolean)( extra && !busy ) ) )
+			CH_Act( "tag", sel->id, "/v2/chars/tag", va( ",\"id\":%i", sel->id ) + CH_Str( "tag", "secondary" ) );
+		if ( CH_Button( x + 34 + bw + 4, y, bw, "Extra", extra, (qboolean)( !extra && !busy ) ) )
+			CH_Act( "tag", sel->id, "/v2/chars/tag", va( ",\"id\":%i", sel->id ) + CH_Str( "tag", "extra" ) );
+	}
+	y += CH_CTRL_H + 4;
+	if ( CH_IsExtra( sel ) ) {
+		if ( CH_Button( x, y, w, va( "Share a copy with players%s", ch.side == CH_SIDE_SHARE ? "..." : "" ), (qboolean)( ch.side == CH_SIDE_SHARE ), qtrue ) ) {
+			ch.side = ch.side == CH_SIDE_SHARE ? CH_SIDE_SUITE : CH_SIDE_SHARE;
+			memset( ch.shareSaid, 0, sizeof( ch.shareSaid ) );
+			ch.shareScroll = 0;
+		}
+	} else {
+		if ( ch.side == CH_SIDE_SHARE )
+			ch.side = CH_SIDE_SUITE;
+		CH_Text( x, y + 2, w, "Only extra characters can be shared", chDim, CH_SMALL, qtrue );
+	}
+	y += CH_CTRL_H + 5;
+
+	// kept from Inspect or not: changed on the one played (its settings are this game's)
+	if ( ch.data.id == sel->id ) {
+		const qboolean held = (qboolean)( sel->active && CH_Held( sel->id ) );
+		const qboolean on = held ? (qboolean)( Cvar_VariableIntegerValue( "cl_inspectOthers" ) != 0 ) : (qboolean)( !ch.data.hasInspect || ch.data.inspect );
+
+		CH_Check( x, y, w, held ? "Others can Inspect this character" : "Others can Inspect it " S_COLOR_GREY "(play as it to change)", on, held );
+		if ( held && CH_Clicked( x, y, w, 14 ) )
+			Cvar_Set( "cl_inspectOthers", on ? "0" : "1" );		// sent with its settings within seconds
+	}
 }
 
 // a tool for the character played
@@ -791,12 +1187,199 @@ static void CH_Tool( float x, float *y, float w, const char *label, const char *
 	*y += CH_CTRL_H + 3;
 }
 
+#define CH_SHARE_ROW		18.0f
+#define CH_SHARE_ROWS		13
+
+// the players a copy can go to: the one aimed at first, then the rest; you left out
+static int CH_SharePlayers( int *out ) {
+	const int aimed = CL_AimedPlayer( 1024.0f );
+	int n = 0;
+
+	if ( aimed >= 0 && aimed != clc.clientNum && CL_PlayerSlotName( aimed )[0] )
+		out[n++] = aimed;
+	for ( int c = 0; c < MAX_CLIENTS; c++ ) {
+		if ( c != clc.clientNum && c != aimed && CL_PlayerSlotName( c )[0] )
+			out[n++] = c;
+	}
+	return n;
+}
+
+static void CH_ShareSend( int id ) {
+	std::string fields = va( ",\"id\":%i,\"clients\":[", id );
+	int n = 0;
+
+	for ( int c = 0; c < MAX_CLIENTS; c++ ) {
+		if ( !ch.picked[c] || !CL_PlayerSlotName( c )[0] )
+			continue;
+		fields += va( "%s%i", n ? "," : "", c );
+		n++;
+		ch.shareSaid[c][0] = '\0';
+	}
+	fields += "]";
+	if ( !n ) {
+		CH_Message( "Tick the players first", qtrue );
+		return;
+	}
+	if ( n > CH_SHARE_MAX ) {
+		CH_Message( va( "At most %i at once", CH_SHARE_MAX ), qtrue );
+		return;
+	}
+	if ( !CH_Post( &chShareHttp, "/v2/chars/share", fields ) )
+		CH_Message( "Wait: still sending", qtrue );
+}
+
+// sharing a copy of the picked one: players ticked, then sent; each says yes or no to it
+static void CH_DrawShare( const chChar_t *sel ) {
+	const float x = CH_C_X, w = CH_C_W;
+	int players[MAX_CLIENTS], n, picked = 0, first;
+	float y = CH_TOP;
+
+	n = CH_SharePlayers( players );
+	for ( int c = 0; c < MAX_CLIENTS; c++ ) {
+		if ( ch.picked[c] && !CL_PlayerSlotName( c )[0] )
+			ch.picked[c] = qfalse;		// they left
+		picked += ch.picked[c] ? 1 : 0;
+	}
+	CH_Text( x, y, w, va( "Share a copy of %s", sel->name ), chOrange, CH_TEXT, qfalse );
+	y += 14;
+	CH_Text( x, y, w, "Its look, settings, panel, holster and items. Not its login.", chDim, CH_SMALL, qfalse );
+	y += 16;
+
+	ch.shareScroll = Com_Clamp( 0, (float)Q_max( 0, n - CH_SHARE_ROWS ), ch.shareScroll );
+	first = (int)ch.shareScroll;
+	if ( !n )
+		CH_Text( x, y + 30, w, "Nobody else is here", chDim, CH_TEXT, qtrue );
+	for ( int i = first; i < n && i < first + CH_SHARE_ROWS; i++ ) {
+		const int c = players[i];
+		const float ry = y + ( i - first ) * CH_SHARE_ROW;
+		const qboolean linked = CL_Presence_Linked( c ), hover = CH_InRect( x, ry, w, CH_SHARE_ROW - 2 );
+
+		CH_Box( x, ry, w, CH_SHARE_ROW - 2, ch.picked[c] ? chItemOn : hover && linked ? chItemHover : chItem );
+		// the box ticked
+		CH_Box( x + 3, ry + 3, 10, 10, chField );
+		if ( ch.picked[c] )
+			CH_Fill( x + 5, ry + 5, 6, 6, chOrange );
+		CH_Text( x + 18, ry + 2, w * 0.55f, va( "%s%s", CL_PlayerSlotName( c ), i == 0 && c == CL_AimedPlayer( 1024.0f ) ? S_COLOR_GREY " (aimed)" : "" ),
+			linked ? chWhite : chDim, CH_SMALL, qfalse );
+		CH_Text( x + w * 0.55f + 22, ry + 2, w * 0.45f - 24, ch.shareSaid[c][0] ? ch.shareSaid[c] : linked ? "" : S_COLOR_GREY "no C1B3R link",
+			chWhite, CH_SMALL, qfalse );
+		if ( linked && CH_Clicked( x, ry, w, CH_SHARE_ROW - 2 ) )
+			ch.picked[c] = (qboolean)!ch.picked[c];
+	}
+	if ( n > CH_SHARE_ROWS )
+		CH_Text( x, y + CH_SHARE_ROWS * CH_SHARE_ROW, w, va( "%i-%i of %i: the wheel scrolls", first + 1, Q_min( n, first + CH_SHARE_ROWS ), n ),
+			chDim, CH_SMALL, qtrue );
+
+	y = CH_Y + CH_H - 48;
+	{
+		const float bw = ( w - 8 ) / 3.0f;
+
+		if ( CH_Button( x, y, bw, "All linked", qfalse, qtrue ) ) {
+			for ( int i = 0; i < n; i++ )
+				ch.picked[players[i]] = CL_Presence_Linked( players[i] );
+		}
+		if ( CH_Button( x + bw + 4, y, bw, "None", qfalse, (qboolean)( picked > 0 ) ) )
+			memset( ch.picked, 0, sizeof( ch.picked ) );
+		if ( CH_Button( x + 2 * ( bw + 4 ), y, bw, chShareHttp.state == HTTP_BUSY ? "Sending..." : va( "Send to %i", picked ), qtrue,
+			(qboolean)( picked > 0 && chShareHttp.state != HTTP_BUSY ) ) )
+			CH_ShareSend( sel->id );
+	}
+}
+
+static void CH_LoginField( float x, float y, float w, int which, const char *hint ) {
+	wgStyle_t style;
+	char shown[CH_LOGIN_LEN];
+	char *buf = which ? ch.typePass : ch.typeUser;
+	const qboolean focused = (qboolean)( ch.typeFocus == which );
+
+	memset( &style, 0, sizeof( style ) );
+	style.font = ch.font;
+	style.scale = CH_TEXT;
+	style.lineH = 13.0f;
+	style.padX = 4;
+	style.padY = 2;
+	style.fill = chField;
+	style.border = chBorder;
+	style.text = chWhite;
+	style.dim = chDim;
+	CH_Box( x, y, w, CH_CTRL_H, chField );
+	if ( focused )
+		CH_Fill( x, y + CH_CTRL_H - 1, w, 1, chOrange );
+	if ( which ) {
+		// the password: as many * as it has letters
+		const int len = (int)strlen( buf );
+
+		memset( shown, '*', len );
+		shown[len] = '\0';
+		WG_Field( &style, x, y, w, CH_CTRL_H, shown, focused, hint, ch.cursorX, ch.cursorY );
+	} else {
+		WG_Field( &style, x, y, w, CH_CTRL_H, buf, focused, hint, ch.cursorX, ch.cursorY );
+	}
+	if ( CH_Clicked( x, y, w, CH_CTRL_H ) ) {
+		if ( !focused )
+			WG_EditReset();
+		ch.typeFocus = which;
+		if ( !which )
+			WG_FieldClick( buf, ch.clickX, ch.clickY );
+	}
+}
+
+// the picked one's RPMod login typed in: written to a cfg on this PC only
+static void CH_DrawLogin( const chChar_t *sel ) {
+	const float x = CH_C_X, w = CH_C_W;
+	float y = CH_TOP;
+
+	CH_Text( x, y, w, va( "RPMod login for %s", sel->name ), chOrange, CH_TEXT, qfalse );
+	y += 18;
+	CH_Text( x, y, w, "Username", chDim, CH_SMALL, qfalse );
+	CH_LoginField( x, y + 11, w, 0, "the RPMod account's name" );
+	y += 11 + CH_CTRL_H + 6;
+	CH_Text( x, y, w, "Password", chDim, CH_SMALL, qfalse );
+	CH_LoginField( x, y + 11, w, 1, ch.loginUser[0] ? "type it again to change the login" : "its password" );
+	y += 11 + CH_CTRL_H + 8;
+	CH_Box( x, y + 1, 12, 12, chField );
+	if ( ch.typeAuto )
+		CH_Fill( x + 3, y + 4, 6, 6, chOrange );
+	CH_Text( x + 18, y, w - 18, "Log in with it when I play as this character", chWhite, CH_SMALL, qfalse );
+	if ( CH_Clicked( x, y, w, 14 ) )
+		ch.typeAuto = (qboolean)!ch.typeAuto;
+	y += 22;
+	{
+		const float bw = ( w - 4 ) * 0.5f;
+
+		if ( CH_Button( x, y, bw, "Keep it", qtrue, (qboolean)( ch.typeUser[0] && ch.typePass[0] ) ) ) {
+			if ( CH_LoginWrite( sel->id, sel->name ) )
+				ch.side = CH_SIDE_SUITE;
+		}
+		if ( CH_Button( x + bw + 4, y, bw, "Cancel", qfalse, qtrue ) ) {
+			CH_Wipe( ch.typePass, sizeof( ch.typePass ) );
+			ch.side = CH_SIDE_SUITE;
+		}
+	}
+	y += CH_CTRL_H + 14;
+	CH_Text( x, y, w, "Kept only on this PC, in a cfg file:", chDim, CH_SMALL, qfalse );
+	CH_Text( x, y + 11, w, va( S_COLOR_WHITE "%s", CH_LoginPath( sel->id ) ), chDim, CH_SMALL, qfalse );
+	CH_Text( x, y + 22, w, "Never sent to C1B3R, never shared with a copy.", chDim, CH_SMALL, qfalse );
+	CH_Text( x, y + 40, w, "Playing as it runs rplogout, then rplogin.", chDim, CH_SMALL, qfalse );
+	CH_Text( x, y + 51, w, "Your inventory, panel and holster then come", chDim, CH_SMALL, qfalse );
+	CH_Text( x, y + 62, w, "from that account's characters, if it's linked.", chDim, CH_SMALL, qfalse );
+}
+
 // what the picked one keeps, and the tools for each part
 static void CH_DrawSuite( void ) {
 	const float x = CH_C_X, w = CH_C_W;
 	const chChar_t *sel = CH_Find( ch.sel );
 	const qboolean playing = (qboolean)( sel && sel->active );
 	float y = CH_TOP;
+
+	if ( sel && ch.side == CH_SIDE_SHARE ) {
+		CH_DrawShare( sel );
+		return;
+	}
+	if ( sel && ch.side == CH_SIDE_LOGIN ) {
+		CH_DrawLogin( sel );
+		return;
+	}
 
 	CH_Text( x, y, w, "What it keeps", chOrange, CH_TEXT, qfalse );
 	y += 16;
@@ -871,6 +1454,8 @@ void CL_Characters_Close( void ) {
 		return;
 	ch.open = qfalse;
 	ch.typing = CH_TYPE_NONE;
+	ch.side = CH_SIDE_SUITE;
+	CH_Wipe( ch.typePass, sizeof( ch.typePass ) );
 	CL_Presets_FreeCharacter();
 	Key_SetCatcher( Key_GetCatcher() & ~KEYCATCH_CHARACTERS );
 }
@@ -916,6 +1501,8 @@ static void CH_Open( void ) {
 	ch.open = qtrue;
 	Key_SetCatcher( Key_GetCatcher() | KEYCATCH_CHARACTERS );
 	CH_AskList();
+	CH_AskOffers();
+	ch.loginFor = 0;		// read again: it may have changed on disk
 }
 
 static qboolean CH_IsToggleKey( int key ) {
@@ -939,6 +1526,19 @@ void CL_Characters_KeyEvent( int key, qboolean down ) {
 		WG_EditKey( ch.field, sizeof( ch.field ), key, NULL );
 		return;
 	}
+	if ( ch.side == CH_SIDE_LOGIN ) {
+		if ( key == A_TAB ) {
+			ch.typeFocus ^= 1;
+			WG_EditReset();
+		} else if ( key != A_ENTER && key != A_KP_ENTER ) {
+			WG_EditKey( ch.typeFocus ? ch.typePass : ch.typeUser, CH_LOGIN_LEN, key, NULL );
+		}
+		return;
+	}
+	if ( ch.side == CH_SIDE_SHARE && ( key == A_MWHEELUP || key == A_MWHEELDOWN ) ) {
+		ch.shareScroll += key == A_MWHEELUP ? -3 : 3;		// held in range as it's drawn
+		return;
+	}
 	if ( CH_IsToggleKey( key ) )
 		CL_Characters_Close();
 }
@@ -946,6 +1546,8 @@ void CL_Characters_KeyEvent( int key, qboolean down ) {
 void CL_Characters_CharEvent( int ch_ ) {
 	if ( ch.open && ch.typing )
 		WG_EditChar( ch.field, sizeof( ch.field ), ch_, NULL );
+	else if ( ch.open && ch.side == CH_SIDE_LOGIN )
+		WG_EditChar( ch.typeFocus ? ch.typePass : ch.typeUser, CH_LOGIN_LEN, ch_, NULL );
 }
 
 void CL_Characters_MouseEvent( int dx, int dy ) {
@@ -953,10 +1555,15 @@ void CL_Characters_MouseEvent( int dx, int dy ) {
 	ch.cursorY = Com_Clamp( 0, SCREEN_HEIGHT, ch.cursorY + dy );
 }
 
-// the name typed in first, then closed
+// the name typed in first, then the login or sharing, then closed
 void CL_Characters_Escape( void ) {
 	if ( ch.typing ) {
 		ch.typing = CH_TYPE_NONE;
+		return;
+	}
+	if ( ch.side != CH_SIDE_SUITE ) {
+		CH_Wipe( ch.typePass, sizeof( ch.typePass ) );
+		ch.side = CH_SIDE_SUITE;
 		return;
 	}
 	CL_Characters_Close();
@@ -969,6 +1576,10 @@ void CL_Characters_Disconnect( void ) {
 	ch.listFor[0] = '\0';
 	ch.data.id = 0;
 	ch.applyId = 0;
+	ch.loginAfter = 0;
+	ch.loginFor = 0;
+	ch.numOffers = 0;
+	memset( ch.picked, 0, sizeof( ch.picked ) );
 	ch.lastSent.clear();
 }
 
@@ -976,6 +1587,14 @@ void CL_Characters_Disconnect( void ) {
 void CL_Characters_CharHook( char **argv, int argc ) {
 	if ( argc >= 1 && atoi( argv[0] ) == clc.clientNum && CL_Presence_Session() )
 		CH_AskList();
+}
+
+// cmd:charoffer/<client>/<offer>: someone offers this player a copy of their character
+void CL_Characters_OfferHook( char **argv, int argc ) {
+	if ( argc < 1 || atoi( argv[0] ) != clc.clientNum || !CL_Presence_Session() )
+		return;
+	Com_Printf( S_COLOR_CYAN "Characters: " S_COLOR_WHITE "a copy of a character is offered to you: /" CH_CMD " to take it or not\n" );
+	CH_AskOffers();
 }
 
 static void CH_Characters_f( void ) {
@@ -1012,9 +1631,44 @@ static void CH_Characters_f( void ) {
 		Com_Printf( "Characters: no character %s (" CH_CMD " list)\n", name );
 		return;
 	}
-	Com_Printf( "usage: " CH_CMD "               opens your characters, or closes them\n" );
-	Com_Printf( "       " CH_CMD " list          lists them\n" );
-	Com_Printf( "       " CH_CMD " play <name>   plays one: its look, settings, inventory, panel and holster\n" );
+	if ( !Q_stricmp( arg, "login" ) && Cmd_Argc() >= 3 ) {
+		const char *name = Cmd_ArgsFrom( 2 );
+
+		for ( int i = 0; i < ch.num; i++ ) {
+			if ( !Q_stricmp( ch.chars[i].name, name ) || ( Q_isanumber( name ) && atoi( name ) == ch.chars[i].id ) ) {
+				if ( !CH_LoginRun( ch.chars[i].id ) )
+					Com_Printf( "Characters: %s" S_COLOR_WHITE " has no RPMod login kept on this PC\n", ch.chars[i].name );
+				return;
+			}
+		}
+		Com_Printf( "Characters: no character %s (" CH_CMD " list)\n", name );
+		return;
+	}
+	if ( !Q_stricmp( arg, "offers" ) ) {
+		if ( !ch.numOffers )
+			Com_Printf( "Characters: no copies offered to you (asked again)\n" );
+		for ( int i = 0; i < ch.numOffers; i++ )
+			Com_Printf( "%i  %s" S_COLOR_WHITE "  from %s" S_COLOR_WHITE ", %i items\n", i + 1, ch.offers[i].name, ch.offers[i].from, ch.offers[i].items );
+		CH_AskOffers();
+		return;
+	}
+	if ( ( !Q_stricmp( arg, "accept" ) || !Q_stricmp( arg, "decline" ) ) && Cmd_Argc() >= 3 ) {
+		const int n = atoi( Cmd_Argv( 2 ) ) - 1;
+
+		if ( n < 0 || n >= ch.numOffers ) {
+			Com_Printf( "Characters: no offer %s (" CH_CMD " offers)\n", Cmd_Argv( 2 ) );
+			return;
+		}
+		if ( !CH_Post( &chOfferActHttp, !Q_stricmp( arg, "accept" ) ? "/v2/chars/accept" : "/v2/chars/decline", va( ",\"offer\":%i", ch.offers[n].id ) ) )
+			Com_Printf( "Characters: wait, still answering the last one\n" );
+		return;
+	}
+	Com_Printf( "usage: " CH_CMD "                  opens your characters, or closes them\n" );
+	Com_Printf( "       " CH_CMD " list             lists them\n" );
+	Com_Printf( "       " CH_CMD " play <name>      plays one: its look, settings, inventory, panel and holster\n" );
+	Com_Printf( "       " CH_CMD " login <name>     runs its RPMod login kept on this PC (rplogout, then rplogin)\n" );
+	Com_Printf( "       " CH_CMD " offers           copies of characters offered to you\n" );
+	Com_Printf( "       " CH_CMD " accept|decline <n>   takes one as a new character of yours, or turns it down\n" );
 }
 
 void CL_Characters_Init( void ) {

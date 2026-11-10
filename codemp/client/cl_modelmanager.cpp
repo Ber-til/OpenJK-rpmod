@@ -325,6 +325,11 @@ static struct {
 	int			gzHot;
 } mm;
 
+// pick mode (CL_ModelManager_Pick): the browser alone, a model chosen for another tool
+static void	( *mmPickDone )( const char *path, void *ctx );
+static void	*mmPickCtx;
+static qboolean	mmPicking;
+
 static vec4_t mmWhite		= { 1.0f, 1.0f, 1.0f, 1.0f };
 static vec4_t mmRed			= { 1.0f, 0.3f, 0.3f, 1.0f };
 static vec4_t mmPanel		= { 0.0f, 0.0f, 0.0f, 0.65f };
@@ -2435,13 +2440,16 @@ static qboolean MM_Open( void ) {
 	mm.cursorY = SCREEN_HEIGHT * 0.5f;
 	MM_RefreshSaves();
 	MM_RebuildView();
-	MM_RequestList();
+	if ( !mmPicking )
+		MM_RequestList();
 	MM_EnterBrowse();
 	Key_SetCatcher( Key_GetCatcher() | KEYCATCH_MODELMANAGER );
 	return qtrue;
 }
 
 static void MM_Close( void ) {
+	mmPicking = qfalse;		// closed while picking: cancelled
+	mmPickDone = NULL;
 	MM_CancelCarry();
 	mm.naming = MM_NAMING_NONE;
 	mm.state = MM_OFF;
@@ -2452,6 +2460,24 @@ static void MM_Close( void ) {
 void CL_ModelManager_Close( void ) {
 	if ( mm.state != MM_OFF )
 		MM_Close();
+}
+
+// the browser alone, to choose a model for another tool: done gets its path ("models/.../x.md3")
+// and the browser closes; Esc closes it with nothing chosen (done isn't called). qfalse: it
+// couldn't open, or it's open already for something else
+qboolean CL_ModelManager_Pick( void ( *done )( const char *path, void *ctx ), void *ctx ) {
+	if ( mm.state != MM_OFF )
+		return qfalse;
+	mmPicking = qtrue;
+	mmPickDone = done;
+	mmPickCtx = ctx;
+	if ( !MM_Open() ) {
+		mmPicking = qfalse;
+		mmPickDone = NULL;
+		return qfalse;
+	}
+	MM_Message( S_COLOR_GREEN "Pick a model: Enter or double-click uses it, Esc cancels" );
+	return qtrue;
 }
 
 // opened from a storyteller step
@@ -2692,6 +2718,23 @@ static void MM_PlaceSelected( void ) {
 
 	if ( sel < 0 )
 		return;
+	if ( mmPicking ) {
+		void ( *done )( const char *path, void *ctx ) = mmPickDone;
+		void *ctx = mmPickCtx;
+		char path[MAX_QPATH];
+
+		if ( mm.viewSaves || mm.viewStates )
+			return;		// constructs and states aren't one model
+		if ( !MM_RegisterModel( sel ) ) {
+			MM_Message( S_COLOR_YELLOW "That model can't be loaded" );
+			return;
+		}
+		Com_sprintf( path, sizeof( path ), "%s/%s%s", MM_ROOT, mm.models[sel].path, MM_EXT );
+		MM_Close();
+		if ( done )
+			done( path, ctx );
+		return;
+	}
 	if ( mm.viewSaves ) {
 		MM_LoadSave( mm.saves[sel] );
 		return;
@@ -2796,7 +2839,7 @@ static void MM_BrowseClick( void ) {
 
 	if ( MM_InRect( MM_PREVIEW_X, MM_BUTTON_Y, MM_PREVIEW_W, MM_BUTTON_H ) )
 		MM_PlaceSelected();
-	else if ( MM_InRect( MM_PREVIEW_X, MM_BUTTON_Y + MM_BUTTON_H + 4, MM_PREVIEW_W, MM_BUTTON_H ) )
+	else if ( !mmPicking && MM_InRect( MM_PREVIEW_X, MM_BUTTON_Y + MM_BUTTON_H + 4, MM_PREVIEW_W, MM_BUTTON_H ) )
 		MM_EnterCamera();
 }
 
@@ -2869,7 +2912,8 @@ static void MM_BrowseKey( int key ) {
 		MM_PlaceSelected();
 		break;
 	case A_TAB:
-		MM_EnterCamera();
+		if ( !mmPicking )
+			MM_EnterCamera();
 		break;
 	case A_MOUSE1:
 		MM_BrowseClick();
@@ -3354,6 +3398,8 @@ void CL_ModelManager_Frame( void ) {
 
 	if ( !( Key_GetCatcher() & KEYCATCH_MODELMANAGER ) ) {
 		// something else cleared the catchers
+		mmPicking = qfalse;
+		mmPickDone = NULL;
 		MM_CancelCarry();
 		mm.naming = MM_NAMING_NONE;
 		mm.state = MM_OFF;
@@ -3911,14 +3957,19 @@ static void MM_DrawBrowser( void ) {
 			MM_Text( MM_PREVIEW_X, y + MM_ROW_H * 2, va( S_COLOR_GREY "Size %i x %i x %i units, scale %i%%, solid %s",
 				(int)( maxs[0] - mins[0] ), (int)( maxs[1] - mins[1] ), (int)( maxs[2] - mins[2] ), mm.defScale, mm.defSolid ? "yes" : "no" ), mmWhite );
 		}
-		MM_Button( MM_PREVIEW_X, MM_BUTTON_Y, MM_PREVIEW_W, "Place this model  (Enter)" );
+		MM_Button( MM_PREVIEW_X, MM_BUTTON_Y, MM_PREVIEW_W, mmPicking ? "Use this model  (Enter)" : "Place this model  (Enter)" );
 	}
-	MM_Button( MM_PREVIEW_X, MM_BUTTON_Y + MM_BUTTON_H + 4, MM_PREVIEW_W, "Edit the map's models  (Tab)" );
+	if ( mmPicking ) {
+		MM_Text( MM_FOLDER_X, 440, S_COLOR_GREY "Up/Down select   Left/Right folder   Wheel scroll   Enter or double-click use it", mmWhite );
+		MM_Text( MM_FOLDER_X, 452, S_COLOR_GREY "Esc cancel: nothing picked", mmWhite );
+	} else {
+		MM_Button( MM_PREVIEW_X, MM_BUTTON_Y + MM_BUTTON_H + 4, MM_PREVIEW_W, "Edit the map's models  (Tab)" );
 
-	MM_Text( MM_FOLDER_X, 440, S_COLOR_GREY "Up/Down select   Left/Right folder   Wheel scroll   Enter or double-click place", mmWhite );
-	Com_sprintf( buf, sizeof( buf ), S_COLOR_GREY "Tab free camera   Esc close   %s",
-		Key_GetKey( MM_TOGGLE_CMD ) >= 0 || Key_GetKey( MM_OLD_TOGGLE_CMD ) >= 0 ? "Your modelmanager bind closes" : "Tip: bind a key to modelmanager" );
-	MM_Text( MM_FOLDER_X, 452, buf, mmWhite );
+		MM_Text( MM_FOLDER_X, 440, S_COLOR_GREY "Up/Down select   Left/Right folder   Wheel scroll   Enter or double-click place", mmWhite );
+		Com_sprintf( buf, sizeof( buf ), S_COLOR_GREY "Tab free camera   Esc close   %s",
+			Key_GetKey( MM_TOGGLE_CMD ) >= 0 || Key_GetKey( MM_OLD_TOGGLE_CMD ) >= 0 ? "Your modelmanager bind closes" : "Tip: bind a key to modelmanager" );
+		MM_Text( MM_FOLDER_X, 452, buf, mmWhite );
+	}
 
 	WG_DrawOverlay();
 	re->DrawStretchPic( mm.cursorX, mm.cursorY, 32, 32, 0, 0, 1, 1, cls.cursorShader );

@@ -1774,7 +1774,7 @@ const void	*RB_DrawSurfs( const void *data ) {
 	*/
 
 	// Render dynamic glowing/flaring objects.
-	if ( !(backEnd.refdef.rdflags & RDF_NOWORLDMODEL) && g_bDynamicGlowSupported && r_DynamicGlow->integer )
+	if ( ( !(backEnd.refdef.rdflags & RDF_NOWORLDMODEL) || (backEnd.refdef.rdflags & RDF_UIGLOW) ) && g_bDynamicGlowSupported && r_DynamicGlow->integer )
 	{
 		// Copy the normal scene to texture.
 		qglDisable( GL_TEXTURE_2D );
@@ -2443,6 +2443,10 @@ static inline void RB_DrawGlowOverlay()
 		qglBlendFunc( GL_ONE, GL_ONE );
 	}
 	qglEnable( GL_BLEND );
+
+	// A preview's glow stays in its box: the screen around it isn't the scene's
+	if ( backEnd.refdef.rdflags & RDF_UIGLOW )
+		qglScissor( backEnd.viewParms.viewportX, backEnd.viewParms.viewportY, backEnd.viewParms.viewportWidth, backEnd.viewParms.viewportHeight );
 
 	// Now additively render the glow texture.
 	qglBindTexture( GL_TEXTURE_RECTANGLE_ARB, tr.blurImage );

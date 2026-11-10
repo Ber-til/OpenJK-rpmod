@@ -662,6 +662,7 @@ void CL_ModelManager_f( void );
 qboolean CL_ModelManager_Active( void );
 void CL_ModelManager_Close( void );
 void CL_ModelManager_OpenForStory( void );
+qboolean CL_ModelManager_Pick( void ( *done )( const char *path, void *ctx ), void *ctx );	// the browser alone: a model chosen for another tool
 void CL_ModelManager_KeyEvent( int key, qboolean down );
 void CL_ModelManager_CharEvent( int ch );
 void CL_ModelManager_MouseEvent( int dx, int dy );
@@ -698,7 +699,8 @@ void CL_ModelManager_Draw( void );
 #define KEYCATCH_INSPECT		0x1000000	// engine only, the inspect window owns keyboard and mouse
 #define KEYCATCH_HOLSTER		0x2000000	// engine only, the holster editor owns keyboard and mouse
 #define KEYCATCH_CHARACTERS		0x4000000	// engine only, the characters window owns keyboard and mouse
-#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELMANAGER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER | KEYCATCH_MAPEDITOR | KEYCATCH_STORYTELLER | KEYCATCH_CINEDITOR | KEYCATCH_SOUNDMANAGER | KEYCATCH_RADIALMENU | KEYCATCH_LANGUAGES | KEYCATCH_CONSETTINGS | KEYCATCH_ANIMMANAGER | KEYCATCH_PRESETS | KEYCATCH_FEEDBACK | KEYCATCH_ASSETMANAGER | KEYCATCH_SPECIALMOVES | KEYCATCH_CHATLOG | KEYCATCH_DATAPAD | KEYCATCH_ESCMENU | KEYCATCH_INVENTORY | KEYCATCH_INSPECT | KEYCATCH_HOLSTER | KEYCATCH_CHARACTERS )	// mods never see or clear these
+#define KEYCATCH_WORLD			0x8000000	// engine only, the world's reader or editor owns keyboard and mouse
+#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELMANAGER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER | KEYCATCH_MAPEDITOR | KEYCATCH_STORYTELLER | KEYCATCH_CINEDITOR | KEYCATCH_SOUNDMANAGER | KEYCATCH_RADIALMENU | KEYCATCH_LANGUAGES | KEYCATCH_CONSETTINGS | KEYCATCH_ANIMMANAGER | KEYCATCH_PRESETS | KEYCATCH_FEEDBACK | KEYCATCH_ASSETMANAGER | KEYCATCH_SPECIALMOVES | KEYCATCH_CHATLOG | KEYCATCH_DATAPAD | KEYCATCH_ESCMENU | KEYCATCH_INVENTORY | KEYCATCH_INSPECT | KEYCATCH_HOLSTER | KEYCATCH_CHARACTERS | KEYCATCH_WORLD )	// mods never see or clear these
 
 void CL_NpcManager_Init( void );
 void CL_NpcManager_Shutdown( void );
@@ -780,6 +782,15 @@ qboolean CL_Extras_Origin( int num, vec3_t out );
 qboolean CL_Extras_Yaw( int num, float *yaw );
 int CL_Extras_Bodies( int *nums, vec3_t *orgs, int max );
 void CL_Extras_AddToScene( const refdef_t *fd );
+// a body only this client draws, posed and held on a pose's last frame (the world's bodies)
+typedef struct {
+	void		*g2;					// its ghoul2 model, NULL none
+	char		key[MAX_QPATH];			// the model it was made for
+	char		anim[48];				// the pose set
+	int			cfg;					// its animation.cfg, -1 none
+} clPosedBody_t;
+qboolean CL_Extras_PoseBody( clPosedBody_t *b, const char *model, const char *anim );
+void CL_Extras_FreeBody( clPosedBody_t *b );
 void CL_Cinematic_AddToScene( const refdef_t *fd );
 int CL_Cinematic_LightStyle( int style, int color );
 qboolean CL_Cinematic_SkyTint( vec3_t tint );
@@ -1090,6 +1101,29 @@ void CL_Datapad_KeyEvent( int key, qboolean down );
 void CL_Datapad_MouseEvent( int dx, int dy );
 void CL_Datapad_CharEvent( int ch );
 void CL_Pazaak_Frame( void );		// cl_pazaak.cpp
+void CL_Datapad_OpenItem( int item, const char *name, int world );	// a datapad item's (or a placed one's) Notes
+void CL_Notes_Frame( void );		// cl_notes.cpp
+void CL_Notes_Disconnect( void );
+void CL_Notes_PickedUp( int item );	// the placed datapad shown is yours now: this item
+void CL_Notes_Message( const char *text, qboolean bad );
+// cl_worlditems.cpp: datapads placed in the world, kept by C1B3R per map
+void CL_WorldItems_Frame( void );
+void CL_WorldItems_Draw( void );
+void CL_WorldItems_AddToScene( const refdef_t *fd );
+void CL_WorldItems_Disconnect( void );
+void CL_WorldItems_Hook( char **argv, int argc );	// cmd:world/<version>
+void CL_WorldItems_Command( const char *what, const char *args );	// datapad place|remove|drop: the old names
+void CL_WorldItems_Drop( int item, const char *name );	// an item of yours put down where you aim
+void CL_WorldItems_PickUp( int world );
+qboolean CL_WorldItems_Admin( void );
+void CL_WorldItems_Init( void );
+void CL_WorldItems_Shutdown( void );
+void CL_WorldItems_RendererRestarted( void );
+qboolean CL_WorldItems_RenderScene( const refdef_t *fd );	// the editor: the view kept for the gizmo, or the free camera's
+void CL_WorldItems_KeyEvent( int key, qboolean down );
+void CL_WorldItems_CharEvent( int ch );
+void CL_WorldItems_MouseEvent( int dx, int dy );
+void CL_WorldItems_Escape( void );
 // cl_inventory.cpp: /inventory, its window
 void CL_Inventory_Init( void );
 void CL_Inventory_Shutdown( void );
@@ -1101,6 +1135,7 @@ void CL_Inventory_KeyEvent( int key, qboolean down );
 void CL_Inventory_CharEvent( int ch );
 void CL_Inventory_MouseEvent( int dx, int dy );
 void CL_Inventory_Disconnect( void );
+int CL_Inventory_Picked( char *name, int size );	// the item picked in the window: its id, 0 none
 void CL_Inventory_RendererRestarted( void );
 void CL_Inventory_CharHook( char **argv, int argc );
 
@@ -1130,7 +1165,9 @@ void CL_Characters_CharEvent( int ch );
 void CL_Characters_MouseEvent( int dx, int dy );
 void CL_Characters_Disconnect( void );
 void CL_Characters_CharHook( char **argv, int argc );
+void CL_Characters_OfferHook( char **argv, int argc );	// cmd:charoffer/<client>/<offer>
 int CL_Characters_ActiveId( void );		// the character played (C1B3R's id), 0 none known
+const char *CL_Characters_ActiveName( void );	// its name, "" none known
 int CL_Presets_Keys( const char ***keys );
 int CL_Presets_Count( void );
 const char *CL_Presets_Get( int i, int key, const char **date, qboolean *favorite, int *character );
@@ -1159,6 +1196,9 @@ void CL_Holster_CharHook( char **argv, int argc );
 void CL_Holster_Entity( const refEntity_t *ent, void *bodyGhoul2 );
 void CL_Holster_DrawOn( void *ctx, void *ghoul2, const refEntity_t *body );
 const char *CL_Holster_Missing( int client );
+qboolean CL_Holster_RenderScene( const refdef_t *fd );	// live: the view kept for the gizmo, or the free camera's
+const char *CL_Holster_DatapadModel( void );		// a datapad model this game has, "" none
+qboolean CL_Holster_ModelEntity( const char *path, refEntity_t *ent );	// its model set on ent, loaded once
 void CL_DatapadWeb_Frame( void );	// cl_holonet.cpp: the HoloNet, the Comport and their pictures
 void CL_Datapad_Escape( void );
 void CL_Datapad_Draw( void );

@@ -516,6 +516,14 @@ static rhResult_t RH_Run( const char *text ) {
 		CL_Characters_CharHook( argv + 1, argc - 1 );
 		return RH_DROP;
 	}
+	if ( !Q_stricmp( argv[0], "world" ) ) {
+		CL_WorldItems_Hook( argv + 1, argc - 1 );
+		return RH_DROP;
+	}
+	if ( !Q_stricmp( argv[0], "charoffer" ) ) {
+		CL_Characters_OfferHook( argv + 1, argc - 1 );
+		return RH_DROP;
+	}
 	if ( !Q_stricmp( argv[0], "story" ) ) {
 		CL_Storyteller_Hook( argv + 1, argc - 1, message );
 		return RH_DROP;

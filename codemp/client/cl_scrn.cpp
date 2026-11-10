@@ -471,6 +471,7 @@ void SCR_DrawScreenField( stereoFrame_t stereoFrame ) {
 			CL_SoundManager_Frame();
 			CL_AnimManager_Frame();
 			CL_Holster_Frame();
+			CL_WorldItems_Frame();
 			CL_CameraSettings_Frame();
 			CL_QuickConnect_Frame();
 			CL_RadialMenu_Frame();
@@ -494,6 +495,7 @@ void SCR_DrawScreenField( stereoFrame_t stereoFrame ) {
 			CL_NpcManager_Draw();
 			CL_EffectManager_Draw();
 			CL_MapEditor_Draw();
+			CL_WorldItems_Draw();
 			CL_Storyteller_Draw();
 			CL_SoundManager_Draw();
 			CL_AnimManager_Draw();

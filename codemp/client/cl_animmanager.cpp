@@ -63,6 +63,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #include "ghoul2/G2.h"
 #include "qcommon/matcomp.h"
 #include "cl_widgets.h"
+#include "cl_gizmo.h"
 
 #define AM_CMD				"animationmanager"
 #define AM_DIR				"emotes"
@@ -734,7 +735,6 @@ KEYS: THE BONES POSED AT TIMES
 // it was before it had keys (and all a client without keys sees of it); the others are numbers in
 // the order of its bones. The turns go the short way round, as one turn from the one to the other.
 
-static void AM_AxisAngles( const matrix3_t axis, vec3_t angles );
 
 static float AM_Round( float v, float scale ) {
 	return floorf( v * scale + 0.5f ) / scale + 0.0f;
@@ -856,7 +856,7 @@ static void AM_SlerpAngles( const vec3_t a, const vec3_t b, float f, vec3_t out 
 	for ( int i = 0; i < 4 && len > 1e-6f; i++ )
 		q[i] /= len;
 	AM_QuatAxis( q, m );
-	AM_AxisAngles( m, out );
+	GZ_AxisAngles( m, out );
 }
 
 // where the keys have bone i, secs into them
@@ -2550,15 +2550,6 @@ static void AM_MeasureGizmo( const char *bone, const amCBone_t *cb ) {
 	am.gz.valid = qtrue;
 }
 
-static void AM_GzBasis( const vec3_t axis, vec3_t u, vec3_t v ) {
-	vec3_t other;
-
-	VectorSet( other, fabsf( axis[2] ) < 0.9f ? 0 : 1, 0, fabsf( axis[2] ) < 0.9f ? 1 : 0 );
-	CrossProduct( axis, other, u );
-	VectorNormalize( u );
-	CrossProduct( axis, u, v );
-}
-
 static void AM_GzLine( float x0, float y0, float x1, float y1, const float *color ) {
 	const float len = sqrtf( ( x1 - x0 ) * ( x1 - x0 ) + ( y1 - y0 ) * ( y1 - y0 ) );
 	const int steps = Com_Clampi( 1, 400, (int)( len / 0.8f ) );
@@ -2586,7 +2577,7 @@ static float AM_SegDist( float px, float py, float x0, float y0, float x1, float
 static qboolean AM_GzRing( int k, float *xs, float *ys ) {
 	vec3_t u, v, p;
 
-	AM_GzBasis( am.gz.rotAxis[k], u, v );
+	GZ_Basis( am.gz.rotAxis[k], u, v );
 	for ( int i = 0; i <= AM_GZ_SEGS; i++ ) {
 		const float a = i * 2.0f * M_PI / AM_GZ_SEGS;
 
@@ -2694,7 +2685,7 @@ static void AM_GzBegin( int part, const amCBone_t *cb ) {
 		am.gz.turned = 0.0f;
 		am.gz.startAngle = AM_GzAngle( am.cursorX, am.cursorY );
 		// which way round on the screen turns it positive
-		AM_GzBasis( am.gz.rotAxis[part], u, v );
+		GZ_Basis( am.gz.rotAxis[part], u, v );
 		VectorMA( am.gz.pos, am.gz.radius, u, q0 );
 		VectorMA( am.gz.pos, am.gz.radius * cosf( 0.2f ), u, q1 );
 		VectorMA( q1, am.gz.radius * sinf( 0.2f ), v, q1 );
@@ -2713,20 +2704,6 @@ static void AM_GzBegin( int part, const amCBone_t *cb ) {
 			am.gz.sx = x1 - x0;
 			am.gz.sy = y1 - y0;
 		}
-	}
-}
-
-// AnglesToAxis the other way round; at a pitch of 90 the roll is left at 0 and the yaw does it all
-static void AM_AxisAngles( const matrix3_t axis, vec3_t angles ) {
-	const float pitch = asinf( Com_Clamp( -1.0f, 1.0f, -axis[0][2] ) );
-
-	angles[PITCH] = RAD2DEG( pitch );
-	if ( cosf( pitch ) > 1e-4f ) {
-		angles[YAW] = RAD2DEG( atan2f( axis[0][1], axis[0][0] ) );
-		angles[ROLL] = RAD2DEG( atan2f( axis[1][2], axis[2][2] ) );
-	} else {
-		angles[YAW] = RAD2DEG( atan2f( -axis[1][0], axis[1][1] ) );
-		angles[ROLL] = 0.0f;
 	}
 }
 
@@ -2761,7 +2738,7 @@ static void AM_GzDrag( const char *bone ) {
 			for ( int j = 0; j < 3; j++ )
 				for ( int i = 0; i < 3; i++ )
 					out[j][i] = r[j][0] * q[0][i] + r[j][1] * q[1][i] + r[j][2] * q[2][i];
-			AM_AxisAngles( out, angles );
+			GZ_AxisAngles( out, angles );
 		}
 		for ( int k = 0; k < 3; k++ ) {
 			value = turn[am.gz.part] == 0.0f ? angles[k] : floorf( angles[k] * 10.0f + 0.5f ) / 10.0f + 0.0f;
@@ -3005,7 +2982,7 @@ static float AM_PoseBone( const amGla_t *g, int bone, const mdxaBone_t *local, c
 	for ( int i = 0; i < 3; i++ )
 		for ( int j = 0; j < 3; j++ )
 			axis[j][i] = r.matrix[i][j];
-	AM_AxisAngles( axis, twist );
+	GZ_AxisAngles( axis, twist );
 	for ( int k = 0; k < 3; k++ ) {
 		twist[k] = floorf( twist[k] * 10.0f + 0.5f ) / 10.0f + 0.0f;
 		if ( twist[k] > 180.0f )

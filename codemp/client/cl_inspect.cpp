@@ -95,6 +95,19 @@ static const struct {
 };
 #define INS_FIELD_LEN	2001
 
+// noticeable things: short lines, as many as C1B3R keeps (characters.py QUIRKS_MAX, QUIRK_LEN)
+#define INS_QUIRKS		10
+#define INS_QUIRK_LEN	101
+
+// what can be kept from others: a field (its insField_t bit), the noticeable things, the carried items
+#define IH_QUIRKS		IF_NUM
+#define IH_ITEMS		( IF_NUM + 1 )
+#define IH_NUM			( IF_NUM + 2 )
+#define IH_BIT( i )		( 1 << ( i ) )
+
+// the field typed in: a field, or a noticeable thing from INS_FOCUS_QUIRK
+#define INS_FOCUS_QUIRK	100
+
 typedef struct {
 	char	kind[16];
 	char	name[64];
@@ -104,10 +117,15 @@ typedef struct {
 typedef struct {
 	qboolean	known;			// answered
 	qboolean	none;			// no character: their game isn't linked
+	qboolean	off;			// the character played keeps itself from Inspect (C1B3R's "off")
 	int			version;
 	char		fields[IF_NUM][INS_FIELD_LEN];
+	char		quirks[INS_QUIRKS][INS_QUIRK_LEN];
+	int			numQuirks;
 	insItem_t	items[INS_ITEMS];
 	int			numItems;
+	int			hidden;			// yours: what others don't see (IH_BIT), as profile/get says
+	qboolean	ownKnown;		// yours: profile/get answered
 } insChar_t;
 
 // what the hint knows of each player: whether they've a character, and its name
@@ -132,7 +150,11 @@ static struct {
 	float		content;
 
 	qboolean	editing;		// yours, its fields typed in
+	int			page;			// 0 the profile, 1 noticeable things and privacy
 	char		edit[IF_NUM][INS_FIELD_LEN];
+	char		editQuirks[INS_QUIRKS][INS_QUIRK_LEN];
+	int			editNumQuirks;
+	int			editHidden;
 	int			focus;			// the field typed in, -1 none
 
 	char		message[160];
@@ -146,9 +168,10 @@ static struct {
 	int		asking;				// the client the request is for
 } insHint;
 
-static httpRequest_t insViewHttp, insSaveHttp, insHintHttp;
+static httpRequest_t insViewHttp, insSaveHttp, insHintHttp, insOwnHttp;
 static int insViewFor = -1;		// the client the view request is for
 static cvar_t *cl_inspectHint;
+static cvar_t *cl_inspectOthers;	// the character played: 0 kept from Inspect (Characters keeps it per character)
 
 /*
 ===============================================================================
@@ -157,6 +180,8 @@ Talking to C1B3R
 
 ===============================================================================
 */
+
+static qboolean INS_IsMe( void );
 
 static void INS_Message( const char *text, qboolean bad ) {
 	Q_strncpyz( ins.message, text, sizeof( ins.message ) );
@@ -197,6 +222,48 @@ static int INS_Split( char *line, char **field, int max ) {
 	return n;
 }
 
+// a hideable part by C1B3R's name for it, -1 none
+static int INS_HideBit( const char *name ) {
+	if ( !strcmp( name, "quirks" ) )
+		return IH_QUIRKS;
+	if ( !strcmp( name, "items" ) )
+		return IH_ITEMS;
+	for ( int i = 0; i < IF_NUM; i++ ) {
+		if ( i != IF_POSE && i != IF_BLADE && !strcmp( name, insFields[i].key ) )
+			return i;
+	}
+	return -1;
+}
+
+static const char *INS_HideName( int bit ) {
+	return bit == IH_QUIRKS ? "quirks" : bit == IH_ITEMS ? "items" : insFields[bit].key;
+}
+
+// field <name> <value>: the noticeable things are one value, a line each
+static void INS_ReadField( insChar_t *ch, const char *key, const char *value ) {
+	const std::string text = CL_Presence_Unfield( value );
+
+	if ( !strcmp( key, "quirks" ) ) {
+		size_t at = 0;
+
+		ch->numQuirks = 0;
+		while ( at <= text.size() && ch->numQuirks < INS_QUIRKS ) {
+			size_t end = text.find( '\n', at );
+
+			if ( end == std::string::npos )
+				end = text.size();
+			if ( end > at )
+				Q_strncpyz( ch->quirks[ch->numQuirks++], text.substr( at, end - at ).c_str(), INS_QUIRK_LEN );
+			at = end + 1;
+		}
+		return;
+	}
+	for ( int i = 0; i < IF_NUM; i++ ) {
+		if ( !strcmp( key, insFields[i].key ) )
+			Q_strncpyz( ch->fields[i], text.c_str(), sizeof( ch->fields[i] ) );
+	}
+}
+
 // "none", or ok <version>, then: field <name> <value>, holster ..., item <id> <kind> <shown> <name> ...
 static void INS_ReadView( const char *answer, insChar_t *ch ) {
 	std::string all( answer );
@@ -227,11 +294,10 @@ static void INS_ReadView( const char *answer, insChar_t *ch ) {
 			ch->version = n > 1 ? atoi( f[1] ) : 0;
 			continue;
 		}
-		if ( !strcmp( f[0], "field" ) && n >= 3 ) {
-			for ( int i = 0; i < IF_NUM; i++ ) {
-				if ( !strcmp( f[1], insFields[i].key ) )
-					Q_strncpyz( ch->fields[i], CL_Presence_Unfield( f[2] ).c_str(), sizeof( ch->fields[i] ) );
-			}
+		if ( !strcmp( f[0], "off" ) ) {
+			ch->off = qtrue;
+		} else if ( !strcmp( f[0], "field" ) && n >= 3 ) {
+			INS_ReadField( ch, f[1], f[2] );
 		} else if ( !strcmp( f[0], "item" ) && n >= 5 && ch->numItems < INS_ITEMS ) {
 			insItem_t *it = &ch->items[ch->numItems++];
 
@@ -241,15 +307,70 @@ static void INS_ReadView( const char *answer, insChar_t *ch ) {
 	}
 }
 
-// the panel saved: every field, empty ones too
+// yours as profile/get says it, all of it (what's kept from others too): field <name> <value>, hidden <name>
+static void INS_ReadOwn( const char *answer, insChar_t *ch ) {
+	std::string all( answer );
+	size_t at = 0;
+
+	memset( ch->fields, 0, sizeof( ch->fields ) );
+	ch->numQuirks = 0;
+	ch->hidden = 0;
+	while ( at < all.size() ) {
+		size_t end = all.find( '\n', at );
+		char *f[4];
+
+		if ( end == std::string::npos )
+			end = all.size();
+		std::string text = all.substr( at, end - at );
+		at = end + 1;
+		std::vector<char> line( text.begin(), text.end() );
+		line.push_back( '\0' );
+		const int n = INS_Split( line.data(), f, 4 );
+
+		if ( !strcmp( f[0], "field" ) && n >= 3 ) {
+			INS_ReadField( ch, f[1], f[2] );
+		} else if ( !strcmp( f[0], "hidden" ) && n >= 2 ) {
+			const int bit = INS_HideBit( f[1] );
+
+			if ( bit >= 0 )
+				ch->hidden |= IH_BIT( bit );
+		}
+	}
+	ch->ownKnown = qtrue;
+}
+
+static void INS_AskOwn( void ) {
+	if ( insOwnHttp.state != HTTP_BUSY )
+		INS_Post( &insOwnHttp, "/v2/char/profile/get", "" );
+}
+
+// the panel saved: every field, empty ones too; the noticeable things, and what's kept from others
 static void INS_Save( void ) {
 	std::string fields = ",\"fields\":{";
+	int n = 0;
 
 	for ( int i = 0; i < IF_NUM; i++ ) {
 		fields += va( "%s\"%s\":", i ? "," : "", insFields[i].key );
 		CL_Presence_Json( fields, ins.edit[i] );
 	}
-	fields += "}";
+	fields += ",\"quirks\":[";
+	for ( int i = 0; i < ins.editNumQuirks; i++ ) {
+		if ( !ins.editQuirks[i][0] )
+			continue;
+		if ( n++ )
+			fields += ",";
+		CL_Presence_Json( fields, ins.editQuirks[i] );
+	}
+	fields += "],\"hidden\":[";
+	n = 0;
+	for ( int i = 0; i < IH_NUM; i++ ) {
+		if ( !( ins.editHidden & IH_BIT( i ) ) || ( i < IF_NUM && INS_HideBit( insFields[i].key ) < 0 ) )
+			continue;
+		if ( n++ )
+			fields += ",";
+		CL_Presence_Json( fields, INS_HideName( i ) );
+	}
+	fields += "]}";
 	if ( !INS_Post( &insSaveHttp, "/v2/char/profile/set", fields ) )
 		INS_Message( CL_Presence_Session() ? "Wait: still saving" : "Not connected to C1B3R", qtrue );
 }
@@ -281,7 +402,7 @@ static void INS_HintFrame( void ) {
 		insHint.aimed = aimed;
 		insHint.since = cls.realtime;
 	}
-	if ( aimed < 0 || !cl_inspectHint->integer || cls.realtime - insHint.since < INS_HINT_WAIT_MS )
+	if ( aimed < 0 || !cl_inspectHint->integer || !cl_inspectOthers->integer || cls.realtime - insHint.since < INS_HINT_WAIT_MS )
 		return;
 	if ( INS_HintFor( aimed )->state == 0 && insHintHttp.state != HTTP_BUSY
 		&& INS_Post( &insHintHttp, "/v2/char/view", va( ",\"client\":%i", aimed ) ) ) {
@@ -296,7 +417,7 @@ void CL_Inspect_DrawHint( void ) {
 	const char *text;
 	vec4_t color = { 1.0f, 1.0f, 1.0f, 0.85f };
 
-	if ( !cl_inspectHint || !cl_inspectHint->integer || cls.state != CA_ACTIVE || insHint.aimed < 0 || Key_GetCatcher()
+	if ( !cl_inspectHint || !cl_inspectHint->integer || !cl_inspectOthers || !cl_inspectOthers->integer || cls.state != CA_ACTIVE || insHint.aimed < 0 || Key_GetCatcher()
 		|| !Cvar_VariableIntegerValue( "cg_draw2D" ) || cls.realtime - insHint.since < INS_HINT_WAIT_MS )
 		return;
 	h = &insHints[insHint.aimed];
@@ -322,15 +443,20 @@ void CL_Inspect_Frame( void ) {
 			if ( ins.client >= 0 && ins.client < MAX_CLIENTS ) {
 				insHint_t *h = INS_HintFor( ins.client );
 
-				h->state = ins.ch.none ? 3 : 2;
+				h->state = ins.ch.none || ins.ch.off ? 3 : 2;
 				Q_strncpyz( h->charName, ins.ch.fields[IF_NAME], sizeof( h->charName ) );
 			}
+			// yours: all of it, what others don't see too
+			if ( INS_IsMe() && !ins.ch.none )
+				INS_AskOwn();
 		} else if ( insViewHttp.status != 200 && ins.open ) {
 			ins.ch.known = qtrue;
 			ins.ch.none = qtrue;
 			INS_Message( insViewHttp.answer[0] ? insViewHttp.answer : "C1B3R didn't answer", qtrue );
 		}
 	}
+	if ( HTTP_Poll( &insOwnHttp ) && insOwnHttp.status == 200 && ins.open && INS_IsMe() && ins.ch.known && !ins.ch.none )
+		INS_ReadOwn( insOwnHttp.answer, &ins.ch );
 	if ( HTTP_Poll( &insSaveHttp ) ) {
 		if ( insSaveHttp.status == 200 ) {
 			INS_Message( "Saved", qfalse );
@@ -348,7 +474,7 @@ void CL_Inspect_Frame( void ) {
 			static insChar_t ch;
 
 			INS_ReadView( insHintHttp.answer, &ch );
-			h->state = ch.none ? 3 : 2;
+			h->state = ch.none || ch.off ? 3 : 2;
 			Q_strncpyz( h->charName, ch.fields[IF_NAME], sizeof( h->charName ) );
 		} else {
 			h->state = 3;
@@ -523,6 +649,11 @@ static qboolean INS_IsMe( void ) {
 	return (qboolean)( ins.client == clc.clientNum );
 }
 
+// on your own panel: a part others don't see, said
+static const char *INS_HidTag( int bit ) {
+	return INS_IsMe() && ( ins.ch.hidden & IH_BIT( bit ) ) ? S_COLOR_GREY "  (hidden)" : "";
+}
+
 /*
 ===============================================================================
 
@@ -553,32 +684,60 @@ static void INS_DrawPanel( void ) {
 			isDim, ins.font, IS_TEXT, qtrue );
 		return;
 	}
+	if ( ch->off && !INS_IsMe() ) {
+		INS_Text( x, top + 40, w, "This character can't be inspected", isOrange, ins.titleFont, IS_ITEM + 0.1f, qtrue );
+		INS_Text( x, top + 64, w, "Its player keeps it from Inspect", isDim, ins.font, IS_TEXT, qtrue );
+		return;
+	}
+	if ( INS_IsMe() && ch->off && !ch->ownKnown ) {
+		INS_Text( x, top + 40, w, "Asking C1B3R...", isDim, ins.font, IS_TEXT, qtrue );
+		return;
+	}
 
 	ins.scroll = Com_Clamp( 0, Q_max( 0.0f, ins.content - ( bottom - top ) ), ins.scroll );
 	y = top - ins.scroll;
-	INS_Line( x, &y, w, ch->fields[IF_NAME][0] ? ch->fields[IF_NAME] : "No name given", ch->fields[IF_NAME][0] ? isOrange : isDim,
-		ins.titleFont, IS_ITEM + 0.15f, 24, top, bottom );
+	if ( INS_IsMe() && ch->off )
+		INS_Line( x, &y, w, S_COLOR_YELLOW "(Inspect is off)" S_COLOR_GREY "  others can't see this: " INS_CMD " on", isDim, ins.font, IS_SMALL, 14, top, bottom );
+	INS_Line( x, &y, w, ch->fields[IF_NAME][0] ? va( "%s%s", ch->fields[IF_NAME], INS_HidTag( IF_NAME ) ) : "No name given",
+		ch->fields[IF_NAME][0] ? isOrange : isDim, ins.titleFont, IS_ITEM + 0.15f, 24, top, bottom );
 	if ( ch->fields[IF_TITLE][0] || ch->fields[IF_FACTION][0] ) {
-		Com_sprintf( line, sizeof( line ), "%s%s%s", ch->fields[IF_TITLE], ch->fields[IF_TITLE][0] && ch->fields[IF_FACTION][0] ? ", " : "",
-			ch->fields[IF_FACTION] );
+		Com_sprintf( line, sizeof( line ), "%s%s%s%s%s", ch->fields[IF_TITLE], ch->fields[IF_TITLE][0] ? INS_HidTag( IF_TITLE ) : "",
+			ch->fields[IF_TITLE][0] && ch->fields[IF_FACTION][0] ? S_COLOR_WHITE ", " : "", ch->fields[IF_FACTION],
+			ch->fields[IF_FACTION][0] ? INS_HidTag( IF_FACTION ) : "" );
 		INS_Line( x, &y, w, line, isWhite, ins.font, IS_TEXT, 16, top, bottom );
 	}
 	line[0] = '\0';
 	for ( int i = IF_SPECIES; i <= IF_GENDER; i++ ) {
 		if ( ch->fields[i][0] )
-			Q_strcat( line, sizeof( line ), va( "%s" S_COLOR_GREY "%s: " S_COLOR_WHITE "%s", line[0] ? "     " : "", insFields[i].label, ch->fields[i] ) );
+			Q_strcat( line, sizeof( line ), va( "%s" S_COLOR_GREY "%s: " S_COLOR_WHITE "%s%s", line[0] ? "     " : "", insFields[i].label,
+				ch->fields[i], INS_HidTag( i ) ) );
 	}
 	if ( line[0] )
 		INS_Line( x, &y, w, line, isWhite, ins.font, IS_TEXT, 16, top, bottom );
 	y += 6;
 	for ( int i = IF_APPEARANCE; i <= IF_BIOGRAPHY; i++ ) {
-		if ( !ch->fields[i][0] )
-			continue;
-		INS_Line( x, &y, w, insFields[i].label, isOrange, ins.font, IS_TEXT, 14, top, bottom );
-		INS_Para( x + 6, &y, w - 6, ch->fields[i], isWhite, top, bottom );
-		y += 8;
+		if ( ch->fields[i][0] ) {
+			INS_Line( x, &y, w, va( "%s%s", insFields[i].label, INS_HidTag( i ) ), isOrange, ins.font, IS_TEXT, 14, top, bottom );
+			INS_Para( x + 6, &y, w - 6, ch->fields[i], isWhite, top, bottom );
+			y += 8;
+		}
+		// what anyone would notice, after how they look
+		if ( i == IF_APPEARANCE && ch->numQuirks ) {
+			INS_Line( x, &y, w, va( "Noticeable%s", INS_HidTag( IH_QUIRKS ) ), isOrange, ins.font, IS_TEXT, 14, top, bottom );
+			for ( int q = 0; q < ch->numQuirks; q++ ) {
+				const float at = y;
+
+				INS_Para( x + 16, &y, w - 16, ch->quirks[q], isWhite, top, bottom );
+				if ( at >= top && at + IS_LINE_H <= bottom )
+					INS_Fill( x + 7, at + 5, 4, 4, isOrange );
+			}
+			y += 8;
+		}
 	}
-	if ( ch->numItems ) {
+	if ( INS_IsMe() && ( ch->hidden & IH_BIT( IH_ITEMS ) ) ) {
+		INS_Line( x, &y, w, "Carries" S_COLOR_GREY "  (hidden from others)", isOrange, ins.font, IS_TEXT, 16, top, bottom );
+		y += 4;
+	} else if ( ch->numItems ) {
 		INS_Line( x, &y, w, "Carries", isOrange, ins.font, IS_TEXT, 16, top, bottom );
 		for ( int i = 0; i < ch->numItems; i++ ) {
 			if ( y >= top && y + 16 <= bottom ) {
@@ -595,7 +754,7 @@ static void INS_DrawPanel( void ) {
 		y += 8;
 	}
 	if ( ch->fields[IF_OOC][0] ) {
-		INS_Line( x, &y, w, "OOC", isDim, ins.font, IS_TEXT, 14, top, bottom );
+		INS_Line( x, &y, w, va( "OOC%s", INS_HidTag( IF_OOC ) ), isDim, ins.font, IS_TEXT, 14, top, bottom );
 		INS_Para( x + 6, &y, w - 6, ch->fields[IF_OOC], isDim, top, bottom );
 	}
 	if ( y + ins.scroll - top <= 34 && !ch->numItems )
@@ -690,33 +849,140 @@ static void INS_DrawLook( float y ) {
 	}
 }
 
-// yours, typed in
-static void INS_DrawEdit( void ) {
-	const float x = IS_RIGHT_X, w = IS_RIGHT_W, half = ( w - 8 ) * 0.5f;
-	float y = IS_TOP;
+#define IS_EYE		14.0f
 
-	INS_Field( x, y, w, IS_CTRL_H, IF_NAME, qfalse );
+// whether others see a part: an open eye (orange) or a shut one (a dim line); hovered, it's said
+static void INS_Eye( float x, float y, int bit ) {
+	const qboolean hidden = (qboolean)( ( ins.editHidden & IH_BIT( bit ) ) != 0 );
+	static const float isShut[4] = { 0.45f, 0.45f, 0.5f, 1.0f };
+
+	INS_Box( x, y + 1, IS_EYE, IS_EYE, INS_InRect( x, y + 1, IS_EYE, IS_EYE ) ? isItemHover : isItem );
+	if ( hidden ) {
+		INS_Fill( x + 3, y + 1 + IS_EYE * 0.5f, IS_EYE - 6, 2, isShut );
+	} else {
+		INS_Fill( x + 3, y + 1 + IS_EYE * 0.5f - 1, IS_EYE - 6, 2, isOrange );
+		INS_Fill( x + IS_EYE * 0.5f - 2, y + 1 + IS_EYE * 0.5f - 3, 4, 6, isOrange );
+	}
+	if ( INS_InRect( x, y + 1, IS_EYE, IS_EYE ) && !( ins.message[0] && cls.realtime - ins.messageTime < INS_MESSAGE_MS ) )
+		INS_Text( IS_MODEL_X, IS_Y + IS_H - 20, IS_W - 24, hidden ? "Hidden: only you see it. Click to show it to others"
+			: "Seen by everyone who inspects you. Click to keep it to yourself", isDim, ins.font, IS_TEXT, qfalse );
+	if ( INS_Clicked( x, y + 1, IS_EYE, IS_EYE ) )
+		ins.editHidden ^= IH_BIT( bit );
+}
+
+// a one-line field with its eye beside it
+static void INS_EyeField( float x, float y, float w, int which ) {
+	INS_Field( x, y, w - IS_EYE - 3, IS_CTRL_H, which, qfalse );
+	INS_Eye( x + w - IS_EYE, y, which );
+}
+
+// yours, typed in: the profile
+static void INS_DrawEditProfile( float y ) {
+	const float x = IS_RIGHT_X, w = IS_RIGHT_W, half = ( w - 8 ) * 0.5f;
+
+	INS_EyeField( x, y, w, IF_NAME );
 	y += IS_CTRL_H + 5;
-	INS_Field( x, y, half, IS_CTRL_H, IF_SPECIES, qfalse );
-	INS_Field( x + half + 8, y, half, IS_CTRL_H, IF_AGE, qfalse );
+	INS_EyeField( x, y, half, IF_SPECIES );
+	INS_EyeField( x + half + 8, y, half, IF_AGE );
 	y += IS_CTRL_H + 5;
-	INS_Field( x, y, half, IS_CTRL_H, IF_GENDER, qfalse );
-	INS_Field( x + half + 8, y, half, IS_CTRL_H, IF_FACTION, qfalse );
+	INS_EyeField( x, y, half, IF_GENDER );
+	INS_EyeField( x + half + 8, y, half, IF_FACTION );
 	y += IS_CTRL_H + 5;
-	INS_Field( x, y, w, IS_CTRL_H, IF_TITLE, qfalse );
-	y += IS_CTRL_H + 9;
-	INS_Text( x, y, w, "Appearance", isOrange, ins.font, IS_SMALL, qfalse );
-	y += 12;
-	INS_Field( x, y, w, 56, IF_APPEARANCE, qtrue );
-	y += 61;
-	INS_Text( x, y, w, va( "Biography" S_COLOR_GREY "  (%i of %i)", (int)strlen( ins.edit[IF_BIOGRAPHY] ), insFields[IF_BIOGRAPHY].max ),
+	INS_EyeField( x, y, w, IF_TITLE );
+	y += IS_CTRL_H + 7;
+	INS_Text( x, y, w - IS_EYE, "Appearance", isOrange, ins.font, IS_SMALL, qfalse );
+	INS_Eye( x + w - IS_EYE, y - 3, IF_APPEARANCE );
+	y += 13;
+	INS_Field( x, y, w, 50, IF_APPEARANCE, qtrue );
+	y += 55;
+	INS_Text( x, y, w - IS_EYE, va( "Biography" S_COLOR_GREY "  (%i of %i)", (int)strlen( ins.edit[IF_BIOGRAPHY] ), insFields[IF_BIOGRAPHY].max ),
 		isOrange, ins.font, IS_SMALL, qfalse );
-	y += 12;
+	INS_Eye( x + w - IS_EYE, y - 3, IF_BIOGRAPHY );
+	y += 13;
 	INS_Field( x, y, w, IS_BOTTOM - IS_CTRL_H - 8 - 50 - y, IF_BIOGRAPHY, qtrue );
 	y = IS_BOTTOM - IS_CTRL_H - 8 - 44;
-	INS_Text( x, y, w, "OOC note: anything out of character (how to reach you, what you're up for)", isOrange, ins.font, IS_SMALL, qfalse );
-	y += 12;
+	INS_Text( x, y, w - IS_EYE, "OOC note: anything out of character (how to reach you, what you're up for)", isOrange, ins.font, IS_SMALL, qfalse );
+	INS_Eye( x + w - IS_EYE, y - 3, IF_OOC );
+	y += 13;
 	INS_Field( x, y, w, IS_CTRL_H, IF_OOC, qfalse );
+}
+
+static void INS_FocusQuirk( int q ) {
+	if ( ins.focus != INS_FOCUS_QUIRK + q )
+		WG_EditReset();
+	ins.focus = INS_FOCUS_QUIRK + q;
+}
+
+// yours, typed in: what anyone would notice, and what others see at all
+static void INS_DrawEditNoticeable( float y ) {
+	const float x = IS_RIGHT_X, w = IS_RIGHT_W;
+	wgStyle_t style;
+
+	INS_Style( &style );
+	INS_Text( x, y, w - IS_EYE, va( "Noticeable things" S_COLOR_GREY "  (%i of %i)", ins.editNumQuirks, INS_QUIRKS ), isOrange, ins.font, IS_SMALL, qfalse );
+	INS_Eye( x + w - IS_EYE, y - 3, IH_QUIRKS );
+	y += 13;
+	INS_Text( x, y, w, "What anyone would notice: a scar, a limp, an accent, a smell of engine oil", isDim, ins.font, IS_SMALL, qfalse );
+	y += 15;
+	for ( int q = 0; q < ins.editNumQuirks; q++ ) {
+		char *buf = ins.editQuirks[q];
+		const qboolean focused = (qboolean)( ins.focus == INS_FOCUS_QUIRK + q );
+		const float fw = w - 24;
+
+		INS_Fill( x + 2, y + 6, 4, 4, isOrange );
+		INS_Box( x + 10, y, fw - 10, IS_CTRL_H, isField );
+		if ( focused )
+			INS_Fill( x + 10, y + IS_CTRL_H - 1, fw - 10, 1, isOrange );
+		WG_Field( &style, x + 10, y, fw - 10, IS_CTRL_H, buf, focused, "A noticeable thing", ins.cursorX, ins.cursorY );
+		if ( INS_Clicked( x + 10, y, fw - 10, WG_FieldHeight( &style, fw - 10, IS_CTRL_H, buf, focused ) ) ) {
+			INS_FocusQuirk( q );
+			WG_FieldClick( buf, ins.clickX, ins.clickY );
+		}
+		// taken out: the ones after it move up
+		if ( INS_Button( x + w - 20, y, 20, "x", qfalse, qtrue ) ) {
+			memmove( ins.editQuirks[q], ins.editQuirks[q + 1], ( ins.editNumQuirks - q - 1 ) * INS_QUIRK_LEN );
+			ins.editNumQuirks--;
+			ins.editQuirks[ins.editNumQuirks][0] = '\0';
+			ins.focus = -1;
+			WG_EditReset();
+			break;
+		}
+		y += IS_CTRL_H + 4;
+	}
+	if ( ins.editNumQuirks < INS_QUIRKS && INS_Button( x + 10, y, 120, "Add one", qfalse, qtrue ) ) {
+		ins.editQuirks[ins.editNumQuirks][0] = '\0';
+		INS_FocusQuirk( ins.editNumQuirks++ );
+	}
+	y += IS_CTRL_H + 14;
+
+	INS_Text( x, y, w, "What others see", isOrange, ins.font, IS_SMALL, qfalse );
+	y += 15;
+	INS_Eye( x, y - 1, IH_ITEMS );
+	INS_Text( x + IS_EYE + 6, y, w - IS_EYE - 6, "The items you carry  " S_COLOR_GREY "(which ones: Show on Inspect in /inventory)", isWhite, ins.font, IS_SMALL, qfalse );
+	y += 18;
+	INS_Text( x, y, w, "Each field's eye on the Profile page keeps it to yourself. Hidden parts stay saved:", isDim, ins.font, IS_SMALL, qfalse );
+	y += 12;
+	INS_Text( x, y, w, "only you see them, marked (hidden), and you can show them again at any time.", isDim, ins.font, IS_SMALL, qfalse );
+}
+
+// yours, typed in: two pages
+static void INS_DrawEdit( void ) {
+	const float x = IS_RIGHT_X, w = IS_RIGHT_W, tab = ( w - 6 ) * 0.5f;
+
+	if ( INS_Button( x, IS_TOP - 4, tab, "Profile", (qboolean)( ins.page == 0 ), qtrue ) && ins.page != 0 ) {
+		ins.page = 0;
+		ins.focus = -1;
+		WG_EditReset();
+	}
+	if ( INS_Button( x + tab + 6, IS_TOP - 4, tab, "Noticeable & privacy", (qboolean)( ins.page == 1 ), qtrue ) && ins.page != 1 ) {
+		ins.page = 1;
+		ins.focus = -1;
+		WG_EditReset();
+	}
+	if ( ins.page == 0 )
+		INS_DrawEditProfile( IS_TOP + IS_CTRL_H + 4 );
+	else
+		INS_DrawEditNoticeable( IS_TOP + IS_CTRL_H + 8 );
 }
 
 static void INS_Close( void ) {
@@ -735,10 +1001,14 @@ void CL_Inspect_Close( void ) {
 
 static void INS_StartEdit( void ) {
 	ins.editing = qtrue;
+	ins.page = 0;
 	ins.focus = IF_NAME;
 	WG_EditReset();
 	for ( int i = 0; i < IF_NUM; i++ )
 		Q_strncpyz( ins.edit[i], ins.ch.fields[i], insFields[i].max + 1 );
+	memcpy( ins.editQuirks, ins.ch.quirks, sizeof( ins.editQuirks ) );
+	ins.editNumQuirks = ins.ch.numQuirks;
+	ins.editHidden = ins.ch.hidden;
 }
 
 void CL_Inspect_Draw( void ) {
@@ -800,8 +1070,8 @@ void CL_Inspect_Draw( void ) {
 				ins.focus = -1;
 				INS_Save();
 			}
-		} else if ( INS_Button( IS_RIGHT_X + IS_RIGHT_W - 120, by, 120, "Edit", qfalse, qtrue ) ) {
-			INS_StartEdit();
+		} else if ( INS_Button( IS_RIGHT_X + IS_RIGHT_W - 120, by, 120, ins.ch.ownKnown ? "Edit" : "Asking C1B3R...", qfalse, ins.ch.ownKnown ) ) {
+			INS_StartEdit();		// only once all of it is known: what's hidden too, or Save would show it
 		}
 	}
 
@@ -882,6 +1152,20 @@ static qboolean INS_IsToggleKey( int key ) {
 	return (qboolean)( VALIDSTRING( binding ) && !Q_stricmp( binding, INS_CMD ) );
 }
 
+// the text typed in, and its size; NULL none
+static char *INS_FocusBuf( int *size ) {
+	if ( ins.focus >= INS_FOCUS_QUIRK ) {
+		const int q = ins.focus - INS_FOCUS_QUIRK;
+
+		*size = INS_QUIRK_LEN;
+		return q < ins.editNumQuirks ? ins.editQuirks[q] : NULL;
+	}
+	if ( ins.focus < 0 || ins.focus >= IF_NUM )
+		return NULL;
+	*size = insFields[ins.focus].max + 1;
+	return ins.edit[ins.focus];
+}
+
 void CL_Inspect_KeyEvent( int key, qboolean down ) {
 	if ( !ins.open || !down )
 		return;
@@ -892,13 +1176,23 @@ void CL_Inspect_KeyEvent( int key, qboolean down ) {
 		return;
 	}
 	if ( ins.editing && ins.focus >= 0 ) {
-		char *buf = ins.edit[ins.focus];
-		const int size = insFields[ins.focus].max + 1;
+		int size;
+		char *buf = INS_FocusBuf( &size );
 		const qboolean box = (qboolean)( ins.focus == IF_APPEARANCE || ins.focus == IF_BIOGRAPHY );
 
+		if ( !buf ) {
+			ins.focus = -1;
+			return;
+		}
 		if ( ( key == A_ENTER || key == A_KP_ENTER ) && box ) {
 			WG_EditChar( buf, size, '\n', NULL );
+		} else if ( key == A_TAB && ins.focus >= INS_FOCUS_QUIRK ) {
+			// the noticeable things, round
+			if ( ins.editNumQuirks > 0 )
+				ins.focus = INS_FOCUS_QUIRK + ( ins.focus - INS_FOCUS_QUIRK + ( kg.keys[A_SHIFT].down ? ins.editNumQuirks - 1 : 1 ) ) % ins.editNumQuirks;
+			WG_EditReset();
 		} else if ( key == A_TAB ) {
+			// the profile's fields (the blade's too: it's under the model), the pose left out
 			do
 				ins.focus = ( ins.focus + ( kg.keys[A_SHIFT].down ? IF_NUM - 1 : 1 ) ) % IF_NUM;
 			while ( ins.focus == IF_POSE );
@@ -930,8 +1224,11 @@ void CL_Inspect_KeyEvent( int key, qboolean down ) {
 }
 
 void CL_Inspect_CharEvent( int ch ) {
-	if ( ins.open && ins.editing && ins.focus >= 0 )
-		WG_EditChar( ins.edit[ins.focus], insFields[ins.focus].max + 1, ch, NULL );
+	int size;
+	char *buf;
+
+	if ( ins.open && ins.editing && ins.focus >= 0 && ( buf = INS_FocusBuf( &size ) ) != NULL )
+		WG_EditChar( buf, size, ch, NULL );
 }
 
 void CL_Inspect_MouseEvent( int dx, int dy ) {
@@ -983,7 +1280,18 @@ static void INS_Inspect_f( void ) {
 			INS_Close();
 			return;
 		}
-		INS_Open( aimed >= 0 ? aimed : clc.clientNum );
+		// kept from Inspect: only your own
+		INS_Open( aimed >= 0 && cl_inspectOthers->integer ? aimed : clc.clientNum );
+	} else if ( !Q_stricmp( arg, "off" ) || !Q_stricmp( arg, "on" ) ) {
+		const qboolean on = (qboolean)!Q_stricmp( arg, "on" );
+
+		Cvar_Set( "cl_inspectOthers", on ? "1" : "0" );
+		Com_Printf( on ? "Inspect: others can inspect the character you play again\n"
+			: "Inspect: the character you play is kept from Inspect; you don't inspect others either\n" );
+		if ( !CL_Characters_ActiveId() )
+			Com_Printf( S_COLOR_YELLOW "Your characters aren't known yet (is your game linked?): kept once they are\n" );
+		else
+			Com_Printf( "Kept for this character within a few seconds\n" );
 	} else if ( !Q_stricmp( arg, "me" ) ) {
 		INS_Open( clc.clientNum );
 	} else if ( !Q_stricmp( arg, "edit" ) ) {
@@ -994,6 +1302,7 @@ static void INS_Inspect_f( void ) {
 		Com_Printf( "usage: " INS_CMD "                 the player you aim at, or yourself (again: closes it)\n" );
 		Com_Printf( "       " INS_CMD " me              your own character panel, to edit it\n" );
 		Com_Printf( "       " INS_CMD " <client|name>   a player by their client number or a part of their name\n" );
+		Com_Printf( "       " INS_CMD " off|on          keep the character you play from Inspect, or not\n" );
 		Com_Printf( "cl_inspectHint 0|1: their character's name under the crosshair when you aim at them\n" );
 	} else {
 		const int client = INS_FindPlayer( Cmd_Args() );
@@ -1009,6 +1318,7 @@ void CL_Inspect_Init( void ) {
 	memset( &ins, 0, sizeof( ins ) );
 	ins.focus = -1;
 	insHint.aimed = insHint.asking = -1;
+	cl_inspectOthers = Cvar_Get( "cl_inspectOthers", "1", CVAR_ARCHIVE_ND, "0: the character you play is kept from Inspect (set per character by /characters or /inspect off|on)" );
 	cl_inspectHint = Cvar_Get( "cl_inspectHint", "1", CVAR_ARCHIVE_ND, "Aiming at a player who has a character panel shows their character's name and the key that inspects them" );
 	Cmd_AddCommand( INS_CMD, INS_Inspect_f, "A player's character: their model, character panel and what they show (yours, to edit it)" );
 }
