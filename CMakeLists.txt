@@ -350,8 +350,11 @@ endif()
 
 # Current Git tag/version
 # A build of a release's own commit is that release's tag ("v0.7.3"). Any other build is the
-# version after the newest release tag, wherever it is, and the commit ("v0.7.4-dev-g5cc1ce8"),
-# so a branch the release merges aren't part of still counts on from the newest release.
+# version the branch's VERSION file names, and the commit ("v0.10.0-dev-g5cc1ce8"); without that
+# file, the version after the newest release tag, wherever it is ("v0.7.4-dev-g5cc1ce8").
+if(EXISTS "${CMAKE_SOURCE_DIR}/VERSION")
+	set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/VERSION")
+endif()
 execute_process(
 	COMMAND "git" "describe" "--tags" "--exact-match"
 	WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
@@ -374,7 +377,21 @@ if(GIT_TAG_ERROR AND NOT GIT_TAG_ERROR EQUAL 0)
 		OUTPUT_STRIP_TRAILING_WHITESPACE
 		ERROR_QUIET)
 	set(GIT_TAG vUNKNOWN)
-	# the newest tag that's a version: v<major>.<minor>.<patch>
+	# the branch's own version, when it says one: VERSION at the top, "0.10.0" ("v0.10.0-dev-g5cc1ce8")
+	set(BRANCH_VERSION "")
+	if(EXISTS "${CMAKE_SOURCE_DIR}/VERSION")
+		file(STRINGS "${CMAKE_SOURCE_DIR}/VERSION" BRANCH_VERSION LIMIT_COUNT 1)
+		string(STRIP "${BRANCH_VERSION}" BRANCH_VERSION)
+		string(REGEX REPLACE "^v" "" BRANCH_VERSION "${BRANCH_VERSION}")
+	endif()
+	if(BRANCH_VERSION)
+		set(GIT_TAG "v${BRANCH_VERSION}-dev")
+		if(GIT_HASH)
+			set(GIT_TAG "${GIT_TAG}-g${GIT_HASH}")
+		endif()
+		set(GIT_TAGS "")
+	endif()
+	# otherwise the newest tag that's a version: v<major>.<minor>.<patch>
 	string(REPLACE "\n" ";" GIT_TAGS "${GIT_TAGS}")
 	foreach(tag ${GIT_TAGS})
 		if(tag MATCHES "^v([0-9]+)\\.([0-9]+)\\.([0-9]+)$")
