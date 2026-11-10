@@ -231,15 +231,12 @@ static qboolean CR_FindSender( const char *line, float *distance ) {
 			}
 		}
 	}
+	// yours too: yours before another's by the same name (another's chat comes with its distance)
 	if ( mine ) {
-		const qboolean waiting = (qboolean)( cr.ownMePending > 0 && cls.realtime - cr.ownMeTime < CR_OWN_ME_MS );
-
-		if ( waiting )
+		if ( cr.ownMePending > 0 && cls.realtime - cr.ownMeTime < CR_OWN_ME_MS )
 			cr.ownMePending--;
-		if ( !others || waiting ) {
-			*distance = 0.0f;
-			return qtrue;
-		}
+		*distance = 0.0f;
+		return qtrue;
 	}
 	if ( !others )
 		return qfalse;
@@ -299,6 +296,24 @@ static qboolean CR_Range( float distance, int *fade ) {
 	return qtrue;
 }
 
+// whether the name starting this line ("name\x19 ...") is yours, colours and all or without them
+static qboolean CR_IsMine( const char *line ) {
+	const char *sep = strchr( line, '\x19' );
+	const int ofs = cl.snap.valid ? cl.gameState.stringOffsets[CS_PLAYERS + cl.snap.ps.clientNum] : 0;
+	char said[256], a[256], b[256];
+
+	if ( !sep || sep - line >= (int)sizeof( said ) || !ofs )
+		return qfalse;
+	Q_strncpyz( said, line, (int)( sep - line ) + 1 );
+	CR_ExactName( said, a, sizeof( a ) );
+	CR_ExactName( Info_ValueForKey( cl.gameState.stringData + ofs, "n" ), b, sizeof( b ) );
+	if ( a[0] && !Q_stricmp( a, b ) )
+		return qtrue;
+	CR_PlainName( said, a, sizeof( a ) );
+	CR_PlainName( Info_ValueForKey( cl.gameState.stringData + ofs, "n" ), b, sizeof( b ) );
+	return (qboolean)( a[0] && !Q_stricmp( a, b ) );
+}
+
 // a chat command is about to run: what it prints is faded or left out by its distance
 void CL_ChatRange_ServerCommand( void ) {
 	const char *cmd = Cmd_Argv( 0 ), *num, *text;
@@ -321,9 +336,14 @@ void CL_ChatRange_ServerCommand( void ) {
 	} else {
 		return;
 	}
+	// RPMod sends another's chat with its distance; yours comes without one
 	if ( isdigit( (unsigned char)num[0] ) )
 		distance = (float)atoi( num );
-	else if ( num[0] || !CL_ChatSenderDistance( text, &distance ) )
+	else if ( num[0] )
+		return;
+	else if ( CR_IsMine( text ) )
+		return;
+	else if ( !CL_ChatSenderDistance( text, &distance ) )
 		return;
 
 	cr.hide = (qboolean)!CR_Range( distance, &fade );
