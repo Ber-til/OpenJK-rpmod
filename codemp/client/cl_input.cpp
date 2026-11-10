@@ -1560,6 +1560,7 @@ usercmd_t CL_CreateCmd( void ) {
 
 	// a special move playing: its keys in place of the player's
 	CL_SpecialMoves_FilterCmd( &cmd );
+	CL_BurstFire_FilterCmd( &cmd );
 
 	// fighters share jump between takeoff and boost
 	CL_FighterAssist_FilterCmd( &cmd, in_vehboost.active );

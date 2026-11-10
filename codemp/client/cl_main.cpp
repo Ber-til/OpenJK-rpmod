@@ -2970,6 +2970,7 @@ void CL_Init( void ) {
 	CL_AnimManager_Init ();
 	CL_Presets_Init ();
 	CL_SpecialMoves_Init ();
+	CL_BurstFire_Init ();
 	CL_EffectSwap_Init ();
 	CL_ChatLog_Init ();
 	CL_Inventory_Init();

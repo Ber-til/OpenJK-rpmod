@@ -137,6 +137,7 @@ const escTool_t escTools[] = {
 	{ "Presets",			"presets",			"Characters saved, swapped to in a click" },
 	{ "Skin Select",		"skinselect",		"Every skin of your model, worn in a click" },
 	{ "Special Moves",		"specialmoves",		"Saber moves explained, played from a key" },
+	{ "Burst Fire (E-11)",	"burstfire",		"The E-11's alt fire in bursts: on or off" },
 	{ "Chat Log",			"chatlog",			"The chat kept as text and a console-like page" },
 	{ "Datapad",			"datapad",			"Your datapad: in the corner, or open on the right" },
 	{ "Inventory",			"inventory",		"What you carry: shown on Inspect, given to others" },

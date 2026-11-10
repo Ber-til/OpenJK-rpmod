@@ -252,6 +252,7 @@ The console commands, keys and settings this client adds. What each feature does
 - `/datapad` opens your datapad in the bottom right corner, or puts it away; `/datapad open`, `/datapad close` and `/datapad settings` go straight there. Its Settings set the keys that open and close it; Esc puts it away
 - `/datapad holonet [n]` opens the HoloNet on it (the n-th article); `/datapad comport [guest|<forum number>]` the Comport (its forums, or that one)
 - `/datapad pazaak` opens Pazaak on it; `/pazaak create [name]`, `/pazaak join <table>`, `/pazaak watch <table>`, `/pazaak end`, `/pazaak stand`, `/pazaak play <card 0-3> [1|-1] [1|2]` and `/pazaak leave` do what its buttons do, for binds; `cl_pazaakDeck` is the side deck you play with
+- `/burstfire [on|off]` or `cl_burstFire 1`: the E-11's alt fire in bursts (0.4 s charge, 4 shots, 1.5 s cool down)
 - `/datapad notes` opens Notes
 - `/world` opens the world editor (RPMod admins): objects, zones, bodies and containers on this map; `/world read` reads what you aim at or stand in, `/world drop` drops the item picked in the Inventory, `/world near` lists what's near you, `/world edit <id>` edits one; Use on a thing reads it
 - `cl_datapadColor` (0-6) is its colour; `cl_datapadEmote 1` has your character hold a datapad (`/emlift`) while it's open; `cl_datapadHand 1` shows a datapad model in the hand then, seen by everyone with the client (`cl_datapadHandPos "<tag> <x y z> <pitch yaw roll> <scale>"` where it sits)

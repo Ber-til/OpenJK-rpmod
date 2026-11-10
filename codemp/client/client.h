@@ -1092,6 +1092,11 @@ void CL_SpecialMoves_Escape( void );
 void CL_SpecialMoves_Draw( void );
 void CL_SpecialMoves_FilterCmd( usercmd_t *cmd );
 
+// cl_burstfire.cpp: the E-11's alt fire in bursts (cl_burstFire)
+void CL_BurstFire_Init( void );
+void CL_BurstFire_FilterCmd( usercmd_t *cmd );
+void CL_BurstFire_Draw( void );
+
 // cl_chatlog.cpp
 // cl_datapad.cpp: the datapad, folded in the corner or open on the right
 void CL_Datapad_Init( void );

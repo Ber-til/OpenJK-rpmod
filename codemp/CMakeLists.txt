@@ -501,6 +501,7 @@ if(BuildMPEngine)
 		"${MPDir}/client/cl_animmanager.cpp"
 		"${MPDir}/client/cl_presets.cpp"
 		"${MPDir}/client/cl_specialmoves.cpp"
+		"${MPDir}/client/cl_burstfire.cpp"
 		"${MPDir}/client/cl_chatlog.cpp"
 		"${MPDir}/client/cl_effectswap.cpp"
 		"${MPDir}/client/cl_datapad.cpp"
