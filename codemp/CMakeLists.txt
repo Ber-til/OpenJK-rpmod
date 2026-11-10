@@ -509,6 +509,7 @@ if(BuildMPEngine)
 		"${MPDir}/client/cl_holonet.cpp"
 		"${MPDir}/client/cl_comport.cpp"
 		"${MPDir}/client/cl_escmenu.cpp"
+		"${MPDir}/client/cl_escpages.cpp"
 		"${MPDir}/client/cl_assetmanager.cpp"
 		"${MPDir}/client/cl_adminflags.cpp"
 		"${MPDir}/client/cl_quickconnect.cpp"
