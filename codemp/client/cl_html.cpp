@@ -25,7 +25,8 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 // in the game's Latin-1; a page's parts are found by their tag and class.
 //
 // Pictures are downloaded and kept in datapad/cache/ in the home folder, so the renderer can load
-// them as it loads any image: JPEG and PNG only, checked by their first bytes. Each is decoded here,
+// them as it loads any image: JPEG, PNG, GIF (its first frame) and WebP (through the FFmpeg the
+// videos use), checked by their first bytes. Each is decoded here,
 // scaled to sizes in powers of two (the classic renderer takes nothing else) and kept as a TGA; it's
 // drawn at its own shape all the same. The cache is emptied once it's grown past HTML_CACHE_MAX.
 
@@ -39,6 +40,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_PNG
 #define STBI_ONLY_JPEG
+#define STBI_ONLY_GIF
 #define STBI_NO_STDIO
 #define STBI_NO_LINEAR
 #define STBI_NO_HDR
@@ -710,8 +712,35 @@ static unsigned int HTML_Hash( const std::string &s ) {
 	return h;
 }
 
-// a JPEG's or PNG's size from its bytes; false for anything else
+// a JPEG's, PNG's, GIF's or WebP's size from its bytes; false for anything else
 static bool HTML_ImageSize( const unsigned char *b, int len, int *w, int *h, const char **ext ) {
+	// WebP: RIFF <size> WEBP, then a VP8 (lossy), VP8L (lossless) or VP8X (extended) chunk
+	if ( len > 30 && !memcmp( b, "RIFF", 4 ) && !memcmp( b + 8, "WEBP", 4 ) ) {
+		const unsigned char *c = b + 12;
+
+		*ext = "webp";
+		if ( !memcmp( c, "VP8 ", 4 ) ) {
+			*w = ( c[14] | ( c[15] << 8 ) ) & 0x3FFF;
+			*h = ( c[16] | ( c[17] << 8 ) ) & 0x3FFF;
+		} else if ( !memcmp( c, "VP8L", 4 ) ) {
+			const unsigned int bits = c[9] | ( c[10] << 8 ) | ( c[11] << 16 ) | ( (unsigned int)c[12] << 24 );
+
+			*w = ( bits & 0x3FFF ) + 1;
+			*h = ( ( bits >> 14 ) & 0x3FFF ) + 1;
+		} else if ( !memcmp( c, "VP8X", 4 ) ) {
+			*w = ( c[12] | ( c[13] << 8 ) | ( c[14] << 16 ) ) + 1;
+			*h = ( c[15] | ( c[16] << 8 ) | ( c[17] << 16 ) ) + 1;
+		} else {
+			return false;
+		}
+		return *w > 0 && *h > 0;
+	}
+	if ( len > 10 && ( !memcmp( b, "GIF87a", 6 ) || !memcmp( b, "GIF89a", 6 ) ) ) {
+		*w = b[6] | ( b[7] << 8 );
+		*h = b[8] | ( b[9] << 8 );
+		*ext = "gif";
+		return *w > 0 && *h > 0;
+	}
 	if ( len > 24 && b[0] == 0x89 && b[1] == 'P' && b[2] == 'N' && b[3] == 'G' ) {
 		*w = ( b[16] << 24 ) | ( b[17] << 16 ) | ( b[18] << 8 ) | b[19];
 		*h = ( b[20] << 24 ) | ( b[21] << 16 ) | ( b[22] << 8 ) | b[23];
@@ -787,18 +816,43 @@ static int HTML_Pow2( int n ) {
 	return p;
 }
 
-// a JPEG or PNG as a TGA the renderers all take: scaled to sizes in powers of two (smoothly), 32
+// a picture's bytes as RGBA, the top row first: WebP through FFmpeg (as the videos), the rest
+// through stb (JPEG, PNG, GIF's first frame). Freed with HTML_FreeRgba
+static unsigned char *HTML_Rgba( const unsigned char *data, int len, int *w, int *h, bool *fromVideo ) {
+	int comp;
+
+	*fromVideo = false;
+	if ( len > 12 && !memcmp( data, "RIFF", 4 ) && !memcmp( data + 8, "WEBP", 4 ) ) {
+		byte *rgba;
+
+		if ( !CIN_DecodeImage( data, len, &rgba, w, h ) )
+			return NULL;
+		*fromVideo = true;
+		return rgba;
+	}
+	return stbi_load_from_memory( data, len, w, h, &comp, 4 );
+}
+
+static void HTML_FreeRgba( unsigned char *rgba, bool fromVideo ) {
+	if ( fromVideo )
+		Z_Free( rgba );
+	else
+		stbi_image_free( rgba );
+}
+
+// a picture as a TGA the renderers all take: scaled to sizes in powers of two (smoothly), 32
 // bits, the top row first; its own size kept in the TGA's id field (8 bytes) for its shape
 static bool HTML_ToTga( const unsigned char *data, int len, const std::string &path, int *width, int *height ) {
-	int w, h, comp;
-	unsigned char *rgba = stbi_load_from_memory( data, len, &w, &h, &comp, 4 );
+	int w, h;
+	bool fromVideo;
+	unsigned char *rgba = HTML_Rgba( data, len, &w, &h, &fromVideo );
 	std::vector<unsigned char> tga;
 	int tw, th;
 
 	if ( !rgba )
 		return false;
 	if ( w <= 0 || h <= 0 || w > 8192 || h > 8192 ) {
-		stbi_image_free( rgba );
+		HTML_FreeRgba( rgba, fromVideo );
 		return false;
 	}
 	tw = HTML_Pow2( w );
@@ -841,7 +895,7 @@ static bool HTML_ToTga( const unsigned char *data, int len, const std::string &p
 			tga.push_back( px[3] );
 		}
 	}
-	stbi_image_free( rgba );
+	HTML_FreeRgba( rgba, fromVideo );
 	FS_WriteFile( va( "%s.tga", path.c_str() ), tga.data(), (int)tga.size() );
 	*width = w;
 	*height = h;
