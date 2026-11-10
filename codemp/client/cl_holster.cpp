@@ -762,6 +762,7 @@ static struct {
 	float		cursorX, cursorY;
 	qboolean	click, mouseDown;
 	float		clickX, clickY;
+	int			wheel;				// the wheel's steps for an open list (negative up)
 
 	qboolean	loaded;			// yours asked from C1B3R since it opened
 	qboolean	refused;
@@ -850,6 +851,8 @@ static void HE_Text( float x, float y, float w, const char *text, const float *c
 }
 
 static qboolean HE_InRect( float x, float y, float w, float h ) {
+	if ( WG_PopupHover( he.cursorX, he.cursorY ) )
+		return qfalse;
 	return (qboolean)( he.cursorX >= x && he.cursorX < x + w && he.cursorY >= y && he.cursorY < y + h );
 }
 
@@ -860,6 +863,35 @@ static qboolean HE_Clicked( float x, float y, float w, float h ) {
 	if ( he.clickSound )
 		S_StartLocalSound( he.clickSound, CHAN_LOCAL_SOUND );
 	return qtrue;
+}
+
+// the shared - value + control, in the editor's look and with its mouse
+static void HE_PopStyle( wgStyle_t *style, const float *fill ) {
+	memset( style, 0, sizeof( *style ) );
+	style->font = he.font;
+	style->scale = HE_TEXT;
+	style->lineH = HE_CTRL_H;
+	style->padX = 4.0f;
+	style->padY = 2.0f;
+	style->fill = fill;
+	style->border = heBorder;
+	style->text = heWhite;
+	style->dim = heDim;
+}
+
+static void HE_PopMouse( wgMouse_t *m ) {
+	const qboolean over = WG_PopupHover( he.cursorX, he.cursorY );
+
+	m->cursorX = over ? -1.0f : he.cursorX;
+	m->cursorY = over ? -1.0f : he.cursorY;
+	m->click = &he.click;
+	m->clickX = he.clickX;
+	m->clickY = he.clickY;
+	m->wheel = &he.wheel;
+}
+
+static const char *HE_TagAt( int i, void *ctx ) {
+	return i >= 0 && i < he.numTags ? he.tags[i] : "";
 }
 
 static qboolean HE_Button( float x, float y, float w, const char *label, qboolean on, qboolean enabled ) {
@@ -1028,23 +1060,33 @@ static float HE_DrawWornOn( float x, float y, float w ) {
 			if ( !Q_stricmp( he.tags[i], it->bolt ) )
 				at = i;
 		}
+		wgStyle_t style;
+		wgMouse_t m;
+
 		HE_Text( x, y, w, "Worn on", heOrange, he.font, HE_SMALL, qfalse );
 		y += 12;
-		if ( HE_Button( x, y, 18, "<", qfalse, (qboolean)( he.numTags > 0 ) ) ) {
-			Q_strncpyz( it->bolt, he.tags[( at - 1 + he.numTags ) % he.numTags], sizeof( it->bolt ) );
-			he.changed = qtrue;
-		}
-		HE_Box( x + 20, y, w - 40, HE_CTRL_H, heField );
-		HE_Text( x + 20, y + 2, w - 40, it->bolt, at >= 0 ? heWhite : heYellow, he.font, HE_TEXT, qtrue );
-		if ( HE_Button( x + w - 18, y, 18, ">", qfalse, (qboolean)( he.numTags > 0 ) ) ) {
-			Q_strncpyz( it->bolt, he.tags[( at + 1 ) % he.numTags], sizeof( it->bolt ) );
-			he.changed = qtrue;
+		// the model's tags: - and + step, the value opens the list
+		HE_PopStyle( &style, heField );
+		HE_PopMouse( &m );
+		if ( he.numTags > 0 ) {
+			int pick = at;
+
+			if ( WG_Choice( &style, &m, x, y, w, HE_CTRL_H, &pick, he.numTags, HE_TagAt, NULL, qtrue ) && pick >= 0 ) {
+				Q_strncpyz( it->bolt, he.tags[pick], sizeof( it->bolt ) );
+				he.changed = qtrue;
+			}
+			// one the model hasn't: its name, in yellow
+			if ( at < 0 )
+				HE_Text( x + HE_CTRL_H, y + 2, w - HE_CTRL_H * 2, it->bolt, heYellow, he.font, HE_TEXT, qtrue );
+		} else {
+			HE_Box( x, y, w, HE_CTRL_H, heField );
+			HE_Text( x, y + 2, w, it->bolt, heYellow, he.font, HE_TEXT, qtrue );
 		}
 		y += HE_CTRL_H + 6;
-		if ( HE_Button( x, y, w, heHideNames[it->hide], (qboolean)( it->hide != 0 ), qtrue ) ) {
-			it->hide = ( it->hide + 1 ) % HS_HIDE_MODES;
+		// when it hides
+		HE_PopStyle( &style, it->hide ? heItemOn : heItem );
+		if ( WG_ChoiceList( &style, &m, x, y, w, HE_CTRL_H, &it->hide, heHideNames, HS_HIDE_MODES, qtrue ) )
 			he.changed = qtrue;
-		}
 		y += HE_CTRL_H + 6;
 		if ( at < 0 ) {
 			HE_Text( x, y, w, "Your model hasn't this tag", heYellow, he.font, HE_SMALL, qfalse );
@@ -1723,6 +1765,7 @@ static void HE_Close( void ) {
 	if ( !he.open )
 		return;
 	HE_LiveLeave();
+	WG_PopupClose();
 	he.open = qfalse;
 	he.typing = qfalse;
 	he.dragging = -1;
@@ -1738,6 +1781,12 @@ void CL_Holster_Close( void ) {
 void CL_Holster_Draw( void ) {
 	if ( !he.open )
 		return;
+	{
+		wgMouse_t m;
+
+		HE_PopMouse( &m );
+		WG_PopupBegin( &m );
+	}
 	if ( !he.mouseDown )
 		he.dragging = -1;
 	HE_LoadTags();
@@ -1749,6 +1798,8 @@ void CL_Holster_Draw( void ) {
 			HE_UpdateCamera( dt );
 		HE_DrawLive();
 		he.click = qfalse;
+		he.wheel = 0;
+		WG_DrawOverlay();
 		re->SetColor( NULL );
 		re->DrawStretchPic( he.cursorX, he.cursorY, 32, 32, 0, 0, 1, 1, cls.cursorShader );
 		return;
@@ -1792,6 +1843,7 @@ void CL_Holster_Draw( void ) {
 	else if ( he.changed )
 		HE_Text( HE_A_X, HE_Y + HE_H - 20, HE_W - 310, "Not saved yet: Save puts it on for everyone", heYellow, he.font, HE_TEXT, qfalse );
 	he.click = qfalse;
+	he.wheel = 0;
 	WG_DrawOverlay();
 	re->SetColor( NULL );
 	re->DrawStretchPic( he.cursorX, he.cursorY, 32, 32, 0, 0, 1, 1, cls.cursorShader );
@@ -1908,6 +1960,13 @@ void CL_Holster_KeyEvent( int key, qboolean down ) {
 	}
 	if ( !down )
 		return;
+	// an open list or number first: the wheel scrolls it
+	if ( WG_PopupOpen() && ( key == A_MWHEELUP || key == A_MWHEELDOWN ) ) {
+		he.wheel += key == A_MWHEELUP ? -1 : 1;
+		return;
+	}
+	if ( WG_PopupKey( key ) )
+		return;
 	if ( he.typing ) {
 		if ( key == A_ENTER || key == A_KP_ENTER || key == A_TAB ) {
 			he.typing = qfalse;
@@ -1957,6 +2016,8 @@ void CL_Holster_KeyEvent( int key, qboolean down ) {
 }
 
 void CL_Holster_CharEvent( int ch ) {
+	if ( he.open && WG_PopupChar( ch ) )
+		return;
 	if ( he.open && he.typing && WG_EditChar( he.search, sizeof( he.search ), ch, NULL ) )
 		he.fileScroll = 0;
 }
@@ -1974,6 +2035,10 @@ void CL_Holster_MouseEvent( int dx, int dy ) {
 
 // the search typed in first, then closed (what's not saved stays, till it's opened again)
 void CL_Holster_Escape( void ) {
+	if ( WG_PopupOpen() ) {
+		WG_PopupClose();
+		return;
+	}
 	if ( he.typing ) {
 		he.typing = qfalse;
 		WG_EditReset();

@@ -215,6 +215,7 @@ static struct {
 	float		cursorX, cursorY;
 	qboolean	click;
 	float		clickX, clickY;
+	int			wheel;				// the wheel's steps for an open list (negative up)
 	qboolean	mouseDown;
 	qboolean	held[MAX_KEYS];
 
@@ -1104,6 +1105,8 @@ static void WT_Text( float x, float y, float w, const char *text, const float *c
 }
 
 static qboolean WT_InRect( float x, float y, float w, float h ) {
+	if ( WG_PopupHover( we.cursorX, we.cursorY ) )
+		return qfalse;
 	return (qboolean)( we.cursorX >= x && we.cursorX < x + w && we.cursorY >= y && we.cursorY < y + h );
 }
 
@@ -1133,6 +1136,18 @@ static void WT_Style( wgStyle_t *style ) {
 	style->border = wtBorder;
 	style->text = wtWhite;
 	style->dim = wtDim;
+}
+
+// the editor's mouse for the shared - value + control (the wheel only for an open list)
+static void WE_PopMouse( wgMouse_t *m ) {
+	const qboolean over = WG_PopupHover( we.cursorX, we.cursorY );
+
+	m->cursorX = over ? -1.0f : we.cursorX;
+	m->cursorY = over ? -1.0f : we.cursorY;
+	m->click = &we.click;
+	m->clickX = we.clickX;
+	m->clickY = we.clickY;
+	m->wheel = WG_PopupOpen() ? &we.wheel : NULL;
 }
 
 static void WT_Cursor( void ) {
@@ -1678,6 +1693,7 @@ The editor: open, picked, built, saved
 static void WE_Close( void ) {
 	if ( !we.open )
 		return;
+	WG_PopupClose();
 	we.open = qfalse;
 	we.focus = WF_NONE;
 	we.freeCam = qfalse;
@@ -1955,24 +1971,24 @@ static void WE_DrawList( float x, float y, float w, float bottom ) {
 	}
 }
 
-// - value + : a number stepped
+// - value + : a number stepped, or typed (its value clicked)
 static qboolean WE_Stepper( float x, float y, float w, const char *label, const char *value, float *v, float step, float min, float max ) {
-	const float bw = 18.0f;
-	qboolean changed = qfalse;
+	wgStyle_t style;
+	wgMouse_t m;
 
 	WT_Text( x, y + 2, w * 0.42f, label, wtDim, wt.font, WT_SMALL, qfalse );
-	if ( WT_Button( x + w * 0.42f, y, bw, "-", qfalse, qtrue ) ) {
-		*v = Com_Clamp( min, max, *v - step );
-		changed = qtrue;
-	}
-	WT_Text( x + w * 0.42f + bw, y + 2, w * 0.58f - bw * 2, value, wtWhite, wt.font, WT_SMALL, qtrue );
-	if ( WT_Button( x + w - bw, y, bw, "+", qfalse, qtrue ) ) {
-		*v = Com_Clamp( min, max, *v + step );
-		changed = qtrue;
-	}
-	if ( changed )
-		WE_Changed();
-	return changed;
+	WT_Style( &style );
+	style.fill = wtRow;
+	WE_PopMouse( &m );
+	if ( !WG_NumberAt( v, &style, &m, x + w * 0.42f, y, w * 0.58f, WT_CTRL_H, v, step, min, max, 1.0f, value ) )
+		return qfalse;
+	WE_Changed();
+	return qtrue;
+}
+
+// how long it stays: "as it is" first, then wtExpiries
+static const char *WE_StaysAt( int i, void *ctx ) {
+	return i <= 0 ? "as it is" : i - 1 < WT_NUM_EXPIRIES ? wtExpiries[i - 1].name : "";
 }
 
 // your items, one picked to go in the thing: the whole panel's, each with its model turning
@@ -2063,15 +2079,22 @@ static void WE_DrawEdit( float x, float y, float w, float bottom ) {
 		if ( d->kind == WT_BODY ) {
 			WE_Field( x, y, half, WF_SKIN, d->skin, "Skin (default)" );
 			WE_Field( x + half + 4, y, half - 36, WF_ANIM, d->anim, "Pose" );
-			if ( WT_Button( x + w - 32, y, 32, ">", qfalse, qtrue ) ) {
-				int at = 0;
+			// the poses in a list: a click on v opens it, the one picked typed in the field
+			{
+				static int pose;
+				wgStyle_t style;
+				wgMouse_t m;
 
-				for ( int i = 0; i < WT_NUM_POSES; i++ ) {
-					if ( !Q_stricmp( wtPoses[i], d->anim ) )
-						at = i + 1;
+				WT_Style( &style );
+				style.fill = wtRow;
+				WE_PopMouse( &m );
+				m.wheel = NULL;
+				pose = -1;
+				if ( WG_ChoiceBox( &style, &m, x + w - 32, y, 32, WT_CTRL_H, &pose, wtPoses, WT_NUM_POSES ) && pose >= 0 ) {
+					Q_strncpyz( d->anim, wtPoses[pose], sizeof( d->anim ) );
+					WE_Changed();
 				}
-				Q_strncpyz( d->anim, wtPoses[at % WT_NUM_POSES], sizeof( d->anim ) );
-				WE_Changed();
+				WT_Text( x + w - 32, y + 2, 32, "v", wtWhite, wt.font, WT_TEXT, qtrue );
 			}
 			y += row;
 		}
@@ -2117,11 +2140,17 @@ static void WE_DrawEdit( float x, float y, float w, float bottom ) {
 		WE_Stepper( x, y, w, "Search (hold use)", d->usetime > 0.0f ? va( "%g s", d->usetime ) : "none", &d->usetime, 0.5f, 0.0f, 10.0f );
 		y += row;
 		{
-			const int at = we.expiry >= 0 ? we.expiry : -1;
+			static int stays;
+			wgStyle_t style;
+			wgMouse_t m;
 
 			WT_Text( x, y + 2, w * 0.42f, "Stays", wtDim, wt.font, WT_SMALL, qfalse );
-			if ( WT_Button( x + w * 0.42f, y, w * 0.58f, at >= 0 ? wtExpiries[at].name : "as it is", (qboolean)( at >= 0 ), qtrue ) ) {
-				we.expiry = ( at + 1 ) % WT_NUM_EXPIRIES;
+			WT_Style( &style );
+			style.fill = we.expiry >= 0 ? wtRowOn : wtRow;
+			WE_PopMouse( &m );
+			stays = we.expiry + 1;
+			if ( WG_Choice( &style, &m, x + w * 0.42f, y, w * 0.58f, WT_CTRL_H, &stays, WT_NUM_EXPIRIES + 1, WE_StaysAt, NULL, qtrue ) ) {
+				we.expiry = stays - 1;
 				WE_Changed();
 			}
 			y += row;
@@ -2240,6 +2269,14 @@ static void WE_Draw( void ) {
 	const float dt = Com_Clamp( 0.0f, 0.1f, ( cls.realtime - we.lastFrameTime ) / 1000.0f );
 
 	we.lastFrameTime = cls.realtime;
+	{
+		wgMouse_t m;
+
+		WE_PopMouse( &m );
+		WG_PopupBegin( &m );
+		if ( WG_PopupTyping() )
+			we.focus = WF_NONE;
+	}
 	if ( !we.mouseDown )
 		we.dragging = WE_DRAG_NONE;
 	if ( we.freeCam )
@@ -2295,6 +2332,7 @@ void CL_WorldItems_Draw( void ) {
 	if ( we.open ) {
 		WE_Draw();
 		we.click = qfalse;
+		we.wheel = 0;
 		WG_DrawOverlay();
 		WT_Cursor();
 		return;
@@ -2341,6 +2379,13 @@ void CL_WorldItems_KeyEvent( int key, qboolean down ) {
 			wr.scroll += 3;		// held in range as it's drawn
 		return;
 	}
+	// an open list or number first: the wheel scrolls it
+	if ( WG_PopupOpen() && ( key == A_MWHEELUP || key == A_MWHEELDOWN ) ) {
+		we.wheel += key == A_MWHEELUP ? -1 : 1;
+		return;
+	}
+	if ( WG_PopupKey( key ) )
+		return;
 	// typing in a field
 	if ( we.focus != WF_NONE ) {
 		int size;
@@ -2401,6 +2446,8 @@ void CL_WorldItems_CharEvent( int ch ) {
 	int size;
 	char *buf;
 
+	if ( we.open && WG_PopupChar( ch ) )
+		return;
 	if ( !we.open || we.focus == WF_NONE || !( buf = WE_FocusBuf( &size ) ) )
 		return;
 	if ( we.focus != WF_DESCR && ( ch == '\r' || ch == '\n' ) )
@@ -2427,6 +2474,10 @@ void CL_WorldItems_MouseEvent( int dx, int dy ) {
 void CL_WorldItems_Escape( void ) {
 	if ( wr.open ) {
 		WR_Close();
+		return;
+	}
+	if ( WG_PopupOpen() ) {
+		WG_PopupClose();
 		return;
 	}
 	if ( we.focus != WF_NONE ) {

@@ -96,6 +96,7 @@ static struct {
 	float		cursorX, cursorY;
 	qboolean	click;
 	float		clickX, clickY;
+	int			wheel;			// the wheel's steps for an open list (negative up)
 
 	invPage_t	page;
 	qboolean	known;			// asked since it was opened, or changed
@@ -424,6 +425,8 @@ static void INV_Text( float x, float y, float w, const char *text, const float *
 }
 
 static qboolean INV_InRect( float x, float y, float w, float h ) {
+	if ( WG_PopupHover( inv.cursorX, inv.cursorY ) )
+		return qfalse;
 	return (qboolean)( inv.cursorX >= x && inv.cursorX < x + w && inv.cursorY >= y && inv.cursorY < y + h );
 }
 
@@ -434,6 +437,31 @@ static qboolean INV_Clicked( float x, float y, float w, float h ) {
 	if ( inv.clickSound )
 		S_StartLocalSound( inv.clickSound, CHAN_LOCAL_SOUND );
 	return qtrue;
+}
+
+// the shared - value + control, in the window's look and with its mouse (the wheel for an open list)
+static void INV_PopStyle( wgStyle_t *style ) {
+	memset( style, 0, sizeof( *style ) );
+	style->font = inv.font;
+	style->scale = IV_TEXT;
+	style->lineH = IV_CTRL_H;
+	style->padX = 4.0f;
+	style->padY = 2.0f;
+	style->fill = ivItem;
+	style->border = ivBorder;
+	style->text = ivWhite;
+	style->dim = ivDim;
+}
+
+static void INV_PopMouse( wgMouse_t *m ) {
+	const qboolean over = WG_PopupHover( inv.cursorX, inv.cursorY );
+
+	m->cursorX = over ? -1.0f : inv.cursorX;
+	m->cursorY = over ? -1.0f : inv.cursorY;
+	m->click = &inv.click;
+	m->clickX = inv.clickX;
+	m->clickY = inv.clickY;
+	m->wheel = WG_PopupOpen() ? &inv.wheel : NULL;
 }
 
 static qboolean INV_Button( float x, float y, float w, const char *label, qboolean on, qboolean enabled ) {
@@ -781,6 +809,19 @@ The staff page
 ===============================================================================
 */
 
+// the staff page's players to pick from, as this frame has them
+static int invPickPlayers[MAX_CLIENTS], invPickNum;
+
+static const char *INV_PlayerAt( int i, void *ctx ) {
+	static char name[MAX_NAME_LENGTH * 2];
+
+	if ( i < 0 || i >= invPickNum )
+		return "";
+	Q_strncpyz( name, CL_PlayerSlotName( invPickPlayers[i] ), sizeof( name ) );
+	Q_StripColor( name );
+	return name;
+}
+
 static void INV_DrawStaff( void ) {
 	const float x = IV_LIST_X, w = 250, label = 76, fx = x + label, fw = w - label;
 	const float rx = x + w + 14, rw = IV_X + IV_W - 12 - rx;
@@ -788,15 +829,28 @@ static void INV_DrawStaff( void ) {
 
 	// whom it's for: a player here (aimed at first), or an account by its name
 	INV_Text( x, y + 2, label, "Player", ivOrange, inv.font, IV_TEXT, qfalse );
-	if ( INV_Button( fx, y, fw, inv.target >= 0 && CL_PlayerSlotName( inv.target )[0] ? va( "%s  >", CL_PlayerSlotName( inv.target ) ) : "Pick one  >",
-		qfalse, qtrue ) ) {
-		int players[MAX_CLIENTS], num = INV_Players( players, MAX_CLIENTS ), i;
+	{
+		// the players here (aimed at first), picked from a list; kept by client number
+		static int pick;
+		wgStyle_t style;
+		wgMouse_t m;
 
-		for ( i = 0; i < num && players[i] != inv.target; i++ )
+		invPickNum = INV_Players( invPickPlayers, MAX_CLIENTS );
+		for ( pick = 0; pick < invPickNum && invPickPlayers[pick] != inv.target; pick++ )
 			;
-		inv.target = num ? players[i < num ? ( i + 1 ) % num : 0] : -1;
-		inv.account[0] = '\0';
-		inv.focus = 0;
+		if ( pick == invPickNum )
+			pick = -1;
+		INV_PopStyle( &style );
+		INV_PopMouse( &m );
+		if ( !invPickNum ) {
+			INV_Button( fx, y, fw, "Nobody else here", qfalse, qfalse );
+		} else if ( WG_Choice( &style, &m, fx, y, fw, IV_CTRL_H, &pick, invPickNum, INV_PlayerAt, NULL, qtrue ) && pick >= 0 ) {
+			inv.target = invPickPlayers[pick];
+			inv.account[0] = '\0';
+			inv.focus = 0;
+		}
+		if ( invPickNum && pick < 0 )
+			INV_Text( fx + IV_CTRL_H, y + 2, fw - IV_CTRL_H * 2, "Pick one", ivDim, inv.font, IV_TEXT, qtrue );
 	}
 	y += IV_CTRL_H + 4;
 	INV_Text( x, y + 2, label, "or account", ivOrange, inv.font, IV_TEXT, qfalse );
@@ -804,8 +858,14 @@ static void INV_DrawStaff( void ) {
 	y += IV_CTRL_H + 14;
 
 	INV_Text( x, y + 2, label, "Kind", ivOrange, inv.font, IV_TEXT, qfalse );
-	if ( INV_Button( fx, y, fw, va( "%s  >", invKinds[inv.kind] ), qfalse, qtrue ) )
-		inv.kind = ( inv.kind + 1 ) % INV_NUM_KINDS;
+	{
+		wgStyle_t style;
+		wgMouse_t m;
+
+		INV_PopStyle( &style );
+		INV_PopMouse( &m );
+		WG_ChoiceBox( &style, &m, fx, y, fw, IV_CTRL_H, &inv.kind, invKinds, INV_NUM_KINDS );
+	}
 	y += IV_CTRL_H + 4;
 	INV_Text( x, y + 2, label, "Name", ivOrange, inv.font, IV_TEXT, qfalse );
 	INV_Field( fx, y, fw, IV_CTRL_H, inv.name, 2, "what it's called", qfalse );
@@ -865,6 +925,7 @@ The window
 static void INV_Close( void ) {
 	if ( !inv.open )
 		return;
+	WG_PopupClose();
 	inv.open = qfalse;
 	inv.focus = 0;
 	inv.giving = qfalse;
@@ -925,6 +986,14 @@ void CL_Inventory_Draw( void ) {
 
 	if ( !inv.open )
 		return;
+	{
+		wgMouse_t m;
+
+		INV_PopMouse( &m );
+		WG_PopupBegin( &m );
+		if ( WG_PopupTyping() )
+			inv.focus = 0;
+	}
 	if ( inv.page == INV_STAFF && !staff )
 		inv.page = INV_MINE;
 	INV_Box( IV_X, IV_Y, IV_W, IV_H, ivPanel );
@@ -951,6 +1020,7 @@ void CL_Inventory_Draw( void ) {
 		INV_Text( IV_LIST_X, IV_Y + IV_H - 20, IV_W - 24, "Kept by C1B3R for your RPMod account. Items shown on Inspect are what others see you carry.",
 			ivDim, inv.font, IV_TEXT, qfalse );
 	inv.click = qfalse;
+	inv.wheel = 0;
 	WG_DrawOverlay();
 	re->SetColor( NULL );
 	re->DrawStretchPic( inv.cursorX, inv.cursorY, 32, 32, 0, 0, 1, 1, cls.cursorShader );
@@ -992,6 +1062,13 @@ void CL_Inventory_KeyEvent( int key, qboolean down ) {
 		inv.clickY = inv.cursorY;
 		return;
 	}
+	// an open list first: the wheel scrolls it
+	if ( WG_PopupOpen() && ( key == A_MWHEELUP || key == A_MWHEELDOWN ) ) {
+		inv.wheel += key == A_MWHEELUP ? -1 : 1;
+		return;
+	}
+	if ( WG_PopupKey( key ) )
+		return;
 	buf = INV_FocusedBuf( &size );
 	if ( buf ) {
 		if ( ( key == A_ENTER || key == A_KP_ENTER ) && inv.focus == 3 ) {
@@ -1040,6 +1117,8 @@ void CL_Inventory_CharEvent( int ch ) {
 	int size;
 	char *buf = INV_FocusedBuf( &size );
 
+	if ( inv.open && WG_PopupChar( ch ) )
+		return;
 	if ( !buf )
 		return;
 	if ( inv.focus == 1 )
@@ -1054,6 +1133,10 @@ void CL_Inventory_MouseEvent( int dx, int dy ) {
 
 // a field typed in first, then whom to give to, then closed
 void CL_Inventory_Escape( void ) {
+	if ( WG_PopupOpen() ) {
+		WG_PopupClose();
+		return;
+	}
 	if ( inv.focus ) {
 		inv.focus = 0;
 		WG_EditReset();
