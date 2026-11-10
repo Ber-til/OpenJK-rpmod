@@ -1791,6 +1791,7 @@ static void AM_Close( void ) {
 	if ( !am.open )
 		return;
 	AM_GlaFree();
+	WG_PopupClose();
 	am.open = qfalse;
 	am.focus = NULL;
 	am.dragging = am.scrubbing = qfalse;
@@ -1997,6 +1998,8 @@ INPUT
 */
 
 static qboolean AM_InRect( float x, float y, float w, float h ) {
+	if ( WG_PopupHover( am.cursorX, am.cursorY ) )
+		return qfalse;
 	return (qboolean)( am.cursorX >= x && am.cursorX < x + w && am.cursorY >= y && am.cursorY < y + h );
 }
 
@@ -2041,6 +2044,8 @@ void CL_AnimManager_KeyEvent( int key, qboolean down ) {
 		AM_Close();
 		return;
 	}
+	if ( WG_PopupKey( key ) )
+		return;
 	switch ( key ) {
 	case A_MOUSE1:
 		am.click = qtrue;
@@ -2079,6 +2084,8 @@ void CL_AnimManager_KeyEvent( int key, qboolean down ) {
 }
 
 void CL_AnimManager_CharEvent( int ch ) {
+	if ( am.open && WG_PopupChar( ch ) )
+		return;
 	if ( !am.open || !am.focus )
 		return;
 	if ( WG_EditChar( am.focus, am.focusSize, ch, AM_AllowChar ) )
@@ -2091,7 +2098,9 @@ void CL_AnimManager_MouseEvent( int dx, int dy ) {
 }
 
 void CL_AnimManager_Escape( void ) {
-	if ( am.focus )
+	if ( WG_PopupOpen() )
+		WG_PopupClose();
+	else if ( am.focus )
 		am.focus = NULL;
 	else if ( am.skelList )
 		am.skelList = qfalse;
@@ -2208,6 +2217,36 @@ static qboolean AM_DangerButton( float x, float y, float w, const char *label, q
 	}
 	am.confirmTime = cls.realtime;
 	return qfalse;
+}
+
+// the shared - value + control, in the manager's look: a number, typed or stepped (the wheel's
+// notches a step each); qtrue when it changed
+static qboolean AM_Number( const void *id, float x, float y, float w, float *v, float step, float min, float max, const char *shown ) {
+	static wgStyle_t style;
+	const qboolean over = WG_PopupHover( am.cursorX, am.cursorY );
+	int wheel = am.wheel > 0 ? 1 : am.wheel < 0 ? -1 : 0;
+	qboolean changed;
+	wgMouse_t m;
+
+	style.font = am.font;
+	style.scale = AM_TEXT_SCALE;
+	style.lineH = AM_ROW_H;
+	style.padX = 4.0f;
+	style.padY = 2.0f;
+	style.fill = amPanelLight;
+	style.border = amBorder;
+	style.text = amWhite;
+	style.dim = amDim;
+	m.cursorX = over ? -1.0f : am.cursorX;
+	m.cursorY = over ? -1.0f : am.cursorY;
+	m.click = &am.click;
+	m.clickX = am.clickX;
+	m.clickY = am.clickY;
+	m.wheel = over ? NULL : &wheel;
+	changed = WG_NumberAt( id, &style, &m, x, y, w, AM_CTRL_H, v, step, min, max, 1.0f, shown );
+	if ( am.wheel && !wheel )
+		am.wheel = 0;
+	return changed;
 }
 
 // a text box; qtrue when it was typed in this frame is up to the caller to see
@@ -3418,9 +3457,27 @@ static void AM_DrawAnimsTab( amShow_t *show ) {
 	// the skeleton, round the ones there are
 	{
 		static const char *filters[AM_NUM_FILTERS] = { "All", "Base", "Custom" };
+		static wgStyle_t style;
+		const qboolean over = WG_PopupHover( am.cursorX, am.cursorY );
+		wgMouse_t m;
 
-		if ( AM_Button( AM_LEFT_X + 124, AM_TOP_Y, 52, filters[am.filter], (qboolean)( am.filter != AM_F_ALL ), qtrue ) ) {
-			am.filter = ( am.filter + 1 ) % AM_NUM_FILTERS;
+		style.font = am.font;
+		style.scale = AM_TEXT_SCALE;
+		style.lineH = AM_ROW_H;
+		style.padX = 4.0f;
+		style.padY = 2.0f;
+		style.fill = am.filter != AM_F_ALL ? amHighlight : amPanelLight;
+		style.border = amBorder;
+		style.text = amWhite;
+		style.dim = amDim;
+		m.cursorX = over ? -1.0f : am.cursorX;
+		m.cursorY = over ? -1.0f : am.cursorY;
+		m.click = &am.click;
+		m.clickX = am.clickX;
+		m.clickY = am.clickY;
+		m.wheel = NULL;
+		// a click opens the three to pick from
+		if ( WG_ChoiceBox( &style, &m, AM_LEFT_X + 124, AM_TOP_Y, 52, AM_CTRL_H, &am.filter, filters, AM_NUM_FILTERS ) ) {
 			am.animScroll = 0;
 			AM_RebuildView();
 		}
@@ -4166,33 +4223,18 @@ static void AM_DrawCustomTab( amShow_t *show ) {
 			for ( int k = 0; k < 3; k++ ) {
 				const float cx = x + k * ( w / 3.0f ), cw = w / 3.0f - 4;
 
-				cb = AM_CustomBone( &am.custom, bone, qfalse );
-				AM_Label( cx, y, axes[k] );
-				if ( AM_Button( cx + 30, y, 16, "-", qfalse, qtrue ) || AM_Button( cx + cw - 16, y, 16, "+", qfalse, qtrue ) ) {
-					const qboolean minus = (qboolean)( am.clickX < cx + 46 );
+				// - and + by 10 degrees, the value typed; the bone's taken on when it's set
+				static const char twistIds[3] = { 0, 0, 0 };
+				float v;
 
+				cb = AM_CustomBone( &am.custom, bone, qfalse );
+				v = cb ? AM_Num( cb->twist[k], 0 ) : 0.0f;
+				AM_Label( cx, y, axes[k] );
+				if ( AM_Number( &twistIds[k], cx + 30, y, cw - 30, &v, 10.0f, -3600.0f, 3600.0f, va( "%g", v ) ) ) {
 					cb = AM_CustomBone( &am.custom, bone, qtrue );
 					if ( cb ) {
-						Com_sprintf( cb->twist[k], AM_NUM_LEN, "%g", AM_Num( cb->twist[k], 0 ) + ( minus ? -10.0f : 10.0f ) );
+						Com_sprintf( cb->twist[k], AM_NUM_LEN, "%g", v );
 						AM_TidyBones( &am.custom );
-					}
-				}
-				cb = AM_CustomBone( &am.custom, bone, qfalse );
-				if ( cb ) {
-					AM_Field( cx + 48, y, cw - 66, cb->twist[k], AM_NUM_LEN, AM_K_NUMBER, "0" );
-				} else {
-					// typed in, the bone's taken on
-					static char blank[3][AM_NUM_LEN];
-
-					AM_Field( cx + 48, y, cw - 66, blank[k], AM_NUM_LEN, AM_K_NUMBER, "0" );
-					if ( blank[k][0] && strcmp( blank[k], "-" ) && strcmp( blank[k], "." ) ) {
-						cb = AM_CustomBone( &am.custom, bone, qtrue );
-						if ( cb ) {
-							Q_strncpyz( cb->twist[k], blank[k], AM_NUM_LEN );
-							if ( am.focus == blank[k] )
-								am.focus = cb->twist[k];
-						}
-						blank[k][0] = '\0';
 					}
 				}
 			}
@@ -4351,6 +4393,21 @@ void CL_AnimManager_Draw( void ) {
 		return;
 	memset( &show, 0, sizeof( show ) );
 	show.skel = -1;
+	// the shared controls' open list or number field: a click on it is its own, one elsewhere
+	// closes it; nothing else is typed in meanwhile
+	{
+		wgMouse_t m;
+
+		m.cursorX = am.cursorX;
+		m.cursorY = am.cursorY;
+		m.click = &am.click;
+		m.clickX = am.clickX;
+		m.clickY = am.clickY;
+		m.wheel = &am.wheel;
+		WG_PopupBegin( &m );
+		if ( WG_PopupTyping() )
+			am.focus = NULL;
+	}
 
 	AM_Fill( 0, 0, SCREEN_WIDTH, SCREEN_HEIGHT, amPanel );
 	AM_Text( AM_LEFT_X, 12, "Animation Manager", amWhite );

@@ -36,6 +36,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #include <vector>
 #include "client.h"
 #include "cl_escmenu.h"
+#include "cl_escpages.h"
 #include "cl_uiapi.h"
 #include "cl_widgets.h"
 
@@ -76,7 +77,10 @@ typedef enum {
 	EP_CAMERA,
 	EP_STYLE,
 	EP_LEAVE,
-	EP_QUIT
+	EP_QUIT,
+	EP_SETUP,			// the pages drawn here in place of JKA's own (cl_escpages.cpp)
+	EP_RENDERER,
+	EP_CONTROLS
 } emPanel_t;
 
 typedef struct {
@@ -107,9 +111,9 @@ static const emEntry_t emBase[] = {
 	{ "Comport",			"JEDI's forum, read and replied to on your datapad", "datapad comport",	EA_CMD,		MC_MESSAGES,	KT_JOURNAL },
 	{ "Pazaak",				"The card game, against a player on your server",	"datapad pazaak",	EA_CMD,		MC_MESSAGES,	KT_JOURNAL },
 	{ "Feedback",			"Report a bug or send an idea",						"feedback",			EA_CMD,		MC_MESSAGES,	KT_MESSAGES },
-	{ "Controls",			"Keys and the mouse (the game's own page)",			"controls",			EA_ROUTE,	MC_SETTINGS,	KT_OPTIONS },
-	{ "Setup",				"Video, sound and game options (the game's own page)", "setup",			EA_ROUTE,	MC_SETTINGS,	KT_OPTIONS },
-	{ "Renderer",			"OpenGL or Vulkan, and their graphics settings",	"renderer",			EA_ROUTE,	MC_SETTINGS,	KT_OPTIONS },
+	{ "Controls",			"Your keys, the mouse and the joystick",			(const char *)EP_CONTROLS,	EA_PANEL,	MC_SETTINGS,	KT_OPTIONS },
+	{ "Setup",				"Video, sound, game options and the defaults",		(const char *)EP_SETUP,		EA_PANEL,	MC_SETTINGS,	KT_OPTIONS },
+	{ "Renderer",			"OpenGL or Vulkan, and their graphics settings",	(const char *)EP_RENDERER,	EA_PANEL,	MC_SETTINGS,	KT_OPTIONS },
 	{ "Camera",				"The third person camera, and the field of view",	(const char *)EP_CAMERA,	EA_PANEL,	MC_SETTINGS,	KT_OPTIONS },
 	{ "Console Settings",	"How the console looks",							"consolesettings",	EA_CMD,		MC_SETTINGS,	KT_OPTIONS },
 	{ "Menu Style",			"This menu as Modern or KOTOR, or the game's own",	(const char *)EP_STYLE,	EA_PANEL,	MC_SETTINGS,	KT_OPTIONS },
@@ -146,6 +150,8 @@ const int escNumTools = (int)ARRAY_LEN( escTools );
 static std::vector<emEntry_t>	emEntries;
 
 static cvar_t *cl_escMenu;
+static void EM_SetPanel( emPanel_t panel );
+static void EM_Close( void );
 
 static struct {
 	qboolean	open;
@@ -158,6 +164,7 @@ static struct {
 	int			cat;				// Modern's category, or KOTOR's tab
 	int			sel;				// in the shown list
 	float		scroll, content;
+	int			wheel;				// the wheel's steps over an open list (the shared controls')
 	char		search[48];
 	qboolean	typing;
 	emPanel_t	panel;
@@ -166,6 +173,7 @@ static struct {
 	char		message[128];
 	int			messageTime;
 	std::vector<int>	shown;		// the entries the list shows
+	char		route[32];			// a page of JKA's own picked: opened once the click or Enter is let go
 } em;
 
 /*
@@ -252,6 +260,8 @@ static void EM_Upper( const char *in, char *out, int size ) {
 }
 
 static qboolean EM_In( float x, float y, float w, float h ) {
+	if ( WG_PopupHover( em.cursorX, em.cursorY ) )
+		return qfalse;
 	return (qboolean)( em.cursorX >= x && em.cursorX < x + w && em.cursorY >= y && em.cursorY < y + h );
 }
 
@@ -314,6 +324,59 @@ static void EM_StyleWG( wgStyle_t *style, const float *text, float scale ) {
 /*
 ===============================================================================
 
+The look, for the pages drawn inside the menu (cl_escpages.cpp)
+
+===============================================================================
+*/
+
+qboolean EscUI_Kotor( void ) { return (qboolean)( em.style == EM_KOTOR ); }
+int EscUI_Font( void ) { return em.font; }
+float EscUI_Wide( float w ) { return EM_Wide( w ); }
+void EscUI_Fill( float x, float y, float w, float h, const float *color ) { EM_Fill( x, y, w, h, color ); }
+void EscUI_Frame( float x, float y, float w, float h, const float *color ) { EM_Frame( x, y, w, h, 1, color ); }
+void EscUI_Text( float x, float y, float w, const char *text, const float *color, float scale, int align ) {
+	EM_Text( x, y, w, text, color, em.font, scale, align );
+}
+qboolean EscUI_Button( float x, float y, float w, float h, const char *label, int kind ) { return EM_Button( x, y, w, h, label, kind ); }
+qboolean EscUI_In( float x, float y, float w, float h ) { return EM_In( x, y, w, h ); }
+qboolean EscUI_Clicked( float x, float y, float w, float h ) { return EM_Clicked( x, y, w, h ); }
+void EscUI_StyleWG( wgStyle_t *style, const float *text, float scale ) { EM_StyleWG( style, text, scale ); }
+void EscUI_Mouse( float *cursorX, float *cursorY, qboolean **click, float *clickX, float *clickY ) {
+	*cursorX = em.cursorX;
+	*cursorY = em.cursorY;
+	*click = &em.click;
+	*clickX = em.clickX;
+	*clickY = em.clickY;
+}
+int *EscUI_Wheel( void ) {
+	return &em.wheel;
+}
+void EscUI_Sound( qboolean click ) {
+	S_StartLocalSound( click ? em.clickSound : em.moveSound, CHAN_LOCAL_SOUND );
+}
+// the colours: 0 text, 1 dim, 2 accent, 3 a row picked, 4 a row under the mouse, 5 a line, 6 danger
+const float *EscUI_Color( int which ) {
+	const qboolean k = (qboolean)( em.style == EM_KOTOR );
+
+	switch ( which ) {
+	case 0:		return k ? ktText : mdText;
+	case 1:		return k ? ktDim : mdDim;
+	case 2:		return k ? ktGlow : mdAccent;
+	case 3:		return k ? ktRow : mdAccentSoft;
+	case 4:		return k ? ktRowHover : mdCardHover;
+	case 5:		return k ? ktSteel : mdLine;
+	default:	return k ? ktGold : mdDanger;
+	}
+}
+// the video restarts: the menu closes, its fonts asked for again when it next opens
+void EscUI_Restarting( void ) {
+	EM_Close();
+	em.font = em.titleFont = 0;
+}
+
+/*
+===============================================================================
+
 What the list shows
 
 ===============================================================================
@@ -365,7 +428,7 @@ static void EM_PickCat( int cat ) {
 	em.cat = cat;
 	em.sel = 0;
 	em.scroll = 0;
-	em.panel = EP_NONE;
+	EM_SetPanel( EP_NONE );
 	em.search[0] = '\0';
 	em.typing = qfalse;
 	EM_BuildShown();
@@ -379,9 +442,32 @@ Opening, closing, doing
 ===============================================================================
 */
 
+// the page a panel is, -1 none
+static int EM_Page( void ) {
+	switch ( em.panel ) {
+	case EP_SETUP:		return ESCPAGE_SETUP;
+	case EP_RENDERER:	return ESCPAGE_RENDERER;
+	case EP_CONTROLS:	return ESCPAGE_CONTROLS;
+	default:			return -1;
+	}
+}
+
+static void EM_SetPanel( emPanel_t panel ) {
+	WG_PopupClose();
+	if ( EM_Page() >= 0 )
+		CL_EscPages_Close();
+	em.panel = panel;
+	if ( EM_Page() >= 0 )
+		CL_EscPages_Open( EM_Page() );
+}
+
 static void EM_Close( void ) {
+	em.route[0] = '\0';
 	if ( !em.open )
 		return;
+	WG_PopupClose();
+	if ( EM_Page() >= 0 )
+		CL_EscPages_Close();
 	em.open = qfalse;
 	em.typing = qfalse;
 	em.camDrag = -1;
@@ -445,12 +531,14 @@ static void EM_Do( const emEntry_t &e ) {
 		UIVM_SetActiveMenu( UIMENU_PLAYERCONFIG );
 		break;
 	case EA_ROUTE:
-		EM_Close();
-		if ( !CL_RenderMenu_Route( e.arg ) )
-			UIVM_SetActiveMenu( UIMENU_INGAME );
+		// not now: the click (or Enter) that picked it is still held, and RPMod's menus act on its
+		// release, which closed the page as soon as it opened. The menu stays, hidden and holding the
+		// keys, until it's let go (CL_EscMenu_Draw)
+		Q_strncpyz( em.route, e.arg, sizeof( em.route ) );
+		em.click = qfalse;
 		break;
 	case EA_PANEL:
-		em.panel = (emPanel_t)(intptr_t)e.arg;
+		EM_SetPanel( (emPanel_t)(intptr_t)e.arg );
 		em.camDrag = -1;
 		if ( em.panel == EP_SERVERS )
 			Cbuf_AddText( "quickconnect refresh\n" );
@@ -628,6 +716,9 @@ static const char *EM_PanelTitle( void ) {
 	case EP_STYLE:		return "Menu Style";
 	case EP_LEAVE:		return "Leave the server";
 	case EP_QUIT:		return "Quit the game";
+	case EP_SETUP:		return "Setup";
+	case EP_RENDERER:	return "Renderer";
+	case EP_CONTROLS:	return "Controls";
 	default:			return "";
 	}
 }
@@ -639,6 +730,9 @@ static void EM_DrawPanel( float x, float y, float w, float h ) {
 	case EP_STYLE:		EM_PanelStyle( x, y, w, h );			break;
 	case EP_LEAVE:		EM_PanelAsk( x, y, w, h, qfalse );		break;
 	case EP_QUIT:		EM_PanelAsk( x, y, w, h, qtrue );		break;
+	case EP_SETUP:
+	case EP_RENDERER:
+	case EP_CONTROLS:	CL_EscPages_Draw( EM_Page(), x, y, w, h );	break;
 	default:			break;
 	}
 }
@@ -721,7 +815,7 @@ static void EM_DrawModern( void ) {
 	// the content: its title, the search, the list or a panel
 	if ( em.panel != EP_NONE ) {
 		if ( EM_Button( cx, 18, EM_Wide( 60 ), 20, "< Back", 0 ) ) {
-			em.panel = EP_NONE;
+			EM_SetPanel( EP_NONE );
 		} else {
 			EM_Text( cx + EM_Wide( 72 ), 18, cw - EM_Wide( 72 ), EM_PanelTitle(), mdText, em.titleFont, 0.7f, 0 );
 			EM_Fill( cx, 48, cw, 1, mdLine );
@@ -770,7 +864,7 @@ static void EM_DrawModern( void ) {
 				if ( EM_Clicked( cx, y, rw, MD_CARD_H ) ) {
 					em.sel = i;
 					EM_Do( e );
-					if ( !em.open )
+					if ( !em.open || em.route[0] )
 						return;
 				}
 			}
@@ -784,7 +878,6 @@ static void EM_DrawModern( void ) {
 		EM_Text( cx, SCREEN_HEIGHT - 22, cw, em.message, mdAccent, em.font, 0.62f, 0 );
 	else
 		EM_Text( cx, SCREEN_HEIGHT - 22, cw, "Enter: open   Up / Down: pick   Tab: next category   type: search   Esc: close", mdDim, em.font, 0.58f, 0 );
-	WG_DrawOverlay();
 }
 
 /*
@@ -890,11 +983,11 @@ static void EM_DrawKotor( void ) {
 			if ( EM_Clicked( listX + 6, y, rw, KT_ROW_H - 2 ) ) {
 				if ( on ) {
 					EM_Do( e );
-					if ( !em.open )
+					if ( !em.open || em.route[0] )
 						return;
 				} else {
 					em.sel = i;
-					em.panel = EP_NONE;
+					EM_SetPanel( EP_NONE );
 				}
 			}
 		}
@@ -904,7 +997,7 @@ static void EM_DrawKotor( void ) {
 	EM_KotorBox( infoX, listY, infoW, listH, qtrue );
 	if ( em.panel != EP_NONE ) {
 		if ( EM_Button( infoX + 10, listY + 10, EM_Wide( 56 ), 18, "Back", 0 ) )
-			em.panel = EP_NONE;
+			EM_SetPanel( EP_NONE );
 		else
 			EM_DrawPanel( infoX + 12, listY + 36, infoW - 24, listH - 46 );
 	} else {
@@ -941,7 +1034,7 @@ static void EM_DrawKotor( void ) {
 			EM_Text( infoX + 12, y + 26 + lines * style.lineH, infoW - 24, EM_KindNote( e ), ktDim, em.font, 0.6f, 0 );
 			if ( EM_Button( infoX + infoW - EM_Wide( 90 ) - 10, listY + listH - 30, EM_Wide( 90 ), 20, "Open", 1 ) ) {
 				EM_Do( e );
-				if ( !em.open )
+				if ( !em.open || em.route[0] )
 					return;
 			}
 		}
@@ -960,18 +1053,54 @@ static void EM_DrawKotor( void ) {
 		EM_Text( KT_X + 120, KT_Y + KT_H - 27, KT_W - 240, "Left / Right: tabs   Up / Down: pick   Enter: open   Esc: close", ktDim, em.font, 0.58f, 1 );
 }
 
+// a JKA page picked: opened as /escroute does, once the mouse button and Enter are up
+static qboolean EM_RouteFrame( void ) {
+	char route[sizeof( em.route )];
+
+	if ( !em.route[0] )
+		return qfalse;
+	if ( kg.keys[A_MOUSE1].down || kg.keys[A_ENTER].down || kg.keys[A_KP_ENTER].down )
+		return qtrue;
+	Q_strncpyz( route, em.route, sizeof( route ) );
+	em.route[0] = '\0';
+	EM_Close();
+	if ( !CL_RenderMenu_Route( route ) )
+		UIVM_SetActiveMenu( UIMENU_INGAME );
+	return qtrue;
+}
+
 void CL_EscMenu_Draw( void ) {
 	if ( !em.open )
+		return;
+	if ( EM_RouteFrame() )
 		return;
 	if ( cls.state != CA_ACTIVE ) {
 		EM_Close();
 		return;
 	}
+	// a page's open list: a click on it is its own, one elsewhere closes it
+	{
+		wgMouse_t m;
+
+		m.cursorX = em.cursorX;
+		m.cursorY = em.cursorY;
+		m.click = &em.click;
+		m.clickX = em.clickX;
+		m.clickY = em.clickY;
+		m.wheel = &em.wheel;
+		WG_PopupBegin( &m );
+		if ( WG_PopupTyping() )
+			em.typing = qfalse;
+	}
 	if ( em.style == EM_KOTOR )
 		EM_DrawKotor();
 	else
 		EM_DrawModern();
+	// a field grown past its box, and an open list, over everything
+	if ( em.open )
+		WG_DrawOverlay();
 	em.click = qfalse;
+	em.wheel = 0;
 	if ( em.open )
 		re->DrawStretchPic( em.cursorX, em.cursorY, 32, 32, 0, 0, 1, 1, cls.cursorShader );
 }
@@ -999,7 +1128,17 @@ static void EM_SeeSel( void ) {
 void CL_EscMenu_KeyEvent( int key, qboolean down ) {
 	const int num = em.style == EM_KOTOR ? KT_NUM : MC_NUM;
 
-	if ( !em.open || !down )
+	if ( !em.open || !down || em.route[0] )
+		return;
+	// an open list: the wheel scrolls it, the keys are its
+	if ( WG_PopupOpen() && ( key == A_MWHEELUP || key == A_MWHEELDOWN ) ) {
+		em.wheel += key == A_MWHEELUP ? -1 : 1;
+		return;
+	}
+	if ( WG_PopupKey( key ) )
+		return;
+	// a page: a key it waits for (a bind), the field typed in, its rows picked and changed
+	if ( EM_Page() >= 0 && CL_EscPages_Key( EM_Page(), key ) )
 		return;
 	if ( key == A_MOUSE1 ) {
 		em.click = qtrue;
@@ -1063,7 +1202,7 @@ void CL_EscMenu_KeyEvent( int key, qboolean down ) {
 		break;
 	case A_BACKSPACE:
 		if ( em.panel != EP_NONE )
-			em.panel = EP_NONE;
+			EM_SetPanel( EP_NONE );
 		break;
 	default:
 		break;
@@ -1073,6 +1212,12 @@ void CL_EscMenu_KeyEvent( int key, qboolean down ) {
 
 // typing anywhere in Modern searches
 void CL_EscMenu_CharEvent( int ch ) {
+	if ( em.open && WG_PopupChar( ch ) )
+		return;
+	if ( em.open && EM_Page() >= 0 ) {
+		CL_EscPages_Char( EM_Page(), ch );
+		return;
+	}
 	if ( !em.open || em.style != EM_MODERN || em.panel != EP_NONE )
 		return;
 	if ( !em.typing ) {
@@ -1095,6 +1240,14 @@ void CL_EscMenu_MouseEvent( int dx, int dy ) {
 
 // Esc: the search cleared, then a panel put away, then the menu
 void CL_EscMenu_Escape( void ) {
+	// an open list or number: closed first
+	if ( WG_PopupOpen() ) {
+		WG_PopupClose();
+		return;
+	}
+	// a page's bind waited for, or its field typed in: given up first
+	if ( EM_Page() >= 0 && CL_EscPages_Escape() )
+		return;
 	if ( em.search[0] || em.typing ) {
 		em.search[0] = '\0';
 		em.typing = qfalse;
@@ -1102,7 +1255,7 @@ void CL_EscMenu_Escape( void ) {
 		return;
 	}
 	if ( em.panel != EP_NONE ) {
-		em.panel = EP_NONE;
+		EM_SetPanel( EP_NONE );
 		return;
 	}
 	EM_Close();
@@ -1124,7 +1277,7 @@ static void EM_Cmd_f( void ) {
 		return;
 	}
 	if ( arg[0] && Q_stricmp( arg, "modern" ) && Q_stricmp( arg, "kotor" ) ) {
-		Com_Printf( "escmenu [modern|kotor|classic] [category] : the menu Esc opens, in that style, on that category or tab\n" );
+		Com_Printf( "escmenu [modern|kotor|classic] [category] [entry] : the menu Esc opens, in that style, on that category or tab, an entry of it opened\n" );
 		Com_Printf( "  (cl_escMenu picks what Esc opens: 0 classic, 1 modern, 2 kotor)\n" );
 		return;
 	}
@@ -1136,6 +1289,21 @@ static void EM_Cmd_f( void ) {
 	for ( int c = 0; cat[0] && c < ( em.style == EM_KOTOR ? KT_NUM : MC_NUM ); c++ ) {
 		if ( !Q_stricmp( cat, em.style == EM_KOTOR ? emKotorTabs[c] : emModernCats[c] ) )
 			EM_PickCat( c );
+	}
+	// and an entry of it opened by name: escmenu kotor options setup
+	if ( Cmd_Argc() > 3 ) {
+		const char *name = Cmd_Args() + strlen( arg ) + strlen( cat ) + 2;
+
+		for ( int i = 0; i < (int)em.shown.size(); i++ ) {
+			const emEntry_t &e = emEntries[em.shown[i]];
+
+			if ( !Q_stricmp( e.name, name ) ) {
+				em.sel = i;
+				EM_Do( e );
+				return;
+			}
+		}
+		Com_Printf( "Esc menu: no \"%s\" there\n", name );
 	}
 }
 

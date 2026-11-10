@@ -175,29 +175,61 @@ static const char *RM_Effective( const rmRow_t *row ) {
 	return cv->latchedString ? cv->latchedString : cv->string;
 }
 
+// the page's copies made what the settings are
+static void RM_Sync( void ) {
+	for ( int i = 0; i < rmNumRows; i++ ) {
+		if ( rmRows[i].ui )
+			Cvar_Set( rmRows[i].ui, RM_Effective( &rmRows[i] ) );
+	}
+}
+
+// a copy the page changed: its setting differs from it
+static qboolean RM_Differs( const rmRow_t *row ) {
+	const char *want = row->ui ? Cvar_VariableString( row->ui ) : "";
+
+	return (qboolean)( want[0] && Q_stricmp( want, RM_Effective( row ) ) );
+}
+
 static void RM_Settings_f( void ) {
 	const char *how = Cmd_Argv( 1 );
 
 	if ( !Q_stricmp( how, "sync" ) ) {
-		for ( int i = 0; i < rmNumRows; i++ ) {
-			if ( rmRows[i].ui )
-				Cvar_Set( rmRows[i].ui, RM_Effective( &rmRows[i] ) );
-		}
+		RM_Sync();
 	} else if ( !Q_stricmp( how, "apply" ) ) {
 		for ( int i = 0; i < rmNumRows; i++ ) {
-			const char *want;
-
-			if ( !rmRows[i].ui )
-				continue;
-			want = Cvar_VariableString( rmRows[i].ui );
-
-			if ( want[0] && Q_stricmp( want, RM_Effective( &rmRows[i] ) ) )
-				Cvar_Set( rmRows[i].real, want );
+			if ( RM_Differs( &rmRows[i] ) )
+				Cvar_Set( rmRows[i].real, Cvar_VariableString( rmRows[i].ui ) );
 		}
 	} else {
 		Com_Printf( "renderersettings sync : the Setup menu's RENDERER page shows the settings as they are\n" );
 		Com_Printf( "renderersettings apply : they become what the page has, at the next vid_restart\n" );
 	}
+}
+
+// the RENDERER page's rows, for the Esc menus' own page (cl_escpages.cpp): the ui_rd_ copy the page
+// changes, NULL for the classic page's buttons between its two pages (skipped there); show 0 always,
+// 1 with Vulkan picked, 2 with Vulkan and Post Effects
+const char *CL_RenderMenu_RendererRow( int i, const char **label, const char **desc, const char **list, int *show ) {
+	if ( i < 0 || i >= rmNumRows )
+		return NULL;
+	*label = rmRows[i].label;
+	*desc = rmRows[i].desc;
+	*list = rmRows[i].list;
+	*show = rmRows[i].show == RM_SHOW_VULKAN ? 1 : rmRows[i].show == RM_SHOW_POSTFX ? 2 : 0;
+	return rmRows[i].ui ? rmRows[i].ui : "";
+}
+
+void CL_RenderMenu_RendererSync( void ) {
+	RM_Sync();
+}
+
+// whether the page has a setting changed, to apply at a vid_restart
+qboolean CL_RenderMenu_RendererChanged( void ) {
+	for ( int i = 0; i < rmNumRows; i++ ) {
+		if ( RM_Differs( &rmRows[i] ) )
+			return qtrue;
+	}
+	return qfalse;
 }
 
 /*

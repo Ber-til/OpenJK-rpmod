@@ -158,6 +158,19 @@ char *Cvar_VariableString( const char *var_name ) {
 
 /*
 ============
+Cvar_LatchedString
+
+What a latched cvar will be at the next restart, NULL when nothing waits
+============
+*/
+const char *Cvar_LatchedString( const char *var_name ) {
+	cvar_t *var = Cvar_FindVar( var_name );
+
+	return var ? var->latchedString : NULL;
+}
+
+/*
+============
 Cvar_VariableStringBuffer
 ============
 */

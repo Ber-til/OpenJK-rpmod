@@ -613,6 +613,7 @@ int CIN_VideoHeight( const cinVideo_t *v );
 byte *CIN_VideoBuffer( const cinVideo_t *v );
 qboolean CIN_VideoUpdate( cinVideo_t *v, double time, qboolean silent, qboolean *newFrame );
 void CIN_VideoRewind( cinVideo_t *v );
+qboolean CIN_DecodeImage( const byte *data, int len, byte **rgba, int *width, int *height );	// a WebP picture, by FFmpeg
 
 e_status CIN_RunCinematic (int handle);
 void CIN_DrawCinematic (int handle);
@@ -1264,6 +1265,9 @@ void CL_RenderMenu_Init( void );
 qboolean CL_RenderMenu_Route( const char *page );	// controls, setup or renderer: that page of JKA's own menus
 // the camera panel's rows, i from 0: the cvar (NULL past the last), its label, default and range, or an on/off
 const char *CL_RenderMenu_CameraRow( int i, const char **label, float *def, float *min, float *max, qboolean *toggle );
+const char *CL_RenderMenu_RendererRow( int i, const char **label, const char **desc, const char **list, int *show );
+void CL_RenderMenu_RendererSync( void );
+qboolean CL_RenderMenu_RendererChanged( void );
 
 // cl_escmenu.cpp: the menu Esc opens in game, Modern or KOTOR
 void CL_EscMenu_Init( void );

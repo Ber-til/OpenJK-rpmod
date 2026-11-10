@@ -4,6 +4,14 @@ What changed in OpenJK-rpmod from version to version, newest first. What each fe
 
 OpenJK-rpmod is built on [OpenJK](https://github.com/JACoders/OpenJK); for the changes OpenJK itself made, see [its changelog](https://github.com/JACoders/OpenJK/blob/master/CHANGELOG.md).
 
+## 0.9.2 - Nov 10th 2026
+
+- [Changed] `Tools: picking values`. A choice's value opens a list to pick from, and a number's value can be typed in; - and + and the wheel still step. In the cinematic manager, map editor, console settings, radial menus, storyteller, presets, the Esc pages, and the effect, animation and NPC managers.
+- [Fixed] `Esc Menu: Setup, Renderer and Controls`. In the Modern and KOTOR menus they are pages of the menu itself, no longer the game's own pages opened behind it, which closed on the next click. `/escmenu <style> <category> <entry>` opens one directly.
+- [Fixed] `Cinematic manager: long tabs`. The open tab scrolls in its part of the panel instead of running under the bottom buttons.
+- [Fixed] `Chat range: same names`. Your own chat is never faded, even when another player has your name; names that differ only in colour are told apart.
+- [Fixed] `HoloNet: WebP pictures`. Pictures in WebP (the newest articles) show in the datapad, decoded by the FFmpeg the game ships for videos; GIF pictures show too.
+
 ## 0.9.1 - Nov 9th 2026
 
 - [Added] `Effect Replacer: force lightning`. Force lightning, which RPMod draws as lightning shapes rather than an effect, can be swapped as `force/lightning`; `/effectreplacer log` lists the effects started near you, to find an effect's name.

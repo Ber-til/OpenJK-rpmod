@@ -2928,6 +2928,12 @@ static struct {
 	qboolean	dirty;
 
 	int			tab;				// cmTab_t
+	// the open tab's part of the panel: scrolled when it holds more than fits, nothing drawn or
+	// clicked outside it (clipTop..clipBottom, while clipping)
+	qboolean	clipping;
+	float		clipTop, clipBottom;
+	float		clipLowest;			// how far down this frame's tab went, unscrolled
+	int			tabScroll;			// pixels
 	int			page;				// cmPage_t, of the Camera tab
 	int			cur;				// the shot shown on the Camera tab
 	int			sel;				// its spot, -1 none
@@ -4255,6 +4261,7 @@ void CL_RpCinematic_EditorClose( void ) {
 	CM_TlLetGo();
 	cm.open = qfalse;
 	cm.typing = CM_TYPE_NONE;
+	WG_PopupClose();
 	// a track listened to: the map's music back
 	if ( cmMusicPlayed && !cmp.playing ) {
 		cmMusicPlayed = qfalse;
@@ -4448,6 +4455,9 @@ void CL_RpCinematic_EditorKeyEvent( int key, qboolean down ) {
 		CL_RpCinematic_EditorClose();
 		return;
 	}
+	// an open list or number field of the panel's has the keys (not the mouse's)
+	if ( !cm.flying && WG_PopupKey( key ) )
+		return;
 
 	switch ( key ) {
 	case A_MOUSE1:
@@ -4601,7 +4611,11 @@ void CL_RpCinematic_EditorCharEvent( int ch ) {
 	int size;
 	char *text;
 
-	if ( !cm.open || cm.flying || !( text = CM_TypedText( &size ) ) )
+	if ( !cm.open || cm.flying )
+		return;
+	if ( WG_PopupChar( ch ) )
+		return;
+	if ( !( text = CM_TypedText( &size ) ) )
 		return;
 	// the animations' names are in capitals, the emotes' small
 	if ( cm.typing == CM_TYPE_ANIM )
@@ -4628,6 +4642,8 @@ void CL_RpCinematic_EditorMouseEvent( int dx, int dy ) {
 void CL_RpCinematic_EditorEscape( void ) {
 	if ( cm.preview ) {
 		CM_StopPreview();
+	} else if ( WG_PopupOpen() ) {
+		WG_PopupClose();
 	} else if ( cm.typing ) {
 		cm.typing = CM_TYPE_NONE;
 	} else if ( cm.listing ) {
@@ -5116,6 +5132,18 @@ The panel's controls
 */
 
 static void CM_Fill( float x, float y, float w, float h, const float *color ) {
+	// in the open tab's part: cut to it
+	if ( cm.clipping ) {
+		cm.clipLowest = Q_max( cm.clipLowest, y + h );
+		if ( y < cm.clipTop ) {
+			h -= cm.clipTop - y;
+			y = cm.clipTop;
+		}
+		if ( y + h > cm.clipBottom )
+			h = cm.clipBottom - y;
+		if ( h <= 0.0f )
+			return;
+	}
 	re->SetColor( color );
 	re->DrawStretchPic( x, y, w, h, 0, 0, 0, 0, cls.whiteShader );
 	re->SetColor( NULL );
@@ -5133,7 +5161,17 @@ static float CM_TextWidth( const char *text ) {
 	return (float)re->Font_StrLenPixels( text, cm.font, CM_TEXT_SCALE );
 }
 
+// a line wholly inside the open tab's part (always, when not clipping)
+static qboolean CM_Inside( float y, float h ) {
+	if ( !cm.clipping )
+		return qtrue;
+	cm.clipLowest = Q_max( cm.clipLowest, y + h );
+	return (qboolean)( y >= cm.clipTop - 1.0f && y + h <= cm.clipBottom + 1.0f );
+}
+
 static void CM_Text( float x, float y, const char *text, const float *color ) {
+	if ( !CM_Inside( y, CM_ROW_H ) )
+		return;
 	re->Font_DrawString( (int)x, (int)y, text, color, cm.font | STYLE_DROPSHADOW, -1, CM_TEXT_SCALE );
 }
 
@@ -5154,12 +5192,18 @@ static void CM_TextClipped( float x, float y, float w, const char *text, const f
 }
 
 static qboolean CM_InRect( float x, float y, float w, float h ) {
+	if ( cm.clipping && ( cm.cursorY < cm.clipTop || cm.cursorY >= cm.clipBottom ) )
+		return qfalse;
+	if ( WG_PopupHover( cm.cursorX, cm.cursorY ) )
+		return qfalse;
 	return (qboolean)( !cm.flying && !cm.popHover && cm.cursorX >= x && cm.cursorX < x + w && cm.cursorY >= y && cm.cursorY < y + h );
 }
 
 // eats this frame's click if it landed in the rect
 static qboolean CM_Clicked( float x, float y, float w, float h ) {
 	if ( !cm.click || cm.clickX < x || cm.clickX >= x + w || cm.clickY < y || cm.clickY >= y + h )
+		return qfalse;
+	if ( cm.clipping && ( cm.clickY < cm.clipTop || cm.clickY >= cm.clipBottom ) )
 		return qfalse;
 	cm.click = qfalse;
 	return qtrue;
@@ -5178,24 +5222,6 @@ static qboolean CM_Switch( float x, float y, float w, const char *label, const c
 	return CM_Button( x, y, w, va( "%s" S_COLOR_GREY ": " S_COLOR_WHITE "%s", label, value ), qfalse, qtrue );
 }
 
-// a value with - and + either side, the wheel over it too; how many steps it went
-static int CM_Stepper( float x, float y, float w, const char *label, const char *value ) {
-	const float lw = 62.0f, vx = x + lw + 17, vw = w - lw - 34;
-	int steps = 0;
-
-	CM_Text( x, y + 2, label, cmDim );
-	if ( CM_Button( x + lw, y, 16, "-", qfalse, qtrue ) )
-		steps--;
-	CM_Box( vx, y, vw, CM_CTRL_H, cmPanelLight );
-	CM_Text( vx + ( vw - CM_TextWidth( value ) ) * 0.5f, y + 2, value, cmWhite );
-	if ( CM_Button( x + w - 16, y, 16, "+", qfalse, qtrue ) )
-		steps++;
-	if ( cm.wheel && CM_InRect( x, y, w, CM_CTRL_H ) ) {
-		steps -= cm.wheel;
-		cm.wheel = 0;
-	}
-	return steps;
-}
 
 // Shift goes in big steps, Ctrl in small ones
 static float CM_Step( float step ) {
@@ -5206,21 +5232,156 @@ static float CM_Step( float step ) {
 	return step;
 }
 
-static void CM_Adjust( float *value, int steps, float step, float min, float max ) {
-	if ( !steps )
-		return;
-	*value = Com_Clamp( min, max, *value + steps * CM_Step( step ) );
-	CM_Changed();
-}
-
-static void CM_AdjustMs( int *ms, int steps, float seconds, int min ) {
-	if ( !steps )
-		return;
-	*ms = Q_max( min, RC_SecondsMs( RC_Seconds( *ms ) + steps * CM_Step( seconds ) ) );
-	CM_Changed();
-}
-
 static vec4_t cmUnknown		= { 1.0f, 1.0f, 0.0f, 1.0f };
+
+/*
+The panel's - value + controls, the tools' shared one (cl_widgets): the value clicked opens a list
+of the choices, or a field to type the number in. Numbers set here are changes (CM_Changed);
+a choice's caller says what it changed, as some only pick what's shown
+*/
+#define CM_LABEL_W			62.0f
+#define CM_MINI_LABEL_W		30.0f
+
+static const wgStyle_t *CM_CtlStyle( void ) {
+	static wgStyle_t style;
+
+	style.font = cm.font;
+	style.scale = CM_TEXT_SCALE;
+	style.lineH = CM_ROW_H;
+	style.padX = 4.0f;
+	style.padY = 2.0f;
+	style.fill = cmPanelLight;
+	style.border = cmBorder;
+	style.text = cmWhite;
+	style.dim = cmDim;
+	return &style;
+}
+
+// the mouse as a control at y has it: none while it's cut by the tab's part, under the add
+// popup or flown with; qfalse when it isn't to be drawn at all
+static qboolean CM_CtlMouse( float y, wgMouse_t *m ) {
+	const qboolean over = (qboolean)( cm.popHover || WG_PopupHover( cm.cursorX, cm.cursorY ) );
+
+	if ( !CM_Inside( y, CM_CTRL_H ) )
+		return qfalse;
+	m->cursorX = cm.flying || over ? -1.0f : cm.cursorX;
+	m->cursorY = cm.flying || over ? -1.0f : cm.cursorY;
+	m->click = cm.flying ? NULL : &cm.click;
+	m->clickX = cm.clickX;
+	m->clickY = cm.clickY;
+	m->wheel = cm.flying || over ? NULL : &cm.wheel;
+	return qtrue;
+}
+
+static qboolean CM_NumAt( const void *id, float x, float y, float w, float lw, const char *label, const char *shown,
+	float *v, float step, float min, float max, float scale ) {
+	wgMouse_t m;
+
+	CM_Text( x, y + 2, label, cmDim );
+	if ( !CM_CtlMouse( y, &m ) )
+		return qfalse;
+	if ( !WG_NumberAt( id, CM_CtlStyle(), &m, x + lw, y, w - lw, CM_CTRL_H, v, step, min, max, scale, shown ) )
+		return qfalse;
+	CM_Changed();
+	return qtrue;
+}
+
+// a number, - and + by step (Shift more, Ctrl less)
+static qboolean CM_Num( float x, float y, float w, const char *label, const char *shown, float *v, float step, float min, float max ) {
+	return CM_NumAt( v, x, y, w, CM_LABEL_W, label, shown, v, CM_Step( step ), min, max, 1.0f );
+}
+
+static qboolean CM_MiniNum( float x, float y, float w, const char *label, const char *shown, float *v, float step, float min, float max ) {
+	return CM_NumAt( v, x, y, w, CM_MINI_LABEL_W, label, shown, v, CM_Step( step ), min, max, 1.0f );
+}
+
+// milliseconds, typed and stepped as seconds; no less than min
+static qboolean CM_NumMsW( float lw, float x, float y, float w, const char *label, const char *shown, int *ms, float seconds, int min ) {
+	float v = (float)*ms;
+
+	if ( !CM_NumAt( ms, x, y, w, lw, label, shown, &v, CM_Step( seconds ) * 1000.0f, (float)min, 1.0e8f, 0.001f ) )
+		return qfalse;
+	*ms = Q_max( min, RC_SecondsMs( v / 1000.0f ) );
+	return qtrue;
+}
+
+static qboolean CM_NumMs( float x, float y, float w, const char *label, const char *shown, int *ms, float seconds, int min ) {
+	return CM_NumMsW( CM_LABEL_W, x, y, w, label, shown, ms, seconds, min );
+}
+
+static qboolean CM_MiniNumMs( float x, float y, float w, const char *label, const char *shown, int *ms, float seconds, int min ) {
+	return CM_NumMsW( CM_MINI_LABEL_W, x, y, w, label, shown, ms, seconds, min );
+}
+
+// a whole number, by step (as the caller has it, Shift and all), in min..max
+static qboolean CM_NumInt( float x, float y, float w, const char *label, const char *shown, int *n, int step, int min, int max ) {
+	float v = (float)*n;
+
+	if ( !CM_NumAt( n, x, y, w, CM_LABEL_W, label, shown, &v, (float)step, (float)min, (float)max, 1.0f ) )
+		return qfalse;
+	*n = Com_Clampi( min, max, (int)floorf( v + 0.5f ) );
+	return qtrue;
+}
+
+// one of count, named by label( i, ctx ); qtrue when *index changed
+static qboolean CM_ChoiceFn( float x, float y, float w, const char *label, int *index, int count, wgLabel_t names, void *ctx, qboolean wrap ) {
+	wgMouse_t m;
+
+	CM_Text( x, y + 2, label, cmDim );
+	if ( !CM_CtlMouse( y, &m ) )
+		return qfalse;
+	return WG_Choice( CM_CtlStyle(), &m, x + CM_LABEL_W, y, w - CM_LABEL_W, CM_CTRL_H, index, count, names, ctx, wrap );
+}
+
+// the lists' names
+static const char *CM_FocusKeyName( int i, void *ctx ) {
+	const rcShot_t *s = (const rcShot_t *)ctx;
+
+	return va( "%i of %i, at %.1f s", i + 1, s->numFocus, s->focus[i].ms / 1000.0f );
+}
+
+static const char *CM_SpotName( int i, void *ctx ) {
+	return va( "%i of %i", i + 1, ( (const rcShot_t *)ctx )->numKeys );
+}
+
+static const char *CM_PropKeyName( int i, void *ctx ) {
+	const cmProp_t *pr = (const cmProp_t *)ctx;
+
+	return va( "%i of %i, at %.1f s", i + 1, pr->numKeys, ( pr->start + pr->keys[i].ms ) / 1000.0f );
+}
+
+static const char *CM_FilterName( int i, void *ctx ) {
+	return RC_FilterName( i );
+}
+
+static const char *CM_ForceName( int i, void *ctx ) {
+	return cmForces[i].name;
+}
+
+static const char *CM_ShellName( int i, void *ctx ) {
+	return cmShells[i].name;
+}
+
+static const char *CM_FaceName( int i, void *ctx ) {
+	return cmFaces[i].name;
+}
+
+// a choice with nothing to choose from: its label, and what's said in its place
+static void CM_NoChoice( float x, float y, float w, const char *label, const char *text ) {
+	CM_Text( x, y + 2, label, cmDim );
+	CM_Box( x + CM_LABEL_W, y, w - CM_LABEL_W, CM_CTRL_H, cmPanelLight );
+	CM_TextClipped( x + CM_LABEL_W + 4, y + 2, w - CM_LABEL_W - 8, text, cmDim );
+}
+
+static qboolean CM_Choice( float x, float y, float w, const char *label, int *index, const char **names, int count, qboolean wrap ) {
+	wgMouse_t m;
+
+	CM_Text( x, y + 2, label, cmDim );
+	if ( !CM_CtlMouse( y, &m ) )
+		return qfalse;
+	return WG_ChoiceList( CM_CtlStyle(), &m, x + CM_LABEL_W, y, w - CM_LABEL_W, CM_CTRL_H, index, names, count, wrap );
+}
+
 
 static void CM_FieldStyle( wgStyle_t *style, const float *color ) {
 	style->font = cm.font;
@@ -5242,9 +5403,11 @@ static float CM_TextBox( float x, float y, float w, char *text, const char *empt
 	float h;
 
 	CM_FieldStyle( &style, color );
+	h = WG_FieldHeight( &style, w, CM_CTRL_H, text, on );
+	if ( !CM_Inside( y, h ) )
+		return h;
 	CM_Box( x, y, w, CM_CTRL_H, on ? cmFocusBox : cmPanelLight );
 	WG_Field( &style, x, y, w, CM_CTRL_H, text, on, empty, cm.cursorX, cm.cursorY );
-	h = WG_FieldHeight( &style, w, CM_CTRL_H, text, on );
 	if ( CM_Clicked( x, y, w, h ) ) {
 		if ( !on )
 			cm.pickScroll = 0;
@@ -5259,6 +5422,8 @@ static float CM_TextBox( float x, float y, float w, char *text, const char *empt
 static float CM_ListBar( float x, float y, float w, float h, int count, int rows, int *scroll ) {
 	if ( count <= rows )
 		return w;
+	if ( !CM_Inside( y, h ) )
+		return w - WG_SCROLL_W - 1;
 	WG_Scrollbar( x + w - WG_SCROLL_W - 1, y + 1, h - 2, count, rows, scroll, cm.cursorX, cm.cursorY, &cm.click, cm.clickX, cm.clickY );
 	return w - WG_SCROLL_W - 1;
 }
@@ -5356,31 +5521,22 @@ static void CM_DrawSpotsPage( float x, float y, float w ) {
 	if ( !k )
 		return;
 	if ( s->numKeys == 1 ) {
-		const int steps = CM_Stepper( x, y, w, "Held for", va( "%.1f s", RC_Seconds( s->ms ) ) );
-
-		CM_AdjustMs( &s->ms, steps, 0.5f, 100 );
+		CM_NumMs( x, y, w, "Held for", va( "%.1f s", RC_Seconds( s->ms ) ), &s->ms, 0.5f, 100 );
 	} else if ( cm.sel ) {
-		const int steps = CM_Stepper( x, y, w, "Seconds", va( "%.1f after", RC_Seconds( k->ms ) ) );
-
-		CM_AdjustMs( &k->ms, steps, 0.5f, 100 );
+		CM_NumMs( x, y, w, "Seconds", va( "%.1f after", RC_Seconds( k->ms ) ), &k->ms, 0.5f, 100 );
 	} else {
 		CM_Text( x, y + 2, S_COLOR_GREY "The shot starts here", cmWhite );
 	}
 	y += CM_CTRL_H + CM_GAP;
 	{
-		const int steps = CM_Stepper( x, y, w, "FOV", va( "%i", RC_Round( k->fov ) ) );
-
-		CM_Adjust( &k->fov, steps, 5.0f, 10.0f, 130.0f );
-		if ( steps && cm.through )
+		if ( CM_Num( x, y, w, "FOV", va( "%i", RC_Round( k->fov ) ), &k->fov, 5.0f, 10.0f, 130.0f ) && cm.through )
 			cm.camFov = k->fov;
 	}
 	y += CM_CTRL_H + CM_GAP;
 	{
 		float roll = AngleNormalize180( k->ang[ROLL] );
-		const int steps = CM_Stepper( x, y, w, "Roll", va( "%i", RC_Round( roll ) ) );
 
-		if ( steps ) {
-			CM_Adjust( &roll, steps, 5.0f, -180.0f, 180.0f );
+		if ( CM_NumAt( &k->ang[ROLL], x, y, w, CM_LABEL_W, "Roll", va( "%i", RC_Round( roll ) ), &roll, CM_Step( 5.0f ), -180.0f, 180.0f, 1.0f ) ) {
 			k->ang[ROLL] = roll;
 			if ( cm.through )
 				cm.camAng[ROLL] = roll;
@@ -5398,7 +5554,6 @@ static void CM_DrawSpotsPage( float x, float y, float w ) {
 
 static void CM_DrawOrbitPage( float x, float y, float w ) {
 	rcShot_t *s = CM_Shot();
-	int steps;
 
 	CM_Text( x, y + 2, "Round", cmDim );
 	if ( CM_Button( x + 62, y, w - 62, "Set to crosshair", qfalse, cm.haveAim ) ) {
@@ -5406,26 +5561,19 @@ static void CM_DrawOrbitPage( float x, float y, float w ) {
 		CM_Changed();
 	}
 	y += CM_CTRL_H + CM_GAP;
-	steps = CM_Stepper( x, y, w, "Seconds", va( "%.1f", RC_Seconds( s->ms ) ) );
-	CM_AdjustMs( &s->ms, steps, 1.0f, 100 );
+	CM_NumMs( x, y, w, "Seconds", va( "%.1f", RC_Seconds( s->ms ) ), &s->ms, 1.0f, 100 );
 	y += CM_CTRL_H + CM_GAP;
-	steps = CM_Stepper( x, y, w, "Degrees", va( "%i", RC_Round( s->degrees ) ) );
-	CM_Adjust( &s->degrees, steps, 45.0f, -3600.0f, 3600.0f );
+	CM_Num( x, y, w, "Degrees", va( "%i", RC_Round( s->degrees ) ), &s->degrees, 45.0f, -3600.0f, 3600.0f );
 	y += CM_CTRL_H + CM_GAP;
-	steps = CM_Stepper( x, y, w, "Radius", va( "%i", RC_Round( s->radius ) ) );
-	CM_Adjust( &s->radius, steps, 16.0f, 16.0f, 8192.0f );
+	CM_Num( x, y, w, "Radius", va( "%i", RC_Round( s->radius ) ), &s->radius, 16.0f, 16.0f, 8192.0f );
 	y += CM_CTRL_H + CM_GAP;
-	steps = CM_Stepper( x, y, w, "Height", va( "%i", RC_Round( s->height ) ) );
-	CM_Adjust( &s->height, steps, 16.0f, -4096.0f, 4096.0f );
+	CM_Num( x, y, w, "Height", va( "%i", RC_Round( s->height ) ), &s->height, 16.0f, -4096.0f, 4096.0f );
 	y += CM_CTRL_H + CM_GAP;
-	steps = CM_Stepper( x, y, w, "From yaw", va( "%i", RC_Round( AngleNormalize360( s->fromYaw ) ) ) );
-	CM_Adjust( &s->fromYaw, steps, 15.0f, -3600.0f, 3600.0f );
+	CM_Num( x, y, w, "From yaw", va( "%i", RC_Round( AngleNormalize360( s->fromYaw ) ) ), &s->fromYaw, 15.0f, -3600.0f, 3600.0f );
 	y += CM_CTRL_H + CM_GAP;
-	steps = CM_Stepper( x, y, w, "Start FOV", va( "%i", RC_Round( s->fov ) ) );
-	CM_Adjust( &s->fov, steps, 5.0f, 10.0f, 130.0f );
+	CM_Num( x, y, w, "Start FOV", va( "%i", RC_Round( s->fov ) ), &s->fov, 5.0f, 10.0f, 130.0f );
 	y += CM_CTRL_H + CM_GAP;
-	steps = CM_Stepper( x, y, w, "End FOV", va( "%i", RC_Round( s->endFov ) ) );
-	CM_Adjust( &s->endFov, steps, 5.0f, 10.0f, 130.0f );
+	CM_Num( x, y, w, "End FOV", va( "%i", RC_Round( s->endFov ) ), &s->endFov, 5.0f, 10.0f, 130.0f );
 	y += CM_CTRL_H + CM_GAP + 2;
 	if ( CM_Button( x, y, w, "Start from the camera", qfalse, qtrue ) )
 		CM_OrbitFromHere();
@@ -5450,7 +5598,7 @@ static const struct {
 
 // a transition's kind, length and colour; where the next row goes
 static float CM_DrawTransition( float x, float y, float w, const char *label, rcTrans_t *tr ) {
-	int color = -1, steps;
+	int color = -1;
 
 	CM_Text( x, y + 2, label, cmDim );
 	if ( CM_Button( x + 62, y, w - 62, cmTransNames[tr->type], (qboolean)( tr->type != RC_TR_CUT ), qtrue ) ) {
@@ -5462,8 +5610,7 @@ static float CM_DrawTransition( float x, float y, float w, const char *label, rc
 	y += CM_CTRL_H + CM_GAP;
 	if ( tr->type == RC_TR_CUT )
 		return y;
-	steps = CM_Stepper( x, y, w, "Seconds", va( "%.1f", RC_Seconds( tr->ms ) ) );
-	CM_AdjustMs( &tr->ms, steps, 0.25f, 100 );
+	CM_NumMs( x, y, w, "Seconds", va( "%.1f", RC_Seconds( tr->ms ) ), &tr->ms, 0.25f, 100 );
 	y += CM_CTRL_H + CM_GAP;
 	for ( int i = 0; i < (int)ARRAY_LEN( cmTransColors ); i++ ) {
 		if ( !memcmp( cmTransColors[i].rgb, tr->color, 3 ) )
@@ -5566,7 +5713,7 @@ static int CM_SortFocus( rcShot_t *s, int k ) {
 // a moving focus: its keys, where the one picked is and how far it's sharp
 static float CM_FocusKeyControls( float x, float y, float w, rcShot_t *s ) {
 	const float half = ( w - 4 ) * 0.5f;
-	int steps, k;
+	int k;
 
 	if ( !s->numFocus )
 		CM_FocusSeeKey( s, CM_FocusKeyAt( s, CM_FocusMs( s ) ) );
@@ -5577,9 +5724,14 @@ static float CM_FocusKeyControls( float x, float y, float w, rcShot_t *s ) {
 	y += CM_ROW_H;
 	CM_Text( x, y, S_COLOR_GREY "goes from one to the next. Wheel on it: how deep", cmWhite );
 	y += CM_ROW_H + CM_GAP;
-	steps = CM_Stepper( x, y, w, "Key", s->numFocus ? va( "%i of %i, at %.1f s", cm.focusSel + 1, s->numFocus, s->focus[cm.focusSel].ms / 1000.0f ) : "none" );
-	if ( steps && s->numFocus )
-		CM_FocusSeeKey( s, Com_Clampi( 0, s->numFocus - 1, cm.focusSel + steps ) );
+	if ( !s->numFocus ) {
+		CM_NoChoice( x, y, w, "Key", "none" );
+	} else {
+		int key = Com_Clampi( 0, s->numFocus - 1, cm.focusSel );
+
+		if ( CM_ChoiceFn( x, y, w, "Key", &key, s->numFocus, CM_FocusKeyName, (void *)s, qfalse ) )
+			CM_FocusSeeKey( s, key );
+	}
 	y += CM_CTRL_H + CM_GAP;
 	if ( CM_Button( x, y, half, "Key now, crosshair", qfalse, cm.haveAim ) && ( k = CM_FocusKeyAt( s, CM_FocusMs( s ) ) ) >= 0 ) {
 		VectorCopy( cm.aim, s->focus[k].org );
@@ -5594,8 +5746,7 @@ static float CM_FocusKeyControls( float x, float y, float w, rcShot_t *s ) {
 	}
 	y += CM_CTRL_H + CM_GAP;
 	if ( s->numFocus ) {
-		steps = CM_Stepper( x, y, w, "Sharp", va( "%i either side", RC_Round( s->focus[cm.focusSel].range ) ) );
-		CM_Adjust( &s->focus[cm.focusSel].range, steps, 16.0f, 8.0f, 4096.0f );
+		CM_Num( x, y, w, "Sharp", va( "%i either side", RC_Round( s->focus[cm.focusSel].range ) ), &s->focus[cm.focusSel].range, 16.0f, 8.0f, 4096.0f );
 		y += CM_CTRL_H + CM_GAP;
 	}
 	return y;
@@ -5606,7 +5757,6 @@ static float CM_FocusKeyControls( float x, float y, float w, rcShot_t *s ) {
 static float CM_FocusControls( float x, float y, float w, float *focus, float *range, float *blur, qboolean whoBox ) {
 	rcShot_t *s = CM_Shot();
 	const float third = ( w - 8 ) / 3.0f;
-	int steps;
 
 	CM_Text( x, y + 2, "Focus on", cmDim );
 	y += CM_ROW_H + 1;
@@ -5643,13 +5793,11 @@ static float CM_FocusControls( float x, float y, float w, float *focus, float *r
 
 	if ( *focus == RC_DOF_POINT ) {
 		y = CM_FocusKeyControls( x, y, w, s );
-		steps = CM_Stepper( x, y, w, "Blur", *blur > 0.0f ? va( "%i", RC_Round( *blur ) ) : "none, sharp" );
-		CM_Adjust( blur, steps, 1.0f, 1.0f, RC_DOF_MAX_BLUR );
+		CM_Num( x, y, w, "Blur", *blur > 0.0f ? va( "%i", RC_Round( *blur ) ) : "none, sharp", blur, 1.0f, 1.0f, RC_DOF_MAX_BLUR );
 		return y + CM_CTRL_H + CM_GAP;
 	}
 	if ( *focus > 0.0f ) {
-		steps = CM_Stepper( x, y, w, "Distance", va( "%i away", RC_Round( *focus ) ) );
-		CM_Adjust( focus, steps, 16.0f, 1.0f, 8192.0f );
+		CM_Num( x, y, w, "Distance", va( "%i away", RC_Round( *focus ) ), focus, 16.0f, 1.0f, 8192.0f );
 		y += CM_CTRL_H + CM_GAP;
 		if ( CM_Button( x, y, w, "Set to the crosshair", qfalse, cm.haveAim ) ) {
 			*focus = Q_max( 1.0f, Distance( cm.camOrg, cm.aim ) );
@@ -5677,11 +5825,9 @@ static float CM_FocusControls( float x, float y, float w, float *focus, float *r
 		y += CM_ROW_H + CM_GAP;
 	}
 
-	steps = CM_Stepper( x, y, w, "Sharp", va( "%i either side", RC_Round( *range ) ) );
-	CM_Adjust( range, steps, 16.0f, 8.0f, 4096.0f );
+	CM_Num( x, y, w, "Sharp", va( "%i either side", RC_Round( *range ) ), range, 16.0f, 8.0f, 4096.0f );
 	y += CM_CTRL_H + CM_GAP;
-	steps = CM_Stepper( x, y, w, "Blur", *blur > 0.0f ? va( "%i", RC_Round( *blur ) ) : "none, sharp" );
-	CM_Adjust( blur, steps, 1.0f, whoBox ? 1.0f : 0.0f, RC_DOF_MAX_BLUR );
+	CM_Num( x, y, w, "Blur", *blur > 0.0f ? va( "%i", RC_Round( *blur ) ) : "none, sharp", blur, 1.0f, whoBox ? 1.0f : 0.0f, RC_DOF_MAX_BLUR );
 	return y + CM_CTRL_H + CM_GAP;
 }
 
@@ -5713,10 +5859,10 @@ static void CM_DrawFocusPage( float x, float y, float w ) {
 		return;
 	y += 2;
 	{
-		const int steps = CM_Stepper( x, y, w, "At spot", va( "%i of %i", cm.sel + 1, s->numKeys ) );
+		int spot = cm.sel;
 
-		if ( steps )
-			CM_SelectKey( cm.sel + steps );
+		if ( CM_ChoiceFn( x, y, w, "At spot", &spot, s->numKeys, CM_SpotName, (void *)s, qfalse ) )
+			CM_SelectKey( spot );
 	}
 	y += CM_CTRL_H + CM_GAP;
 	k = CM_SelectedKey();
@@ -5739,12 +5885,9 @@ static void CM_DrawFocusPage( float x, float y, float w ) {
 // the filter over the picture, and how the shot comes in and goes out
 static void CM_DrawLookPage( float x, float y, float w ) {
 	rcShot_t *s = CM_Shot();
-	int steps;
 
 	if ( re->ext.SetScreenFilter ) {
-		steps = CM_Stepper( x, y, w, "Filter", RC_FilterName( s->filter ) );
-		if ( steps ) {
-			s->filter = ( ( s->filter + steps ) % RC_NUM_FILTERS + RC_NUM_FILTERS ) % RC_NUM_FILTERS;
+		if ( CM_ChoiceFn( x, y, w, "Filter", &s->filter, RC_NUM_FILTERS, CM_FilterName, NULL, qtrue ) ) {
 			if ( s->filter && !s->filterStrength )
 				s->filterStrength = 100;
 			CM_Changed();
@@ -5753,8 +5896,7 @@ static void CM_DrawLookPage( float x, float y, float w ) {
 		if ( s->filter ) {
 			float strength = (float)s->filterStrength;
 
-			steps = CM_Stepper( x, y, w, "Strength", va( "%i%%", s->filterStrength ) );
-			CM_Adjust( &strength, steps, 10.0f, 10.0f, 100.0f );
+			CM_Num( x, y, w, "Strength", va( "%i%%", s->filterStrength ), &strength, 10.0f, 10.0f, 100.0f );
 			s->filterStrength = RC_Round( strength );
 			y += CM_CTRL_H + CM_GAP;
 		}
@@ -5770,7 +5912,7 @@ static void CM_DrawTrackPage( float x, float y, float w ) {
 	static const char *handheld[RC_MAX_HANDHELD + 1] = { "off, steady", "light", "medium", "heavy" };
 	rcShot_t *s = CM_Shot();
 	const float half = ( w - 4 ) * 0.5f;
-	int steps, local = 0;
+	int local = 0;
 	vec3_t at;
 	float yaw;
 
@@ -5822,11 +5964,8 @@ static void CM_DrawTrackPage( float x, float y, float w ) {
 	CM_Fill( x, y - 3, w, 1, cmBorder );
 	CM_Text( x, y + 2, "Shake", cmWhite );
 	y += CM_ROW_H + 2;
-	steps = CM_Stepper( x, y, w, "Handheld", handheld[s->handheld] );
-	if ( steps ) {
-		s->handheld = Com_Clampi( 0, RC_MAX_HANDHELD, s->handheld + steps );
+	if ( CM_Choice( x, y, w, "Handheld", &s->handheld, handheld, RC_MAX_HANDHELD + 1, qfalse ) )
 		CM_Changed();
-	}
 	y += CM_CTRL_H + CM_GAP;
 	// a jolt at the moment picked, if it's in this shot
 	if ( cm.tlPinned && CM_ShotAt( &cm.cine, cm.tlMs, &local ) != cm.cur )
@@ -5860,17 +5999,11 @@ static void CM_DrawTrackPage( float x, float y, float w ) {
 		rcShake_t *k = &s->shakes[cm.shakeSel];
 
 		y += CM_GAP;
-		steps = CM_Stepper( x, y, w, "Strength", va( "%i", k->strength ) );
-		if ( steps ) {
-			k->strength = Com_Clampi( 1, 10, k->strength + steps );
-			CM_Changed();
-		}
+		CM_NumInt( x, y, w, "Strength", va( "%i", k->strength ), &k->strength, 1, 1, 10 );
 		y += CM_CTRL_H + CM_GAP;
-		steps = CM_Stepper( x, y, w, "Dies away in", va( "%.1f s", k->len / 1000.0f ) );
-		CM_AdjustMs( &k->len, steps, 0.25f, 100 );
+		CM_NumMs( x, y, w, "Dies away in", va( "%.1f s", k->len / 1000.0f ), &k->len, 0.25f, 100 );
 		y += CM_CTRL_H + CM_GAP;
-		steps = CM_Stepper( x, y, half * 2 + 4, "At", va( "%.1f s", k->ms / 1000.0f ) );
-		CM_AdjustMs( &k->ms, steps, 0.1f, 0 );
+		CM_NumMs( x, y, half * 2 + 4, "At", va( "%.1f s", k->ms / 1000.0f ), &k->ms, 0.1f, 0 );
 	} else if ( !s->numShakes ) {
 		CM_Text( x, y, S_COLOR_GREY "A jolt: an explosion, a ship landing", cmWhite );
 	}
@@ -5981,7 +6114,7 @@ static void CM_DrawMoveClip( float x, float y, float w, cmClip_t *clip ) {
 static void CM_DrawAnimClip( float x, float y, float w, cmClip_t *clip ) {
 	const float half = ( w - 4 ) * 0.5f;
 	rcAnim_t *a = &clip->a;
-	int nums[4], n, cfg, count, numPicks = 0, steps;
+	int nums[4], n, cfg, count, numPicks = 0;
 	const rcAnimDef_t *defs, *def;
 	static int picks[2048];
 
@@ -6046,28 +6179,21 @@ static void CM_DrawAnimClip( float x, float y, float w, cmClip_t *clip ) {
 		const int last = def ? def->num - 1 : 999;
 		const int to = a->to < 0 ? last : a->to;
 
-		steps = CM_Stepper( x, y, w, a->mode == RC_AM_HOLD ? "Frame" : "From", def ? va( "%i of %i", Com_Clampi( 0, last, a->from ), last ) : va( "%i", a->from ) );
-		if ( steps ) {
-			a->from = Com_Clampi( 0, last, a->from + steps * ( CM_ShiftDown() ? 10 : 1 ) );
+		if ( CM_NumInt( x, y, w, a->mode == RC_AM_HOLD ? "Frame" : "From", def ? va( "%i of %i", Com_Clampi( 0, last, a->from ), last ) : va( "%i", a->from ),
+			&a->from, CM_ShiftDown() ? 10 : 1, 0, last ) ) {
 			if ( a->to >= 0 && a->to < a->from )
 				a->to = a->from;
-			CM_Changed();
 		}
 		y += CM_CTRL_H + CM_GAP;
 		if ( a->mode != RC_AM_HOLD ) {
-			steps = CM_Stepper( x, y, w, "To", a->to < 0 ? "its last" : va( "%i", to ) );
-			if ( steps ) {
-				const int now = Com_Clampi( a->from, last, to + steps * ( CM_ShiftDown() ? 10 : 1 ) );
+			{
+				int now = to;
 
-				a->to = now >= last && def ? -1 : now;
-				CM_Changed();
+				if ( CM_NumInt( x, y, w, "To", a->to < 0 ? "its last" : va( "%i", to ), &now, CM_ShiftDown() ? 10 : 1, a->from, last ) )
+					a->to = now >= last && def ? -1 : now;
 			}
 			y += CM_CTRL_H + CM_GAP;
-			steps = CM_Stepper( x, y, w, "Speed", va( "%i%%", a->speed ) );
-			if ( steps ) {
-				a->speed = Com_Clampi( 5, 1000, a->speed + steps * ( CM_ShiftDown() ? 50 : 10 ) );
-				CM_Changed();
-			}
+			CM_NumInt( x, y, w, "Speed", va( "%i%%", a->speed ), &a->speed, CM_ShiftDown() ? 50 : 10, 5, 1000 );
 			y += CM_CTRL_H + CM_GAP;
 		}
 	}
@@ -6214,24 +6340,6 @@ static void CM_DrawSayClip( float x, float y, float w, cmClip_t *clip ) {
 	CM_Text( x, y + CM_ROW_H, S_COLOR_GREY "with this client; a subtitle in a preview", cmWhite );
 }
 
-// a value with - and + either side, small, two to a row
-static int CM_MiniStepper( float x, float y, float w, const char *label, const char *value ) {
-	const float lw = 30.0f, vx = x + lw + 15, vw = w - lw - 30;
-	int steps = 0;
-
-	CM_Text( x, y + 2, label, cmDim );
-	if ( CM_Button( x + lw, y, 14, "-", qfalse, qtrue ) )
-		steps--;
-	CM_Box( vx, y, vw, CM_CTRL_H, cmPanelLight );
-	CM_Text( vx + ( vw - CM_TextWidth( value ) ) * 0.5f, y + 2, value, cmWhite );
-	if ( CM_Button( x + w - 14, y, 14, "+", qfalse, qtrue ) )
-		steps++;
-	if ( cm.wheel && CM_InRect( x, y, w, CM_CTRL_H ) ) {
-		steps -= cm.wheel;
-		cm.wheel = 0;
-	}
-	return steps;
-}
 
 static void CM_DrawEmoteClip( float x, float y, float w, cmClip_t *clip ) {
 	const float half = ( w - 4 ) * 0.5f;
@@ -6300,7 +6408,6 @@ static void CM_DrawPlaceClip( float x, float y, float w, cmClip_t *clip ) {
 	const float half = ( w - 4 ) * 0.5f;
 	const int rows = 3;
 	cmPlace_t *k;
-	int steps;
 
 	if ( CM_Switch( x, y, w, "From key to key", clip->smooth ? "smooth" : "straight" ) ) {
 		clip->smooth = (qboolean)!clip->smooth;
@@ -6345,18 +6452,13 @@ static void CM_DrawPlaceClip( float x, float y, float w, cmClip_t *clip ) {
 		static const int turnAxis[3] = { PITCH, YAW, ROLL };
 
 		for ( int j = 0; j < 3; j++ ) {
-			steps = CM_MiniStepper( x, y, half, axes[j], va( "%i", RC_Round( k->org[j] ) ) );
-			CM_Adjust( &k->org[j], steps, 8.0f, -65536.0f, 65536.0f );
-			steps = CM_MiniStepper( x + half + 4, y, half, turns[j], va( "%i", RC_Round( turnAxis[j] == YAW ? AngleNormalize360( k->ang[YAW] ) : AngleNormalize180( k->ang[turnAxis[j]] ) ) ) );
-			CM_Adjust( &k->ang[turnAxis[j]], steps, 15.0f, -3600.0f, 3600.0f );
+			CM_MiniNum( x, y, half, axes[j], va( "%i", RC_Round( k->org[j] ) ), &k->org[j], 8.0f, -65536.0f, 65536.0f );
+			CM_MiniNum( x + half + 4, y, half, turns[j], va( "%i", RC_Round( turnAxis[j] == YAW ? AngleNormalize360( k->ang[YAW] ) : AngleNormalize180( k->ang[turnAxis[j]] ) ) ), &k->ang[turnAxis[j]], 15.0f, -3600.0f, 3600.0f );
 			y += CM_CTRL_H + CM_GAP;
 		}
 	}
-	steps = CM_Stepper( x, y, w, "At", va( "%.1f s", ( clip->start + k->ms ) / 1000.0f ) );
-	if ( steps ) {
-		CM_AdjustMs( &k->ms, steps, 0.1f, 0 );
+	if ( CM_NumMs( x, y, w, "At", va( "%.1f s", ( clip->start + k->ms ) / 1000.0f ), &k->ms, 0.1f, 0 ) )
 		CM_SortKeys( clip );
-	}
 	y += CM_CTRL_H + CM_GAP;
 	CM_Text( x, y, S_COLOR_GREY "Drag a key in the view; pitch and roll tip", cmWhite );
 	CM_Text( x, y + CM_ROW_H, S_COLOR_GREY "the whole body, as one thrown would be", cmWhite );
@@ -6365,22 +6467,17 @@ static void CM_DrawPlaceClip( float x, float y, float w, cmClip_t *clip ) {
 // a spot and a yaw, for a teleport or a spawn: where you aim, or nudged
 static float CM_SpotControls( float x, float y, float w, cmPlace_t *k ) {
 	const float half = ( w - 4 ) * 0.5f;
-	int steps;
 
 	if ( CM_Button( x, y, w, "Where you aim", qfalse, cm.haveAim ) ) {
 		VectorCopy( cm.aim, k->org );
 		CM_Changed();
 	}
 	y += CM_CTRL_H + CM_GAP;
-	steps = CM_MiniStepper( x, y, half, "X", va( "%i", RC_Round( k->org[0] ) ) );
-	CM_Adjust( &k->org[0], steps, 8.0f, -65536.0f, 65536.0f );
-	steps = CM_MiniStepper( x + half + 4, y, half, "Y", va( "%i", RC_Round( k->org[1] ) ) );
-	CM_Adjust( &k->org[1], steps, 8.0f, -65536.0f, 65536.0f );
+	CM_MiniNum( x, y, half, "X", va( "%i", RC_Round( k->org[0] ) ), &k->org[0], 8.0f, -65536.0f, 65536.0f );
+	CM_MiniNum( x + half + 4, y, half, "Y", va( "%i", RC_Round( k->org[1] ) ), &k->org[1], 8.0f, -65536.0f, 65536.0f );
 	y += CM_CTRL_H + CM_GAP;
-	steps = CM_MiniStepper( x, y, half, "Z", va( "%i", RC_Round( k->org[2] ) ) );
-	CM_Adjust( &k->org[2], steps, 8.0f, -65536.0f, 65536.0f );
-	steps = CM_MiniStepper( x + half + 4, y, half, "Yaw", va( "%i", RC_Round( AngleNormalize360( k->ang[YAW] ) ) ) );
-	CM_Adjust( &k->ang[YAW], steps, 15.0f, -3600.0f, 3600.0f );
+	CM_MiniNum( x, y, half, "Z", va( "%i", RC_Round( k->org[2] ) ), &k->org[2], 8.0f, -65536.0f, 65536.0f );
+	CM_MiniNum( x + half + 4, y, half, "Yaw", va( "%i", RC_Round( AngleNormalize360( k->ang[YAW] ) ) ), &k->ang[YAW], 15.0f, -3600.0f, 3600.0f );
 	return y + CM_CTRL_H + CM_GAP;
 }
 
@@ -6417,15 +6514,13 @@ static qboolean CM_NpcEnt( int ent ) {
 }
 
 static void CM_DrawNpcCmdClip( float x, float y, float w, cmClip_t *clip ) {
-	int which = 0, steps;
+	int which = 0;
 
 	for ( int i = 0; i < (int)ARRAY_LEN( cmNpcCmds ); i++ ) {
 		if ( !Q_stricmp( clip->cmd, cmNpcCmds[i] ) )
 			which = i;
 	}
-	steps = CM_Stepper( x, y, w, "Command", cmNpcCmds[which] );
-	if ( steps ) {
-		which = ( ( which + steps ) % (int)ARRAY_LEN( cmNpcCmds ) + (int)ARRAY_LEN( cmNpcCmds ) ) % (int)ARRAY_LEN( cmNpcCmds );
+	if ( CM_Choice( x, y, w, "Command", &which, cmNpcCmds, (int)ARRAY_LEN( cmNpcCmds ), qtrue ) ) {
 		Q_strncpyz( clip->cmd, cmNpcCmds[which], sizeof( clip->cmd ) );
 		CM_Changed();
 	}
@@ -6444,7 +6539,7 @@ static void CM_DrawNpcCmdClip( float x, float y, float w, cmClip_t *clip ) {
 
 static void CM_DrawSpawnClip( float x, float y, float w, cmClip_t *clip ) {
 	const char *who = cm.cine.ents[clip->ent].who;
-	int team = 0, steps;
+	int team = 0;
 
 	CM_TextBox( x, y, w, clip->npcType, "the NPC type, e.g. stormtrooper", CM_TYPE_NPCTYPE, NULL );
 	y += CM_CTRL_H + CM_GAP;
@@ -6452,9 +6547,7 @@ static void CM_DrawSpawnClip( float x, float y, float w, cmClip_t *clip ) {
 		if ( !Q_stricmp( clip->team, cmTeams[i] ) )
 			team = i;
 	}
-	steps = CM_Stepper( x, y, w, "Team", cmTeams[team] );
-	if ( steps ) {
-		team = ( ( team + steps ) % (int)ARRAY_LEN( cmTeams ) + (int)ARRAY_LEN( cmTeams ) ) % (int)ARRAY_LEN( cmTeams );
+	if ( CM_Choice( x, y, w, "Team", &team, cmTeams, (int)ARRAY_LEN( cmTeams ), qtrue ) ) {
 		Q_strncpyz( clip->team, cmTeams[team], sizeof( clip->team ) );
 		CM_Changed();
 	}
@@ -6545,7 +6638,6 @@ static void CM_AddExtra( void ) {
 // an extra's name, model, saber and spot; where the next row goes
 static float CM_DrawExtra( float x, float y, float w, cmEnt_t *e ) {
 	const float half = ( w - 4 ) * 0.5f;
-	int steps;
 
 	if ( CM_Button( x, y, w, va( "Extra: %s, %s   %s", e->model[0] ? e->model : "kyle", cmExtraSabers[e->saber], cm.extraOpen ? "^" : "v" ),
 		cm.extraOpen, qtrue ) )
@@ -6563,18 +6655,12 @@ static float CM_DrawExtra( float x, float y, float w, cmEnt_t *e ) {
 		CM_Changed();
 	}
 	y += CM_CTRL_H + CM_GAP;
-	steps = CM_Stepper( x, y, w, "Holds", cmExtraSabers[e->saber] );
-	if ( steps ) {
-		e->saber = ( e->saber + steps + ARRAY_LEN( cmExtraSabers ) ) % ARRAY_LEN( cmExtraSabers );
+	if ( CM_Choice( x, y, w, "Holds", &e->saber, cmExtraSabers, (int)ARRAY_LEN( cmExtraSabers ), qtrue ) )
 		CM_Changed();
-	}
 	y += CM_CTRL_H + CM_GAP;
 	if ( e->saber ) {
-		steps = CM_Stepper( x, y, w, "Blades", cmExtraColors[e->color] );
-		if ( steps ) {
-			e->color = ( e->color + steps + CL_EXTRA_NUM_COLORS ) % CL_EXTRA_NUM_COLORS;
+		if ( CM_Choice( x, y, w, "Blades", &e->color, cmExtraColors, CL_EXTRA_NUM_COLORS, qtrue ) )
 			CM_Changed();
-		}
 		y += CM_CTRL_H + CM_GAP;
 	}
 	if ( CM_Button( x, y, half, "Stand at crosshair", qfalse, cm.haveAim ) ) {
@@ -6582,42 +6668,46 @@ static float CM_DrawExtra( float x, float y, float w, cmEnt_t *e ) {
 		e->home[2] += CM_LOOK_UP;
 		CM_Changed();
 	}
-	steps = CM_MiniStepper( x + half + 4, y, half, "Yaw", va( "%i", RC_Round( AngleNormalize360( e->yaw ) ) ) );
-	if ( steps ) {
-		e->yaw = AngleNormalize360( e->yaw + steps * 15.0f );
-		CM_Changed();
+	{
+		float yaw = AngleNormalize360( e->yaw );
+
+		if ( CM_NumAt( &e->yaw, x + half + 4, y, half, CM_MINI_LABEL_W, "Yaw", va( "%i", RC_Round( yaw ) ), &yaw, 15.0f, -3600.0f, 3600.0f, 1.0f ) )
+			e->yaw = AngleNormalize360( yaw );
 	}
 	y += CM_CTRL_H + CM_GAP;
 	CM_Text( x, y, S_COLOR_GREY "Stands there until an action moves it", cmWhite );
 	return y + CM_ROW_H + 4;
 }
 
+static const char *CM_TargetName( int i, void *ctx ) {
+	return i ? ( (const cmCine_t *)ctx )->ents[i - 1].who : "no one, ahead";
+}
+
 static void CM_DrawForceClip( float x, float y, float w, cmClip_t *clip ) {
 	const cmCine_t *c = &cm.cine;
-	int steps;
 
-	steps = CM_Stepper( x, y, w, "Power", cmForces[clip->power].name );
-	if ( steps ) {
-		clip->power = ( clip->power + steps + ARRAY_LEN( cmForces ) ) % ARRAY_LEN( cmForces );
+	if ( CM_ChoiceFn( x, y, w, "Power", &clip->power, (int)ARRAY_LEN( cmForces ), CM_ForceName, NULL, qtrue ) )
 		CM_Changed();
-	}
 	y += CM_CTRL_H + CM_GAP;
 	// at someone else in it, or at no one: in front of them
-	steps = CM_Stepper( x, y, w, "At", clip->target >= 0 && clip->target < c->numEnts ? c->ents[clip->target].who : "no one, ahead" );
-	if ( steps ) {
-		int t = clip->target;
+	{
+		// no one first, then everyone in it; not the one using it
+		const int was = clip->target >= 0 && clip->target < c->numEnts ? clip->target + 1 : 0;
+		int pick = was;
 
-		for ( int n = 0; n <= c->numEnts; n++ ) {
-			t += steps > 0 ? 1 : -1;
-			if ( t >= c->numEnts )
-				t = -1;
-			else if ( t < -1 )
-				t = c->numEnts - 1;
-			if ( t != clip->ent )
-				break;
+		if ( CM_ChoiceFn( x, y, w, "At", &pick, c->numEnts + 1, CM_TargetName, (void *)c, qtrue ) ) {
+			int t = pick - 1;
+
+			if ( t >= 0 && t == clip->ent ) {
+				t += pick > was ? 1 : -1;
+				if ( t >= c->numEnts )
+					t = -1;
+				else if ( t < -1 )
+					t = c->numEnts - 1;
+			}
+			clip->target = t;
+			CM_Changed();
 		}
-		clip->target = t;
-		CM_Changed();
 	}
 	y += CM_CTRL_H + CM_GAP;
 	if ( CM_Switch( x, y, w, "Acted", clip->forceAnims ? "both of them" : "no, the effect only" ) ) {
@@ -6657,7 +6747,6 @@ static float CM_ModelPicks( float x, float y, float w, char *model, int size, qb
 
 static void CM_DrawLookClip( float x, float y, float w, cmClip_t *clip ) {
 	const float half = ( w - 4 ) * 0.5f;
-	int steps;
 
 	if ( CM_Switch( x, y, w, "Shown", clip->hidden ? "no, hidden" : "yes" ) ) {
 		clip->hidden = (qboolean)!clip->hidden;
@@ -6665,37 +6754,26 @@ static void CM_DrawLookClip( float x, float y, float w, cmClip_t *clip ) {
 	}
 	y += CM_CTRL_H + CM_GAP;
 	if ( !clip->hidden ) {
-		steps = CM_Stepper( x, y, w, "Size", va( "%i%%", clip->size ) );
-		if ( steps ) {
-			clip->size = Com_Clampi( 25, 400, clip->size + steps * ( clip->size > 100 || ( clip->size == 100 && steps > 0 ) ? 10 : 5 ) );
-			CM_Changed();
+		{
+			// 5% steps up to its own size, 10% over it
+			float size = (float)clip->size;
+
+			if ( CM_NumAt( &clip->size, x, y, w, CM_LABEL_W, "Size", va( "%i%%", clip->size ), &size, clip->size > 100 ? 10.0f : 5.0f, 25.0f, 400.0f, 1.0f ) )
+				clip->size = Com_Clampi( 25, 400, (int)floorf( size + 0.5f ) );
 		}
 		y += CM_CTRL_H + CM_GAP;
-		steps = CM_Stepper( x, y, w, "Drawn", cmShells[clip->shell].name );
-		if ( steps ) {
-			clip->shell = ( clip->shell + steps + ARRAY_LEN( cmShells ) ) % ARRAY_LEN( cmShells );
+		if ( CM_ChoiceFn( x, y, w, "Drawn", &clip->shell, (int)ARRAY_LEN( cmShells ), CM_ShellName, NULL, qtrue ) )
 			CM_Changed();
-		}
 		y += CM_CTRL_H + CM_GAP;
-		steps = CM_Stepper( x, y, w, "Saber", cmSaberLooks[clip->saber] );
-		if ( steps ) {
-			clip->saber = ( clip->saber + steps + ARRAY_LEN( cmSaberLooks ) ) % ARRAY_LEN( cmSaberLooks );
+		if ( CM_Choice( x, y, w, "Saber", &clip->saber, cmSaberLooks, (int)ARRAY_LEN( cmSaberLooks ), qtrue ) )
 			CM_Changed();
-		}
 		y += CM_CTRL_H + CM_GAP;
 		if ( clip->saber != CM_SABER_OFF ) {
-			steps = CM_Stepper( x, y, w, "Blades", va( "%i%% long", clip->blade ) );
-			if ( steps ) {
-				clip->blade = Com_Clampi( 25, 300, clip->blade + steps * 10 );
-				CM_Changed();
-			}
+			CM_NumInt( x, y, w, "Blades", va( "%i%% long", clip->blade ), &clip->blade, 10, 25, 300 );
 			y += CM_CTRL_H + CM_GAP;
 		}
-		steps = CM_Stepper( x, y, w, "Face", cmFaces[clip->face].name );
-		if ( steps ) {
-			clip->face = ( clip->face + steps + ARRAY_LEN( cmFaces ) ) % ARRAY_LEN( cmFaces );
+		if ( CM_ChoiceFn( x, y, w, "Face", &clip->face, (int)ARRAY_LEN( cmFaces ), CM_FaceName, NULL, qtrue ) )
 			CM_Changed();
-		}
 		y += CM_CTRL_H + CM_GAP;
 		// a model in a hand: a blaster, a datapad, a cup
 		CM_Text( x, y + 2, "Holds", cmDim );
@@ -6708,13 +6786,10 @@ static void CM_DrawLookClip( float x, float y, float w, cmClip_t *clip ) {
 				clip->holdHand = !clip->holdHand;
 				CM_Changed();
 			}
-			steps = CM_MiniStepper( x + half + 4, y, half, "Pitch", va( "%i", RC_Round( clip->holdAng[PITCH] ) ) );
-			CM_Adjust( &clip->holdAng[PITCH], steps, 15.0f, -180.0f, 180.0f );
+			CM_MiniNum( x + half + 4, y, half, "Pitch", va( "%i", RC_Round( clip->holdAng[PITCH] ) ), &clip->holdAng[PITCH], 15.0f, -180.0f, 180.0f );
 			y += CM_CTRL_H + CM_GAP;
-			steps = CM_MiniStepper( x, y, half, "Yaw", va( "%i", RC_Round( clip->holdAng[YAW] ) ) );
-			CM_Adjust( &clip->holdAng[YAW], steps, 15.0f, -180.0f, 180.0f );
-			steps = CM_MiniStepper( x + half + 4, y, half, "Roll", va( "%i", RC_Round( clip->holdAng[ROLL] ) ) );
-			CM_Adjust( &clip->holdAng[ROLL], steps, 15.0f, -180.0f, 180.0f );
+			CM_MiniNum( x, y, half, "Yaw", va( "%i", RC_Round( clip->holdAng[YAW] ) ), &clip->holdAng[YAW], 15.0f, -180.0f, 180.0f );
+			CM_MiniNum( x + half + 4, y, half, "Roll", va( "%i", RC_Round( clip->holdAng[ROLL] ) ), &clip->holdAng[ROLL], 15.0f, -180.0f, 180.0f );
 			y += CM_CTRL_H + CM_GAP;
 		}
 	}
@@ -7028,7 +7103,6 @@ static void CM_DrawEffectsTab( float x, float y, float w ) {
 	const float half = ( w - 4 ) * 0.5f;
 	const int rows = 6;
 	cmFx_t *f;
-	int steps;
 
 	CM_Text( x, y + 2, va( "Effects (%i)", c->numFx ), cmWhite );
 	y += CM_CTRL_H + 2;
@@ -7089,16 +7163,17 @@ static void CM_DrawEffectsTab( float x, float y, float w ) {
 		CM_Changed();
 	}
 	y += CM_CTRL_H + CM_GAP;
-	steps = CM_Stepper( x, y, w, "Starts", va( "%.1f s", f->start / 1000.0f ) );
-	CM_AdjustMs( &f->start, steps, 0.1f, 0 );
+	CM_NumMs( x, y, w, "Starts", va( "%.1f s", f->start / 1000.0f ), &f->start, 0.1f, 0 );
 	y += CM_CTRL_H + CM_GAP;
-	steps = CM_Stepper( x, y, w, "Plays", f->ms > 0 ? va( "%.1f s, over and over", f->ms / 1000.0f ) : "once" );
-	CM_AdjustMs( &f->ms, steps, 0.5f, 0 );
+	CM_NumMs( x, y, w, "Plays", f->ms > 0 ? va( "%.1f s, over and over", f->ms / 1000.0f ) : "once", &f->ms, 0.5f, 0 );
 	y += CM_CTRL_H + CM_GAP;
-	steps = CM_Stepper( x, y, w, "Size", va( "x%.2g", f->scale > 0.0f ? f->scale : 1.0f ) );
-	if ( steps ) {
-		f->scale = Com_Clamp( 0.1f, 8.0f, ( f->scale > 0.0f ? f->scale : 1.0f ) * powf( 1.25f, (float)steps ) );
-		CM_Changed();
+	{
+		// - and + by a quarter more or less; typed as it is
+		float scale = f->scale > 0.0f ? f->scale : 1.0f;
+		const float step = scale * 0.25f;
+
+		if ( CM_NumAt( &f->scale, x, y, w, CM_LABEL_W, "Size", va( "x%.2g", scale ), &scale, step, 0.1f, 8.0f, 1.0f ) )
+			f->scale = scale;
 	}
 	y += CM_CTRL_H + CM_GAP;
 	if ( CM_Button( x, y, half, "Straight up", (qboolean)!f->haveAngles, qtrue ) && f->haveAngles ) {
@@ -7112,13 +7187,13 @@ static void CM_DrawEffectsTab( float x, float y, float w ) {
 	}
 	y += CM_CTRL_H + CM_GAP;
 	if ( f->haveAngles ) {
-		steps = CM_Stepper( x, y, w, "Pitch", va( "%i", RC_Round( AngleNormalize180( f->ang[PITCH] ) ) ) );
-		CM_Adjust( &f->ang[PITCH], steps, 15.0f, -90.0f, 90.0f );
+		CM_Num( x, y, w, "Pitch", va( "%i", RC_Round( AngleNormalize180( f->ang[PITCH] ) ) ), &f->ang[PITCH], 15.0f, -90.0f, 90.0f );
 		y += CM_CTRL_H + CM_GAP;
-		steps = CM_Stepper( x, y, w, "Yaw", va( "%i", RC_Round( AngleNormalize360( f->ang[YAW] ) ) ) );
-		if ( steps ) {
-			f->ang[YAW] = AngleNormalize360( f->ang[YAW] + steps * CM_Step( 15.0f ) );
-			CM_Changed();
+		{
+			float yaw = AngleNormalize360( f->ang[YAW] );
+
+			if ( CM_NumAt( &f->ang[YAW], x, y, w, CM_LABEL_W, "Yaw", va( "%i", RC_Round( yaw ) ), &yaw, CM_Step( 15.0f ), -3600.0f, 3600.0f, 1.0f ) )
+				f->ang[YAW] = AngleNormalize360( yaw );
 		}
 		y += CM_CTRL_H + CM_GAP;
 	}
@@ -7309,7 +7384,6 @@ static void CM_DrawSoundsTab( float x, float y, float w ) {
 	const float half = ( w - 4 ) * 0.5f;
 	const int rows = 6;
 	cmSnd_t *s;
-	int steps;
 
 	CM_Text( x, y + 2, va( "Sounds (%i)", c->numSnd ), cmWhite );
 	y += CM_CTRL_H + 2;
@@ -7370,20 +7444,17 @@ static void CM_DrawSoundsTab( float x, float y, float w ) {
 	if ( CM_Button( x + half + 4, y, half, "Listen", qfalse, qtrue ) )
 		CM_ListenSnd( s );
 	y += CM_CTRL_H + CM_GAP;
-	steps = CM_Stepper( x, y, w, "Starts", va( "%.1f s", s->start / 1000.0f ) );
-	CM_AdjustMs( &s->start, steps, 0.1f, 0 );
+	CM_NumMs( x, y, w, "Starts", va( "%.1f s", s->start / 1000.0f ), &s->start, 0.1f, 0 );
 	y += CM_CTRL_H + CM_GAP;
 	// a track: in place of the map's music, for a while or on to the end
 	if ( s->music ) {
-		steps = CM_Stepper( x, y, w, "Plays", s->ms > 0 ? va( "%.1f s, then the map's", s->ms / 1000.0f ) : "on, to the end" );
-		CM_AdjustMs( &s->ms, steps, 1.0f, 0 );
+		CM_NumMs( x, y, w, "Plays", s->ms > 0 ? va( "%.1f s, then the map's", s->ms / 1000.0f ) : "on, to the end", &s->ms, 1.0f, 0 );
 		y += CM_CTRL_H + CM_GAP;
 		CM_Text( x, y, S_COLOR_GREY "Music in place of the map's; the map's", cmWhite );
 		CM_Text( x, y + CM_ROW_H, S_COLOR_GREY "comes back when it ends, or the cinematic does", cmWhite );
 		return;
 	}
-	steps = CM_Stepper( x, y, w, "Plays", s->ms > 0 ? va( "%.1f s, over and over", s->ms / 1000.0f ) : "once" );
-	CM_AdjustMs( &s->ms, steps, 0.5f, 0 );
+	CM_NumMs( x, y, w, "Plays", s->ms > 0 ? va( "%.1f s, over and over", s->ms / 1000.0f ) : "once", &s->ms, 0.5f, 0 );
 	y += CM_CTRL_H + CM_GAP;
 	if ( CM_Button( x, y, half, "Everywhere", (qboolean)!s->spot, qtrue ) && s->spot ) {
 		s->spot = qfalse;
@@ -7466,7 +7537,6 @@ static void CM_DrawTextTab( float x, float y, float w ) {
 	const float half = ( w - 4 ) * 0.5f;
 	const int rows = 6;
 	cmTxt_t *t;
-	int steps;
 
 	CM_Text( x, y + 2, va( "Texts (%i)", c->numTxt ), cmWhite );
 	y += CM_CTRL_H + 2;
@@ -7529,17 +7599,12 @@ static void CM_DrawTextTab( float x, float y, float w ) {
 		}
 	}
 	y += ( CM_CTRL_H + CM_GAP ) * 2;
-	steps = CM_Stepper( x, y, w, "Shows at", va( "%.1f s", t->start / 1000.0f ) );
-	CM_AdjustMs( &t->start, steps, 0.1f, 0 );
+	CM_NumMs( x, y, w, "Shows at", va( "%.1f s", t->start / 1000.0f ), &t->start, 0.1f, 0 );
 	y += CM_CTRL_H + CM_GAP;
-	steps = CM_Stepper( x, y, w, "For", va( "%.1f s", t->ms / 1000.0f ) );
-	CM_AdjustMs( &t->ms, steps, 0.5f, 100 );
+	CM_NumMs( x, y, w, "For", va( "%.1f s", t->ms / 1000.0f ), &t->ms, 0.5f, 100 );
 	y += CM_CTRL_H + CM_GAP;
-	steps = CM_Stepper( x, y, w, "Size", cmTxtSizes[t->size] );
-	if ( steps ) {
-		t->size = Com_Clampi( 0, (int)ARRAY_LEN( cmTxtSizes ) - 1, t->size + steps );
+	if ( CM_Choice( x, y, w, "Size", &t->size, cmTxtSizes, (int)ARRAY_LEN( cmTxtSizes ), qfalse ) )
 		CM_Changed();
-	}
 	y += CM_CTRL_H + CM_GAP;
 	if ( CM_Switch( x, y, w, "Typed out", t->typed ? "a letter at a time" : "no, all at once" ) ) {
 		t->typed = (qboolean)!t->typed;
@@ -7825,7 +7890,7 @@ static void CM_DrawPropsPage( float x, float y, float w ) {
 	const float half = ( w - 4 ) * 0.5f;
 	cmProp_t *pr;
 	cmPlace_t *k;
-	int clicked, steps;
+	int clicked;
 
 	clicked = CM_WorldList( x, y, w, 4, c->numProps, cm.prop, &cm.propScroll, CM_PropLabel );
 	if ( clicked >= 0 && clicked != cm.prop ) {
@@ -7851,11 +7916,9 @@ static void CM_DrawPropsPage( float x, float y, float w ) {
 	y += CM_CTRL_H + 1;
 	// the models there are, while it's typed in or has none
 	y = CM_ModelPicks( x, y, w, pr->model, sizeof( pr->model ), (qboolean)( cm.typing == CM_TYPE_PROPMODEL || !pr->model[0] ) );
-	steps = CM_Stepper( x, y, w, "Shows", pr->ms > 0 ? va( "%.1f s", pr->ms / 1000.0f ) : "to the end" );
-	CM_AdjustMs( &pr->ms, steps, 0.5f, 0 );
+	CM_NumMs( x, y, w, "Shows", pr->ms > 0 ? va( "%.1f s", pr->ms / 1000.0f ) : "to the end", &pr->ms, 0.5f, 0 );
 	y += CM_CTRL_H + CM_GAP;
-	steps = CM_MiniStepper( x, y, half, "Size", va( "%.2f", pr->scale ) );
-	CM_Adjust( &pr->scale, steps, 0.1f, 0.05f, 50.0f );
+	CM_MiniNum( x, y, half, "Size", va( "%.2f", pr->scale ), &pr->scale, 0.1f, 0.05f, 50.0f );
 	if ( CM_Button( x + half + 4, y, half, pr->smooth ? "Moves smoothly" : "Moves straight", pr->smooth, qtrue ) ) {
 		pr->smooth = (qboolean)!pr->smooth;
 		CM_Changed();
@@ -7864,9 +7927,7 @@ static void CM_DrawPropsPage( float x, float y, float w ) {
 
 	// its keys: where it is, turned how, at moments of it
 	cm.propKey = Com_Clampi( 0, pr->numKeys - 1, cm.propKey );
-	steps = CM_Stepper( x, y, w, "Key", va( "%i of %i, at %.1f s", cm.propKey + 1, pr->numKeys, ( pr->start + pr->keys[cm.propKey].ms ) / 1000.0f ) );
-	if ( steps )
-		cm.propKey = Com_Clampi( 0, pr->numKeys - 1, cm.propKey + steps );
+	CM_ChoiceFn( x, y, w, "Key", &cm.propKey, pr->numKeys, CM_PropKeyName, (void *)pr, qfalse );
 	y += CM_CTRL_H + CM_GAP;
 	{
 		const int at = cm.tlPinned ? Q_max( 0, cm.tlMs - pr->start ) : pr->keys[pr->numKeys - 1].ms + 1000;
@@ -7896,23 +7957,17 @@ static void CM_DrawPropsPage( float x, float y, float w ) {
 		CM_Changed();
 	}
 	if ( cm.propKey > 0 ) {
-		steps = CM_MiniStepper( x + half + 4, y, half, "At", va( "%.1f", ( pr->start + k->ms ) / 1000.0f ) );
-		if ( steps ) {
-			CM_AdjustMs( &k->ms, steps, 0.1f, 0 );
+		if ( CM_MiniNumMs( x + half + 4, y, half, "At", va( "%.1f", ( pr->start + k->ms ) / 1000.0f ), &k->ms, 0.1f, 0 ) ) {
 			CM_SortPropKey( pr );
 			k = &pr->keys[cm.propKey];
 		}
 	}
 	y += CM_CTRL_H + CM_GAP;
-	steps = CM_MiniStepper( x, y, half, "Yaw", va( "%i", RC_Round( AngleNormalize360( k->ang[YAW] ) ) ) );
-	CM_Adjust( &k->ang[YAW], steps, 15.0f, -3600.0f, 3600.0f );
-	steps = CM_MiniStepper( x + half + 4, y, half, "Pitch", va( "%i", RC_Round( AngleNormalize180( k->ang[PITCH] ) ) ) );
-	CM_Adjust( &k->ang[PITCH], steps, 15.0f, -3600.0f, 3600.0f );
+	CM_MiniNum( x, y, half, "Yaw", va( "%i", RC_Round( AngleNormalize360( k->ang[YAW] ) ) ), &k->ang[YAW], 15.0f, -3600.0f, 3600.0f );
+	CM_MiniNum( x + half + 4, y, half, "Pitch", va( "%i", RC_Round( AngleNormalize180( k->ang[PITCH] ) ) ), &k->ang[PITCH], 15.0f, -3600.0f, 3600.0f );
 	y += CM_CTRL_H + CM_GAP;
-	steps = CM_MiniStepper( x, y, half, "Roll", va( "%i", RC_Round( AngleNormalize180( k->ang[ROLL] ) ) ) );
-	CM_Adjust( &k->ang[ROLL], steps, 15.0f, -3600.0f, 3600.0f );
-	steps = CM_MiniStepper( x + half + 4, y, half, "Up", va( "%i", RC_Round( k->org[2] ) ) );
-	CM_Adjust( &k->org[2], steps, 8.0f, -65536.0f, 65536.0f );
+	CM_MiniNum( x, y, half, "Roll", va( "%i", RC_Round( AngleNormalize180( k->ang[ROLL] ) ) ), &k->ang[ROLL], 15.0f, -3600.0f, 3600.0f );
+	CM_MiniNum( x + half + 4, y, half, "Up", va( "%i", RC_Round( k->org[2] ) ), &k->org[2], 8.0f, -65536.0f, 65536.0f );
 	y += CM_CTRL_H + CM_GAP;
 	CM_Text( x, y, S_COLOR_GREY "Drag the key in the view, or J for arrows;", cmWhite );
 	CM_Text( x, y + CM_ROW_H, S_COLOR_GREY "its bar on the timeline: drag it, or its end", cmWhite );
@@ -7922,7 +7977,7 @@ static void CM_DrawLightsPage( float x, float y, float w ) {
 	cmCine_t *c = &cm.cine;
 	const float sw = ( w - 4.0f * ( ARRAY_LEN( cmLightColors ) - 1 ) ) / ARRAY_LEN( cmLightColors );
 	cmLight_t *l;
-	int clicked, steps;
+	int clicked;
 	vec3_t at;
 
 	clicked = CM_WorldList( x, y, w, 4, c->numLights, cm.light, &cm.lightScroll, CM_LightLabel );
@@ -7960,20 +8015,14 @@ static void CM_DrawLightsPage( float x, float y, float w ) {
 		}
 	}
 	y += CM_CTRL_H + CM_GAP;
-	steps = CM_Stepper( x, y, w, "Reach", va( "%i", RC_Round( l->radius ) ) );
-	CM_Adjust( &l->radius, steps, 25.0f, 8.0f, 2000.0f );
+	CM_Num( x, y, w, "Reach", va( "%i", RC_Round( l->radius ) ), &l->radius, 25.0f, 8.0f, 2000.0f );
 	y += CM_CTRL_H + CM_GAP;
-	steps = CM_Stepper( x, y, w, "It's", cmLightFx[l->fx] );
-	if ( steps ) {
-		l->fx = ( l->fx + steps + CM_NUM_LIGHT_FX ) % CM_NUM_LIGHT_FX;
+	if ( CM_Choice( x, y, w, "It's", &l->fx, cmLightFx, CM_NUM_LIGHT_FX, qtrue ) )
 		CM_Changed();
-	}
 	y += CM_CTRL_H + CM_GAP;
-	steps = CM_Stepper( x, y, w, "On for", l->ms > 0 ? va( "%.1f s", l->ms / 1000.0f ) : "to the end" );
-	CM_AdjustMs( &l->ms, steps, 0.5f, 0 );
+	CM_NumMs( x, y, w, "On for", l->ms > 0 ? va( "%.1f s", l->ms / 1000.0f ) : "to the end", &l->ms, 0.5f, 0 );
 	y += CM_CTRL_H + CM_GAP;
-	steps = CM_Stepper( x, y, w, "Fades", l->fade > 0 ? va( "%.2f s in and out", l->fade / 1000.0f ) : "no, at once" );
-	CM_AdjustMs( &l->fade, steps, 0.25f, 0 );
+	CM_NumMs( x, y, w, "Fades", l->fade > 0 ? va( "%.2f s in and out", l->fade / 1000.0f ) : "no, at once", &l->fade, 0.25f, 0 );
 	y += CM_CTRL_H + CM_GAP;
 	CM_Text( x, y + 2, "On", cmDim );
 	CM_TextBox( x + 30, y, w - 30 - 34, l->who, "nobody: at its spot", CM_TYPE_LIGHTWHO, NULL );
@@ -8015,7 +8064,7 @@ static void CM_DrawScreenPage( float x, float y, float w ) {
 	const int numColors = (int)ARRAY_LEN( cmLightColors ) + 1;
 	const float sw = ( w - 4.0f * ( numColors - 1 ) ) / numColors;
 	cmScreen_t *sc;
-	int clicked, steps;
+	int clicked;
 
 	clicked = CM_WorldList( x, y, w, 4, c->numScreens, cm.screen, &cm.screenScroll, CM_ScreenLabel );
 	if ( clicked >= 0 )
@@ -8047,9 +8096,7 @@ static void CM_DrawScreenPage( float x, float y, float w ) {
 		return;
 	}
 	CM_Fill( x, y - 2, w, 1, cmBorder );
-	steps = CM_Stepper( x, y, w - 54, "It's", cmScreenKinds[sc->kind] );
-	if ( steps ) {
-		sc->kind = ( sc->kind + steps + CM_NUM_SCREENS ) % CM_NUM_SCREENS;
+	if ( CM_Choice( x, y, w - 54, "It's", &sc->kind, cmScreenKinds, CM_NUM_SCREENS, qtrue ) ) {
 		if ( sc->kind == CM_SCREEN_VIGNETTE )
 			VectorClear( sc->color );
 		CM_Changed();
@@ -8079,18 +8126,12 @@ static void CM_DrawScreenPage( float x, float y, float w ) {
 		}
 	}
 	y += CM_CTRL_H + CM_GAP;
-	steps = CM_Stepper( x, y, w, "Strength", va( "%i%%", sc->strength ) );
-	if ( steps ) {
-		sc->strength = Com_Clampi( 5, 100, sc->strength + steps * 5 );
-		CM_Changed();
-	}
+	CM_NumInt( x, y, w, "Strength", va( "%i%%", sc->strength ), &sc->strength, 5, 5, 100 );
 	y += CM_CTRL_H + CM_GAP;
-	steps = CM_Stepper( x, y, w, "Lasts", va( "%.1f s", sc->ms / 1000.0f ) );
-	CM_AdjustMs( &sc->ms, steps, 0.25f, 100 );
+	CM_NumMs( x, y, w, "Lasts", va( "%.1f s", sc->ms / 1000.0f ), &sc->ms, 0.25f, 100 );
 	y += CM_CTRL_H + CM_GAP;
 	if ( sc->kind != CM_SCREEN_FLASH ) {
-		steps = CM_Stepper( x, y, w, "Fades", sc->fade > 0 ? va( "%.2f s in and out", sc->fade / 1000.0f ) : "no, at once" );
-		CM_AdjustMs( &sc->fade, steps, 0.25f, 0 );
+		CM_NumMs( x, y, w, "Fades", sc->fade > 0 ? va( "%.2f s in and out", sc->fade / 1000.0f ) : "no, at once", &sc->fade, 0.25f, 0 );
 		y += CM_CTRL_H + CM_GAP;
 	}
 	CM_Text( x, y, S_COLOR_GREY "Seen at the moment picked on the timeline;", cmWhite );
@@ -8134,11 +8175,33 @@ static const char *CM_MapLookLabel( int i ) {
 	return va( S_COLOR_CYAN "%.1fs " S_COLOR_WHITE "light %i%%" S_COLOR_GREY "%s", m->start / 1000.0f, m->light, m->fogDepth > 0.0f ? ", fog" : "" );
 }
 
+static const char *CM_FogName( int i, void *ctx ) {
+	const float depth = ( (const float *)ctx )[i];
+
+	return depth > 0.0f ? va( "see %i through it", RC_Round( depth ) ) : "none";
+}
+
+static const char *CM_LayoutName( int i, void *ctx ) {
+	return i ? ( (const char (*)[MAX_QPATH])ctx )[i - 1] : "none";
+}
+
+static const char *CM_VolumeName( int i, void *ctx ) {
+	const int v = ( (const int *)ctx )[i];
+
+	return v >= 100 ? "as they are" : v ? va( "%i%%, music as it is", v ) : "none, music only";
+}
+
+static const char *CM_SpeedName( int i, void *ctx ) {
+	const int v = ( (const int *)ctx )[i];
+
+	return v < 100 ? va( "%i%%, slower", v ) : va( "%i%%, faster", v );
+}
+
 static void CM_DrawMapPage( float x, float y, float w ) {
 	static const int volumes[] = { 100, 50, 25, 0 };
 	cmCine_t *c = &cm.cine;
 	cmMapLook_t *m;
-	int clicked, steps;
+	int clicked;
 
 	clicked = CM_WorldList( x, y, w, 3, c->numMapLooks, cm.mapLook, &cm.mapLookScroll, CM_MapLookLabel );
 	if ( clicked >= 0 )
@@ -8167,11 +8230,7 @@ static void CM_DrawMapPage( float x, float y, float w ) {
 	y += CM_CTRL_H + CM_GAP + 3;
 	if ( ( m = CM_MapLook() ) != NULL ) {
 		CM_Fill( x, y - 2, w, 1, cmBorder );
-		steps = CM_Stepper( x, y, w - 54, "Light", va( "%i%%", m->light ) );
-		if ( steps ) {
-			m->light = Com_Clampi( 0, 300, m->light + steps * 10 );
-			CM_Changed();
-		}
+		CM_NumInt( x, y, w - 54, "Light", va( "%i%%", m->light ), &m->light, 10, 0, 300 );
 		if ( CM_Button( x + w - 50, y, 50, "Delete", qfalse, qtrue ) ) {
 			CM_DeleteWorld();
 			return;
@@ -8191,9 +8250,8 @@ static void CM_DrawMapPage( float x, float y, float w ) {
 
 			while ( d < (int)ARRAY_LEN( depths ) - 1 && m->fogDepth > 0.0f && depths[d] != m->fogDepth && ( d == 0 || depths[d] > m->fogDepth ) )
 				d++;
-			steps = CM_Stepper( x, y, w, "Fog", m->fogDepth > 0.0f ? va( "see %i through it", RC_Round( m->fogDepth ) ) : "none" );
-			if ( steps ) {
-				m->fogDepth = depths[Com_Clampi( 0, (int)ARRAY_LEN( depths ) - 1, d + steps )];
+			if ( CM_ChoiceFn( x, y, w, "Fog", &d, (int)ARRAY_LEN( depths ), CM_FogName, (void *)depths, qfalse ) ) {
+				m->fogDepth = depths[d];
 				CM_Changed();
 			}
 		}
@@ -8203,11 +8261,9 @@ static void CM_DrawMapPage( float x, float y, float w ) {
 				CM_Changed();
 			y += CM_CTRL_H + CM_GAP;
 		}
-		steps = CM_Stepper( x, y, w, "Lasts", m->ms > 0 ? va( "%.1f s", m->ms / 1000.0f ) : "to the end" );
-		CM_AdjustMs( &m->ms, steps, 0.5f, 0 );
+		CM_NumMs( x, y, w, "Lasts", m->ms > 0 ? va( "%.1f s", m->ms / 1000.0f ) : "to the end", &m->ms, 0.5f, 0 );
 		y += CM_CTRL_H + CM_GAP;
-		steps = CM_Stepper( x, y, w, "Fades", m->fade > 0 ? va( "%.1f s in and out", m->fade / 1000.0f ) : "no, at once" );
-		CM_AdjustMs( &m->fade, steps, 0.5f, 0 );
+		CM_NumMs( x, y, w, "Fades", m->fade > 0 ? va( "%.1f s in and out", m->fade / 1000.0f ) : "no, at once", &m->fade, 0.5f, 0 );
 		y += CM_CTRL_H + CM_GAP;
 		// a map editor layout of this map, shown while it lasts: props hidden or moved, textures
 		{
@@ -8223,15 +8279,15 @@ static void CM_DrawMapPage( float x, float y, float w ) {
 				if ( !Q_stricmp( layouts[i], m->layout ) )
 					cur = i;
 			}
-			steps = CM_Stepper( x, y, w, "Map edits", m->layout[0] ? m->layout : numLayouts ? "none" : "none: make a layout" );
-			if ( steps && numLayouts ) {
-				cur += steps;
-				if ( cur < -1 )
-					cur = numLayouts - 1;
-				else if ( cur >= numLayouts )
-					cur = -1;
-				Q_strncpyz( m->layout, cur >= 0 ? layouts[cur] : "", sizeof( m->layout ) );
-				CM_Changed();
+			if ( !numLayouts ) {
+				CM_NoChoice( x, y, w, "Map edits", m->layout[0] ? m->layout : "none: make a layout" );
+			} else {
+				int pick = cur + 1;
+
+				if ( CM_ChoiceFn( x, y, w, "Map edits", &pick, numLayouts + 1, CM_LayoutName, (void *)layouts, qtrue ) ) {
+					Q_strncpyz( m->layout, pick > 0 ? layouts[pick - 1] : "", sizeof( m->layout ) );
+					CM_Changed();
+				}
 			}
 			y += CM_CTRL_H + CM_GAP;
 		}
@@ -8247,9 +8303,8 @@ static void CM_DrawMapPage( float x, float y, float w ) {
 
 		while ( v < (int)ARRAY_LEN( volumes ) - 1 && volumes[v] > c->worldVolume )
 			v++;
-		steps = CM_Stepper( x, y + 2, w, "Game sounds", c->worldVolume >= 100 ? "as they are" : c->worldVolume ? va( "%i%%, music as it is", c->worldVolume ) : "none, music only" );
-		if ( steps ) {
-			c->worldVolume = volumes[Com_Clampi( 0, (int)ARRAY_LEN( volumes ) - 1, v + steps )];
+		if ( CM_ChoiceFn( x, y + 2, w, "Game sounds", &v, (int)ARRAY_LEN( volumes ), CM_VolumeName, (void *)volumes, qfalse ) ) {
+			c->worldVolume = volumes[v];
 			CM_Changed();
 		}
 	}
@@ -8266,7 +8321,7 @@ static void CM_DrawTimePage( float x, float y, float w ) {
 	static const int speeds[] = { 10, 25, 50, 75, 150, 200, 400 };
 	cmCine_t *c = &cm.cine;
 	cmSpeed_t *sp;
-	int clicked, steps;
+	int clicked;
 
 	clicked = CM_WorldList( x, y, w, 4, c->numSpeeds, cm.speed, &cm.speedScroll, CM_SpeedLabel );
 	if ( clicked >= 0 )
@@ -8294,9 +8349,8 @@ static void CM_DrawTimePage( float x, float y, float w ) {
 
 		while ( v < (int)ARRAY_LEN( speeds ) - 1 && speeds[v] < sp->speed )
 			v++;
-		steps = CM_Stepper( x, y, w - 54, "Speed", sp->speed < 100 ? va( "%i%%, slower", sp->speed ) : va( "%i%%, faster", sp->speed ) );
-		if ( steps ) {
-			sp->speed = speeds[Com_Clampi( 0, (int)ARRAY_LEN( speeds ) - 1, v + steps )];
+		if ( CM_ChoiceFn( x, y, w - 54, "Speed", &v, (int)ARRAY_LEN( speeds ), CM_SpeedName, (void *)speeds, qfalse ) ) {
+			sp->speed = speeds[v];
 			CM_Changed();
 		}
 	}
@@ -8305,8 +8359,7 @@ static void CM_DrawTimePage( float x, float y, float w ) {
 		return;
 	}
 	y += CM_CTRL_H + CM_GAP;
-	steps = CM_Stepper( x, y, w, "Lasts", va( "%.1f s of it", sp->ms / 1000.0f ) );
-	CM_AdjustMs( &sp->ms, steps, 0.5f, 100 );
+	CM_NumMs( x, y, w, "Lasts", va( "%.1f s of it", sp->ms / 1000.0f ), &sp->ms, 0.5f, 100 );
 	y += CM_CTRL_H + CM_GAP;
 	CM_Text( x, y, va( S_COLOR_GREY "Takes %.1f s to play", sp->ms * 100.0f / sp->speed / 1000.0f ), cmWhite );
 }
@@ -9995,6 +10048,21 @@ static void CM_DrawEditor( void ) {
 		}
 	}
 	cm.addPlaced = qfalse;
+	// the shared controls' open list or number field: a click on it is its own, one elsewhere
+	// closes it; nothing of the panel's is typed in meanwhile
+	{
+		wgMouse_t m;
+
+		m.cursorX = cm.cursorX;
+		m.cursorY = cm.cursorY;
+		m.click = cm.flying ? NULL : &cm.click;
+		m.clickX = cm.clickX;
+		m.clickY = cm.clickY;
+		m.wheel = cm.flying ? NULL : &cm.wheel;
+		WG_PopupBegin( &m );
+		if ( WG_PopupTyping() )
+			cm.typing = CM_TYPE_NONE;
+	}
 
 	// through the cinematic's camera at the timeline's moment: its fade or wipe then
 	if ( CM_TlLooking() ) {
@@ -10159,21 +10227,52 @@ static void CM_DrawEditor( void ) {
 				cm.tab = tab;
 				cm.typing = CM_TYPE_NONE;
 				cm.through = qfalse;
+				cm.tabScroll = 0;
 			}
 		}
 		y += CM_CTRL_H + 8;
-		if ( cm.tab == CM_TAB_ENTITIES )
-			CM_DrawEntitiesTab( x, y, w );
-		else if ( cm.tab == CM_TAB_EFFECTS )
-			CM_DrawEffectsTab( x, y, w );
-		else if ( cm.tab == CM_TAB_SOUNDS )
-			CM_DrawSoundsTab( x, y, w );
-		else if ( cm.tab == CM_TAB_TEXT )
-			CM_DrawTextTab( x, y, w );
-		else if ( cm.tab == CM_TAB_WORLD )
-			CM_DrawWorldTab( x, y, w );
-		else
-			CM_DrawCameraTab( x, y, w );
+		// the tab, in the part between the tabs and the bottom's buttons: scrolled when it's longer
+		{
+			const float top = y, bottom = CM_BOTTOM_Y - 8, view = bottom - top;
+			const qboolean bar = (qboolean)( cm.clipLowest - top > view + 1.0f );
+			const float tw = bar ? w - WG_SCROLL_W - 3 : w;
+			const float ty = top - cm.tabScroll;
+			float lowest;
+
+			cm.clipping = qtrue;
+			cm.clipTop = top;
+			cm.clipBottom = bottom;
+			cm.clipLowest = top;
+			if ( cm.tab == CM_TAB_ENTITIES )
+				CM_DrawEntitiesTab( x, ty, tw );
+			else if ( cm.tab == CM_TAB_EFFECTS )
+				CM_DrawEffectsTab( x, ty, tw );
+			else if ( cm.tab == CM_TAB_SOUNDS )
+				CM_DrawSoundsTab( x, ty, tw );
+			else if ( cm.tab == CM_TAB_TEXT )
+				CM_DrawTextTab( x, ty, tw );
+			else if ( cm.tab == CM_TAB_WORLD )
+				CM_DrawWorldTab( x, ty, tw );
+			else
+				CM_DrawCameraTab( x, ty, tw );
+			cm.clipping = qfalse;
+			// how long it is, unscrolled: next frame's scrollbar
+			lowest = cm.clipLowest + cm.tabScroll;
+			cm.clipLowest = lowest;
+			{
+				const int most = Q_max( 0, (int)( lowest - top - view + 4.0f ) );
+
+				// the wheel over it that nothing in it took
+				if ( cm.wheel && cm.cursorX >= x && cm.cursorX < x + w && cm.cursorY >= top && cm.cursorY < bottom ) {
+					cm.tabScroll += cm.wheel * 24;
+					cm.wheel = 0;
+				}
+				if ( most > 0 )
+					WG_Scrollbar( x + w - WG_SCROLL_W, top, view, most + (int)view, (int)view, &cm.tabScroll,
+						cm.cursorX, cm.cursorY, &cm.click, cm.clickX, cm.clickY );
+				cm.tabScroll = Com_Clampi( 0, most, cm.tabScroll );
+			}
+		}
 
 		// try it
 		y = CM_BOTTOM_Y;

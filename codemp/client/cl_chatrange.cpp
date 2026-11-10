@@ -135,6 +135,26 @@ static void CR_PlainName( const char *in, char *out, int size ) {
 	out[len] = '\0';
 }
 
+// the name as written, colours kept, without the spaces at its ends (and a trailing ^7 the
+// server may add)
+static void CR_ExactName( const char *in, char *out, int size ) {
+	int len;
+
+	while ( *in == ' ' )
+		in++;
+	Q_strncpyz( out, in, size );
+	len = (int)strlen( out );
+	for ( ;; ) {
+		while ( len && out[len - 1] == ' ' )
+			len--;
+		if ( len >= 2 && out[len - 2] == Q_COLOR_ESCAPE && out[len - 1] == '7' )
+			len -= 2;
+		else
+			break;
+	}
+	out[len] = '\0';
+}
+
 // how far the player whose name starts this line ("name\x19 ...") is, in units; qfalse if
 // nobody playing goes by it. With more than one by that name, it's you only when a /me of
 // yours is waiting to come back, else the nearest of the others in sight
@@ -150,6 +170,41 @@ static qboolean CR_FindSender( const char *line, float *distance ) {
 	CR_PlainName( said, name, sizeof( name ) );
 	if ( !name[0] )
 		return qfalse;
+	// first by the name as it's written, colours and all: ^3. and . are two players
+	{
+		char exact[256], theirs[256];
+		int found = -1, count = 0;
+
+		CR_ExactName( said, exact, sizeof( exact ) );
+		for ( int c = 0; c < MAX_CLIENTS; c++ ) {
+			const int ofs = cl.gameState.stringOffsets[CS_PLAYERS + c];
+
+			if ( !ofs )
+				continue;
+			CR_ExactName( Info_ValueForKey( cl.gameState.stringData + ofs, "n" ), theirs, sizeof( theirs ) );
+			if ( !Q_stricmp( theirs, exact ) ) {
+				found = c;
+				count++;
+			}
+		}
+		if ( count == 1 ) {
+			if ( found == cl.snap.ps.clientNum ) {
+				*distance = 0.0f;
+				return qtrue;
+			}
+			*distance = CR_OUT_OF_SIGHT;
+			for ( int i = 0; i < cl.snap.numEntities; i++ ) {
+				const entityState_t *es = &cl.parseEntities[( cl.snap.parseEntitiesNum + i ) & ( MAX_PARSE_ENTITIES - 1 )];
+
+				if ( es->number == found ) {
+					*distance = Distance( cl.snap.ps.origin, es->pos.trBase );
+					break;
+				}
+			}
+			return qtrue;
+		}
+	}
+	// the same name, colours aside: guessed among them, below
 	for ( int c = 0; c < MAX_CLIENTS; c++ ) {
 		const int ofs = cl.gameState.stringOffsets[CS_PLAYERS + c];
 
@@ -176,15 +231,12 @@ static qboolean CR_FindSender( const char *line, float *distance ) {
 			}
 		}
 	}
+	// yours too: yours before another's by the same name (another's chat comes with its distance)
 	if ( mine ) {
-		const qboolean waiting = (qboolean)( cr.ownMePending > 0 && cls.realtime - cr.ownMeTime < CR_OWN_ME_MS );
-
-		if ( waiting )
+		if ( cr.ownMePending > 0 && cls.realtime - cr.ownMeTime < CR_OWN_ME_MS )
 			cr.ownMePending--;
-		if ( !others || waiting ) {
-			*distance = 0.0f;
-			return qtrue;
-		}
+		*distance = 0.0f;
+		return qtrue;
 	}
 	if ( !others )
 		return qfalse;
@@ -244,6 +296,24 @@ static qboolean CR_Range( float distance, int *fade ) {
 	return qtrue;
 }
 
+// whether the name starting this line ("name\x19 ...") is yours, colours and all or without them
+static qboolean CR_IsMine( const char *line ) {
+	const char *sep = strchr( line, '\x19' );
+	const int ofs = cl.snap.valid ? cl.gameState.stringOffsets[CS_PLAYERS + cl.snap.ps.clientNum] : 0;
+	char said[256], a[256], b[256];
+
+	if ( !sep || sep - line >= (int)sizeof( said ) || !ofs )
+		return qfalse;
+	Q_strncpyz( said, line, (int)( sep - line ) + 1 );
+	CR_ExactName( said, a, sizeof( a ) );
+	CR_ExactName( Info_ValueForKey( cl.gameState.stringData + ofs, "n" ), b, sizeof( b ) );
+	if ( a[0] && !Q_stricmp( a, b ) )
+		return qtrue;
+	CR_PlainName( said, a, sizeof( a ) );
+	CR_PlainName( Info_ValueForKey( cl.gameState.stringData + ofs, "n" ), b, sizeof( b ) );
+	return (qboolean)( a[0] && !Q_stricmp( a, b ) );
+}
+
 // a chat command is about to run: what it prints is faded or left out by its distance
 void CL_ChatRange_ServerCommand( void ) {
 	const char *cmd = Cmd_Argv( 0 ), *num, *text;
@@ -266,9 +336,14 @@ void CL_ChatRange_ServerCommand( void ) {
 	} else {
 		return;
 	}
+	// RPMod sends another's chat with its distance; yours comes without one
 	if ( isdigit( (unsigned char)num[0] ) )
 		distance = (float)atoi( num );
-	else if ( num[0] || !CL_ChatSenderDistance( text, &distance ) )
+	else if ( num[0] )
+		return;
+	else if ( CR_IsMine( text ) )
+		return;
+	else if ( !CL_ChatSenderDistance( text, &distance ) )
 		return;
 
 	cr.hide = (qboolean)!CR_Range( distance, &fade );

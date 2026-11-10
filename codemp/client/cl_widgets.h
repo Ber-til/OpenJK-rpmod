@@ -91,3 +91,51 @@ enum {
 int			WG_EditKey( char *buf, int size, int key, wgAllow_t allow );
 // a typed character, put in at the cursor over the selection; qtrue if it went in
 qboolean	WG_EditChar( char *buf, int size, int ch, wgAllow_t allow );
+
+/*
+The - value + control a tool's settings share. - and + (and the wheel over it) step it; its value,
+clicked, opens a list of every choice under it, or turns into a field a number is typed in (Enter
+or a click elsewhere sets it, Esc doesn't). The open one is drawn over everything by
+WG_DrawOverlay, and is closed when its control isn't drawn for a frame.
+
+A tool wires it once: WG_PopupBegin at the start of its frame (a click on the open list is held
+for it, one elsewhere closes it), WG_PopupKey / WG_PopupChar first in its key and character
+handlers, and nothing it draws lit or clicked where WG_PopupHover says the list is. Its own
+typing stops while WG_PopupTyping. A control it can't use now (clipped, under something) is given
+a NULL click and the cursor at -1.
+
+The list's rows are the style's text for the current one and its dim for the others; - and +, and
+the value's box, its fill and border.
+*/
+typedef struct {
+	float		cursorX, cursorY;
+	qboolean	*click;				// NULL: not clickable now
+	float		clickX, clickY;
+	int			*wheel;				// the tool's wheel steps (negative up), taken when used; NULL none
+} wgMouse_t;
+
+typedef const char *( *wgLabel_t )( int i, void *ctx );
+
+void		WG_PopupBegin( wgMouse_t *m );
+qboolean	WG_PopupOpen( void );
+qboolean	WG_PopupTyping( void );			// a number field is open
+qboolean	WG_PopupHover( float x, float y );	// over the open list
+void		WG_PopupClose( void );
+qboolean	WG_PopupKey( int key );			// qtrue: taken
+qboolean	WG_PopupChar( int ch );
+
+// a choice of count, *index the one now (wrap: - and + go round); qtrue when it changed
+qboolean	WG_Choice( const wgStyle_t *st, const wgMouse_t *m, float x, float y, float w, float h,
+				int *index, int count, wgLabel_t label, void *ctx, qboolean wrap );
+qboolean	WG_ChoiceList( const wgStyle_t *st, const wgMouse_t *m, float x, float y, float w, float h,
+				int *index, const char **names, int count, qboolean wrap );
+// one box, no - and +: clicking it opens the list
+qboolean	WG_ChoiceBox( const wgStyle_t *st, const wgMouse_t *m, float x, float y, float w, float h,
+	int *index, const char **names, int count );
+
+// a number, shown as the caller says (shown), typed as *v * scale; - and + step it by step, kept
+// in min..max; qtrue when it changed. WG_NumberAt for a value copied (an int's): id is its own
+qboolean	WG_Number( const wgStyle_t *st, const wgMouse_t *m, float x, float y, float w, float h,
+				float *v, float step, float min, float max, float scale, const char *shown );
+qboolean	WG_NumberAt( const void *id, const wgStyle_t *st, const wgMouse_t *m, float x, float y, float w, float h,
+				float *v, float step, float min, float max, float scale, const char *shown );
