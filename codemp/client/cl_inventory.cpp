@@ -942,7 +942,7 @@ static void INV_Open( void ) {
 		Com_Printf( "Inventory: join a server first\n" );
 		return;
 	}
-	if ( inv.open )
+	if ( inv.open || CL_Characters_NeedSetup( "Inventory" ) )
 		return;
 	CL_ModelManager_Close();
 	CL_NpcManager_Close();

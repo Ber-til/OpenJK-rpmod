@@ -71,6 +71,7 @@ typedef struct {
 	char		date[32];
 	qboolean	favorite;
 	int			character;		// the C1B3R character it belongs to (cl_characters.cpp), 0 none
+	char		id[9];			// its own: 8 hex, kept through renames (a holster item's presets name it)
 } prPreset_t;
 
 enum { PR_MODE_PRESETS, PR_MODE_SKINS };
@@ -192,9 +193,45 @@ static void PR_Save( void ) {
 
 			FS_Write( line, strlen( line ), f );
 		}
+		if ( prPresets[i].id[0] ) {
+			const char *line = va( "\tid \"%s\"\n", prPresets[i].id );
+
+			FS_Write( line, strlen( line ), f );
+		}
 		FS_Write( "}\n", 2, f );
 	}
 	FS_FCloseFile( f );
+}
+
+static void PR_Save( void );
+
+// 8 hex, a preset's id
+static qboolean PR_IsId( const char *s ) {
+	if ( !s || strlen( s ) != 8 )
+		return qfalse;
+	for ( int i = 0; i < 8; i++ ) {
+		if ( !( ( s[i] >= '0' && s[i] <= '9' ) || ( s[i] >= 'a' && s[i] <= 'f' ) ) )
+			return qfalse;
+	}
+	return qtrue;
+}
+
+// a new id, none of the others'
+static void PR_NewId( char *out ) {
+	static unsigned int seed;
+
+	if ( !seed )
+		seed = (unsigned int)Sys_Milliseconds() * 2654435761u ^ (unsigned int)rand();
+	for ( ;; ) {
+		qboolean taken = qfalse;
+
+		seed = seed * 1664525u + 1013904223u;
+		Com_sprintf( out, 9, "%08x", seed ^ ( (unsigned int)rand() << 16 ) );
+		for ( int i = 0; i < prNumPresets && !taken; i++ )
+			taken = (qboolean)( prPresets[i].id != out && !strcmp( prPresets[i].id, out ) );
+		if ( !taken )
+			return;
+	}
 }
 
 static void PR_Load( void ) {
@@ -232,6 +269,8 @@ static void PR_Load( void ) {
 				ps->favorite = (qboolean)( atoi( token ) != 0 );
 			if ( !Q_stricmp( key, "character" ) )
 				ps->character = atoi( token );
+			if ( !Q_stricmp( key, "id" ) && PR_IsId( token ) )
+				Q_strncpyz( ps->id, token, sizeof( ps->id ) );
 			for ( int k = 0; k < PR_NUM_KEYS; k++ ) {
 				if ( !Q_stricmp( key, prKeys[k] ) )
 					Q_strncpyz( ps->values[k], token, PR_VALUE_LEN );
@@ -241,6 +280,19 @@ static void PR_Load( void ) {
 			prNumPresets++;
 	}
 	FS_FreeFile( buf );
+	// one from before ids: given one, kept from now on
+	{
+		qboolean given = qfalse;
+
+		for ( int i = 0; i < prNumPresets; i++ ) {
+			if ( !prPresets[i].id[0] ) {
+				PR_NewId( prPresets[i].id );
+				given = qtrue;
+			}
+		}
+		if ( given )
+			PR_Save();
+	}
 }
 
 /*
@@ -261,6 +313,7 @@ static void PR_FromCurrent( prPreset_t *ps ) {
 	Com_RealTime( &t );
 	Com_sprintf( ps->date, sizeof( ps->date ), "%04i-%02i-%02i %02i:%02i", t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min );
 	ps->character = CL_Characters_ActiveId();
+	PR_NewId( ps->id );
 }
 
 static void PR_SaveCurrent( void ) {
@@ -315,13 +368,23 @@ const char *CL_Presets_Get( int i, int key, const char **date, qboolean *favorit
 }
 
 // a character's preset from C1B3R, kept here unless it is already (the same date and character)
-void CL_Presets_Import( int character, const char *date, const char **values, qboolean favorite ) {
+void CL_Presets_Import( int character, const char *date, const char **values, qboolean favorite, const char *id ) {
 	prPreset_t *ps;
 
 	CL_Presets_Count();
 	for ( int i = 0; i < prNumPresets; i++ ) {
-		if ( prPresets[i].character == character && !Q_stricmp( prPresets[i].date, date ) )
+		if ( prPresets[i].character != character )
+			continue;
+		// known by its id; or the same date, which takes C1B3R's id when it has one
+		if ( PR_IsId( id ) && !Q_stricmp( prPresets[i].id, id ) )
 			return;
+		if ( !Q_stricmp( prPresets[i].date, date ) ) {
+			if ( PR_IsId( id ) && Q_stricmp( prPresets[i].id, id ) ) {
+				Q_strncpyz( prPresets[i].id, id, sizeof( prPresets[i].id ) );
+				PR_Save();
+			}
+			return;
+		}
 	}
 	if ( prNumPresets >= PR_MAX || !values[PR_K_MODEL][0] )
 		return;
@@ -332,8 +395,80 @@ void CL_Presets_Import( int character, const char *date, const char **values, qb
 	Q_strncpyz( ps->date, date, sizeof( ps->date ) );
 	ps->favorite = favorite;
 	ps->character = character;
+	if ( PR_IsId( id ) )
+		Q_strncpyz( ps->id, id, sizeof( ps->id ) );
+	else
+		PR_NewId( ps->id );
 	PR_FreeViews();
 	PR_Save();
+}
+
+// what you wear now, kept as a preset of the character (a character's first, set up); not when
+// one of its presets is that already
+void CL_Presets_AddCurrent( int character ) {
+	prPreset_t now;
+
+	CL_Presets_Count();
+	PR_FromCurrent( &now );
+	for ( int i = 0; i < prNumPresets; i++ ) {
+		if ( prPresets[i].character == character && !memcmp( prPresets[i].values, now.values, sizeof( now.values ) ) )
+			return;
+	}
+	if ( prNumPresets >= PR_MAX ) {
+		Com_Printf( S_COLOR_YELLOW "Presets: as many as there can be, what you wear isn't kept as one\n" );
+		return;
+	}
+	now.character = character;
+	prPresets[prNumPresets++] = now;
+	PR_Save();
+}
+
+// a preset's id, "" none
+const char *CL_Presets_Id( int i ) {
+	return i >= 0 && i < prNumPresets ? prPresets[i].id : "";
+}
+
+// the id of the character's preset the look is now (every key as it is), "" none: a holster item
+// is worn with it (cl_holster.cpp). Worked out once a frame
+const char *CL_Presets_WornId( int character ) {
+	static int frame = -1, forChar = -1;
+	static char worn[9];
+
+	if ( frame == cls.framecount && forChar == character )
+		return worn;
+	frame = cls.framecount;
+	forChar = character;
+	worn[0] = '\0';
+	if ( !character )
+		return worn;
+	CL_Presets_Count();
+	// every key the preset sets as it is now (one it leaves empty, as applying it does, is any);
+	// then, when none is, the look without the name, if only one preset has it: a name changed
+	// by hand, or by the server, is still that preset
+	for ( int pass = 0; pass < 2 && !worn[0]; pass++ ) {
+		int found = -1, count = 0;
+
+		for ( int i = 0; i < prNumPresets; i++ ) {
+			int k;
+
+			if ( prPresets[i].character != character || !prPresets[i].id[0] )
+				continue;
+			for ( k = 0; k < PR_NUM_KEYS; k++ ) {
+				if ( pass == 1 && !Q_stricmp( prKeys[k], "name" ) )
+					continue;
+				if ( prPresets[i].values[k][0] && strcmp( Cvar_VariableString( prKeys[k] ), prPresets[i].values[k] ) )
+					break;
+			}
+			if ( k == PR_NUM_KEYS ) {
+				if ( found < 0 )
+					found = i;
+				count++;
+			}
+		}
+		if ( found >= 0 && ( pass == 0 || count == 1 ) )
+			Q_strncpyz( worn, prPresets[found].id, sizeof( worn ) );
+	}
+	return worn;
 }
 
 // your appearance as a preset has it (the keys in CL_Presets_Keys' order)
@@ -505,7 +640,7 @@ static void PR_BuildView( prView_t *v, const char *model, const char *saber1, co
 		if ( index > 0 )
 			re->G2API_SetBoltInfo( *v->g2, index, bolts[s] );
 	}
-	PR_Pose( *v->g2, saber1[0] && Q_stricmp( saber1, "none" ) ? "BOTH_STAND2" : "BOTH_STAND1" );
+	PR_Pose( *v->g2, "BOTH_STAND1" );		// standing, the saber or not
 }
 
 // how tall it stands: its head's top to its feet, as posed; the model's bounds when it hasn't the tags
@@ -723,16 +858,32 @@ const char *CL_Presets_CharacterError( void ) {
 	return prOther.g2 ? NULL : prOther.error ? prOther.error : "No model";
 }
 
+// a model let go of while the frame is drawn: the renderer still draws it at the frame's end (its
+// bones read then), so it's freed on the next frame, not now (a window closed by its own button)
+static CGhoul2Info_v *prDoomed[4];
+static int prNumDoomed;
+
 void CL_Presets_FreeCharacter( void ) {
-	if ( prOther.g2 )
-		re->G2API_CleanGhoul2Models( &prOther.g2 );
+	if ( prOther.g2 ) {
+		if ( prNumDoomed < (int)ARRAY_LEN( prDoomed ) )
+			prDoomed[prNumDoomed++] = prOther.g2;
+		else
+			re->G2API_CleanGhoul2Models( &prOther.g2 );
+	}
 	memset( &prOther, 0, sizeof( prOther ) );
+}
+
+// before anything's drawn: the models let go of last frame freed
+void CL_Presets_Frame( void ) {
+	while ( prNumDoomed > 0 )
+		re->G2API_CleanGhoul2Models( &prDoomed[--prNumDoomed] );
 }
 
 // the renderer's models are gone with it: dropped, not freed
 void CL_Presets_RendererRestarted( void ) {
 	memset( &prPortrait, 0, sizeof( prPortrait ) );
 	memset( &prOther, 0, sizeof( prOther ) );
+	prNumDoomed = 0;
 }
 
 /*
@@ -1246,10 +1397,14 @@ static void PR_DrawCard( int i, float x, float y ) {
 	if ( PR_Button( x + 4, bottom - PR_CTRL_H - 3, 66, "Update", prPanelLight ) ) {
 		const qboolean favorite = prPresets[i].favorite;
 		const int character = prPresets[i].character;
+		char id[sizeof( prPresets[i].id )];
 
+		Q_strncpyz( id, prPresets[i].id, sizeof( id ) );
 		PR_FromCurrent( &prPresets[i] );
 		prPresets[i].favorite = favorite;
 		prPresets[i].character = character;
+		if ( id[0] )
+			Q_strncpyz( prPresets[i].id, id, sizeof( prPresets[i].id ) );	// the same preset, its holster stays
 		PR_Save();
 		PR_Message( va( "Updated %s" S_COLOR_WHITE " to who you are now", prPresets[i].values[PR_K_NAME] ) );
 		return;

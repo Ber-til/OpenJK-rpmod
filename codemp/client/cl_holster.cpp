@@ -58,7 +58,14 @@ typedef struct {
 	vec3_t	off, ang;
 	float	scale;
 	int		hide;					// 0 never, 1 while the saber's lit, 2 while it's in hand, 3 shown only in the datapad emote
+	// worn with every preset of the character, or only with these (their ids, cl_presets.cpp);
+	// neither: not worn. Others' come from C1B3R already picked (all set)
+	qboolean	all;
+	char		presets[32][9];
+	int			numPresets;
 } hsItem_t;
+
+#define HS_ITEM_PRESETS		32
 
 #define HS_HIDE_MODES		4
 #define HS_HIDE_DATAPAD		3
@@ -290,13 +297,14 @@ static int HS_ReadItems( const char *answer, hsItem_t *items, int max ) {
 
 	while ( at < all.size() && num < max ) {
 		size_t end = all.find( '\n', at );
-		char line[1024], *f[8];
+		char line[1024], *f[10];
+		int n;
 
 		if ( end == std::string::npos )
 			end = all.size();
 		Q_strncpyz( line, all.substr( at, end - at ).c_str(), sizeof( line ) );
 		at = end + 1;
-		if ( strncmp( line, "holster\t", 8 ) || HS_Split( line, f, 8 ) < 8 )
+		if ( strncmp( line, "holster\t", 8 ) || ( n = HS_Split( line, f, 10 ) ) < 8 )
 			continue;
 		hsItem_t *it = &items[num++];
 
@@ -308,8 +316,43 @@ static int HS_ReadItems( const char *answer, hsItem_t *items, int max ) {
 		sscanf( f[5], "%f %f %f", &it->ang[0], &it->ang[1], &it->ang[2] );
 		it->scale = Com_Clamp( HS_SCALE_MIN, HS_SCALE_MAX, (float)atof( f[6] ) );
 		it->hide = Com_Clampi( 0, HS_HIDE_MODES - 1, atoi( f[7] ) );
+		// yours, for the editor and your own body: what it's worn with; others': picked already
+		it->all = qtrue;
+		if ( n >= 10 ) {
+			char ids[512];
+
+			it->all = (qboolean)( atoi( f[8] ) != 0 );
+			Q_strncpyz( ids, f[9], sizeof( ids ) );
+			for ( char *id = strtok( ids, "," ); id && it->numPresets < HS_ITEM_PRESETS; id = strtok( NULL, "," ) ) {
+				if ( strlen( id ) == 8 )
+					Q_strncpyz( it->presets[it->numPresets++], id, sizeof( it->presets[0] ) );
+			}
+		}
 	}
 	return num;
+}
+
+// whether an item is worn with the preset the look is now (every preset's are, always)
+static qboolean HS_WornWith( const hsItem_t *it, const char *worn ) {
+	if ( it->all )
+		return qtrue;
+	for ( int i = 0; worn[0] && i < it->numPresets; i++ ) {
+		if ( !strcmp( it->presets[i], worn ) )
+			return qtrue;
+	}
+	return qfalse;
+}
+
+// your own items worn now, picked here at once as the look changes (others' come picked by C1B3R)
+static int HS_OwnWorn( const hsItem_t *in, int num, hsItem_t *out ) {
+	const char *worn = CL_Presets_WornId( CL_Characters_ActiveId() );
+	int n = 0;
+
+	for ( int i = 0; i < num; i++ ) {
+		if ( HS_WornWith( &in[i], worn ) )
+			out[n++] = in[i];
+	}
+	return n;
 }
 
 static qboolean HS_Post( httpRequest_t *req, const char *path, const std::string &fields ) {
@@ -371,7 +414,9 @@ static void HS_FetchFrame( void ) {
 			c->state = 0;
 		if ( c->state || cls.realtime < c->retryAt )
 			continue;
-		if ( HS_Post( &hsViewHttp, "/v2/char/view", va( ",\"client\":%i", i ) ) ) {
+		// yours: every item and what it's worn with, picked here as the look changes
+		if ( i == clc.clientNum ? HS_Post( &hsViewHttp, "/v2/char/holster/get", "" )
+			: HS_Post( &hsViewHttp, "/v2/char/view", va( ",\"client\":%i", i ) ) ) {
 			c->state = 1;
 			c->linked = CL_Presence_Linked( i );
 			hsViewFor = i;
@@ -566,10 +611,15 @@ void CL_Holster_Entity( const refEntity_t *ent, void *bodyGhoul2 ) {
 		if ( hsDebug )
 			Com_Printf( "  drawing %i's on body (renderfx %i, gla %s)\n", c, ent->renderfx, gla );
 		if ( cl_holster->integer ) {
-			if ( c == clc.clientNum && HE_Live() )
+			if ( c == clc.clientNum && HE_Live() ) {
 				HE_AddLive( ent->ghoul2, ent, saber );
-			else
+			} else if ( c == clc.clientNum ) {
+				hsItem_t worn[HS_MAX];
+
+				HS_AddItems( worn, HS_OwnWorn( hsClients[c].items, hsClients[c].num, worn ), ent->ghoul2, ent, saber, HS_Emote( c ) );
+			} else {
 				HS_AddItems( hsClients[c].items, hsClients[c].num, ent->ghoul2, ent, saber, HS_Emote( c ) );
+			}
 		}
 		if ( HS_Hand( c ) && HS_Emote( c ) == HS_EMOTE_DATAPAD ) {
 			const int keep = hsKeep.item;	// not the live editor's picked one
@@ -588,8 +638,14 @@ void CL_Holster_Entity( const refEntity_t *ent, void *bodyGhoul2 ) {
 void CL_Holster_DrawOn( void *ctx, void *ghoul2, const refEntity_t *body ) {
 	const int client = (int)(intptr_t)ctx;
 
-	if ( client >= 0 && client < MAX_CLIENTS && hsClients[client].state == 2 )
-		HS_AddItems( hsClients[client].items, hsClients[client].num, ghoul2, body, 0, HS_EMOTE_NO );
+	if ( client >= 0 && client < MAX_CLIENTS && hsClients[client].state == 2 ) {
+		hsItem_t worn[HS_MAX];
+
+		if ( client == clc.clientNum )
+			HS_AddItems( worn, HS_OwnWorn( hsClients[client].items, hsClients[client].num, worn ), ghoul2, body, 0, HS_EMOTE_NO );
+		else
+			HS_AddItems( hsClients[client].items, hsClients[client].num, ghoul2, body, 0, HS_EMOTE_NO );
+	}
 }
 
 // what a player wears that this game hasn't: "<model> (<pk3>), ..." for Inspect, "" none
@@ -780,6 +836,7 @@ static struct {
 	char		tags[HS_MAX_TAGS][MAX_QPATH];
 	int			numTags;
 	char		tagsOf[MAX_QPATH];
+	int			presetScroll;	// the picked one's presets, scrolled
 
 	int			dragging;		// a slider, or -2 the preview turned; -1 none
 	int			lastSlider;		// the arrows nudge it
@@ -941,6 +998,15 @@ static void HE_Add( const char *model, int hide ) {
 	}
 	it->scale = 1.0f;
 	it->hide = hide;
+	// worn with the preset you're in, or with every preset when the look is none of them
+	{
+		const char *worn = CL_Presets_WornId( CL_Characters_ActiveId() );
+
+		if ( worn[0] )
+			Q_strncpyz( it->presets[it->numPresets++], worn, sizeof( it->presets[0] ) );
+		else
+			it->all = qtrue;
+	}
 	he.sel = he.num++;
 	he.changed = qtrue;
 }
@@ -961,8 +1027,11 @@ static void HE_Save( void ) {
 		CL_Presence_Json( fields, it->model );
 		fields += ",\"source\":";
 		CL_Presence_Json( fields, it->source );
-		fields += va( ",\"off\":[%.2f,%.2f,%.2f],\"ang\":[%.1f,%.1f,%.1f],\"scale\":%.2f,\"hide\":%i}",
-			it->off[0], it->off[1], it->off[2], it->ang[0], it->ang[1], it->ang[2], it->scale, it->hide );
+		fields += va( ",\"off\":[%.2f,%.2f,%.2f],\"ang\":[%.1f,%.1f,%.1f],\"scale\":%.2f,\"hide\":%i,\"all\":%i,\"presets\":[",
+			it->off[0], it->off[1], it->off[2], it->ang[0], it->ang[1], it->ang[2], it->scale, it->hide, it->all ? 1 : 0 );
+		for ( int k = 0; k < it->numPresets; k++ )
+			fields += va( "%s\"%s\"", k ? "," : "", it->presets[k] );
+		fields += "]}";
 	}
 	fields += "]";
 	if ( !HS_Post( &hsSetHttp, "/v2/char/holster/set", fields ) )
@@ -1006,6 +1075,77 @@ static void HE_Slider( float x, float y, float w, int s, hsItem_t *it ) {
 
 static float HE_DrawWornOn( float x, float y, float w );
 
+// the picked one's presets: every preset, or a ticked list of the character's (to the bottom given)
+static qboolean HE_HasPreset( const hsItem_t *it, const char *id ) {
+	for ( int k = 0; k < it->numPresets; k++ ) {
+		if ( !strcmp( it->presets[k], id ) )
+			return qtrue;
+	}
+	return qfalse;
+}
+
+static void HE_TogglePreset( hsItem_t *it, const char *id ) {
+	for ( int k = 0; k < it->numPresets; k++ ) {
+		if ( !strcmp( it->presets[k], id ) ) {
+			memmove( it->presets[k], it->presets[k + 1], ( it->numPresets - k - 1 ) * sizeof( it->presets[0] ) );
+			it->numPresets--;
+			return;
+		}
+	}
+	if ( it->numPresets < HS_ITEM_PRESETS )
+		Q_strncpyz( it->presets[it->numPresets++], id, sizeof( it->presets[0] ) );
+}
+
+static void HE_DrawWornWith( float x, float y, float w, float bottom ) {
+	hsItem_t *it = &he.items[he.sel];
+	const int character = CL_Characters_ActiveId();
+	const char *worn = CL_Presets_WornId( character );
+	int list[256], count = 0, rows;
+	const float rowH = HE_CTRL_H + 2;
+
+	HE_Text( x, y, w, "Worn with", heOrange, he.font, HE_SMALL, qfalse );
+	y += 12;
+	if ( HE_Button( x, y, w, it->all ? "[x] Every preset" : "[  ] Every preset", it->all, qtrue ) ) {
+		it->all = (qboolean)!it->all;
+		he.changed = qtrue;
+	}
+	y += rowH;
+	for ( int i = 0; i < CL_Presets_Count() && count < (int)ARRAY_LEN( list ); i++ ) {
+		const char *date;
+		qboolean favorite;
+		int owner;
+
+		CL_Presets_Get( i, 0, &date, &favorite, &owner );
+		if ( owner == character && character && CL_Presets_Id( i )[0] )
+			list[count++] = i;
+	}
+	if ( !count ) {
+		HE_Text( x, y, w, character ? "This character has no presets yet" : "Presets need your characters (C1B3R)", heDim, he.font, 0.55f, qfalse );
+		return;
+	}
+	rows = Q_max( 1, (int)( ( bottom - y ) / rowH ) );
+	he.presetScroll = Com_Clampi( 0, Q_max( 0, count - rows ), he.presetScroll );
+	if ( count > rows ) {
+		WG_Scrollbar( x + w - WG_SCROLL_W, y, rows * rowH - 2, count, rows, &he.presetScroll, he.cursorX, he.cursorY, &he.click, he.clickX, he.clickY );
+		w -= WG_SCROLL_W + 2;
+	}
+	for ( int r = 0; r < rows && he.presetScroll + r < count; r++, y += rowH ) {
+		const int i = list[he.presetScroll + r];
+		const char *date, *id = CL_Presets_Id( i );
+		qboolean favorite;
+		int owner;
+		const char *name = CL_Presets_Get( i, 0, &date, &favorite, &owner );
+		const qboolean in = HE_HasPreset( it, id );
+
+		// greyed while every preset's on: they all are; the one you're in now marked
+		if ( HE_Button( x, y, w, va( "%s %s%s", in || it->all ? "[x]" : "[  ]", name, !strcmp( id, worn ) ? S_COLOR_WHITE " (now)" : "" ),
+			in, (qboolean)!it->all ) ) {
+			HE_TogglePreset( it, id );
+			he.changed = qtrue;
+		}
+	}
+}
+
 static void HE_DrawList( void ) {
 	const float x = HE_A_X, w = HE_A_W;
 	float y = HE_TOP;
@@ -1021,7 +1161,10 @@ static void HE_DrawList( void ) {
 		}
 		HE_Box( x, y, w, HE_ROW_H - 2, on ? heItemOn : hover ? heItemHover : heItem );
 		HE_Text( x + 4, y + 1, w - 8, COM_SkipPath( he.items[i].model ), on || hover ? heWhite : heOrange, he.font, HE_SMALL, qfalse );
-		HE_Text( x + 4, y + 10, w - 8, he.items[i].bolt, heDim, he.font, 0.55f, qfalse );
+		if ( !he.items[i].all && !he.items[i].numPresets )
+			HE_Text( x + 4, y + 10, w - 8, "not worn: pick its presets", heYellow, he.font, 0.55f, qfalse );
+		else
+			HE_Text( x + 4, y + 10, w - 8, he.items[i].bolt, heDim, he.font, 0.55f, qfalse );
 		if ( HE_Clicked( x, y, w, HE_ROW_H - 2 ) )
 			he.sel = i;
 	}
@@ -1047,7 +1190,8 @@ static void HE_DrawList( void ) {
 		HE_Text( x, y, w, "Pick a model in the middle to wear it", heDim, he.font, HE_SMALL, qfalse );
 		return;
 	}
-	HE_DrawWornOn( x, y, w );
+	y = HE_DrawWornOn( x, y, w );
+	HE_DrawWornWith( x, y, w, HE_BOTTOM );
 }
 
 // the picked one's tag and hiding
@@ -1695,7 +1839,9 @@ static void HE_DrawLive( void ) {
 			he.sel = ( he.sel + 1 ) % he.num;
 		y += HE_CTRL_H + 8;
 		y = HE_DrawWornOn( x, y, w );
-		y += 2;
+		HE_Text( x, y, w, it->all ? "Worn with every preset" : it->numPresets ? va( "Worn with %i preset%s", it->numPresets, it->numPresets == 1 ? "" : "s" )
+			: "Not worn: pick its presets (full editor)", it->all || it->numPresets ? heDim : heYellow, he.font, 0.55f, qfalse );
+		y += 12;
 		for ( int s = 0; s < HS_NUM_SLIDERS; s++, y += 18 ) {
 			if ( s == HS_PITCH || s == HS_SIZE )
 				y += 4;
@@ -1886,7 +2032,7 @@ static void HE_Open( void ) {
 		Com_Printf( "Holster: join a server first\n" );
 		return;
 	}
-	if ( he.open )
+	if ( he.open || CL_Characters_NeedSetup( "Holster" ) )
 		return;
 	CL_ModelManager_Close();
 	CL_NpcManager_Close();

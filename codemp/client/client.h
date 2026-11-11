@@ -1173,11 +1173,15 @@ void CL_Characters_Disconnect( void );
 void CL_Characters_CharHook( char **argv, int argc );
 void CL_Characters_OfferHook( char **argv, int argc );	// cmd:charoffer/<client>/<offer>
 int CL_Characters_ActiveId( void );		// the character played (C1B3R's id), 0 none known
+qboolean CL_Characters_NeedSetup( const char *tool );	// linked with no character yet: said, and the setup opened
 const char *CL_Characters_ActiveName( void );	// its name, "" none known
 int CL_Presets_Keys( const char ***keys );
 int CL_Presets_Count( void );
 const char *CL_Presets_Get( int i, int key, const char **date, qboolean *favorite, int *character );
-void CL_Presets_Import( int character, const char *date, const char **values, qboolean favorite );
+void CL_Presets_Import( int character, const char *date, const char **values, qboolean favorite, const char *id );
+const char *CL_Presets_Id( int i );					// a preset's own id (8 hex), "" none
+const char *CL_Presets_WornId( int character );		// the character's preset the look is now, "" none
+void CL_Presets_AddCurrent( int character );			// what you wear now, a preset of the character
 void CL_Presets_SetAppearance( const char **values );
 void CL_EffectSwap_Replace( const char **from, const char **to, int num );
 int CL_ShaderManager_MineCount( void );
@@ -1425,6 +1429,7 @@ void CL_Presets_DrawCharacter( const char *model, const char *saber1, const char
 	const float *blade, float x, float y, float w, float h, float yaw, clBodyExtra_t extra, void *ctx );
 const char *CL_Presets_CharacterError( void );
 void CL_Presets_FreeCharacter( void );
+void CL_Presets_Frame( void );
 void CL_Presets_RendererRestarted( void );
 void CL_RenderMenu_Shutdown( void );
 void CL_Update_Frame( void );

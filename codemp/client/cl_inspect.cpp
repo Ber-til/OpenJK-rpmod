@@ -1295,6 +1295,8 @@ static void INS_Inspect_f( void ) {
 	} else if ( !Q_stricmp( arg, "me" ) ) {
 		INS_Open( clc.clientNum );
 	} else if ( !Q_stricmp( arg, "edit" ) ) {
+		if ( CL_Characters_NeedSetup( "Character panel" ) )
+			return;
 		INS_Open( clc.clientNum );
 		if ( ins.open && ins.ch.known && !ins.ch.none )
 			INS_StartEdit();

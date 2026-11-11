@@ -2422,6 +2422,7 @@ void CL_Frame ( int msec ) {
 	CL_Inventory_Frame();
 	CL_Inspect_Frame();
 	CL_Holster_PollFrame();
+	CL_Presets_Frame();			// previews let go of last frame freed, before this one draws
 	CL_Characters_Frame();
 	CL_DatapadWeb_Frame();
 	CL_AssetManager_Frame();
