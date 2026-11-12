@@ -30,8 +30,8 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 // the whole map is taken a brush at a time instead: the faces lying on the brush clicked.
 // What's chosen has red, green and blue arrows to drag it along X, Y and Z.
 // Lights: dynamic lights, their colour and reach, and a light style they can follow.
-// Triggers: boxes that run a console command when the player walks in, or presses use
-// looking at one within reach.
+// (Triggers moved to the world editor, cl_worlditems.cpp: zones used or walked into, kept by
+// C1B3R for everyone. Old layouts' rpm_trigger entities are skipped.)
 // Sounds: speakers playing a sound or a piece of music round and round, heard near them
 // or everywhere on the map, as a target_speaker would; saved as one.
 // Styles: the map's light styles, the switchable lights it was built with, and style 0,
@@ -57,8 +57,8 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 //                                          cmd:map/clear: <map>, or another map
 // An edit is m (a model), p (a map prop), l (a light), a (a speaker), s (a light style),
 // h (a hidden brush entity) or t (surfaces given a texture: their numbers, =, the texture), then its numbers; a model's path and a style's letters come last, with
-// spaces put in so no word is long, and taken out again. Triggers stay with whoever made
-// them: a print never runs a command. Only what's drawn changes: walls hidden still block,
+// spaces put in so no word is long, and taken out again; v is a fog volume, f the map's fog.
+// Only what's drawn changes: walls hidden still block,
 // props moved don't, as the server knows nothing of it. Players who join later see the
 // edits once they're shared again.
 
@@ -107,11 +107,6 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define ME_SOUND_POOL		( ME_MAX_SOUNDS * 48 )
 #define ME_SOUND_NEAR		256.0f		// a speaker's sound is at its loudest this near
 #define ME_GIZMO_PX			6.0f		// an arrow is pointed at this near, on the 640x480 screen
-#define ME_USE_REACH		96.0f		// a use trigger is used from this near
-#define ME_MAX_USETIME		60000		// ms a use trigger can be held for
-#define ME_CROUCH_MS		120			// a held use trigger's emote ended with a crouch this long
-#define ME_EARLY_MS			3000		// a use trigger used too early: its message shows this long
-#define ME_CROUCH_KEY		"1023"		// the crouch's own key number: the player's C isn't let go with it
 #define ME_MAX_FOGS			64
 #define ME_FOG_NONE			65536.0f	// a fog this thin isn't seen
 #define ME_MAX_TEXNAMES		64			// textures given to the map's surfaces
@@ -126,7 +121,6 @@ typedef enum {
 	ME_TAB_MAP,
 	ME_TAB_MODELS,
 	ME_TAB_LIGHTS,
-	ME_TAB_TRIGGERS,
 	ME_TAB_SOUNDS,
 	ME_TAB_STYLES,
 	ME_TAB_LOCKS,
@@ -135,8 +129,8 @@ typedef enum {
 	ME_NUM_TABS
 } meTab_t;
 
-static const char *meTabNames[ME_NUM_TABS] = { "Map", "Models", "Lights", "Triggers", "Sounds", "Styles", "Locks", "Fog", "Textures" };
-#define ME_TABS_PER_ROW		5
+static const char *meTabNames[ME_NUM_TABS] = { "Map", "Models", "Lights", "Sounds", "Styles", "Locks", "Fog", "Textures" };
+#define ME_TABS_PER_ROW		4
 
 // what can be chosen
 typedef enum {
@@ -170,7 +164,6 @@ typedef struct {
 typedef enum {
 	ME_ITEM_MODEL,
 	ME_ITEM_LIGHT,
-	ME_ITEM_TRIGGER,
 	ME_ITEM_PROP,		// a prop of the map's, lifted out
 	ME_ITEM_SPEAKER,	// a sound playing round and round
 	ME_ITEM_FOG			// a fog volume of ours: a box, its colour, how thick
@@ -199,18 +192,9 @@ typedef struct {
 	sfxHandle_t	sfx;
 	qboolean	sfxRegistered;
 
-	// a trigger: a box that size either way from org, walked into or used, with a name
+	// a fog volume: a box that size either way from org, its colour as a light's, and how deep
+	// it takes to see nothing through it
 	vec3_t		size;
-	char		command[ME_CMD_LEN];
-	qboolean	once;
-	qboolean	inside, fired;
-	qboolean	use;
-	char		name[48];			// what the storyteller knows it by
-	char		display[48];		// what a use trigger is shown as, looked at
-	int			usetime;			// a use trigger: the use key held this many ms, 0 a press (JKA's usetime)
-
-	// a fog volume: the box as a trigger's, its colour as a light's, and how deep it takes to
-	// see nothing through it
 	float		fogDepth;
 
 	// a map prop: the pieces it's found from, surface and triangle, where it was, and
@@ -302,13 +286,10 @@ typedef enum {
 	ME_FIELD_NONE,
 	ME_FIELD_FILTER,		// the map's entities, by class or name
 	ME_FIELD_SEARCH,		// the models
-	ME_FIELD_COMMAND,		// a trigger's
 	ME_FIELD_PATTERN,		// a light style's
 	ME_FIELD_LAYOUT,		// a layout's name
 	ME_FIELD_SOUND,			// a speaker's sound
 	ME_FIELD_LOCKNAME,		// a lock's name
-	ME_FIELD_TRIGGERNAME,	// a trigger's name, the storyteller's
-	ME_FIELD_TRIGGERDISPLAY,	// what a use trigger is shown as
 	ME_FIELD_TEXTURE,		// a texture to give the picked surfaces
 	ME_FIELD_GROW			// a sprite image to grow on them
 } meField_t;
@@ -455,19 +436,8 @@ typedef struct {
 	vec3_t		dragFrom;
 	float		dragT0;
 
-	// use triggers: the use key as it was, and the one looked at
-	qboolean	useDown;
-	int			useAim;
-	int			holdItem;			// held on with the use key, -1 none
-	int			holdStart;
-	qboolean	holdDone;			// used: not again until the key is let go
-	qboolean	holdEmote;			// emconsole played while it's held
-	int			crouchUntil;		// the crouch ending it, let go then; 0 none
-	char		earlyText[96];		// used too early: the storyteller's message, shown a while
-	int			earlyTime;
-
 	// opened from the storyteller to click a trigger for a step: 0 a map trigger, 1 a door or
-	// button, 2 a use trigger; -1 not
+	// button; -1 not
 	int			storyPick;
 
 	// a prop chosen in the map, not lifted yet
@@ -524,14 +494,12 @@ static const byte meBrushColor[4]	= { 70, 140, 255, 255 };
 static const byte mePointColor[4]	= { 90, 230, 110, 255 };
 static const byte meHiddenColor[4]	= { 120, 120, 120, 160 };
 static const byte meItemColor[4]	= { 60, 220, 255, 255 };
-static const byte meOurTrigger[4]	= { 255, 230, 40, 255 };
 static const byte meSelColor[4]		= { 255, 255, 255, 255 };
 static const byte meAimColor[4]		= { 255, 140, 40, 255 };
 static const byte meReachColor[4]	= { 255, 255, 255, 70 };
 static const byte meCandColor[4]	= { 255, 90, 200, 255 };
 static const byte meSpeakerColor[4]	= { 190, 120, 255, 255 };
 static const byte meLockedColor[4]	= { 255, 50, 50, 255 };
-static const byte meUseTrigger[4]	= { 80, 230, 255, 255 };
 static const byte meAxisColors[3][4] = { { 255, 60, 60, 255 }, { 60, 230, 60, 255 }, { 70, 120, 255, 255 } };
 static const byte meAxisLit[4]		= { 255, 230, 40, 255 };
 static const vec3_t meAxes[3]		= { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } };
@@ -831,14 +799,13 @@ static char *ME_LockNameBuffer( int *size ) {
 	return ml.name;
 }
 
-// opened from a storyteller step to click its trigger: 0 a map trigger, 1 a door or button, 2 a
-// use trigger
+// opened from a storyteller step to click its trigger: 0 a map trigger, 1 a door or button
 void CL_MapEditor_PickForStory( int kind ) {
 	CL_MapEditor_Open();
 	if ( !me.open )
 		return;
 	me.storyPick = kind;
-	me.tab = kind == 2 ? ME_TAB_TRIGGERS : ME_TAB_MAP;
+	me.tab = ME_TAB_MAP;
 	me.showLayouts = qfalse;
 	me.showTriggers = me.showBrushes = qtrue;
 	me.selKind = ME_SEL_NONE;
@@ -859,12 +826,12 @@ void CL_MapEditor_OpenForStory( void ) {
 
 static int ME_ItemTab( int kind ) {
 	return kind == ME_ITEM_MODEL || kind == ME_ITEM_PROP ? ME_TAB_MODELS : kind == ME_ITEM_LIGHT ? ME_TAB_LIGHTS
-		: kind == ME_ITEM_SPEAKER ? ME_TAB_SOUNDS : kind == ME_ITEM_FOG ? ME_TAB_FOG : ME_TAB_TRIGGERS;
+		: kind == ME_ITEM_SPEAKER ? ME_TAB_SOUNDS : ME_TAB_FOG;
 }
 
 static int ME_TabItemKind( int tab ) {
 	return tab == ME_TAB_MODELS ? ME_ITEM_MODEL : tab == ME_TAB_LIGHTS ? ME_ITEM_LIGHT : tab == ME_TAB_SOUNDS ? ME_ITEM_SPEAKER
-		: tab == ME_TAB_FOG ? ME_ITEM_FOG : ME_ITEM_TRIGGER;
+		: ME_ITEM_FOG;
 }
 
 /*
@@ -2209,7 +2176,6 @@ static meItem_t *ME_NewItem( int kind ) {
 	it->radius = 200.0f;
 	VectorSet( it->color, 1.0f, 0.8f, 0.55f );
 	VectorSet( it->size, 32, 32, 32 );
-	it->once = qfalse;
 	return it;
 }
 
@@ -2330,7 +2296,6 @@ static void ME_CopySelected( void ) {
 	*it = *src;
 	it->org[0] += 16.0f;
 	it->org[1] += 16.0f;
-	it->inside = it->fired = qfalse;
 	me.numItems++;
 	ME_Select( ME_SEL_ITEM, me.numItems - 1 );
 	ME_Changed();
@@ -2725,21 +2690,6 @@ static int ME_SaveTo( const char *path ) {
 			ME_Print( f, "_color", va( "%g %g %g", it->color[0], it->color[1], it->color[2] ) );
 			if ( it->style >= 0 )
 				ME_Print( f, "style", va( "%i", it->style ) );
-		} else {
-			ME_Print( f, "classname", "rpm_trigger" );
-			ME_Print( f, "origin", ME_Vec( it->org ) );
-			ME_Print( f, "size", ME_Vec( it->size ) );
-			ME_Print( f, "command", it->command );
-			if ( it->once )
-				ME_Print( f, "once", "1" );
-			if ( it->use )
-				ME_Print( f, "use", "1" );
-			if ( it->name[0] )
-				ME_Print( f, "targetname", it->name );
-			if ( it->display[0] )
-				ME_Print( f, "displayname", it->display );
-			if ( it->usetime > 0 )
-				ME_Print( f, "usetime", va( "%i", it->usetime ) );
 		}
 		FS_Printf( f, "}\n" );
 		count++;
@@ -2885,19 +2835,7 @@ static void ME_LoadEntity( const meKv_t *kv, int num ) {
 		it->style = Com_Clampi( -1, MAX_LIGHT_STYLES - 1, atoi( ME_Value( kv, num, "style", "-1" ) ) );
 		me.numItems++;
 	} else if ( !Q_stricmp( classname, "rpm_trigger" ) ) {
-		if ( !( it = ME_NewItem( ME_ITEM_TRIGGER ) ) )
-			return;
-		ME_ParseVector( ME_Value( kv, num, "origin", "0 0 0" ), it->org );
-		ME_ParseVector( ME_Value( kv, num, "size", "32 32 32" ), it->size );
-		for ( int i = 0; i < 3; i++ )
-			it->size[i] = Com_Clamp( 1.0f, 4096.0f, it->size[i] );
-		Q_strncpyz( it->command, ME_Value( kv, num, "command", "" ), sizeof( it->command ) );
-		it->once = (qboolean)( atoi( ME_Value( kv, num, "once", "0" ) ) != 0 );
-		it->use = (qboolean)( atoi( ME_Value( kv, num, "use", "0" ) ) != 0 );
-		Q_strncpyz( it->name, ME_Value( kv, num, "targetname", "" ), sizeof( it->name ) );
-		Q_strncpyz( it->display, ME_Value( kv, num, "displayname", "" ), sizeof( it->display ) );
-		it->usetime = Com_Clampi( 0, ME_MAX_USETIME, atoi( ME_Value( kv, num, "usetime", "0" ) ) );
-		me.numItems++;
+		return;		// the old triggers: the world editor has them now (zones)
 	} else if ( !Q_stricmp( classname, "rpm_lightstyle" ) ) {
 		const int style = atoi( ME_Value( kv, num, "style", "-1" ) );
 
@@ -3158,22 +3096,6 @@ static const char *ME_ShareItem( const meItem_t *it ) {
 	} else if ( it->kind == ME_ITEM_LIGHT ) {
 		Q_strcat( out, sizeof( out ), va( "l %s %i %g %g %g %i", ME_Vec( it->org ), ME_Round( it->radius ),
 			it->color[0], it->color[1], it->color[2], it->style ) );
-	} else if ( it->kind == ME_ITEM_TRIGGER && it->use ) {
-		char words[sizeof( it->name ) + sizeof( it->display ) + 16];
-
-		// the name and what it's shown as, ~ between, spaces as `: the edit's spaces are taken out.
-		// Held, the ms after another ~
-		if ( it->usetime > 0 )
-			Com_sprintf( words, sizeof( words ), "%s~%s~%i", it->name, it->display, it->usetime );
-		else
-			Com_sprintf( words, sizeof( words ), "%s~%s", it->name, it->display );
-		for ( char *c = words; *c; c++ ) {
-			if ( *c == ' ' )
-				*c = '`';
-		}
-		Q_strcat( out, sizeof( out ), va( "u %s", ME_Vec( it->org ) ) );
-		Q_strcat( out, sizeof( out ), va( " %s ", ME_Vec( it->size ) ) );
-		ME_AppendSplit( out, sizeof( out ), words );
 	} else if ( it->kind == ME_ITEM_FOG ) {
 		Q_strcat( out, sizeof( out ), va( "v %s", ME_Vec( it->org ) ) );
 		Q_strcat( out, sizeof( out ), va( " %s %g %g %g %i", ME_Vec( it->size ), it->color[0], it->color[1], it->color[2], ME_Round( it->fogDepth ) ) );
@@ -3372,33 +3294,6 @@ static void ME_ApplyShared( const char *edit ) {
 		ME_KV( "style", va( "%i", (int)f[0] ) );
 		ME_KV( "_color", va( "%g %g %g", f[1], f[2], f[3] ) );
 		ME_KV( "value", rest );
-		break;
-	case 'u':
-		if ( sscanf( edit + 1, "%f %f %f %f %f %f %n", &f[0], &f[1], &f[2], &f[3], &f[4], &f[5], &used ) < 6 || !used )
-			return;
-		ME_Unsplit( edit + 1 + used, rest, sizeof( rest ) );
-		for ( char *c = rest; *c; c++ ) {
-			if ( *c == '`' )
-				*c = ' ';
-		}
-		{
-			char *bar = strchr( rest, '~' ), *held = NULL;
-
-			if ( bar ) {
-				*bar++ = '\0';
-				held = strchr( bar, '~' );
-				if ( held )
-					*held++ = '\0';
-			}
-			ME_KV( "classname", "rpm_trigger" );
-			ME_KV( "origin", va( "%g %g %g", f[0], f[1], f[2] ) );
-			ME_KV( "size", va( "%g %g %g", f[3], f[4], f[5] ) );
-			ME_KV( "use", "1" );
-			ME_KV( "targetname", rest );
-			ME_KV( "displayname", bar ? bar : "" );
-			if ( held )
-				ME_KV( "usetime", held );
-		}
 		break;
 	case 'v':
 		if ( sscanf( edit + 1, "%f %f %f %f %f %f %f %f %f %f", &f[0], &f[1], &f[2], &f[3], &f[4], &f[5], &f[6], &f[7], &f[8], &f[9] ) < 10 )
@@ -3759,7 +3654,7 @@ static float ME_RayPoint( const vec3_t org, const vec3_t dir, const vec3_t p, fl
 }
 
 static void ME_ItemBounds( meItem_t *it, vec3_t mins, vec3_t maxs ) {
-	if ( it->kind == ME_ITEM_TRIGGER || it->kind == ME_ITEM_FOG ) {
+	if ( it->kind == ME_ITEM_FOG ) {
 		VectorSubtract( it->org, it->size, mins );
 		VectorAdd( it->org, it->size, maxs );
 		return;
@@ -3874,8 +3769,7 @@ static void ME_ScrollToSelection( void ) {
 	}
 }
 
-// for the storyteller, the trigger of the kind it wants the ray meets: kind ME_SEL_ENT or
-// ME_SEL_ITEM; qfalse if none
+// for the storyteller, the map's trigger or door the ray meets: kind ME_SEL_ENT; qfalse if none
 static qboolean ME_StoryPickAt( const vec3_t org, const vec3_t dir, int *kind, int *index ) {
 	float best;
 	trace_t tr;
@@ -3886,34 +3780,19 @@ static qboolean ME_StoryPickAt( const vec3_t org, const vec3_t dir, int *kind, i
 	VectorMA( org, ME_TRACE_DIST, dir, end );
 	CM_BoxTrace( &tr, org, end, vec3_origin, vec3_origin, 0, CONTENTS_SOLID | CONTENTS_TERRAIN, qfalse );
 	best = tr.fraction * ME_TRACE_DIST + 8.0f;
-	if ( me.storyPick == 2 ) {
-		for ( int i = 0; i < me.numItems; i++ ) {
-			float t;
+	for ( int i = 0; i < me.numEnts; i++ ) {
+		const meEnt_t *e = &me.ents[i];
+		float t;
 
-			if ( me.items[i].kind != ME_ITEM_TRIGGER || !me.items[i].use )
-				continue;
-			t = ME_ItemRay( &me.items[i], org, dir );
-			if ( t >= 0.0f && t < best ) {
-				best = t;
-				*kind = ME_SEL_ITEM;
-				*index = i;
-			}
-		}
-	} else {
-		for ( int i = 0; i < me.numEnts; i++ ) {
-			const meEnt_t *e = &me.ents[i];
-			float t;
-
-			if ( !e->bmodel || e->kind != ( me.storyPick == 0 ? ME_ENT_TRIGGER : ME_ENT_BRUSH ) )
-				continue;
-			t = ME_RayBox( org, dir, e->mins, e->maxs );
-			// a door's box we're in is found by its walls; a trigger's we stand in counts
-			if ( t < 0.0f || ( t == 0.0f && me.storyPick == 1 ) || t >= best )
-				continue;
-			best = t;
-			*kind = ME_SEL_ENT;
-			*index = i;
-		}
+		if ( !e->bmodel || e->kind != ( me.storyPick == 0 ? ME_ENT_TRIGGER : ME_ENT_BRUSH ) )
+			continue;
+		t = ME_RayBox( org, dir, e->mins, e->maxs );
+		// a door's box we're in is found by its walls; a trigger's we stand in counts
+		if ( t < 0.0f || ( t == 0.0f && me.storyPick == 1 ) || t >= best )
+			continue;
+		best = t;
+		*kind = ME_SEL_ENT;
+		*index = i;
 	}
 	return (qboolean)( *kind != ME_SEL_NONE );
 }
@@ -3929,16 +3808,7 @@ static void ME_ClickWorld( float x, float y ) {
 			ME_Message( S_COLOR_YELLOW "Nothing of that kind there" );
 			return;
 		}
-		if ( kind == ME_SEL_ITEM ) {
-			if ( !me.items[index].name[0] ) {
-				ME_Select( kind, index );
-				ME_Message( S_COLOR_YELLOW "Give it a name first, in the Triggers tab, then click it again" );
-				return;
-			}
-			CL_Storyteller_TriggerPicked( me.items[index].name );
-		} else {
-			CL_Storyteller_TriggerPicked( va( "*%i", me.ents[index].bmodel ) );
-		}
+		CL_Storyteller_TriggerPicked( va( "*%i", me.ents[index].bmodel ) );
 		return;
 	}
 
@@ -4102,21 +3972,6 @@ static char *ME_FieldBuffer( int *size ) {
 	case ME_FIELD_SEARCH:
 		*size = sizeof( me.search );
 		return me.search;
-	case ME_FIELD_COMMAND:
-		if ( !it || it->kind != ME_ITEM_TRIGGER )
-			return NULL;
-		*size = sizeof( it->command );
-		return it->command;
-	case ME_FIELD_TRIGGERNAME:
-		if ( !it || it->kind != ME_ITEM_TRIGGER )
-			return NULL;
-		*size = sizeof( it->name );
-		return it->name;
-	case ME_FIELD_TRIGGERDISPLAY:
-		if ( !it || it->kind != ME_ITEM_TRIGGER )
-			return NULL;
-		*size = sizeof( it->display );
-		return it->display;
 	case ME_FIELD_PATTERN:
 		if ( me.selKind != ME_SEL_STYLE || me.sel < 0 || me.sel >= MAX_LIGHT_STYLES )
 			return NULL;
@@ -4297,13 +4152,6 @@ static qboolean ME_FieldChar( int field, int ch ) {
 		return (qboolean)( ch >= 'a' && ch <= 'z' );
 	case ME_FIELD_LAYOUT:
 		return ME_LayoutChar( ch );
-	case ME_FIELD_COMMAND:
-		// an entity's value can't hold a quote
-		return (qboolean)( ch >= ' ' && ch < 127 && ch != '"' );
-	case ME_FIELD_TRIGGERNAME:
-	case ME_FIELD_TRIGGERDISPLAY:
-		// shared, they can't hold what splits the edits up
-		return (qboolean)( ch >= ( me.field == ME_FIELD_TRIGGERNAME ? '!' : ' ' ) && ch < 127 && !strchr( "\"|~`", ch ) );
 	case ME_FIELD_LOCKNAME:
 		// a word or more, nothing that would end the command
 		return (qboolean)( ch >= ' ' && ch < 127 && ch != '"' && ch != ';' );
@@ -4375,147 +4223,6 @@ Every frame
 
 ===============================================================================
 */
-
-// the use trigger the player looks at, within reach and not behind a wall; -1 none
-static int ME_UseAimed( void ) {
-	vec3_t eye, ang, dir, end, mins, maxs;
-	trace_t tr;
-	float best;
-	int found = -1;
-
-	VectorCopy( cl.snap.ps.origin, eye );
-	eye[2] += cl.snap.ps.viewheight;
-	for ( int i = 0; i < 3; i++ )
-		ang[i] = cl.viewangles[i] + SHORT2ANGLE( cl.snap.ps.delta_angles[i] );
-	AngleVectors( ang, dir, NULL, NULL );
-	VectorMA( eye, ME_USE_REACH, dir, end );
-	CM_BoxTrace( &tr, eye, end, vec3_origin, vec3_origin, 0, CONTENTS_SOLID | CONTENTS_TERRAIN, qfalse );
-	best = tr.fraction * ME_USE_REACH + 1.0f;
-	for ( int i = 0; i < me.numItems; i++ ) {
-		meItem_t *it = &me.items[i];
-		float t;
-
-		if ( it->kind != ME_ITEM_TRIGGER || !it->use )
-			continue;
-		// too early for the story, and hidden till then
-		if ( CL_Storyteller_UseLock( it->name, NULL ) == 1 )
-			continue;
-		ME_ItemBounds( it, mins, maxs );
-		t = ME_RayBox( eye, dir, mins, maxs );
-		if ( t >= 0.0f && t < best ) {
-			best = t;
-			found = i;
-		}
-	}
-	return found;
-}
-
-// the storyteller's: the name of the use trigger looked at, "" if it has none, NULL if none's looked at
-const char *CL_MapEditor_AimedUseTrigger( void ) {
-	if ( me.useAim < 0 || me.useAim >= me.numItems )
-		return NULL;
-	return me.items[me.useAim].name;
-}
-
-// a use trigger does nothing of its own: the player reaches out to it (RPMod's emote), and the
-// storytellers hear it was used; their stories decide what it does. A held one has its own emote
-static void ME_UseTrigger( meItem_t *it, qboolean reach ) {
-	if ( reach && cls.state == CA_ACTIVE )
-		CL_AddReliableCommand( "emreach", qfalse );
-	CL_Storyteller_TriggerUsed( it->name );
-}
-
-// held: the player works the console (RPMod's emconsole) until it's used or let go
-static void ME_HoldEmote( qboolean on ) {
-	if ( on == me.holdEmote )
-		return;
-	me.holdEmote = on;
-	if ( cls.state != CA_ACTIVE )
-		return;
-	if ( on ) {
-		CL_AddReliableCommand( "emconsole", qfalse );
-		return;
-	}
-	// ended as the player would: a tap of crouch
-	Cbuf_AddText( "+movedown " ME_CROUCH_KEY "\n" );
-	me.crouchUntil = cls.realtime + ME_CROUCH_MS;
-}
-
-// our triggers: walking into one runs its command, and pressing use looking at a use one
-static void ME_RunTriggers( void ) {
-	vec3_t mins, maxs;
-	qboolean useDown = (qboolean)( ( cl.cmds[cl.cmdNumber & CMD_MASK].buttons & BUTTON_USE ) != 0 );
-
-	// the crouch that ended a held emote, let go
-	if ( me.crouchUntil && cls.realtime >= me.crouchUntil ) {
-		me.crouchUntil = 0;
-		Cbuf_AddText( "-movedown " ME_CROUCH_KEY "\n" );
-	}
-	if ( me.open || !ME_Shown() || cl.snap.ps.pm_type == PM_SPECTATOR || cl.snap.ps.stats[STAT_HEALTH] <= 0 ) {
-		for ( int i = 0; i < me.numItems; i++ )
-			me.items[i].inside = qfalse;
-		me.useAim = -1;
-		me.holdItem = -1;
-		ME_HoldEmote( qfalse );
-		me.useDown = useDown;
-		return;
-	}
-	me.useAim = ME_UseAimed();
-	// a press uses it; one with a usetime only once it's been held that long on it
-	if ( useDown && me.useAim >= 0 ) {
-		meItem_t *it = &me.items[me.useAim];
-
-		if ( !me.useDown ) {
-			const char *early = NULL;
-
-			me.holdItem = me.useAim;
-			me.holdStart = cls.realtime;
-			me.holdDone = qfalse;
-			// too early for the story: the storyteller's message instead, and nothing used
-			if ( CL_Storyteller_UseLock( it->name, &early ) == 2 ) {
-				Q_strncpyz( me.earlyText, early && early[0] ? early : "Not yet.", sizeof( me.earlyText ) );
-				me.earlyTime = cls.realtime;
-				me.holdDone = qtrue;
-			} else if ( it->usetime <= 0 ) {
-				ME_UseTrigger( it, qtrue );
-				me.holdDone = qtrue;
-			} else {
-				ME_HoldEmote( qtrue );
-			}
-		} else if ( me.holdItem != me.useAim ) {
-			me.holdItem = -1;	// looked away: let go
-		}
-		if ( me.holdItem == me.useAim && !me.holdDone && it->usetime > 0 && cls.realtime - me.holdStart >= it->usetime ) {
-			ME_UseTrigger( it, qfalse );
-			me.holdDone = qtrue;
-		}
-	} else {
-		me.holdItem = -1;
-	}
-	// used, let go or looked away: the emote ends
-	if ( me.holdEmote && ( me.holdItem < 0 || me.holdDone ) )
-		ME_HoldEmote( qfalse );
-	me.useDown = useDown;
-	// the player's box
-	VectorSet( mins, cl.snap.ps.origin[0] - 15, cl.snap.ps.origin[1] - 15, cl.snap.ps.origin[2] - 24 );
-	VectorSet( maxs, cl.snap.ps.origin[0] + 15, cl.snap.ps.origin[1] + 15, cl.snap.ps.origin[2] + 40 );
-	for ( int i = 0; i < me.numItems; i++ ) {
-		meItem_t *it = &me.items[i];
-		qboolean inside = qtrue;
-
-		if ( it->kind != ME_ITEM_TRIGGER || it->use )
-			continue;
-		for ( int j = 0; j < 3; j++ ) {
-			if ( maxs[j] < it->org[j] - it->size[j] || mins[j] > it->org[j] + it->size[j] )
-				inside = qfalse;
-		}
-		if ( inside && !it->inside && it->command[0] && !( it->once && it->fired ) ) {
-			it->fired = qtrue;
-			Cbuf_AddText( va( "%s\n", it->command ) );
-		}
-		it->inside = inside;
-	}
-}
 
 static void ME_EditorFrame( void ) {
 	vec3_t forward, right, move, end, dir;
@@ -4623,7 +4330,6 @@ void CL_MapEditor_Frame( void ) {
 		ME_ReadFogs();
 	if ( me.fogsDirty || me.fogsShown != ME_Shown() || me.fogItemsSum != ME_FogItemsSum() || me.cineFogKey != ME_CineFogKey() )
 		ME_ApplyFogs();
-	ME_RunTriggers();
 	ME_RunShare();
 	ME_RunLocks();
 	if ( me.open )
@@ -4966,9 +4672,6 @@ static void ME_AddEditorLines( void ) {
 
 			ME_ItemBounds( it, mins, maxs );
 			ME_BoxLines( mins, maxs, sel || hover ? meSelColor : color );
-		} else if ( it->kind == ME_ITEM_TRIGGER ) {
-			ME_ItemBounds( it, mins, maxs );
-			ME_BoxLines( mins, maxs, sel || hover ? meSelColor : it->use ? meUseTrigger : meOurTrigger );
 		} else if ( it->kind == ME_ITEM_SPEAKER ) {
 			ME_Cross( it->org, sel || hover ? 10.0f : 6.0f, sel || hover ? meSelColor : it->off ? meHiddenColor : meSpeakerColor );
 			if ( sel && !it->global )
@@ -5633,13 +5336,9 @@ static meItem_t *ME_DrawItemList( float *py, float x, float w, int kind, const c
 		else if ( kind == ME_ITEM_FOG )
 			text = va( "%i  fog volume" S_COLOR_GREY "  %i x %i x %i, opaque at %i", r + me.itemScroll[tab] + 1, ME_Round( row->size[0] * 2 ),
 				ME_Round( row->size[1] * 2 ), ME_Round( row->size[2] * 2 ), ME_Round( row->fogDepth ) );
-		else if ( kind == ME_ITEM_SPEAKER )
+		else
 			text = va( "%i  %s" S_COLOR_GREY "  %s%s", r + me.itemScroll[tab] + 1, row->noise[0] ? COM_SkipPath( (char *)row->noise ) : S_COLOR_YELLOW "no sound",
 				row->global ? "everywhere" : "here", row->off ? ", stopped" : "" );
-		else
-			text = row->use ? va( "%i  " S_COLOR_CYAN "use " S_COLOR_WHITE "%s" S_COLOR_GREY "  %s", r + me.itemScroll[tab] + 1,
-				row->name[0] ? row->name : S_COLOR_YELLOW "no name", row->display )
-				: va( "%i  %s%s", r + me.itemScroll[tab] + 1, row->name[0] ? va( "%s: ", row->name ) : "", row->command[0] ? row->command : S_COLOR_GREY "no command" );
 		ME_TextClipped( x + 4, ry, rowW - 8, text, meWhite );
 	}
 	if ( !numMatches )
@@ -5843,70 +5542,6 @@ static void ME_DrawLightsTab( float x, float y, float w ) {
 	y += ME_CTRL_H + ME_GAP;
 	ME_Text( x, y, S_COLOR_GREY "With a style it flickers or pulses as that does;", meWhite );
 	ME_Text( x, y + ME_ROW_H, S_COLOR_GREY "set the style's pattern in Styles", meWhite );
-}
-
-static void ME_DrawTriggersTab( float x, float y, float w ) {
-	meItem_t *it = ME_DrawItemList( &y, x, w, ME_ITEM_TRIGGER, "Add" );
-	const float half = ( w - 4 ) * 0.5f;
-
-	if ( !it ) {
-		ME_Text( x, y + 4, S_COLOR_GREY "A box that runs a console command when you", meWhite );
-		ME_Text( x, y + 4 + ME_ROW_H, S_COLOR_GREY "walk into it; or one the storyteller's stories", meWhite );
-		ME_Text( x, y + 4 + ME_ROW_H * 2, S_COLOR_GREY "act on, used with the use key looking at it", meWhite );
-		return;
-	}
-	// walked into, or used: the use key, looking at it, within reach
-	if ( ME_Button( x, y, half, "Walked into", (qboolean)!it->use, qtrue ) && it->use ) {
-		it->use = qfalse;
-		ME_Changed();
-	}
-	if ( ME_Button( x + half + 4, y, half, "Used (+use)", it->use, qtrue ) && !it->use ) {
-		it->use = qtrue;
-		ME_Changed();
-	}
-	y += ME_CTRL_H + ME_GAP;
-	ME_Text( x, y + 2, "Name", meDim );
-	ME_TextBox( x + 52, y, w - 52, ME_FIELD_TRIGGERNAME, it->name, "the storyteller's, optional" );
-	y += ME_CTRL_H + ME_GAP;
-	if ( it->use ) {
-		ME_Text( x, y + 2, "Shown as", meDim );
-		ME_TextBox( x + 52, y, w - 52, ME_FIELD_TRIGGERDISPLAY, it->display, "what players see: [key] ..." );
-		y += ME_CTRL_H + ME_GAP;
-		// JKA's usetime, in milliseconds
-		if ( ME_NumInt( x, y, w, "Hold use", it->usetime > 0 ? va( "%i ms (%.2g s)", it->usetime, it->usetime / 1000.0f ) : "no, a press",
-			&it->usetime, (int)ME_Step( 250.0f ), 0, ME_MAX_USETIME ) )
-			ME_Changed();
-		y += ME_CTRL_H + ME_GAP;
-	}
-	ME_Num( x, y, w, "Width", va( "%i", ME_Round( it->size[0] * 2 ) ), &it->size[0], 8.0f, 1.0f, 4096.0f, 2.0f );
-	y += ME_CTRL_H + ME_GAP;
-	ME_Num( x, y, w, "Depth", va( "%i", ME_Round( it->size[1] * 2 ) ), &it->size[1], 8.0f, 1.0f, 4096.0f, 2.0f );
-	y += ME_CTRL_H + ME_GAP;
-	ME_Num( x, y, w, "Tall", va( "%i", ME_Round( it->size[2] * 2 ) ), &it->size[2], 8.0f, 1.0f, 4096.0f, 2.0f );
-	y += ME_CTRL_H + ME_GAP + 4;
-	// a use trigger's doing is the storyteller's
-	if ( it->use ) {
-		ME_Text( x, y, S_COLOR_GREY "What it does is up to the storyteller: a story's", meWhite );
-		ME_Text( x, y + ME_ROW_H, S_COLOR_GREY "\"When someone uses\" with its name. Using it", meWhite );
-		ME_Text( x, y + ME_ROW_H * 2, S_COLOR_GREY "plays the reach emote.", meWhite );
-		return;
-	}
-	ME_Text( x, y, "Runs", meDim );
-	y += ME_ROW_H;
-	ME_TextBox( x, y, w, ME_FIELD_COMMAND, it->command, "a console command, e.g. play sound/..." );
-	y += ME_CTRL_H + ME_GAP;
-	if ( ME_Button( x, y, half, it->once ? "Once" : "Every time", it->once, qtrue ) ) {
-		it->once = (qboolean)!it->once;
-		it->fired = qfalse;
-		ME_Changed();
-	}
-	if ( ME_Button( x + half + 4, y, half, "Try it now", qfalse, (qboolean)( it->command[0] != '\0' ) ) )
-		Cbuf_AddText( va( "%s\n", it->command ) );
-	y += ME_CTRL_H + ME_GAP;
-	if ( it->once && it->fired ) {
-		if ( ME_Button( x, y, w, "Done; let it run again", qfalse, qtrue ) )
-			it->fired = qfalse;
-	}
 }
 
 static void ME_AddSound( const char *name, const char *source, void *ctx ) {
@@ -6639,9 +6274,6 @@ static void ME_DrawLabels( void ) {
 			ME_Text( sx + 4, sy - 12, va( "map %s%s", ME_ItemIsBrush( it ) ? "brush" : "prop", it->removed ? " (hidden)" : "" ), meWhite );
 		else if ( it->kind == ME_ITEM_LIGHT )
 			ME_Text( sx + 4, sy - 12, "light", meWhite );
-		else if ( it->kind == ME_ITEM_TRIGGER )
-			ME_Text( sx + 4, sy - 12, va( "%s%s%s", it->use ? "use trigger" : "trigger", it->name[0] ? va( " %s", it->name ) : "",
-				it->inside ? " (you're in it)" : "" ), meWhite );
 		else if ( it->kind == ME_ITEM_FOG )
 			ME_Text( sx + 4, sy - 12, "fog volume", meWhite );
 		else
@@ -6738,8 +6370,8 @@ static void ME_DrawLayouts( float x, float y, float w ) {
 		ME_TextClipped( x, y, w, S_COLOR_CYAN "Showing edits shared with you", meWhite );
 		y += ME_ROW_H + 2;
 	}
-	ME_Text( x, y, S_COLOR_GREY "Models, props, lights, styles, fog, hidden", meWhite );
-	ME_Text( x, y + ME_ROW_H, S_COLOR_GREY "brushes and use triggers go (not commands).", meWhite );
+	ME_Text( x, y, S_COLOR_GREY "Models, props, lights, styles, fog and hidden", meWhite );
+	ME_Text( x, y + ME_ROW_H, S_COLOR_GREY "brushes go (triggers: the world editor's).", meWhite );
 	ME_Text( x, y + ME_ROW_H * 2, S_COLOR_GREY "Only the look changes: no collision.", meWhite );
 	ME_Text( x, y + ME_ROW_H * 3, S_COLOR_GREY "Who joins later needs it shared again.", meWhite );
 }
@@ -6836,7 +6468,7 @@ static void ME_DrawEditor( void ) {
 	ME_Text( 8, 40, va( "Map editor" S_COLOR_GREY "   %s   fov %i", me.map, ME_Round( me.camFov ) ), meWhite );
 	if ( me.storyPick >= 0 )
 		ME_Text( 8, 40 + ME_ROW_H, va( S_COLOR_CYAN "For the story: click the %s it waits on   " S_COLOR_GREY "Esc goes back",
-			me.storyPick == 0 ? "map trigger" : me.storyPick == 1 ? "door" : "use trigger" ), meWhite );
+			me.storyPick == 0 ? "map trigger" : "door" ), meWhite );
 	else if ( me.grabbing )
 		ME_Text( 8, 40 + ME_ROW_H, S_COLOR_CYAN "Carrying: it goes where you point; click or G puts it down, Esc puts it back", meWhite );
 	if ( me.message[0] && cls.realtime - me.messageTime < ME_MESSAGE_MS )
@@ -6888,7 +6520,6 @@ static void ME_DrawEditor( void ) {
 	case ME_TAB_MAP:		ME_DrawMapTab( x, y, w );		break;
 	case ME_TAB_MODELS:		ME_DrawModelsTab( x, y, w );	break;
 	case ME_TAB_LIGHTS:		ME_DrawLightsTab( x, y, w );	break;
-	case ME_TAB_TRIGGERS:	ME_DrawTriggersTab( x, y, w );	break;
 	case ME_TAB_SOUNDS:		ME_DrawSoundsTab( x, y, w );	break;
 	case ME_TAB_LOCKS:		ME_DrawLocksTab( x, y, w );		break;
 	case ME_TAB_FOG:		ME_DrawFogTab( x, y, w );		break;
@@ -6919,47 +6550,8 @@ static void ME_DrawEditor( void ) {
 }
 
 void CL_MapEditor_Draw( void ) {
-	if ( me.open ) {
+	if ( me.open )
 		ME_DrawEditor();
-		return;
-	}
-	// a use trigger looked at: which key uses it
-	if ( me.useAim >= 0 && me.useAim < me.numItems && ME_Shown() && !Key_GetCatcher() ) {
-		const meItem_t *it = &me.items[me.useAim];
-		const int key = Key_GetKey( "+use" );
-		const char *text = va( S_COLOR_YELLOW "[%s]" S_COLOR_WHITE " %s", key >= 0 ? Key_KeynumToString( key ) : "use",
-			it->display[0] ? it->display : it->name[0] ? it->name : "Use" );
-
-		if ( !me.font ) {
-			me.font = re->RegisterFont( "arialnb" );
-			if ( !me.font )
-				me.font = cls.menuFont;
-		}
-		ME_Text( ( SCREEN_WIDTH - ME_TextWidth( text ) ) * 0.5f, SCREEN_HEIGHT * 0.5f + 20, text, meWhite );
-		// held: how far along
-		if ( it->usetime > 0 && me.holdItem == me.useAim && !me.holdDone ) {
-			const float bw = 120.0f, frac = Com_Clamp( 0.0f, 1.0f, (float)( cls.realtime - me.holdStart ) / it->usetime );
-
-			ME_Fill( ( SCREEN_WIDTH - bw ) * 0.5f, SCREEN_HEIGHT * 0.5f + 36, bw, 5, mePanel );
-			ME_Fill( ( SCREEN_WIDTH - bw ) * 0.5f + 1, SCREEN_HEIGHT * 0.5f + 37, ( bw - 2 ) * frac, 3, meHighlight );
-		} else if ( it->usetime > 0 ) {
-			const char *hold = va( S_COLOR_GREY "hold %.2g s", it->usetime / 1000.0f );
-
-			ME_Text( ( SCREEN_WIDTH - ME_TextWidth( hold ) ) * 0.5f, SCREEN_HEIGHT * 0.5f + 34, hold, meWhite );
-		}
-	}
-	// used too early: the storyteller's message, a few seconds, fading
-	if ( me.earlyTime && cls.realtime - me.earlyTime < ME_EARLY_MS && !Key_GetCatcher() ) {
-		const float fade = Com_Clamp( 0.0f, 1.0f, ( ME_EARLY_MS - ( cls.realtime - me.earlyTime ) ) / 500.0f );
-		const vec4_t color = { 1.0f, 1.0f, 1.0f, fade };
-
-		if ( !me.font ) {
-			me.font = re->RegisterFont( "arialnb" );
-			if ( !me.font )
-				me.font = cls.menuFont;
-		}
-		ME_Text( ( SCREEN_WIDTH - ME_TextWidth( me.earlyText ) ) * 0.5f, SCREEN_HEIGHT * 0.5f + 48, me.earlyText, color );
-	}
 }
 
 /*
@@ -7045,8 +6637,6 @@ void CL_MapEditor_Init( void ) {
 	me.layoutSel = -1;
 	me.candBrush = -1;
 	me.gizmoAxis = me.dragAxis = -1;
-	me.useAim = -1;
-	me.holdItem = -1;
 	me.storyPick = -1;
 	memset( &ml, 0, sizeof( ml ) );
 	ml.showDoors = ml.showTriggers = qtrue;

@@ -36,9 +36,10 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 // rest of the map is watched two more ways (see FAR AWAY): players with this client are
 // told where the stories wait and say when they come or go, and the others' positions are
 // asked of the server with rporigin, one a command. NPCs out of sight still can't be seen.
-// It can also wait for someone to use one of the map editor's use triggers, by its name. A use
-// trigger a story waits on later than the step it's at is too early: hidden from the players, or
-// it shows them a message instead of being used (its step's Too early), until the story gets there.
+// It can also wait for someone to use a world thing (cl_worlditems.cpp) by its story name, or come
+// into a walk-in world zone. A thing a story waits on later than the step it's at is too early:
+// hidden from the players, or it shows them a message instead of being used (its step's Too early),
+// until the story gets there.
 //
 // An If can ask who set off the When it's under, by name; a Play story step plays another saved
 // story alongside. A Go back step plays again from an earlier step: the When before it, which
@@ -167,8 +168,8 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ "Seconds", ST_K_NUMBER, "2", NULL } } },
 	{ "pause", "Wait for me", "Flow", "Stops until you press Continue, or run /storyteller continue (bind it to a key). The note shows while it waits.", -1, -1, 1, {
 		{ "Note", ST_K_TEXT, "", NULL } } },
-	{ "trigger", "When someone comes", "Flow", "Waits until someone comes into a map trigger or near a spot or an effect, a door moves, someone says one of the words (| between them), or someone uses one of the map editor's use triggers (by its name). Who can be a team's players only, red or blue. With For, they have to stay in that many seconds. A story starting with it can be armed. Players out of sight are found too: those with this client say where they are (with experimental on), the others are asked for with rporigin.", 5, -1, 11, {
-		{ "Where", ST_K_CHOICE, "map trigger", "map trigger|near a spot|near an effect|door|someone says|someone uses" },
+	{ "trigger", "When someone comes", "Flow", "Waits until someone comes into a map trigger or near a spot or an effect, a door moves, someone says one of the words (| between them), someone uses a world thing (by its story name, from the world editor), or comes into a walk-in world zone. Who can be a team's players only, red or blue. With For, they have to stay in that many seconds. A story starting with it can be armed. Players out of sight are found too: those with this client say where they are (with experimental on), the others are asked for with rporigin.", 5, -1, 11, {
+		{ "Where", ST_K_CHOICE, "map trigger", "map trigger|near a spot|near an effect|world zone|door|someone says|someone uses" },
 		{ "Which", ST_K_TEXT, "", NULL },
 		{ "Who", ST_K_CHOICE, "any player", "any player|any NPC|anyone|me|named|red team|blue team" },
 		{ "Name", ST_K_TEXT, "", NULL },
@@ -179,8 +180,8 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ "For (s)", ST_K_NUMBER, "0", NULL },
 		{ "Too early", ST_K_CHOICE, "as ever", "as ever|hidden|a message" },
 		{ "Message", ST_K_TEXT, "Maybe you should do something else first.", NULL } } },
-	{ "if", "If", "Flow", "Goes under a When step, and looks once, when the story gets to it: how many are in a map trigger or near a spot or an effect, or whether someone has said one of the words (| between them), or used the use trigger by that name, since the story began, or whether who set off the When above it has that name. True, the steps after it play; false, the ones after its Else, or after its End if.", 5, -1, 10, {
-		{ "Where", ST_K_CHOICE, "map trigger", "map trigger|near a spot|near an effect|someone says|someone uses|who set it off" },
+	{ "if", "If", "Flow", "Goes under a When step, and looks once, when the story gets to it: how many are in a map trigger, a walk-in world zone or near a spot or an effect, or whether someone has said one of the words (| between them), or used the world thing by that story name, since the story began, or whether who set off the When above it has that name. True, the steps after it play; false, the ones after its Else, or after its End if.", 5, -1, 10, {
+		{ "Where", ST_K_CHOICE, "map trigger", "map trigger|near a spot|near an effect|world zone|someone says|someone uses|who set it off" },
 		{ "Which", ST_K_TEXT, "", NULL },
 		{ "Who", ST_K_CHOICE, "any player", "any player|any NPC|anyone|me|named|red team|blue team" },
 		{ "Name", ST_K_TEXT, "", NULL },
@@ -403,7 +404,7 @@ typedef enum {
 	ST_PICK_SOUND,
 	ST_PICK_MUSIC,
 	ST_PICK_LOCK,
-	ST_PICK_TRIGGER,	// a map trigger, a door or a use trigger, clicked in the map editor
+	ST_PICK_TRIGGER,	// a map trigger or a door, clicked in the map editor
 	ST_PICK_CENTER_SOUND	// a typewriter centre message's sound
 } stPick_t;
 
@@ -430,9 +431,10 @@ static const struct {
 	{ "map trigger", "When someone enters a map trigger", "Waits until someone comes into one of the map's own triggers: stand in it and press I stand in, or pick it from the list. With For, they have to stay in that many seconds." ST_WHEN_ARMED ST_WHEN_FAR },
 	{ "near a spot", "When someone comes near a spot", "Waits until someone comes within the radius of a spot, where you stand when it's added. With For, they have to stay that many seconds." ST_WHEN_ARMED ST_WHEN_FAR },
 	{ "near an effect", "When someone comes near an effect", "Waits until someone comes within the radius of an effect placed with the effect manager. With For, they have to stay that many seconds." ST_WHEN_ARMED ST_WHEN_FAR },
+	{ "world zone", "When someone enters a world zone", "Waits until someone comes into a walk-in zone built with the world editor (/world), by its story name: stand in it, or pick it from the list. With For, they have to stay in that many seconds." ST_WHEN_ARMED ST_WHEN_FAR },
 	{ "door", "When a door moves", "Waits until one of the map's doors opens or closes: aim at it, or pick it from the list. Your game only sees a door while it's near you." ST_WHEN_ARMED },
 	{ "someone says", "When someone says", "Waits until someone says one of the words in chat, | between them." ST_WHEN_ARMED },
-	{ "someone uses", "When someone uses a trigger", "Waits until someone uses one of the map editor's use triggers, by its name: one with Hold use only once it's been held that long. Too early: while the story is at an earlier step (or waits armed for its first), the trigger is hidden from the players with this client, or shows them the message instead of being used; as ever, it's left as it is." ST_WHEN_ARMED },
+	{ "someone uses", "When someone uses something", "Waits until someone uses a world thing (an object, a zone or a body built with /world) by its story name: one with a search time only once it's been held that long. Too early: while the story is at an earlier step (or waits armed for its first), the thing is hidden from the players with this client, or shows them the message instead of being used; as ever, it's left as it is." ST_WHEN_ARMED },
 };
 
 static int ST_WhenKind( const char *where ) {
@@ -700,9 +702,14 @@ static qboolean ST_TriggerChat( const stStep_t *s ) {
 	return (qboolean)!Q_stricmp( s->values[0], "someone says" );
 }
 
-// one of the map editor's use triggers used, by its name
+// a world thing used, by its story name
 static qboolean ST_TriggerUse( const stStep_t *s ) {
 	return (qboolean)!Q_stricmp( s->values[0], "someone uses" );
+}
+
+// a walk-in world zone, by its story name: an area like a map trigger
+static qboolean ST_TriggerZone( const stStep_t *s ) {
+	return (qboolean)!Q_stricmp( s->values[0], "world zone" );
 }
 
 // an If asking who set off the When it's under: by the name in its Name
@@ -725,7 +732,9 @@ static const char *ST_FieldLabel( const stStep_t *s, int field, const char *labe
 	if ( field == 1 && ST_Watches( s ) && ST_TriggerChat( s ) )
 		return "Words";
 	if ( field == 1 && ST_Watches( s ) && ST_TriggerUse( s ) )
-		return "Trigger";
+		return "Story name";
+	if ( field == 1 && ST_Watches( s ) && ST_TriggerZone( s ) )
+		return "Zone";
 	if ( field == 3 && ST_IfWho( s ) )
 		return "It was";
 	return label;
@@ -1101,9 +1110,10 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 				*error = "Type the words to listen for, | between them";
 				return NULL;
 			}
-		} else if ( ST_TriggerUse( s ) ) {
+		} else if ( ST_TriggerUse( s ) || ST_TriggerZone( s ) ) {
 			if ( !v[1][0] ) {
-				*error = "Type the name of the use trigger, as the map editor's Triggers tab has it";
+				*error = ST_TriggerZone( s ) ? "Pick the walk-in zone: stand in it, or pick it from the list (the world editor gives it its story name)"
+					: "Pick the world thing: look at it, or pick it from the list (the world editor gives it its story name)";
 				return NULL;
 			}
 		} else if ( !ST_TriggerNear( s ) && !ST_ModelNum( v[1] ) ) {
@@ -1657,6 +1667,8 @@ static const char *ST_AreaText( const stStep_t *s ) {
 		return va( "near %s", s->values[1][0] ? s->values[1] : "an effect" );
 	if ( ST_TriggerNear( s ) )
 		return va( "within %g of %s %s %s", ST_Number( s, 4 ) > 0 ? ST_Number( s, 4 ) : 96.0f, s->values[5], s->values[6], s->values[7] );
+	if ( ST_TriggerZone( s ) )
+		return va( "in world zone %s", s->values[1][0] ? s->values[1] : "?" );
 	return va( "in %s", ST_EntLabel( s->values[1] ) );
 }
 
@@ -1666,7 +1678,7 @@ static const char *ST_IfSummary( const stStep_t *s ) {
 	if ( ST_TriggerChat( s ) )
 		return va( "If %s said \"%s\"", ST_WhoText( s ), s->values[1] );
 	if ( ST_TriggerUse( s ) )
-		return va( "If %s used %s", ST_WhoText( s ), s->values[1][0] ? s->values[1] : "a use trigger" );
+		return va( "If %s used %s", ST_WhoText( s ), s->values[1][0] ? s->values[1] : "a world thing" );
 	return va( "If %s %i %s %s", s->values[8], (int)ST_Number( s, 9 ), ST_WhoPlural( s ), ST_AreaText( s ) );
 }
 
@@ -1678,7 +1690,7 @@ static const char *ST_TriggerSummary( const stStep_t *s ) {
 	if ( ST_TriggerChat( s ) )
 		return va( "When %s says \"%s\"", ST_WhoText( s ), s->values[1] );
 	if ( ST_TriggerUse( s ) )
-		return va( "When %s uses %s%s", ST_WhoText( s ), s->values[1][0] ? s->values[1] : "a use trigger",
+		return va( "When %s uses %s%s", ST_WhoText( s ), s->values[1][0] ? s->values[1] : "a world thing",
 			s->action != ST_A_TRIGGER ? "" : !Q_stricmp( s->values[9], "hidden" ) ? S_COLOR_GREY " (hidden before)"
 			: !Q_stricmp( s->values[9], "a message" ) ? S_COLOR_GREY " (a message before)" : "" );
 	if ( stay > 0 )
@@ -1688,12 +1700,21 @@ static const char *ST_TriggerSummary( const stStep_t *s ) {
 	if ( ST_TriggerNear( s ) )
 		return va( "When %s comes within %g of %s %s %s", ST_WhoText( s ), ST_Number( s, 4 ) > 0 ? ST_Number( s, 4 ) : 96.0f,
 			s->values[5], s->values[6], s->values[7] );
-	return va( "When %s comes into %s", ST_WhoText( s ), ST_EntLabel( s->values[1] ) );
+	return va( "When %s comes %s", ST_WhoText( s ), ST_AreaText( s ) );
 }
 
 // a player's box, near enough for an NPC's too
 static const vec3_t stPersonMins = { -15, -15, -24 };
 static const vec3_t stPersonMaxs = { 15, 15, 40 };
+
+// a person's box touching a box (a walk-in world zone's)
+static qboolean ST_InBox( const vec3_t mins, const vec3_t maxs, const vec3_t org ) {
+	for ( int k = 0; k < 3; k++ ) {
+		if ( org[k] + stPersonMaxs[k] < mins[k] || org[k] + stPersonMins[k] > maxs[k] )
+			return qfalse;
+	}
+	return qtrue;
+}
 
 static qboolean ST_InTrigger( int model, const vec3_t org ) {
 	trace_t tr;
@@ -1853,6 +1874,11 @@ static qboolean ST_Inside( const stStep_t *s, const vec3_t org ) {
 
 		ST_GetPos( s, pos );
 		return (qboolean)( Distance( org, pos ) <= radius );
+	}
+	if ( ST_TriggerZone( s ) ) {
+		vec3_t mins, maxs;
+
+		return (qboolean)( CL_WorldItems_ZoneBox( s->values[1], mins, maxs ) && ST_InBox( mins, maxs, org ) );
 	}
 	return ST_InTrigger( ST_ModelNum( s->values[1] ), org );
 }
@@ -3397,10 +3423,12 @@ when the storyteller's an admin that can. NPCs out of sight can't be found eithe
 #define ST_MAX_USES			32
 
 typedef struct {
-	qboolean	sphere;				// near a spot; else a map trigger
+	qboolean	sphere;				// near a spot; else a map trigger, or a box
+	qboolean	box;				// a walk-in world zone: mins to maxs
 	int			model;
 	vec3_t		pos;
 	float		radius;
+	vec3_t		mins, maxs;
 } stArea_t;
 
 // a use trigger asked for too early: a story waits on it at a later step than the one it's at
@@ -3410,7 +3438,7 @@ typedef struct {
 	char		text[96];
 } stLock_t;
 
-// as a storyteller: the use triggers our own stories have too early, for our own map editor too
+// as a storyteller: the use triggers (world things' story names) our own stories have too early, for our own game too
 static stLock_t	stOwnLocks[ST_MAX_AREAS];
 static int		stNumOwnLocks;
 
@@ -3487,13 +3515,18 @@ static void ST_StepAreas( const stStep_t *steps, int numSteps, stArea_t *out, in
 			a.sphere = qtrue;
 			ST_GetPos( s, a.pos );
 			a.radius = ST_Number( s, 4 ) > 0 ? ST_Number( s, 4 ) : 96.0f;
+		} else if ( ST_TriggerZone( s ) ) {
+			if ( !CL_WorldItems_ZoneBox( s->values[1], a.mins, a.maxs ) )
+				continue;
+			a.box = qtrue;
 		} else {
 			a.model = ST_ModelNum( s->values[1] );
 			if ( !a.model )
 				continue;
 		}
 		for ( int k = 0; k < *n; k++ ) {
-			if ( out[k].sphere == a.sphere && out[k].model == a.model && VectorCompare( out[k].pos, a.pos ) && out[k].radius == a.radius )
+			if ( out[k].sphere == a.sphere && out[k].box == a.box && out[k].model == a.model && VectorCompare( out[k].pos, a.pos )
+				&& out[k].radius == a.radius && VectorCompare( out[k].mins, a.mins ) && VectorCompare( out[k].maxs, a.maxs ) )
 				dup = qtrue;
 		}
 		if ( !dup )
@@ -3631,9 +3664,9 @@ static unsigned ST_AreasSum( const stArea_t *areas, int n ) {
 	unsigned sum = (unsigned)n;
 
 	for ( int i = 0; i < n; i++ ) {
-		sum = sum * 31 + ( areas[i].sphere ? 1 : 2 ) + areas[i].model * 7;
+		sum = sum * 31 + ( areas[i].sphere ? 1 : areas[i].box ? 3 : 2 ) + areas[i].model * 7;
 		for ( int k = 0; k < 3; k++ )
-			sum = sum * 31 + (unsigned)ST_Round( areas[i].pos[k] );
+			sum = sum * 31 + (unsigned)ST_Round( areas[i].pos[k] ) + (unsigned)ST_Round( areas[i].mins[k] ) * 7 + (unsigned)ST_Round( areas[i].maxs[k] ) * 13;
 		sum = sum * 31 + (unsigned)ST_Round( areas[i].radius );
 	}
 	return sum;
@@ -3675,6 +3708,9 @@ static void ST_FarFrame( void ) {
 				if ( areas[i].sphere )
 					Q_strcat( text, sizeof( text ), va( " | s %i %i %i %i", ST_Round( areas[i].pos[0] ), ST_Round( areas[i].pos[1] ),
 						ST_Round( areas[i].pos[2] ), ST_Round( areas[i].radius ) ) );
+				else if ( areas[i].box )
+					Q_strcat( text, sizeof( text ), va( " | b %i %i %i %i %i %i", ST_Round( areas[i].mins[0] ), ST_Round( areas[i].mins[1] ),
+						ST_Round( areas[i].mins[2] ), ST_Round( areas[i].maxs[0] ), ST_Round( areas[i].maxs[1] ), ST_Round( areas[i].maxs[2] ) ) );
 				else
 					Q_strcat( text, sizeof( text ), va( " | m %i", areas[i].model ) );
 			}
@@ -3925,6 +3961,12 @@ void CL_Storyteller_Hook( char **argv, int argc, const char *message ) {
 		if ( sscanf( part, " %c %f %f %f %f", &kind, &a->pos[0], &a->pos[1], &a->pos[2], &a->radius ) == 5 && kind == 's' ) {
 			a->sphere = qtrue;
 			stWatchers[slot].numAreas++;
+		} else if ( kind == 'b' && sscanf( part, " %c %f %f %f %f %f %f", &kind, &a->mins[0], &a->mins[1], &a->mins[2],
+			&a->maxs[0], &a->maxs[1], &a->maxs[2] ) == 7 ) {
+			VectorClear( a->pos );
+			a->radius = 0;
+			a->box = qtrue;
+			stWatchers[slot].numAreas++;
 		} else if ( sscanf( part, " %c %i", &kind, &a->model ) == 2 && kind == 'm' && a->model > 0 && a->model < CM_NumInlineModels() ) {
 			stWatchers[slot].numAreas++;
 		}
@@ -3936,7 +3978,8 @@ static unsigned ST_AreasHere( const stArea_t *areas, int n, const vec3_t org ) {
 	unsigned mask = 0;
 
 	for ( int i = 0; i < n; i++ ) {
-		if ( areas[i].sphere ? Distance( org, areas[i].pos ) <= areas[i].radius : ST_InTrigger( areas[i].model, org ) )
+		if ( areas[i].sphere ? Distance( org, areas[i].pos ) <= areas[i].radius
+			: areas[i].box ? ST_InBox( areas[i].mins, areas[i].maxs, org ) : ST_InTrigger( areas[i].model, org ) )
 			mask |= 1u << i;
 	}
 	return mask;
@@ -3987,7 +4030,7 @@ static void ST_ReportFrame( void ) {
 	}
 }
 
-// the map editor's: whether a use trigger is asked for too early, by our own stories or a
+// the world editor's: whether a thing's story name is asked for too early, by our own stories or a
 // storyteller watching: 0 not, 1 hidden, 2 its message shown instead (in *text)
 int CL_Storyteller_UseLock( const char *name, const char **text ) {
 	if ( !name || !name[0] || cls.state != CA_ACTIVE )
@@ -4014,7 +4057,7 @@ int CL_Storyteller_UseLock( const char *name, const char **text ) {
 	return 0;
 }
 
-// the map editor's use trigger by that name was used here: heard by our own stories, and told to
+// the world thing by that story name was used here: heard by our own stories, and told to
 // the storytellers watching
 void CL_Storyteller_TriggerUsed( const char *name ) {
 	if ( !name || !name[0] )
@@ -4073,8 +4116,7 @@ static qboolean ST_PickOpen( void ) {
 	}
 }
 
-// the step's trigger, clicked in the map editor's free camera: 0 a map trigger, 1 a door or
-// button, 2 a use trigger
+// the step's trigger, clicked in the map editor's free camera: 0 a map trigger, 1 a door or button
 static void ST_StartTriggerPick( int kind ) {
 	st.pick = ST_PICK_TRIGGER;
 	st.pickStep = st.stepList.sel;
@@ -4083,7 +4125,7 @@ static void ST_StartTriggerPick( int kind ) {
 	CL_MapEditor_PickForStory( kind );
 }
 
-// the map editor's click: "*12" for a map trigger or a door, the name of a use trigger
+// the map editor's click: "*12" for a map trigger or a door
 void CL_Storyteller_TriggerPicked( const char *value ) {
 	if ( st.pick != ST_PICK_TRIGGER )
 		return;
@@ -5411,26 +5453,42 @@ static void ST_DrawEdit( void ) {
 			st.focus = i;
 	}
 
-	// a use trigger: the one looked at
-	if ( ST_Watches( s ) && ST_TriggerUse( s ) ) {
+	// a world thing used, or a walk-in zone: the one looked at or stood in, or from the map's story names
+	if ( ST_Watches( s ) && ( ST_TriggerUse( s ) || ST_TriggerZone( s ) ) ) {
+		const qboolean zone = ST_TriggerZone( s );
 		const float bw = ( ST_EDIT_W - 4 ) * 0.5f;
+		static char names[64][48];
+		static char choices[64 * 48 + 16];
+		static char picked[ST_VALUE_LEN];
+		const int n = CL_WorldItems_Stories( names, 64, zone );
 
-		if ( ST_Button( ST_EDIT_X + bw + 4, y, bw, "Pick in the map", qfalse, qtrue ) )
-			ST_StartTriggerPick( 2 );
-		if ( ST_Button( ST_EDIT_X, y, bw, "The one I look at", qfalse, qtrue ) ) {
-			const char *name = CL_MapEditor_AimedUseTrigger();
+		if ( ST_Button( ST_EDIT_X, y, bw, zone ? "The one I stand in" : "The one I look at", qfalse, qtrue ) ) {
+			const char *name = CL_WorldItems_AimedStory( zone );
 
 			if ( name && name[0] ) {
 				Q_strncpyz( s->values[1], name, ST_VALUE_LEN );
 				ST_Changed();
 			} else {
-				ST_Message( name ? S_COLOR_YELLOW "That use trigger has no name: give it one in the map editor's Triggers tab"
-					: S_COLOR_YELLOW "Look at one of the map editor's use triggers first, close enough to use it" );
+				ST_Message( name ? S_COLOR_YELLOW "It has no story name: give it one in the world editor (/world)"
+					: zone ? S_COLOR_YELLOW "Stand in a walk-in world zone first (/world builds them)"
+					: S_COLOR_YELLOW "Look at a world thing first, close enough to use it, or stand in its zone" );
 			}
+		}
+		if ( n ) {
+			Q_strncpyz( choices, "From the list", sizeof( choices ) );
+			for ( int i = 0; i < n; i++ )
+				Q_strcat( choices, sizeof( choices ), va( "|%s", names[i] ) );
+			Q_strncpyz( picked, "From the list", sizeof( picked ) );
+			if ( ST_ChoiceCtl( ST_EDIT_X + bw + 4, y, bw, choices, picked ) && Q_stricmp( picked, "From the list" ) ) {
+				Q_strncpyz( s->values[1], picked, ST_VALUE_LEN );
+				ST_Changed();
+			}
+		} else {
+			ST_Button( ST_EDIT_X + bw + 4, y, bw, zone ? "No walk-in zones here" : "No story names here", qfalse, qfalse );
 		}
 		y += ST_CTRL_H + 4;
 	}
-	if ( ST_Watches( s ) && !ST_TriggerNear( s ) && !ST_TriggerChat( s ) && !ST_TriggerUse( s ) ) {
+	if ( ST_Watches( s ) && !ST_TriggerNear( s ) && !ST_TriggerChat( s ) && !ST_TriggerUse( s ) && !ST_TriggerZone( s ) ) {
 		const qboolean door = ST_TriggerDoor( s );
 		const float bw = ( ST_EDIT_W - 8 ) / 3.0f;
 
@@ -5566,7 +5624,7 @@ static void ST_DrawEdit( void ) {
 		ST_TextWrapped( ST_EDIT_X, y + ( lines + 1 ) * ST_ROW_H, ST_EDIT_W, ST_TriggerDoor( s )
 			? "Whoever opens it: your game can't see who used it."
 			: ST_TriggerChat( s ) ? "Said in chat from when this step starts waiting, any of the words, | between them."
-			: ST_TriggerUse( s ) ? "Used from when this step starts waiting: by you, or by anyone with this client with experimental on."
+			: ST_TriggerUse( s ) ? "Used from when this step starts waiting: by you, or by anyone with this client with experimental on. The world editor (/world) gives things their story names."
 			: ST_Number( s, 8 ) > 0 ? "Someone in already counts from when the step starts. Players out of sight count too; NPCs only near you."
 			: "Someone already in has to leave and come back. Players out of sight count too; NPCs only near you.", stDim, 3 );
 	} else if ( s->action == ST_A_IF && ST_UnderWhen( st.steps, st.stepList.sel ) ) {
@@ -6041,8 +6099,11 @@ static qboolean ST_DrawTrigger( const stStep_t *s, const byte *color, vec3_t top
 		return qtrue;
 	}
 
-	// a box round the map's trigger, door or button
-	{
+	// a box round the map's trigger, door or button, or a walk-in world zone
+	if ( ST_TriggerZone( s ) ) {
+		if ( !CL_WorldItems_ZoneBox( s->values[1], mins, maxs ) )
+			return qfalse;
+	} else {
 		const int model = ST_ModelNum( s->values[1] );
 		qboolean found = qfalse;
 

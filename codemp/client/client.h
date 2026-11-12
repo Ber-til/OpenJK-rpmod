@@ -939,7 +939,6 @@ qboolean CL_Storyteller_ServerPrint( const char *text );
 void CL_Storyteller_Hook( char **argv, int argc, const char *message );
 void CL_Storyteller_TriggerUsed( const char *name );
 int CL_Storyteller_UseLock( const char *name, const char **text );
-const char *CL_MapEditor_AimedUseTrigger( void );
 void CL_MapEditor_PickForStory( int kind );
 void CL_Storyteller_TriggerPicked( const char *value );
 void CL_RpCinematic_AnimHook( char **argv, int argc );
@@ -1122,6 +1121,9 @@ void CL_WorldItems_Command( const char *what, const char *args );	// datapad pla
 void CL_WorldItems_Drop( int item, const char *name );	// an item of yours put down where you aim
 void CL_WorldItems_PickUp( int world );
 qboolean CL_WorldItems_Admin( void );
+const char *CL_WorldItems_AimedStory( qboolean walk );	// the story name of the thing looked at (walk: the walk-in zone stood in): "" none, NULL nothing there
+qboolean CL_WorldItems_ZoneBox( const char *story, vec3_t mins, vec3_t maxs );	// a walk-in zone, by its story name
+int CL_WorldItems_Stories( char names[][48], int max, qboolean walkOnly );	// the map's story names, each once
 void CL_WorldItems_Init( void );
 void CL_WorldItems_Shutdown( void );
 void CL_WorldItems_RendererRestarted( void );

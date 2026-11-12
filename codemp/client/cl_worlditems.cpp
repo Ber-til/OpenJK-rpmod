@@ -24,7 +24,8 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 //   item     an item a player dropped from their inventory (or an admin put there): anyone picks it
 //            up. A datapad keeps its notes. A player's drop goes back to them after a day
 //   object   a model with a title and a description, and loot to take or not
-//   zone     an invisible box: standing in it, the use key reads it (and its loot)
+//   zone     an invisible box: standing in it, the use key reads it (and its loot); or walked into,
+//            for the storyteller only (nothing to see or use)
 //   body     a player model lying in a pose (a death), searched for its description and loot
 //
 // Looked at within reach (or stood in, for a zone), the use key opens the reader: the title, the
@@ -33,6 +34,11 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 // /world, an editor over the world with the gizmo, the same keys as the holster's live mode. C1B3R
 // decides who's an admin (RPMod's own rank), and tells every game on the server when they change
 // (cmd:world/<version>).
+//
+// A thing can have a story name: the storyteller waits on it being used ("someone uses"), or a
+// walk-in zone being walked into ("world zone"), as the map editor's triggers were. Used with
+// nothing to read (no description, no loot), it's only reached for and the storyteller told. A
+// story not there yet hides it, or shows its Too early message instead.
 
 #include <string>
 #include <vector>
@@ -57,6 +63,8 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define WT_FLY_SPEED		400.0f
 #define WT_MESSAGE_MS		5000
 #define WT_INV_MAX			100
+#define WT_STORY_LEN		48			// a story name: letters, digits, _ - . (as C1B3R takes)
+#define WT_EARLY_MS			3000		// a "too early" message shown this long
 
 enum { WT_ITEM, WT_OBJECT, WT_ZONE, WT_BODY, WT_NUM_KINDS };
 static const char *wtKinds[WT_NUM_KINDS] = { "item", "object", "zone", "body" };
@@ -94,6 +102,9 @@ typedef struct {
 	float		usetime;			// seconds the use key's held to open it
 	int			loot;
 	qboolean	datapad, mine, hasLoot;
+	qboolean	text;				// it has a description to read
+	char		story[WT_STORY_LEN];	// the storyteller's name for it, "" none
+	qboolean	walk;				// a zone walked into (for the storyteller), not used
 
 	qboolean	boundsKnown;		// its model's own box, unscaled
 	vec3_t		mins, maxs;
@@ -130,6 +141,7 @@ static const float wtYellow[4]		= { 1.0f, 0.85f, 0.3f, 1.0f };
 static const float wtGreen[4]		= { 0.4f, 1.0f, 0.4f, 1.0f };
 static const float wtZone[4]		= { 0.3f, 0.9f, 1.0f, 0.9f };
 static const float wtZoneSel[4]		= { 1.0f, 0.85f, 0.2f, 1.0f };
+static const float wtZoneWalk[4]	= { 0.4f, 1.0f, 0.5f, 0.9f };
 
 #define WT_CTRL_H		16.0f
 #define WT_TEXT			0.8f
@@ -155,6 +167,8 @@ static struct {
 	qboolean	holdDone;
 	qboolean	holdEmote;
 	int			crouchUntil;
+	char		earlyText[96];			// a story's "too early", shown instead of using it
+	int			earlyTime;
 	int			font, titleFont;
 	sfxHandle_t	clickSound;
 } wt;
@@ -184,7 +198,7 @@ static struct {
 
 // the editor
 enum { WE_MOVE, WE_TURN, WE_SIZE };
-enum { WF_NONE, WF_TITLE, WF_MODEL, WF_SKIN, WF_ANIM, WF_DESCR };
+enum { WF_NONE, WF_TITLE, WF_MODEL, WF_SKIN, WF_ANIM, WF_DESCR, WF_STORY };
 enum { WE_DRAG_NONE = -1, WE_DRAG_GIZMO = 1 };
 
 static const float weMoveSteps[3] = { 1.0f, 4.0f, 16.0f };
@@ -366,7 +380,7 @@ typedef struct {
 } wtListCtx_t;
 
 // ok <version> <map>, then thing <id> <kind> <item> <title> <model> <skin> <anim> <x y z> <p y r>
-// <scale> <sx sy sz> <usetime> <loot> <flags>
+// <scale> <sx sy sz> <usetime> <loot> <flags> [<story> <walk>]
 static void WT_ListLine( char **f, int n, void *ctx ) {
 	wtListCtx_t *c = (wtListCtx_t *)ctx;
 	wtThing_t *t;
@@ -402,6 +416,11 @@ static void WT_ListLine( char **f, int n, void *ctx ) {
 	t->datapad = (qboolean)( Q_stristr( f[14], "datapad" ) != NULL );
 	t->mine = (qboolean)( Q_stristr( f[14], "mine" ) != NULL );
 	t->hasLoot = (qboolean)( Q_stristr( f[14], "loot" ) != NULL );
+	t->text = (qboolean)( Q_stristr( f[14], "text" ) != NULL );
+	if ( n >= 17 ) {
+		WT_Unfield( t->story, sizeof( t->story ), f[15] );
+		t->walk = (qboolean)( t->kind == WT_ZONE && atoi( f[16] ) );
+	}
 }
 
 static void WT_FreeBody( int slot ) {
@@ -682,6 +701,11 @@ static float WT_RayBox( const vec3_t org, const vec3_t dir, const vec3_t mins, c
 	return tmin;
 }
 
+// a story not there yet hides it
+static qboolean WT_Hidden( const wtThing_t *t ) {
+	return (qboolean)( t->story[0] && CL_Storyteller_UseLock( t->story, NULL ) == 1 );
+}
+
 // the one looked at within reach (not a zone), not behind a wall; -1 none
 static int WT_Aimed( void ) {
 	vec3_t eye, dir, end, mins, maxs;
@@ -698,7 +722,7 @@ static int WT_Aimed( void ) {
 	for ( int i = 0; i < wt.num; i++ ) {
 		float t;
 
-		if ( wt.things[i].kind == WT_ZONE )
+		if ( wt.things[i].kind == WT_ZONE || WT_Hidden( &wt.things[i] ) )
 			continue;
 		WT_Box( &wt.things[i], mins, maxs );
 		t = WT_RayBox( eye, dir, mins, maxs, WT_REACH );
@@ -723,7 +747,7 @@ static int WT_ZoneIn( void ) {
 		qboolean inside = qtrue;
 		float volume;
 
-		if ( t->kind != WT_ZONE )
+		if ( t->kind != WT_ZONE || t->walk || WT_Hidden( t ) )
 			continue;
 		WT_Box( t, mins, maxs );
 		for ( int k = 0; k < 3 && inside; k++ )
@@ -735,6 +759,66 @@ static int WT_ZoneIn( void ) {
 		}
 	}
 	return found;
+}
+
+// the storyteller's: the story name of the thing looked at or the zone stood in (walk: the walk-in
+// zone stood in); "" it has none, NULL nothing there
+const char *CL_WorldItems_AimedStory( qboolean walk ) {
+	int i;
+
+	if ( cls.state != CA_ACTIVE )
+		return NULL;
+	if ( walk ) {
+		const char *found = NULL;
+
+		for ( i = 0; i < wt.num; i++ ) {
+			vec3_t mins, maxs;
+			const float *o = cl.snap.ps.origin;
+
+			if ( !wt.things[i].walk )
+				continue;
+			WT_Box( &wt.things[i], mins, maxs );
+			if ( o[0] + 15 >= mins[0] && o[0] - 15 <= maxs[0] && o[1] + 15 >= mins[1] && o[1] - 15 <= maxs[1]
+				&& o[2] + 40 >= mins[2] && o[2] - 24 <= maxs[2] && ( !found || wt.things[i].story[0] ) )
+				found = wt.things[i].story;
+		}
+		return found;
+	}
+	i = WT_Aimed();
+	if ( i < 0 )
+		i = WT_ZoneIn();
+	return i >= 0 ? wt.things[i].story : NULL;
+}
+
+// the storyteller's: a walk-in zone's box, by its story name (the first, when several share it)
+qboolean CL_WorldItems_ZoneBox( const char *story, vec3_t mins, vec3_t maxs ) {
+	if ( !story || !story[0] )
+		return qfalse;
+	for ( int i = 0; i < wt.num; i++ ) {
+		if ( wt.things[i].walk && !Q_stricmp( wt.things[i].story, story ) ) {
+			WT_Box( &wt.things[i], mins, maxs );
+			return qtrue;
+		}
+	}
+	return qfalse;
+}
+
+// the storyteller's: the map's story names, each once; walk-in zones only, or the things used
+int CL_WorldItems_Stories( char names[][48], int max, qboolean walkOnly ) {
+	int n = 0;
+
+	for ( int i = 0; i < wt.num && n < max; i++ ) {
+		const wtThing_t *t = &wt.things[i];
+		qboolean seen = qfalse;
+
+		if ( !t->story[0] || t->walk != walkOnly )
+			continue;
+		for ( int k = 0; k < n && !seen; k++ )
+			seen = (qboolean)!Q_stricmp( names[k], t->story );
+		if ( !seen )
+			Q_strncpyz( names[n++], t->story, 48 );
+	}
+	return n;
 }
 
 // each one where it lies, in every main view; the one edited as it's being edited
@@ -839,6 +923,32 @@ static int WT_Target( void ) {
 	return wt.aim >= 0 ? wt.aim : wt.zone;
 }
 
+// nothing to read: a thing with a story name, no description and no loot is only used
+static qboolean WT_OnlyUsed( const wtThing_t *t ) {
+	return (qboolean)( t->story[0] && t->kind != WT_ITEM && !t->text && t->loot == WT_LOOT_NONE );
+}
+
+// used: the storyteller told, and read unless there's nothing to; reached for if not
+static void WT_Use( const wtThing_t *t ) {
+	if ( t->story[0] )
+		CL_Storyteller_TriggerUsed( t->story );
+	if ( !WT_OnlyUsed( t ) )
+		WR_Open( t );
+	else if ( t->usetime <= 0.0f )
+		CL_AddReliableCommand( "emreach", qfalse );
+}
+
+// pressed on too early for a story: its message instead (qtrue), not used
+static qboolean WT_TooEarly( const wtThing_t *t ) {
+	const char *text = NULL;
+
+	if ( !t->story[0] || CL_Storyteller_UseLock( t->story, &text ) != 2 )
+		return qfalse;
+	Q_strncpyz( wt.earlyText, text && text[0] ? text : "Not yet.", sizeof( wt.earlyText ) );
+	wt.earlyTime = cls.realtime;
+	return qtrue;
+}
+
 static void WT_UseFrame( void ) {
 	const qboolean useDown = (qboolean)( ( cl.cmds[cl.cmdNumber & CMD_MASK].buttons & BUTTON_USE ) != 0 );
 	int target;
@@ -864,8 +974,10 @@ static void WT_UseFrame( void ) {
 			wt.holdId = t->id;
 			wt.holdStart = cls.realtime;
 			wt.holdDone = qfalse;
-			if ( t->usetime <= 0.0f ) {
-				WR_Open( t );
+			if ( WT_TooEarly( t ) ) {
+				wt.holdDone = qtrue;
+			} else if ( t->usetime <= 0.0f ) {
+				WT_Use( t );
 				wt.holdDone = qtrue;
 			} else {
 				WT_HoldEmote( qtrue );
@@ -876,7 +988,7 @@ static void WT_UseFrame( void ) {
 		if ( wt.holdId == t->id && !wt.holdDone && t->usetime > 0.0f && cls.realtime - wt.holdStart >= t->usetime * 1000.0f ) {
 			wt.holdDone = qtrue;
 			WT_HoldEmote( qfalse );
-			WR_Open( t );
+			WT_Use( t );
 		}
 	} else {
 		wt.holdId = 0;
@@ -904,10 +1016,16 @@ static void WT_DrawPrompt( void ) {
 	const wtThing_t *t;
 	const char *verb;
 
+	if ( wt.earlyTime && cls.realtime - wt.earlyTime < WT_EARLY_MS && !Key_GetCatcher() ) {
+		float c[4] = { 1.0f, 0.85f, 0.3f, 1.0f };
+
+		c[3] = Com_Clamp( 0.0f, 1.0f, ( WT_EARLY_MS - ( cls.realtime - wt.earlyTime ) ) / 800.0f );
+		WG_TypedText( 0, SCREEN_HEIGHT * 0.5f + 70, SCREEN_WIDTH, wt.earlyText, c, wt.font, 0.8f, qtrue, qtrue );
+	}
 	if ( target < 0 || Key_GetCatcher() )
 		return;
 	t = &wt.things[target];
-	verb = t->kind == WT_BODY ? "Search" : t->kind == WT_ITEM ? "Look at" : "Read";
+	verb = WT_OnlyUsed( t ) ? "Use" : t->kind == WT_BODY ? "Search" : t->kind == WT_ITEM ? "Look at" : "Read";
 	WG_TypedText( 0, SCREEN_HEIGHT * 0.5f + 34, SCREEN_WIDTH, va( S_COLOR_YELLOW "[%s]" S_COLOR_WHITE " %s \"%s\"",
 		key >= 0 ? Key_KeynumToString( key ) : "use", verb, WT_Name( t ) ), wtWhite, wt.font, 0.8f, qtrue, qtrue );
 	if ( wt.holdId == t->id && !wt.holdDone && t->usetime > 0.0f ) {
@@ -1634,7 +1752,7 @@ static void WE_DrawZones( void ) {
 		return;
 	for ( int i = 0; i < wt.num; i++ ) {
 		if ( wt.things[i].kind == WT_ZONE && wt.things[i].id != we.sel )
-			WE_DrawZone( &wt.things[i], wtZone );
+			WE_DrawZone( &wt.things[i], wt.things[i].walk ? wtZoneWalk : wtZone );
 	}
 	if ( WE_Editing() && we.d.kind == WT_ZONE )
 		WE_DrawZone( &we.d, wtZoneSel );
@@ -1786,7 +1904,7 @@ static void WT_AimPoint( vec3_t out, float *yaw ) {
 }
 
 // a new one where you aim, not saved till Save
-static void WE_New( int kind, qboolean container ) {
+static void WE_New( int kind, qboolean container, qboolean walk ) {
 	float yaw;
 
 	WE_Select( 0 );
@@ -1801,7 +1919,8 @@ static void WE_New( int kind, qboolean container ) {
 		VectorSet( we.d.size, 48, 48, 40 );
 		we.d.pos[2] += we.d.size[2];
 		we.d.ang[YAW] = 0;
-		Q_strncpyz( we.d.title, "A place", sizeof( we.d.title ) );
+		we.d.walk = walk;
+		Q_strncpyz( we.d.title, walk ? "Walked into" : "A place", sizeof( we.d.title ) );
 	} else if ( kind == WT_BODY ) {
 		Q_strncpyz( we.d.model, "kyle", sizeof( we.d.model ) );
 		Q_strncpyz( we.d.anim, wtPoses[0], sizeof( we.d.anim ) );
@@ -1846,6 +1965,9 @@ static void WE_Save( void ) {
 		WE_AddString( f, "anim", we.d.anim );
 		WE_AddVec( f, "size", we.d.size );
 		f += va( ",\"usetime\":%.1f,\"loot\":\"%s\"", we.d.usetime, wtLoots[we.d.loot] );
+		WE_AddString( f, "story", we.d.story );
+		if ( we.d.kind == WT_ZONE )
+			f += va( ",\"walk\":%i", we.d.walk ? 1 : 0 );
 	}
 	if ( we.expiry >= 0 )
 		f += va( ",\"expires\":%i", wtExpiries[we.expiry].secs );
@@ -1920,6 +2042,11 @@ static void WE_Field( float x, float y, float w, int which, char *buf, const cha
 	}
 }
 
+// what a story name takes, as C1B3R does
+static qboolean WT_StoryChar( int ch ) {
+	return (qboolean)( isalnum( ch ) || ch == '_' || ch == '-' || ch == '.' );
+}
+
 static char *WE_FocusBuf( int *size ) {
 	switch ( we.focus ) {
 	case WF_TITLE:	*size = sizeof( we.d.title ); return we.d.title;
@@ -1927,6 +2054,7 @@ static char *WE_FocusBuf( int *size ) {
 	case WF_SKIN:	*size = sizeof( we.d.skin ); return we.d.skin;
 	case WF_ANIM:	*size = sizeof( we.d.anim ); return we.d.anim;
 	case WF_DESCR:	*size = sizeof( we.descr ); return we.descr;
+	case WF_STORY:	*size = sizeof( we.d.story ); return we.d.story;
 	default:		return NULL;
 	}
 }
@@ -1964,8 +2092,8 @@ static void WE_DrawList( float x, float y, float w, float bottom ) {
 
 		WT_FrameBox( x, ry, w, rowH - 2, WT_InRect( x, ry, w, rowH - 2 ) ? wtRowHover : wtRow );
 		WT_Text( x + 5, ry + 1, w - 10, WT_Name( t ), wtWhite, wt.font, WT_TEXT, qfalse );
-		WT_Text( x + 5, ry + 13, w - 10, va( "#%i %s%s, %.0f away", t->id, wtKindTitles[t->kind], t->loot != WT_LOOT_NONE ? " with loot" : "",
-			Distance( t->pos, cl.snap.ps.origin ) ), wtDim, wt.font, WT_SMALL, qfalse );
+		WT_Text( x + 5, ry + 13, w - 10, va( "#%i %s%s%s%s, %.0f away", t->id, t->walk ? "Walk-in zone" : wtKindTitles[t->kind],
+			t->loot != WT_LOOT_NONE ? " with loot" : "", t->story[0] ? ", story " : "", t->story, Distance( t->pos, cl.snap.ps.origin ) ), wtDim, wt.font, WT_SMALL, qfalse );
 		if ( WT_Clicked( x, ry, w, rowH - 2 ) )
 			WE_Select( t->id );
 	}
@@ -2066,6 +2194,26 @@ static void WE_DrawEdit( float x, float y, float w, float bottom ) {
 	} else {
 		WE_Field( x, y, w, WF_TITLE, d->title, "Its title" );
 		y += row;
+		WE_Field( x, y, w, WF_STORY, d->story, d->walk ? "Story name (the storyteller's world zone)" : "Story name (the storyteller waits on its use)" );
+		y += row;
+		if ( d->kind == WT_ZONE ) {
+			if ( WT_Button( x, y, half, "Used (+use)", (qboolean)!d->walk, qtrue ) && d->walk ) {
+				d->walk = qfalse;
+				WE_Changed();
+			}
+			if ( WT_Button( x + half + 4, y, half, "Walked into", d->walk, qtrue ) && !d->walk ) {
+				d->walk = qtrue;
+				d->loot = WT_LOOT_NONE;
+				d->usetime = 0.0f;
+				WE_Changed();
+			}
+			y += row;
+		}
+		if ( d->walk ) {
+			WT_Text( x, y, w, "Nothing to see or use: a storyteller's", wtDim, wt.font, WT_SMALL, qfalse );
+			WT_Text( x, y + 11, w, "\"world zone\" waits for people in it", wtDim, wt.font, WT_SMALL, qfalse );
+			y += 28;
+		}
 		if ( d->kind != WT_ZONE ) {
 			if ( d->kind == WT_BODY ) {
 				WE_Field( x, y, w, WF_MODEL, d->model, "Player model (kyle) or a .glm" );
@@ -2099,7 +2247,7 @@ static void WE_DrawEdit( float x, float y, float w, float bottom ) {
 			y += row;
 		}
 		// the description
-		{
+		if ( !d->walk ) {
 			wgStyle_t style;
 			const int lootRows = looted ? Q_min( 4, Q_max( 1, we.numLoot ) ) : 0;
 			// what's drawn under it: loot choice, search, stays, size, place, modes, bring, the loot, save
@@ -2126,19 +2274,21 @@ static void WE_DrawEdit( float x, float y, float w, float bottom ) {
 			y += h + 4;
 		}
 		// loot, the search, how long it stays
-		WT_Text( x, y, w, d->kind == WT_BODY ? "Container: loot on the body" : "Container: loot inside", wtDim, wt.font, WT_SMALL, qfalse );
-		y += 11;
-		for ( int l = 0; l < WT_NUM_LOOTS; l++ ) {
-			const float bw = ( w - 8 ) / 3.0f;
+		if ( !d->walk ) {
+			WT_Text( x, y, w, d->kind == WT_BODY ? "Container: loot on the body" : "Container: loot inside", wtDim, wt.font, WT_SMALL, qfalse );
+			y += 11;
+			for ( int l = 0; l < WT_NUM_LOOTS; l++ ) {
+				const float bw = ( w - 8 ) / 3.0f;
 
-			if ( WT_Button( x + l * ( bw + 4 ), y, bw, wtLootTitles[l], (qboolean)( d->loot == l ), qtrue ) && d->loot != l ) {
-				d->loot = l;
-				WE_Changed();
+				if ( WT_Button( x + l * ( bw + 4 ), y, bw, wtLootTitles[l], (qboolean)( d->loot == l ), qtrue ) && d->loot != l ) {
+					d->loot = l;
+					WE_Changed();
+				}
 			}
+			y += row;
+			WE_Stepper( x, y, w, "Search (hold use)", d->usetime > 0.0f ? va( "%g s", d->usetime ) : "none", &d->usetime, 0.5f, 0.0f, 10.0f );
+			y += row;
 		}
-		y += row;
-		WE_Stepper( x, y, w, "Search (hold use)", d->usetime > 0.0f ? va( "%g s", d->usetime ) : "none", &d->usetime, 0.5f, 0.0f, 10.0f );
-		y += row;
 		{
 			static int stays;
 			wgStyle_t style;
@@ -2298,17 +2448,19 @@ static void WE_Draw( void ) {
 		const float half = ( w - 4 ) * 0.5f;
 
 		if ( WT_Button( x, y, half, "New object", qfalse, qtrue ) )
-			WE_New( WT_OBJECT, qfalse );
+			WE_New( WT_OBJECT, qfalse, qfalse );
 		if ( WT_Button( x + half + 4, y, half, "New zone", qfalse, qtrue ) )
-			WE_New( WT_ZONE, qfalse );
+			WE_New( WT_ZONE, qfalse, qfalse );
 		y += WT_CTRL_H + 4;
 		if ( WT_Button( x, y, half, "New body", qfalse, qtrue ) )
-			WE_New( WT_BODY, qfalse );
+			WE_New( WT_BODY, qfalse, qfalse );
 		if ( WT_Button( x + half + 4, y, half, "New looted body", qfalse, qtrue ) )
-			WE_New( WT_BODY, qtrue );
+			WE_New( WT_BODY, qtrue, qfalse );
 		y += WT_CTRL_H + 4;
-		if ( WT_Button( x, y, w, "New container (an object with loot)", qfalse, qtrue ) )
-			WE_New( WT_OBJECT, qtrue );
+		if ( WT_Button( x, y, half, "New container", qfalse, qtrue ) )
+			WE_New( WT_OBJECT, qtrue, qfalse );
+		if ( WT_Button( x + half + 4, y, half, "New walk-in zone", qfalse, qtrue ) )
+			WE_New( WT_ZONE, qfalse, qtrue );
 		y += WT_CTRL_H + 8;
 		WE_DrawList( x, y, w, bottom );
 	} else {
@@ -2400,7 +2552,7 @@ void CL_WorldItems_KeyEvent( int key, qboolean down ) {
 			WG_EditReset();
 			return;
 		}
-		if ( buf && WG_EditKey( buf, size, key, NULL ) == WG_EDIT_CHANGED ) {
+		if ( buf && WG_EditKey( buf, size, key, we.focus == WF_STORY ? WT_StoryChar : NULL ) == WG_EDIT_CHANGED ) {
 			WE_Changed();
 			// a model or skin typed: its box found again
 			if ( we.focus == WF_MODEL || we.focus == WF_SKIN )
@@ -2452,7 +2604,7 @@ void CL_WorldItems_CharEvent( int ch ) {
 		return;
 	if ( we.focus != WF_DESCR && ( ch == '\r' || ch == '\n' ) )
 		return;
-	if ( WG_EditChar( buf, size, ch, NULL ) ) {
+	if ( WG_EditChar( buf, size, ch, we.focus == WF_STORY ? WT_StoryChar : NULL ) ) {
 		WE_Changed();
 		if ( we.focus == WF_MODEL || we.focus == WF_SKIN )
 			we.d.boundsKnown = qfalse;
