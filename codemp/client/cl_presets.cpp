@@ -57,6 +57,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define PR_GRID_X			( ( SCREEN_WIDTH - ( PR_COLS * PR_CARD_W + ( PR_COLS - 1 ) * PR_CARD_GAP ) ) * 0.5f )
 #define PR_GRID_Y			60.0f
 #define PR_VIEW_H			110.0f
+#define PR_CARD_VIEW_H		96.0f		// a preset card's: its own name's field under it
 
 // what a preset keeps: the userinfo that makes a character
 static const char *prKeys[] = {
@@ -1470,26 +1471,26 @@ static void PR_DrawCard( int i, float x, float y ) {
 		const qboolean played = (qboolean)( ps->character && ps->character == CL_Characters_ActiveId() && ps->id[0] );
 
 		if ( prViews[i].g2 )
-			PR_RenderView( &prViews[i], ps->values[PR_K_RED], ps->values[PR_K_GREEN], ps->values[PR_K_BLUE], x + 2, y + 20, PR_CARD_W - 4, PR_VIEW_H,
+			PR_RenderView( &prViews[i], ps->values[PR_K_RED], ps->values[PR_K_GREEN], ps->values[PR_K_BLUE], x + 2, y + 20, PR_CARD_W - 4, PR_CARD_VIEW_H,
 				hover ? sinf( cls.realtime * 0.002f ) * 35.0f : 20.0f, NULL, NULL, NULL, played ? CL_Holster_DrawForPreset : NULL, (void *)ps->id );
 		if ( played && CL_Holster_CountForPreset( ps->id ) )
 			PR_Text( x + 4, y + 20, PR_CARD_W - 8, va( "holster: %i", CL_Holster_CountForPreset( ps->id ) ), prDim, 0.6f, qfalse );
 	}
 	if ( !prViews[i].g2 )
-		PR_Text( x + 4, y + 20 + PR_VIEW_H * 0.5f - 6, PR_CARD_W - 8, prViews[i].error ? prViews[i].error : "", prDim, PR_TEXT_SCALE, qtrue );
+		PR_Text( x + 4, y + 20 + PR_CARD_VIEW_H * 0.5f - 6, PR_CARD_W - 8, prViews[i].error ? prViews[i].error : "", prDim, PR_TEXT_SCALE, qtrue );
 
 	// the skin and the sabers under it, its own name typed under them
 	Q_strncpyz( model, ps->values[PR_K_MODEL], sizeof( model ) );
 	if ( slash )
 		model[slash - ps->values[PR_K_MODEL]] = '\0';
 	if ( ps->label[0] )
-		PR_ColorText( x + 4, y + 21 + PR_VIEW_H, PR_CARD_W - 8, ps->values[PR_K_NAME], 0.65f, qtrue );
-	PR_Text( x + 4, y + ( ps->label[0] ? 30 : 22 ) + PR_VIEW_H, PR_CARD_W - 8, va( "%s, skin %s", model, slash && slash[1] ? slash + 1 : "default" ),
+		PR_ColorText( x + 4, y + 21 + PR_CARD_VIEW_H, PR_CARD_W - 8, ps->values[PR_K_NAME], 0.65f, qtrue );
+	PR_Text( x + 4, y + ( ps->label[0] ? 31 : 23 ) + PR_CARD_VIEW_H, PR_CARD_W - 8, va( "%s, skin %s", model, slash && slash[1] ? slash + 1 : "default" ),
 		prWhite, 0.65f, qtrue );
-	PR_Text( x + 4, y + ( ps->label[0] ? 39 : 33 ) + PR_VIEW_H, PR_CARD_W - 8, PR_SaberText( ps ), prDim, 0.65f, qtrue );
+	PR_Text( x + 4, y + ( ps->label[0] ? 41 : 34 ) + PR_CARD_VIEW_H, PR_CARD_W - 8, PR_SaberText( ps ), prDim, 0.65f, qtrue );
 	// its own name, typed in place: a click on it, Enter or a click elsewhere keeps it
 	{
-		const float fy = y + 49 + PR_VIEW_H, fh = 12.0f;
+		const float fh = 13.0f, fy = bottom - PR_CTRL_H - 3 - 4 - fh;	// over the buttons, a gap between
 		const qboolean editing = (qboolean)( pr.labelEdit == i );
 		wgStyle_t style;
 
