@@ -1746,7 +1746,7 @@ SIZES (experimental)
 
 An effect can be drawn bigger or smaller than it was made, on this screen: the effects system
 asks CL_EffectManager_FxScale how big one is as it plays, and finds it here by where it is.
-Shared, the sizes go to everyone with this client in an rpnotify:
+Shared, the sizes go to everyone with this client in a C1B3R hook:
 	cmd:fxscale/<x y z>/<size>[/once]: <effect>
 a size of 1 putting it back; once, for an effect that only plays once, lasts a moment.
 They're kept until the map changes, and sent again a little after someone joins.
@@ -1893,7 +1893,7 @@ static void EM_ShareScale( const char *path, const vec3_t org, float scale, qboo
 		}
 	}
 	split[n] = '\0';
-	EM_Queue( va( "rpnotify -1 1 cmd:fxscale/%i %i %i/%g%s: %s", (int)floorf( org[0] + 0.5f ), (int)floorf( org[1] + 0.5f ), (int)floorf( org[2] + 0.5f ),
+	EM_Queue( va( "c1b3rhook all cmd:fxscale/%i %i %i/%g%s: %s", (int)floorf( org[0] + 0.5f ), (int)floorf( org[1] + 0.5f ), (int)floorf( org[2] + 0.5f ),
 		floorf( EM_ClampScale( scale ) * 100.0f + 0.5f ) / 100.0f, once ? "/once" : "", split ), qfalse );
 }
 

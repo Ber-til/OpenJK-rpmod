@@ -559,7 +559,7 @@ static void ES_AppendSplit( std::string &out, const char *word ) {
 }
 
 static void ES_Queue( const char *text ) {
-	es.shareQueue.push_back( va( "rpnotify -1 1 %s", text ) );
+	es.shareQueue.push_back( va( "c1b3rhook all %s", text ) );
 }
 
 // this player's swaps, in as few hooks as fit; none when sharing is off

@@ -20,11 +20,11 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 
 // cl_rphooks.cpp -- client hooks: what the tools share with everyone with this client
 //
-// A hook is a line of text, cmd:<hook>/<args...>: <message>. The tools still make them as
-//   rpnotify -1 1 cmd:<hook>/<args...>: <message>
-// but that never reaches the server: C1B3R carries it to everyone with this client on the server
-// (see cl_presence.cpp), and the sender runs it at once. Hooks the server sends in prints, from
-// clients from before that still use rpnotify, are hidden and not run.
+// A hook is a line of text, cmd:<hook>/<args...>: <message>. The tools send them through C1B3R
+// (CL_Presence_Hook, or c1b3rhook all cmd:...): never to the server, carried to everyone with this
+// client on the server (see cl_presence.cpp), and the sender runs it at once. The tools' are RPMod
+// admins' only. Hooks the server sends in prints, from clients from before that still use rpnotify,
+// are hidden and not run.
 //
 //   cmd:npc/talk/<npc>/<display name>/<name colour>/<emote|none>: <message>
 //     (cmd:npc/<npc>/talk/... too, say for talk, and spaces around the parts)
@@ -313,7 +313,7 @@ void CL_RpHooks_Unescape( char *s ) {
 const char *CL_RpHooks_NpcTalkCommand( const char *npc, const char *name, const char *color, const char *emote, const char *text ) {
 	static char cmd[MAX_STRING_CHARS];
 
-	Com_sprintf( cmd, sizeof( cmd ), "rpnotify -1 1 cmd:npc/talk/%s/%s/%s/%s: %s", RH_HookPart( npc ), RH_HookPart( name[0] ? name : npc ),
+	Com_sprintf( cmd, sizeof( cmd ), "c1b3rhook all cmd:npc/talk/%s/%s/%s/%s: %s", RH_HookPart( npc ), RH_HookPart( name[0] ? name : npc ),
 		RH_HookPart( color[0] ? color : "^7" ), emote[0] ? RH_HookPart( emote ) : "none", text );
 	return cmd;
 }
@@ -887,7 +887,7 @@ void CL_RpHooks_Draw( void ) {
 	}
 }
 
-// objective: lists them; objective <verb> [text]: sends one to everyone, hidden in an rpnotify
+// objective: lists them; objective <verb> [text]: sends one to everyone, through C1B3R
 static void CL_Objective_f( void ) {
 	static const char *verbs[] = { "add", "done", "undone", "remove", "clear", "title" };
 	const char *verb = Cmd_Argv( 1 ), *text = Cmd_ArgsFrom( 2 );
@@ -932,8 +932,8 @@ static void CL_Objective_f( void ) {
 		Com_Printf( S_COLOR_YELLOW "Not sent: the server would cut the text at the //\n" );
 		return;
 	}
-	CL_AddReliableCommand( text[0] ? va( "rpnotify -1 1 " RH_PREFIX "objective/%s: %s", verb, text )
-		: va( "rpnotify -1 1 " RH_PREFIX "objective/%s", verb ), qfalse );
+	CL_AddReliableCommand( text[0] ? va( "c1b3rhook all " RH_PREFIX "objective/%s: %s", verb, text )
+		: va( "c1b3rhook all " RH_PREFIX "objective/%s", verb ), qfalse );
 }
 
 /*
@@ -997,7 +997,7 @@ static void CL_Combat_f( void ) {
 		Com_Printf( "Not connected to a server.\n" );
 		return;
 	}
-	CL_AddReliableCommand( va( "rpnotify -1 1 " RH_PREFIX "combat/%s", Q_strlwr( (char *)va( "%s", verb ) ) ), qfalse );
+	CL_AddReliableCommand( va( "c1b3rhook all " RH_PREFIX "combat/%s", Q_strlwr( (char *)va( "%s", verb ) ) ), qfalse );
 }
 
 void CL_RpHooks_Init( void ) {

@@ -707,7 +707,7 @@ const refEntity_t *CL_ShaderManager_MineEntity( const refEntity_t *ent, refEntit
 
 SHARED PLAYER SHADERS
 
-Through RPMod's rpnotify, to everyone with this client: cmd:mine/<client>/<part>/<parts>:
+Through C1B3R, to everyone with this client: cmd:mine/<client>/<part>/<parts>:
 <shader>><shader>|..., the words split for the server and joined again; cmd:mine/<client>/clear.
 
 ===============================================================================
@@ -728,7 +728,7 @@ static void SM_AppendSplit( std::string &out, const char *word ) {
 }
 
 static void SM_QueueShare( const char *text ) {
-	sm.shareQueue.push_back( va( "rpnotify -1 1 %s", text ) );
+	sm.shareQueue.push_back( va( "c1b3rhook all %s", text ) );
 }
 
 // this player's player shaders, in as few hooks as fit
@@ -3792,9 +3792,9 @@ static void SM_DrawSkyTab( float x, float y, float w ) {
 		if ( !CL_RpHooks_Experimental() )
 			SM_SetStatus( S_COLOR_YELLOW "Sharing the sky is experimental: TOGGLE EXPERIMENTAL in the npcmanager first" );
 		else if ( !SM_SkyAltered( &sm.sky ) )
-			SM_Send( "rpnotify -1 1 cmd:sky/off" );
+			SM_Send( "c1b3rhook all cmd:sky/off" );
 		else
-			SM_Send( va( "rpnotify -1 1 cmd:sky/%g %g %g/%g/%g %g %g/%g %g %g%s%s", sm.sky.tint[0], sm.sky.tint[1], sm.sky.tint[2], sm.sky.spin,
+			SM_Send( va( "c1b3rhook all cmd:sky/%g %g %g/%g/%g %g %g/%g %g %g%s%s", sm.sky.tint[0], sm.sky.tint[1], sm.sky.tint[2], sm.sky.spin,
 				sm.sky.angles[0], sm.sky.angles[1], sm.sky.angles[2], sm.sky.shift[0], sm.sky.shift[1], sm.sky.shift[2],
 				sm.sky.portalOn ? va( "/%g %g %g", sm.sky.portalOrg[0], sm.sky.portalOrg[1], sm.sky.portalOrg[2] ) : sm.sky.zoom != 1.0f ? "/-" : "",
 				sm.sky.zoom != 1.0f ? va( "/%g", sm.sky.zoom ) : "" ) );
@@ -3804,7 +3804,7 @@ static void SM_DrawSkyTab( float x, float y, float w ) {
 			SM_SetStatus( S_COLOR_YELLOW "Sharing the sky is experimental: TOGGLE EXPERIMENTAL in the npcmanager first" );
 		} else {
 			SM_SkyDefault( &sm.sky );
-			SM_Send( "rpnotify -1 1 cmd:sky/off" );
+			SM_Send( "c1b3rhook all cmd:sky/off" );
 		}
 	}
 	y += 22;

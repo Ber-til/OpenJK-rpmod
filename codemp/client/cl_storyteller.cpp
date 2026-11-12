@@ -1346,9 +1346,9 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 			return NULL;
 		}
 		if ( v[1][0] )
-			Com_sprintf( cmd, sizeof( cmd ), "rpnotify -1 1 cmd:objective/%s: %s", v[0], v[1] );
+			Com_sprintf( cmd, sizeof( cmd ), "c1b3rhook all cmd:objective/%s: %s", v[0], v[1] );
 		else
-			Com_sprintf( cmd, sizeof( cmd ), "rpnotify -1 1 cmd:objective/%s", v[0] );
+			Com_sprintf( cmd, sizeof( cmd ), "c1b3rhook all cmd:objective/%s", v[0] );
 		return cmd;
 
 	case ST_A_CINEMATIC: {
@@ -1370,7 +1370,7 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 	}
 
 	case ST_A_CIN_START:
-		Com_sprintf( cmd, sizeof( cmd ), "rpnotify -1 1 cmd:cin/start%s%s", !Q_stricmp( v[0], "show" ) ? "/hud" : "",
+		Com_sprintf( cmd, sizeof( cmd ), "c1b3rhook all cmd:cin/start%s%s", !Q_stricmp( v[0], "show" ) ? "/hud" : "",
 			!Q_stricmp( v[1], "on" ) ? "/bars" : "" );
 		return cmd;
 
@@ -1388,7 +1388,7 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 			*error = why;
 			return NULL;
 		}
-		Com_sprintf( cmd, sizeof( cmd ), "rpnotify -1 1 cmd:%s", hook );
+		Com_sprintf( cmd, sizeof( cmd ), "c1b3rhook all cmd:%s", hook );
 		return cmd;
 	}
 
@@ -1397,15 +1397,15 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 			*error = "Set the FOV, e.g. 40 to zoom in, 80 for the usual";
 			return NULL;
 		}
-		Com_sprintf( cmd, sizeof( cmd ), "rpnotify -1 1 cmd:cin/fov/%g/%g", ST_Number( s, 0 ), ST_Number( s, 1 ) );
+		Com_sprintf( cmd, sizeof( cmd ), "c1b3rhook all cmd:cin/fov/%g/%g", ST_Number( s, 0 ), ST_Number( s, 1 ) );
 		return cmd;
 
 	case ST_A_CIN_BARS:
-		Com_sprintf( cmd, sizeof( cmd ), "rpnotify -1 1 cmd:cin/bars/%s/%g", !Q_stricmp( v[0], "off" ) ? "off" : "on", ST_Number( s, 1 ) );
+		Com_sprintf( cmd, sizeof( cmd ), "c1b3rhook all cmd:cin/bars/%s/%g", !Q_stricmp( v[0], "off" ) ? "off" : "on", ST_Number( s, 1 ) );
 		return cmd;
 
 	case ST_A_CIN_END:
-		return "rpnotify -1 1 cmd:cin/end";
+		return "c1b3rhook all cmd:cin/end";
 
 	case ST_A_COMMAND:
 		if ( !v[0][0] ) {
@@ -1611,7 +1611,7 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 		vec3_t tint = { 255, 255, 255 }, shift = { 0, 0, 0 };
 
 		if ( !Q_stricmp( v[0], "reset" ) )
-			return "rpnotify -1 1 cmd:sky/off";
+			return "c1b3rhook all cmd:sky/off";
 		if ( v[1][0] && sscanf( v[1], "%f %f %f", &tint[0], &tint[1], &tint[2] ) != 3 ) {
 			*error = "Type the colour as red green blue, 0 to 255, e.g. 255 180 120";
 			return NULL;
@@ -1620,7 +1620,7 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 			*error = "Type the move as x y z, e.g. 0 0 128";
 			return NULL;
 		}
-		Com_sprintf( cmd, sizeof( cmd ), "rpnotify -1 1 cmd:sky/%g %g %g/%g/%g %g %g/%g %g %g", Com_Clamp( 0, 255, tint[0] ),
+		Com_sprintf( cmd, sizeof( cmd ), "c1b3rhook all cmd:sky/%g %g %g/%g/%g %g %g/%g %g %g", Com_Clamp( 0, 255, tint[0] ),
 			Com_Clamp( 0, 255, tint[1] ), Com_Clamp( 0, 255, tint[2] ), ST_Number( s, 2 ), ST_Number( s, 4 ), ST_Number( s, 3 ),
 			ST_Number( s, 5 ), shift[0], shift[1], shift[2] );
 		return cmd;
@@ -3602,7 +3602,7 @@ FAR AWAY: who's out of sight, and the use triggers used
 
 The server sends this client only who is near it. A storyteller whose stories wait on
 areas or use triggers (armed, or the one playing) tells everyone with this client where and
-which, in a hidden rpnotify, again every while for who joins later:
+which, in a C1B3R hook, again every while for who joins later:
 	cmd:story/watch/<its client number>: <map> | m <inline model> | s <x y z> <radius> | u <name> | ...
 	cmd:story/unwatch/<its client number>
 Their client says, in a tell hidden from both of them, where its player is each time they go
@@ -3905,7 +3905,7 @@ static void ST_FarFrame( void ) {
 		if ( ( n || nu ) && ( !stFar.watchSent || sum != stFar.sentSum || cls.realtime - stFar.sentTime > ST_WATCH_RESEND ) ) {
 			char text[MAX_STRING_CHARS];
 
-			Com_sprintf( text, sizeof( text ), "rpnotify -1 1 cmd:story/watch/%i: %s", clc.clientNum, cl.mapname );
+			Com_sprintf( text, sizeof( text ), "c1b3rhook all cmd:story/watch/%i: %s", clc.clientNum, cl.mapname );
 			for ( int i = 0; i < n; i++ ) {
 				if ( areas[i].sphere )
 					Q_strcat( text, sizeof( text ), va( " | s %i %i %i %i", ST_Round( areas[i].pos[0] ), ST_Round( areas[i].pos[1] ),
@@ -3929,7 +3929,7 @@ static void ST_FarFrame( void ) {
 			return;
 		}
 		if ( !n && !nu && stFar.watchSent ) {
-			CL_AddReliableCommand( va( "rpnotify -1 1 cmd:story/unwatch/%i", clc.clientNum ), qfalse );
+			CL_AddReliableCommand( va( "c1b3rhook all cmd:story/unwatch/%i", clc.clientNum ), qfalse );
 			stFar.watchSent = qfalse;
 			st.nextSend = cls.realtime + ST_CommandGap();
 			return;
@@ -4462,9 +4462,19 @@ static qboolean ST_NpcStep( char **argv, int argc, stStep_t *s ) {
 	return qtrue;
 }
 
-// rpnotify -1 1 cmd:npc/talk/<npc>/<name>/<colour>/<emote>: <text>, as NPC talk sends it
+// a hook written as before C1B3R (rpnotify -1 1 cmd:...), as it's written now (c1b3rhook all cmd:...)
+static const char *ST_HookNow( const char *cmd ) {
+	static char now[MAX_STRING_CHARS];
+
+	if ( Q_stricmpn( cmd, "rpnotify -1 1 cmd:", 18 ) )
+		return cmd;
+	Com_sprintf( now, sizeof( now ), "c1b3rhook all %s", cmd + 14 );
+	return now;
+}
+
+// c1b3rhook all cmd:npc/talk/<npc>/<name>/<colour>/<emote>: <text>, as NPC talk sends it
 static qboolean ST_TalkStep( const char *cmd, stStep_t *s ) {
-	static const char prefix[] = "rpnotify -1 1 cmd:npc/talk/";
+	static const char prefix[] = "c1b3rhook all cmd:npc/talk/";
 	const char *p = cmd + strlen( prefix ), *colon;
 
 	if ( Q_stricmpn( cmd, prefix, strlen( prefix ) ) || !( colon = strchr( p, ':' ) ) )
@@ -4495,10 +4505,11 @@ static void ST_StepFromCommand( const char *cmd, stStep_t *s ) {
 
 	memset( s, 0, sizeof( *s ) );
 	s->enabled = qtrue;
+	cmd = ST_HookNow( cmd );
 
-	// rpnotify -1 1 cmd:sky/<r g b>/<spin>/<pitch yaw roll>/<x y z>, or cmd:sky/off: the shader manager's
+	// c1b3rhook all cmd:sky/<r g b>/<spin>/<pitch yaw roll>/<x y z>, or cmd:sky/off: the shader manager's
 	// sky look; its parts have spaces in them
-	if ( !Q_stricmpn( cmd, "rpnotify -1 1 cmd:sky/", 22 ) ) {
+	if ( !Q_stricmpn( cmd, "c1b3rhook all cmd:sky/", 22 ) ) {
 		vec3_t tint = { 255, 255, 255 }, angles = { 0, 0, 0 }, shift = { 0, 0, 0 };
 		float spin = 0.0f;
 

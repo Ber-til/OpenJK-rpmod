@@ -85,7 +85,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define AM_NUM_LEN			12
 #define AM_STEP_DEFAULT_MS	2000	// a step whose animation isn't known, or loops
 #define AM_NEAR				64.0f	// a model drawn this near an entity is its
-#define AM_SEND_PART		400		// of an emote, in one rpnotify
+#define AM_SEND_PART		400		// of an emote, in one hook
 #define AM_RECV_LEN			4096
 #define AM_SEND_LEN			( AM_RECV_LEN / AM_SEND_PART * AM_SEND_PART )	// the most one takes
 #define AM_MOVE_SPEED		40.0f	// moving this fast ends your own emote
@@ -1303,13 +1303,13 @@ static int AM_Share( const amCustom_t *c ) {
 		pos = end;
 	}
 	for ( int i = 0; i < parts; i++ ) {
-		CL_AddReliableCommand( va( "rpnotify -1 1 cmd:emote/%i/%i/%i: %.*s", clc.clientNum, i + 1, parts, size[i], text + start[i] ), qfalse );
+		CL_AddReliableCommand( va( "c1b3rhook all cmd:emote/%i/%i/%i: %.*s", clc.clientNum, i + 1, parts, size[i], text + start[i] ), qfalse );
 	}
 	return left;
 }
 
 static void AM_ShareStop( void ) {
-	CL_AddReliableCommand( va( "rpnotify -1 1 cmd:emote/%i/stop", clc.clientNum ), qfalse );
+	CL_AddReliableCommand( va( "c1b3rhook all cmd:emote/%i/stop", clc.clientNum ), qfalse );
 }
 
 // cmd:emote/<num>/<part>/<parts>: <text>, cmd:emote/<num>/stop

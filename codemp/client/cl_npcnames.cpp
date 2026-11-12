@@ -36,7 +36,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define NN_NAME_LEN			48
 #define NN_SHARE_SETTLE_MS	400		// the names shared once the list's lines stop coming this long
 #define NN_SHARE_WAIT_MS	5000	// /npcnames shares what's known if no fresh list came by then
-#define NN_PART_LEN			700		// of the names in one rpnotify
+#define NN_PART_LEN			700		// of the names in one hook
 #define NN_MAX_PARTS		8
 #define NN_RANGE			8192.0f
 #define NN_LINGER_MS		1000	// a name stays this long after the crosshair leaves
@@ -155,8 +155,8 @@ static void NN_Share( void ) {
 		return;
 	}
 	for ( int i = 0; i < numParts; i++ ) {
-		CL_AddReliableCommand( parts[i][0] ? va( "rpnotify -1 1 cmd:npcnames/%i/%i: %s", i + 1, numParts, parts[i] )
-			: va( "rpnotify -1 1 cmd:npcnames/%i/%i", i + 1, numParts ), qfalse );
+		CL_AddReliableCommand( parts[i][0] ? va( "c1b3rhook all cmd:npcnames/%i/%i: %s", i + 1, numParts, parts[i] )
+			: va( "c1b3rhook all cmd:npcnames/%i/%i", i + 1, numParts ), qfalse );
 	}
 	memcpy( nn.names, nn.read, sizeof( nn.names ) );
 	Com_Printf( "npcnames: %i NPC name%s shared with everyone with this client\n", named, named == 1 ? "" : "s" );
@@ -335,7 +335,7 @@ static void NN_Cmd_f( void ) {
 	if ( clear ) {
 		nn.shareAsked = 0;
 		memset( nn.names, 0, sizeof( nn.names ) );
-		CL_AddReliableCommand( "rpnotify -1 1 cmd:npcnames/1/1", qfalse );
+		CL_AddReliableCommand( "c1b3rhook all cmd:npcnames/1/1", qfalse );
 		Com_Printf( "npcnames: NPC names taken back from everyone with this client\n" );
 		return;
 	}

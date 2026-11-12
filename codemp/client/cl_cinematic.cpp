@@ -2362,7 +2362,7 @@ static const char *CM_SayCommand( const cmCine_t *c, const cmClip_t *clip, qbool
 static void CM_ShowHook( const char *cmd ) {
 	qboolean replaced;
 
-	if ( Q_stricmpn( cmd, "rpnotify -1 1 ", 14 ) )
+	if ( Q_stricmpn( cmd, "c1b3rhook all ", 14 ) )
 		return;
 	Cmd_TokenizeString( va( "print \"%s\n\"", cmd + 14 ) );
 	CL_RpHooks_ServerCommand( &replaced );
@@ -2578,7 +2578,7 @@ static qboolean CM_Play( const cmCine_t *c, int fromMs, qboolean local ) {
 
 Sending
 
-Played for everyone, the cinematic goes out as its file's text in rpnotify hooks,
+Played for everyone, the cinematic goes out as its file's text in C1B3R hooks (c1b3rhook),
   cmd:cine/<id>/<part>/<parts>: <text>
 a part a second for the server's flood protection; everyone with this client plays it once the
 last part is in, its sender too, so they start together. In the text a space is +, a line's end
@@ -2622,7 +2622,7 @@ static void CM_OutFrame( void ) {
 
 // what's left of a cinematic being sent; 0 when none
 static int CM_PartsLeft( void ) {
-	const char *prefix = va( "rpnotify -1 1 cmd:cine/%s/", cms.sentId );
+	const char *prefix = va( "c1b3rhook all cmd:cine/%s/", cms.sentId );
 	int left = 0;
 
 	for ( int i = 0; i < cms.count && cms.sentId[0]; i++ ) {
@@ -2720,7 +2720,7 @@ static qboolean CM_Send( const cmCine_t *c ) {
 			part[out++] = from[j];
 		}
 		part[out] = '\0';
-		CM_Queue( va( "rpnotify -1 1 cmd:cine/%s/%i/%i: %s", cms.sentId, i + 1, parts, part ) );
+		CM_Queue( va( "c1b3rhook all cmd:cine/%s/%i/%i: %s", cms.sentId, i + 1, parts, part ) );
 	}
 	Z_Free( enc );
 	Com_Printf( S_COLOR_GREEN "Cinematic: " S_COLOR_WHITE "sending it in %i part%s, it plays for everyone once they're in\n", parts, parts == 1 ? "" : "s" );
@@ -2729,7 +2729,7 @@ static qboolean CM_Send( const cmCine_t *c ) {
 
 // ended for everyone, the rest of it unsent
 static void CM_SendStop( void ) {
-	const char *prefix = va( "rpnotify -1 1 cmd:cine/%s/", cms.sentId );
+	const char *prefix = va( "c1b3rhook all cmd:cine/%s/", cms.sentId );
 
 	for ( int i = 0; i < cms.count; ) {
 		if ( cms.sentId[0] && !Q_stricmpn( cms.cmds[i], prefix, strlen( prefix ) ) ) {
@@ -2739,7 +2739,7 @@ static void CM_SendStop( void ) {
 			i++;
 		}
 	}
-	CM_Queue( "rpnotify -1 1 cmd:cine/stop" );
+	CM_Queue( "c1b3rhook all cmd:cine/stop" );
 }
 
 static void CM_Received( void ) {
@@ -7003,7 +7003,7 @@ qboolean CL_Cinematic_CaptureEffect( const char *cmd, float scale ) {
 	if ( !CL_Cinematic_PickingEffect() )
 		return qfalse;
 	// its size goes with it, not to the server
-	if ( !Q_stricmpn( cmd, "rpnotify ", 9 ) && Q_stristr( cmd, "cmd:fxscale" ) )
+	if ( ( !Q_stricmpn( cmd, "c1b3rhook ", 10 ) || !Q_stricmpn( cmd, "rpnotify ", 9 ) ) && Q_stristr( cmd, "cmd:fxscale" ) )
 		return qtrue;
 	if ( Q_stricmpn( cmd, "rpeffect add ", 13 ) && Q_stricmpn( cmd, "rpeffect once ", 14 ) )
 		return qfalse;

@@ -3321,7 +3321,7 @@ static void ME_Unshare( void ) {
 static void ME_RunShare( void ) {
 	if ( me.shareSent >= me.numShare || cls.realtime < me.nextShare )
 		return;
-	CL_AddReliableCommand( va( "rpnotify -1 1 %s", me.share[me.shareSent++] ), qfalse );
+	CL_AddReliableCommand( va( "c1b3rhook all %s", me.share[me.shareSent++] ), qfalse );
 	me.nextShare = cls.realtime + ME_CommandGap();
 	if ( me.shareSent == me.numShare )
 		ME_Message( S_COLOR_GREEN "Shared with everyone on the map with this client" );
