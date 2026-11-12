@@ -168,8 +168,8 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ "Seconds", ST_K_NUMBER, "2", NULL } } },
 	{ "pause", "Wait for me", "Flow", "Stops until you press Continue, or run /storyteller continue (bind it to a key). The note shows while it waits.", -1, -1, 1, {
 		{ "Note", ST_K_TEXT, "", NULL } } },
-	{ "trigger", "When someone comes", "Flow", "Waits until someone comes into a map trigger or near a spot or an effect, a door moves, someone says one of the words (| between them), someone uses a world thing (by its story name, from the world editor), or comes into a walk-in world zone. Who can be a team's players only, red or blue. With For, they have to stay in that many seconds. A story starting with it can be armed. Players out of sight are found too: those with this client say where they are (with experimental on), the others are asked for with rporigin.", 5, -1, 11, {
-		{ "Where", ST_K_CHOICE, "map trigger", "map trigger|near a spot|near an effect|world zone|door|someone says|someone uses" },
+	{ "trigger", "When someone comes", "Flow", "Waits until someone comes into a map trigger, a door moves, someone says one of the words (| between them), someone uses a world trigger (a world thing by its story name, from the world editor), or comes into a walk-in world zone. Who can be a team's players only, red or blue. With For, they have to stay in that many seconds. A story starting with it can be armed. Players out of sight are found too: those with this client say where they are (with experimental on), the others are asked for with rporigin.", 5, -1, 11, {
+		{ "Where", ST_K_CHOICE, "map trigger", "map trigger|world zone|door|someone says|someone uses" },
 		{ "Which", ST_K_TEXT, "", NULL },
 		{ "Who", ST_K_CHOICE, "any player", "any player|any NPC|anyone|me|named|red team|blue team" },
 		{ "Name", ST_K_TEXT, "", NULL },
@@ -180,8 +180,8 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ "For (s)", ST_K_NUMBER, "0", NULL },
 		{ "Too early", ST_K_CHOICE, "as ever", "as ever|hidden|a message" },
 		{ "Message", ST_K_TEXT, "Maybe you should do something else first.", NULL } } },
-	{ "if", "If", "Flow", "Goes under a When step, and looks once, when the story gets to it: how many are in a map trigger, a walk-in world zone or near a spot or an effect, or whether someone has said one of the words (| between them), or used the world thing by that story name, since the story began, or whether who set off the When above it has that name. True, the steps after it play; false, the ones after its Else, or after its End if.", 5, -1, 10, {
-		{ "Where", ST_K_CHOICE, "map trigger", "map trigger|near a spot|near an effect|world zone|someone says|someone uses|who set it off" },
+	{ "if", "If", "Flow", "Goes under a When step, and looks once, when the story gets to it: how many are in a map trigger or a walk-in world zone, or whether someone has said one of the words (| between them), or used the world thing by that story name, since the story began, or whether who set off the When above it has that name. True, the steps after it play; false, the ones after its Else, or after its End if.", 5, -1, 10, {
+		{ "Where", ST_K_CHOICE, "map trigger", "map trigger|world zone|someone says|someone uses|who set it off" },
 		{ "Which", ST_K_TEXT, "", NULL },
 		{ "Who", ST_K_CHOICE, "any player", "any player|any NPC|anyone|me|named|red team|blue team" },
 		{ "Name", ST_K_TEXT, "", NULL },
@@ -423,18 +423,22 @@ typedef struct {
 // the kinds of "when", each its own action in the list; its Where, in the story file
 #define ST_WHEN_ARMED	" A story starting with it can be armed: it plays each time it's set off."
 #define ST_WHEN_FAR		" Players out of sight are found too: those with this client say where they are (with experimental on), the others are asked for with rporigin."
+// world: listed under World triggers; old: no longer in the list to add (comes near a spot or
+// an effect, from before the world editor's zones), stories that have them still play them
 static const struct {
 	const char	*where;
 	const char	*name;
 	const char	*desc;
+	qboolean	world;
+	qboolean	old;
 } stWhenKinds[] = {
-	{ "map trigger", "When someone enters a map trigger", "Waits until someone comes into one of the map's own triggers: stand in it and press I stand in, or pick it from the list. With For, they have to stay in that many seconds." ST_WHEN_ARMED ST_WHEN_FAR },
-	{ "near a spot", "When someone comes near a spot", "Waits until someone comes within the radius of a spot, where you stand when it's added. With For, they have to stay that many seconds." ST_WHEN_ARMED ST_WHEN_FAR },
-	{ "near an effect", "When someone comes near an effect", "Waits until someone comes within the radius of an effect placed with the effect manager. With For, they have to stay that many seconds." ST_WHEN_ARMED ST_WHEN_FAR },
-	{ "world zone", "When someone enters a world zone", "Waits until someone comes into a walk-in zone built with the world editor (/world), by its story name: stand in it, or pick it from the list. With For, they have to stay in that many seconds." ST_WHEN_ARMED ST_WHEN_FAR },
-	{ "door", "When a door moves", "Waits until one of the map's doors opens or closes: aim at it, or pick it from the list. Your game only sees a door while it's near you." ST_WHEN_ARMED },
-	{ "someone says", "When someone says", "Waits until someone says one of the words in chat, | between them." ST_WHEN_ARMED },
-	{ "someone uses", "When someone uses something", "Waits until someone uses a world thing (an object, a zone or a body built with /world) by its story name: one with a search time only once it's been held that long. Too early: while the story is at an earlier step (or waits armed for its first), the thing is hidden from the players with this client, or shows them the message instead of being used; as ever, it's left as it is." ST_WHEN_ARMED },
+	{ "map trigger", "When someone enters a map trigger", "Waits until someone comes into one of the map's own triggers: stand in it and press I stand in, or pick it from the list. With For, they have to stay in that many seconds." ST_WHEN_ARMED ST_WHEN_FAR, qfalse, qfalse },
+	{ "near a spot", "When someone comes near a spot", "Waits until someone comes within the radius of a spot, where you stand when it's added. With For, they have to stay that many seconds." ST_WHEN_ARMED ST_WHEN_FAR, qfalse, qtrue },
+	{ "near an effect", "When someone comes near an effect", "Waits until someone comes within the radius of an effect placed with the effect manager. With For, they have to stay that many seconds." ST_WHEN_ARMED ST_WHEN_FAR, qfalse, qtrue },
+	{ "world zone", "When someone enters a world zone", "Waits until someone comes into a walk-in zone built with the world editor (/world), by its story name: stand in it, or pick it from the list. With For, they have to stay in that many seconds." ST_WHEN_ARMED ST_WHEN_FAR, qtrue, qfalse },
+	{ "door", "When a door moves", "Waits until one of the map's doors opens or closes: aim at it, or pick it from the list. Your game only sees a door while it's near you." ST_WHEN_ARMED, qfalse, qfalse },
+	{ "someone says", "When someone says", "Waits until someone says one of the words in chat, | between them." ST_WHEN_ARMED, qfalse, qfalse },
+	{ "someone uses", "When someone uses a world trigger", "Waits until someone uses a world thing (an object, a zone or a body built with /world) by its story name: one with a search time only once it's been held that long. Too early: while the story is at an earlier step (or waits armed for its first), the thing is hidden from the players with this client, or shows them the message instead of being used; as ever, it's left as it is." ST_WHEN_ARMED, qtrue, qfalse },
 };
 
 static int ST_WhenKind( const char *where ) {
@@ -3185,26 +3189,54 @@ OPEN / CLOSE
 ===============================================================================
 */
 
+// a "when" of each kind in the list, those of the world editor or the others
+static void ST_AddWhenRows( qboolean world ) {
+	for ( int k = 0; k < (int)ARRAY_LEN( stWhenKinds ); k++ ) {
+		if ( stWhenKinds[k].old || stWhenKinds[k].world != world )
+			continue;
+		st.actionRows[st.numActionRows].header = NULL;
+		st.actionRows[st.numActionRows].action = ST_A_TRIGGER;
+		st.actionRows[st.numActionRows].kind = k;
+		st.numActionRows++;
+	}
+}
+
+// World triggers: the "when"s on what the world editor builds, after the category of the others
+static void ST_AddWorldTriggerRows( void ) {
+	st.actionRows[st.numActionRows].header = "World triggers";
+	st.numActionRows++;
+	ST_AddWhenRows( qtrue );
+}
+
 static void ST_BuildActionRows( void ) {
 	const char *category = NULL;
+	qboolean world = qfalse;
 
 	st.numActionRows = 0;
 	for ( int i = 0; i < ST_NUM_ACTIONS; i++ ) {
 		if ( ST_OldAction( i ) )
 			continue;
 		if ( !category || Q_stricmp( category, stActions[i].category ) ) {
+			if ( world ) {
+				ST_AddWorldTriggerRows();
+				world = qfalse;
+			}
 			category = stActions[i].category;
 			st.actionRows[st.numActionRows].header = category;
 			st.numActionRows++;
 		}
-		// a "when", once for each kind
-		for ( int k = 0; k < ( i == ST_A_TRIGGER ? (int)ARRAY_LEN( stWhenKinds ) : 1 ); k++ ) {
-			st.actionRows[st.numActionRows].header = NULL;
-			st.actionRows[st.numActionRows].action = (stAction_t)i;
-			st.actionRows[st.numActionRows].kind = i == ST_A_TRIGGER ? k : -1;
-			st.numActionRows++;
+		if ( i == ST_A_TRIGGER ) {
+			ST_AddWhenRows( qfalse );
+			world = qtrue;
+			continue;
 		}
+		st.actionRows[st.numActionRows].header = NULL;
+		st.actionRows[st.numActionRows].action = (stAction_t)i;
+		st.actionRows[st.numActionRows].kind = -1;
+		st.numActionRows++;
 	}
+	if ( world )
+		ST_AddWorldTriggerRows();
 }
 
 static qboolean ST_Open( void ) {
@@ -5172,8 +5204,16 @@ static const char *ST_ChoiceLabel( int i, void *ctx ) {
 
 // one of a field's '|' separated choices: - and + go round, the value opens the list
 static qboolean ST_ChoiceCtl( float x, float y, float w, const char *choices, char *value ) {
-	int at = ST_ChoiceIndex( choices, value ), wheel;
+	static char withOld[MAX_STRING_CHARS];
+	int at, wheel;
 	wgMouse_t m;
+
+	// a value no longer offered (near a spot, in an older story) shows as it is, last
+	if ( value[0] && Q_stricmp( ST_Choice( choices, ST_ChoiceIndex( choices, value ) ), value ) ) {
+		Com_sprintf( withOld, sizeof( withOld ), "%s|%s", choices, value );
+		choices = withOld;
+	}
+	at = ST_ChoiceIndex( choices, value );
 
 	ST_CtlMouse( &m, &wheel );
 	if ( !WG_Choice( ST_CtlStyle(), &m, x, y, w, ST_CTRL_H, &at, ST_NumChoices( choices ), ST_ChoiceLabel, (void *)choices, qtrue ) ) {
