@@ -105,6 +105,8 @@ typedef struct {
 	qboolean	text;				// it has a description to read
 	char		story[WT_STORY_LEN];	// the storyteller's name for it, "" none
 	qboolean	walk;				// a zone walked into (for the storyteller), not used
+	char		verb[25];			// a used zone's word before its title (Hack, Open), "" none
+	qboolean	panel;				// a used zone opens its panel; else it's only a trigger for the storyteller
 
 	qboolean	boundsKnown;		// its model's own box, unscaled
 	vec3_t		mins, maxs;
@@ -198,7 +200,7 @@ static struct {
 
 // the editor
 enum { WE_MOVE, WE_TURN, WE_SIZE };
-enum { WF_NONE, WF_TITLE, WF_MODEL, WF_SKIN, WF_ANIM, WF_DESCR, WF_STORY };
+enum { WF_NONE, WF_TITLE, WF_MODEL, WF_SKIN, WF_ANIM, WF_DESCR, WF_STORY, WF_VERB };
 enum { WE_DRAG_NONE = -1, WE_DRAG_GIZMO = 1 };
 
 static const float weMoveSteps[3] = { 1.0f, 4.0f, 16.0f };
@@ -417,6 +419,11 @@ static void WT_ListLine( char **f, int n, void *ctx ) {
 	t->mine = (qboolean)( Q_stristr( f[14], "mine" ) != NULL );
 	t->hasLoot = (qboolean)( Q_stristr( f[14], "loot" ) != NULL );
 	t->text = (qboolean)( Q_stristr( f[14], "text" ) != NULL );
+	t->panel = qtrue;
+	if ( n >= 19 ) {
+		WT_Unfield( t->verb, sizeof( t->verb ), f[17] );
+		t->panel = (qboolean)( t->kind != WT_ZONE || atoi( f[18] ) );
+	}
 	if ( n >= 17 ) {
 		WT_Unfield( t->story, sizeof( t->story ), f[15] );
 		t->walk = (qboolean)( t->kind == WT_ZONE && atoi( f[16] ) );
@@ -923,8 +930,11 @@ static int WT_Target( void ) {
 	return wt.aim >= 0 ? wt.aim : wt.zone;
 }
 
-// nothing to read: a thing with a story name, no description and no loot is only used
+// nothing to read: a zone that's only a trigger, or a thing with a story name, no description and
+// no loot, is only used
 static qboolean WT_OnlyUsed( const wtThing_t *t ) {
+	if ( t->kind == WT_ZONE && !t->panel )
+		return qtrue;
 	return (qboolean)( t->story[0] && t->kind != WT_ITEM && !t->text && t->loot == WT_LOOT_NONE );
 }
 
@@ -1025,9 +1035,15 @@ static void WT_DrawPrompt( void ) {
 	if ( target < 0 || Key_GetCatcher() )
 		return;
 	t = &wt.things[target];
-	verb = WT_OnlyUsed( t ) ? "Use" : t->kind == WT_BODY ? "Search" : t->kind == WT_ITEM ? "Look at" : "Read";
-	WG_TypedText( 0, SCREEN_HEIGHT * 0.5f + 34, SCREEN_WIDTH, va( S_COLOR_YELLOW "[%s]" S_COLOR_WHITE " %s \"%s\"",
-		key >= 0 ? Key_KeynumToString( key ) : "use", verb, WT_Name( t ) ), wtWhite, wt.font, 0.8f, qtrue, qtrue );
+	// a zone: its own verb, if it has one, and its title as it's written
+	if ( t->kind == WT_ZONE ) {
+		WG_TypedText( 0, SCREEN_HEIGHT * 0.5f + 34, SCREEN_WIDTH, va( S_COLOR_YELLOW "[%s]" S_COLOR_WHITE " %s%s%s",
+			key >= 0 ? Key_KeynumToString( key ) : "use", t->verb, t->verb[0] ? " " : "", WT_Name( t ) ), wtWhite, wt.font, 0.8f, qtrue, qtrue );
+	} else {
+		verb = WT_OnlyUsed( t ) ? "Use" : t->kind == WT_BODY ? "Search" : t->kind == WT_ITEM ? "Look at" : "Read";
+		WG_TypedText( 0, SCREEN_HEIGHT * 0.5f + 34, SCREEN_WIDTH, va( S_COLOR_YELLOW "[%s]" S_COLOR_WHITE " %s \"%s\"",
+			key >= 0 ? Key_KeynumToString( key ) : "use", verb, WT_Name( t ) ), wtWhite, wt.font, 0.8f, qtrue, qtrue );
+	}
 	if ( wt.holdId == t->id && !wt.holdDone && t->usetime > 0.0f ) {
 		const float f = Com_Clamp( 0.0f, 1.0f, ( cls.realtime - wt.holdStart ) / ( t->usetime * 1000.0f ) );
 		const float w = 120.0f, x = ( SCREEN_WIDTH - w ) * 0.5f, y = SCREEN_HEIGHT * 0.5f + 52;
@@ -1372,6 +1388,10 @@ static void WR_ReadAimed( void ) {
 	target = WT_Target();
 	if ( target < 0 ) {
 		Com_Printf( "World: look at something near you, or stand in a zone (world near lists them)\n" );
+		return;
+	}
+	if ( WT_OnlyUsed( &wt.things[target] ) ) {
+		Com_Printf( "World: nothing to read there, it's only used\n" );
 		return;
 	}
 	WR_Open( &wt.things[target] );
@@ -1913,6 +1933,7 @@ static void WE_New( int kind, qboolean container, qboolean walk ) {
 	we.d.kind = kind;
 	we.d.scale = 1.0f;
 	we.d.loot = container ? WT_LOOT_SHARED : WT_LOOT_NONE;
+	we.d.panel = qtrue;
 	WT_AimPoint( we.d.pos, &yaw );
 	we.d.ang[YAW] = yaw;
 	if ( kind == WT_ZONE ) {
@@ -1966,8 +1987,10 @@ static void WE_Save( void ) {
 		WE_AddVec( f, "size", we.d.size );
 		f += va( ",\"usetime\":%.1f,\"loot\":\"%s\"", we.d.usetime, wtLoots[we.d.loot] );
 		WE_AddString( f, "story", we.d.story );
-		if ( we.d.kind == WT_ZONE )
-			f += va( ",\"walk\":%i", we.d.walk ? 1 : 0 );
+		if ( we.d.kind == WT_ZONE ) {
+			f += va( ",\"walk\":%i,\"panel\":%i", we.d.walk ? 1 : 0, we.d.panel ? 1 : 0 );
+			WE_AddString( f, "verb", we.d.verb );
+		}
 	}
 	if ( we.expiry >= 0 )
 		f += va( ",\"expires\":%i", wtExpiries[we.expiry].secs );
@@ -2055,6 +2078,7 @@ static char *WE_FocusBuf( int *size ) {
 	case WF_ANIM:	*size = sizeof( we.d.anim ); return we.d.anim;
 	case WF_DESCR:	*size = sizeof( we.descr ); return we.descr;
 	case WF_STORY:	*size = sizeof( we.d.story ); return we.d.story;
+	case WF_VERB:	*size = sizeof( we.d.verb ); return we.d.verb;
 	default:		return NULL;
 	}
 }
@@ -2208,6 +2232,22 @@ static void WE_DrawEdit( float x, float y, float w, float bottom ) {
 				WE_Changed();
 			}
 			y += row;
+			// a used one: the word before its title, and whether it opens anything
+			if ( !d->walk ) {
+				WE_Field( x, y, half, WF_VERB, d->verb, "Verb (Hack, Open...)" );
+				if ( WT_Button( x + half + 4, y, half, d->panel ? "Opens its panel" : "Only a trigger", qfalse, qtrue ) ) {
+					d->panel = (qboolean)!d->panel;
+					if ( !d->panel )
+						d->loot = WT_LOOT_NONE;
+					WE_Changed();
+				}
+				y += row;
+			}
+		}
+		if ( d->kind == WT_ZONE && !d->walk && !d->panel ) {
+			WT_Text( x, y, w, "Opens nothing: the storyteller's \"uses a", wtDim, wt.font, WT_SMALL, qfalse );
+			WT_Text( x, y + 11, w, "world trigger\" hears it used, by its story name", wtDim, wt.font, WT_SMALL, qfalse );
+			y += 28;
 		}
 		if ( d->walk ) {
 			WT_Text( x, y, w, "Nothing to see or use: a storyteller's", wtDim, wt.font, WT_SMALL, qfalse );
@@ -2247,7 +2287,7 @@ static void WE_DrawEdit( float x, float y, float w, float bottom ) {
 			y += row;
 		}
 		// the description
-		if ( !d->walk ) {
+		if ( !d->walk && ( d->kind != WT_ZONE || d->panel ) ) {
 			wgStyle_t style;
 			const int lootRows = looted ? Q_min( 4, Q_max( 1, we.numLoot ) ) : 0;
 			// what's drawn under it: loot choice, search, stays, size, place, modes, bring, the loot, save
@@ -2274,7 +2314,7 @@ static void WE_DrawEdit( float x, float y, float w, float bottom ) {
 			y += h + 4;
 		}
 		// loot, the search, how long it stays
-		if ( !d->walk ) {
+		if ( !d->walk && ( d->kind != WT_ZONE || d->panel ) ) {
 			WT_Text( x, y, w, d->kind == WT_BODY ? "Container: loot on the body" : "Container: loot inside", wtDim, wt.font, WT_SMALL, qfalse );
 			y += 11;
 			for ( int l = 0; l < WT_NUM_LOOTS; l++ ) {
@@ -2286,7 +2326,9 @@ static void WE_DrawEdit( float x, float y, float w, float bottom ) {
 				}
 			}
 			y += row;
-			WE_Stepper( x, y, w, "Search (hold use)", d->usetime > 0.0f ? va( "%g s", d->usetime ) : "none", &d->usetime, 0.5f, 0.0f, 10.0f );
+		}
+		if ( !d->walk ) {
+			WE_Stepper( x, y, w, d->kind == WT_ZONE && !d->panel ? "Hold use" : "Search (hold use)", d->usetime > 0.0f ? va( "%g s", d->usetime ) : "none", &d->usetime, 0.5f, 0.0f, 10.0f );
 			y += row;
 		}
 		{

@@ -127,6 +127,7 @@ typedef enum {
 	ST_A_NOTIFY,
 	ST_A_NPC_TALK,
 	ST_A_OBJECTIVE,
+	ST_A_GIVE,			// rpgive: health, armour, ammo, weapons or items
 	ST_A_NPC_SPAWN,
 	ST_A_NPC_TELE,
 	ST_A_NPC_CMD,
@@ -161,6 +162,8 @@ typedef struct {
 	stFieldDef_t	fields[ST_MAX_FIELDS];
 } stActionDef_t;
 
+#define ST_GIVE_WEAPONS		"stun_baton|melee|saber|blaster_pistol|concussion_rifle|bryar_pistol|blaster|disruptor|bowcaster|repeater|demp2|flechette|rocket_launcher|thermal|trip_mine|det_pack|all"
+#define ST_GIVE_ITEMS		"seeker|shield|medpac|medpac_big|binoculars|sentry_gun|jetpack|healthdisp|ammodisp|eweb_holdable|cloak|all"
 #define ST_NPC_COMMANDS		"kill|freeze|unfreeze|emote|stop emote|follow me|stop following|dialog|no dialog|hologram|projector|no hologram"
 
 static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
@@ -200,11 +203,11 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ "Name", ST_K_TEXT, "", NULL } } },
 	{ "command", "Run a command", "Flow", "Runs it as if typed in the console, e.g. rpcinematic intro, or exec mission.cfg. Separate several with ;", -1, -1, 1, {
 		{ "Command", ST_K_TEXT, "", NULL } } },
-	{ "say", "Say", "Speech", "Says this in chat, as you, or as one of the players on the server: by their number or a part of their name. As a player it shows in chat as theirs for everyone with this client (sent through C1B3R).", -1, -1, 3, {
+	{ "say", "Say", "Speech", "Says this in chat, as you, or as one of the players on the server: by their number or a part of their name, or who set it off. As a player it shows in chat as theirs for everyone with this client (sent through C1B3R).", -1, -1, 3, {
 		{ "Text", ST_K_TEXT, "", NULL },
 		{ "As", ST_K_CHOICE, "me", "me|a player" },
 		{ "Player", ST_K_TEXT, "", NULL } } },
-	{ "center", "Center message", "Speech", "Shows the text in the middle of the screen with rpcentersay, for everyone (all), or one player. 0 seconds keeps each player's own setting. Place moves it down: to the bottom of the screen, or a number of lines. Typewriter shows it a letter at a time, each with the sound, this many ms apart.", -1, -1, 8, {
+	{ "center", "Center message", "Speech", "Shows the text in the middle of the screen with rpcentersay, for everyone (all), one player, or who set it off (the When before it). 0 seconds keeps each player's own setting. Place moves it down: to the bottom of the screen, or a number of lines. Typewriter shows it a letter at a time, each with the sound, this many ms apart.", -1, -1, 8, {
 		{ "Who", ST_K_TEXT, "all", NULL },
 		{ "Seconds", ST_K_NUMBER, "3", NULL },
 		{ "Text", ST_K_TEXT, "", NULL },
@@ -213,7 +216,7 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ "Typewriter", ST_K_CHOICE, "no", "no|yes" },
 		{ "Letter ms", ST_K_NUMBER, "100", NULL },
 		{ "Sound", ST_K_TEXT, "sound/interface/sub_select", NULL } } },
-	{ "notify", "Notification", "Speech", "Shows the text in the top left corner with rpnotify, for everyone (all) or one player, this many seconds. A countdown is a live count of the seconds left (rpnotify's <timer>), on each player's screen; or type <timer> in the text where it goes.", -1, -1, 4, {
+	{ "notify", "Notification", "Speech", "Shows the text in the top left corner with rpnotify, for everyone (all), one player or who set it off, this many seconds. A countdown is a live count of the seconds left (rpnotify's <timer>), on each player's screen; or type <timer> in the text where it goes.", -1, -1, 4, {
 		{ "Who", ST_K_TEXT, "all", NULL },
 		{ "Seconds", ST_K_NUMBER, "10", NULL },
 		{ "Text", ST_K_TEXT, "", NULL },
@@ -227,6 +230,12 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 	{ "objective", "Objective", "Speech", "Adds to the mission's objectives, listed on the left while Esc is up, for everyone with this client (sent through C1B3R). Done strikes one through; it and undone and remove take its number or its text. Clear takes them all, or with done only the struck ones.", -1, -1, 2, {
 		{ "Do", ST_K_CHOICE, "add", "add|done|undone|remove|clear|title" },
 		{ "Text", ST_K_TEXT, "", NULL } } },
+	{ "give", "Give", "Players", "Gives a player, or everyone (all), health, armour, ammo, weapons or items with rpgive. An amount for health, armour or ammo is what it's set to; none fills it up. Player who set it off gives it to whoever set off the When before it (or used the world trigger).", -1, -1, 5, {
+		{ "Player", ST_K_TEXT, "all", NULL },
+		{ "Give", ST_K_CHOICE, "weapon", "weapon|item|health|armor|ammo|all" },
+		{ "Amount", ST_K_NUMBER, "", NULL },
+		{ "Weapon", ST_K_CHOICE, "blaster", ST_GIVE_WEAPONS },
+		{ "Item", ST_K_CHOICE, "medpac", ST_GIVE_ITEMS } } },
 	{ "npcspawn", "Spawn NPC", "NPCs", "Spawns an NPC at the spot, as the NPC manager does. Give it a targetname to command it in later steps.", 6, 9, 10, {
 		{ "Type", ST_K_TEXT, "", NULL },
 		{ "Targetname", ST_K_TEXT, "", NULL },
@@ -301,7 +310,7 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ "Target", ST_K_TEXT, "", NULL },
 		{ "Rank", ST_K_NUMBER, "0", NULL },
 		{ "Name", ST_K_TEXT, "", NULL } } },
-	{ "sound", "Play sound", "World", "Plays a sound with rpsound: once, looping (until removed) or local, to everyone, you, a player or at a spot. Pick it in the sound manager to hear it first.", 4, -1, 7, {
+	{ "sound", "Play sound", "World", "Plays a sound with rpsound: once, looping (until removed) or local, to everyone, you, a player (or who set it off) or at a spot. Pick it in the sound manager to hear it first.", 4, -1, 7, {
 		{ "Sound", ST_K_TEXT, "", NULL },
 		{ "Play", ST_K_CHOICE, "once", "once|loop|local" },
 		{ "To", ST_K_CHOICE, "everyone", "everyone|me|player|spot" },
@@ -759,6 +768,14 @@ static qboolean ST_Typewriter( const stStep_t *s );
 
 // a "when someone comes" step shows only what its kind of trigger uses
 static qboolean ST_FieldShown( const stStep_t *s, int field ) {
+	if ( s->action == ST_A_GIVE ) {
+		switch ( field ) {
+		case 2:		return (qboolean)( !Q_stricmp( s->values[1], "health" ) || !Q_stricmp( s->values[1], "armor" ) || !Q_stricmp( s->values[1], "ammo" ) );
+		case 3:		return (qboolean)!Q_stricmp( s->values[1], "weapon" );
+		case 4:		return (qboolean)!Q_stricmp( s->values[1], "item" );
+		default:	return qtrue;
+		}
+	}
 	if ( s->action == ST_A_SOUND ) {
 		if ( field == 3 )
 			return (qboolean)!Q_stricmp( s->values[2], "player" );
@@ -903,6 +920,8 @@ static int ST_CenterLines( const stStep_t *s ) {
 	return 0;
 }
 
+static const char *ST_Target( const char *value, const char *def, const char **error );
+
 // the rpcentersay for a centre message showing text: its lines down first, as \n's
 static const char *ST_CenterCommand( const stStep_t *s, const char *text ) {
 	static char cmd[MAX_STRING_CHARS];
@@ -914,7 +933,9 @@ static const char *ST_CenterCommand( const stStep_t *s, const char *text ) {
 			Q_strcat( lines, sizeof( lines ), " " );
 		Q_strcat( lines, sizeof( lines ), "\\n" );
 	}
-	Com_sprintf( cmd, sizeof( cmd ), "rpcentersay %s %i %s%s%s", s->values[0][0] ? s->values[0] : "all", ST_Round( ST_Number( s, 1 ) ), lines,
+	const char *error = NULL, *who = ST_Target( s->values[0], "all", &error );
+
+	Com_sprintf( cmd, sizeof( cmd ), "rpcentersay %s %i %s%s%s", who ? who : "all", ST_Round( ST_Number( s, 1 ) ), lines,
 		lines[0] ? " " : "", ST_CenterText( text ) );
 	return cmd;
 }
@@ -1062,6 +1083,76 @@ static int ST_FindPlayer( const char *who ) {
 	return found;
 }
 
+// who set off the story being played (its When, or the world trigger used), while a step of it is
+// sent; NULL when a step is only looked at
+static const char *stBy;
+
+struct stByScope {
+	const char *was;
+	stByScope( const char *by ) : was( stBy ) { stBy = by; }
+	~stByScope() { stBy = was; }
+};
+
+// a step's player field asking for whoever set it off
+static qboolean ST_IsBy( const char *value ) {
+	return (qboolean)( !Q_stricmp( value, "who set it off" ) );
+}
+
+// the step's field naming a player, -1 if it has none
+static int ST_PlayerField( const stStep_t *s ) {
+	switch ( s->action ) {
+	case ST_A_CENTER:
+	case ST_A_NOTIFY:
+	case ST_A_GIVE:		return 0;
+	case ST_A_SAY:		return !Q_stricmp( s->values[1], "a player" ) ? 2 : -1;
+	case ST_A_SOUND:	return 3;
+	default:			return -1;
+	}
+}
+
+// the player on the server by that whole name, colours left out; -1 if none (an NPC, or gone)
+static int ST_PlayerNamed( const char *who ) {
+	char want[MAX_QPATH], name[MAX_QPATH];
+
+	Q_strncpyz( want, who, sizeof( want ) );
+	Q_StripColor( want );
+	if ( !want[0] )
+		return -1;
+	for ( int i = 0; i < MAX_CLIENTS; i++ ) {
+		Q_strncpyz( name, ST_PlayerName( i ), sizeof( name ) );
+		Q_StripColor( name );
+		if ( name[0] && !Q_stricmp( name, want ) )
+			return i;
+	}
+	return -1;
+}
+
+// a step's player as its command takes it: who set it off made their number. Only looked at, it
+// stands as player 0, found when it's played; NULL and why if no player set it off
+static const char *ST_Target( const char *value, const char *def, const char **error ) {
+	static char num[16], why[MAX_STRING_CHARS];
+	int n;
+
+	if ( !value[0] )
+		return def;
+	if ( !ST_IsBy( value ) )
+		return value;
+	if ( !stBy ) {
+		Q_strncpyz( num, "0", sizeof( num ) );
+		return num;
+	}
+	if ( ( n = ST_PlayerNamed( stBy ) ) < 0 ) {
+		if ( stBy[0] )
+			Com_sprintf( why, sizeof( why ), "%s set it off, and isn't a player on the server", stBy );
+		else
+			Q_strncpyz( why, "Nobody set it off: who set it off goes after a When", sizeof( why ) );
+		*error = why;
+		return NULL;
+	}
+	Com_sprintf( num, sizeof( num ), "%i", n );
+	return num;
+}
+
 // what a step sends: a server command, or with *local a console command; NULL and why if it can't
 static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const char **error ) {
 	static char cmd[MAX_STRING_CHARS];
@@ -1156,7 +1247,9 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 			*error = "Type the text, or have it count down";
 			return NULL;
 		}
-		Com_sprintf( cmd, sizeof( cmd ), "rpnotify %s %g %s", v[0][0] ? v[0] : "all", ST_Number( s, 1 ), text );
+		if ( !( value = ST_Target( v[0], "all", error ) ) )
+			return NULL;
+		Com_sprintf( cmd, sizeof( cmd ), "rpnotify %s %g %s", value, ST_Number( s, 1 ), text );
 		return cmd;
 	}
 
@@ -1178,7 +1271,11 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 				*error = "Type the player's number or a part of their name";
 				return NULL;
 			}
-			if ( ( num = ST_FindPlayer( v[2] ) ) < 0 ) {
+			if ( ST_IsBy( v[2] ) ) {
+				if ( !( value = ST_Target( v[2], "", error ) ) )
+					return NULL;
+				num = atoi( value );
+			} else if ( ( num = ST_FindPlayer( v[2] ) ) < 0 ) {
 				Com_sprintf( why, sizeof( why ), "No player %s on the server", v[2] );
 				*error = why;
 				return NULL;
@@ -1193,6 +1290,8 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 			*error = "Type the text to show";
 			return NULL;
 		}
+		if ( !ST_Target( v[0], "all", error ) )
+			return NULL;
 		return ST_CenterCommand( s, v[2] );
 
 	case ST_A_NPC_TALK:
@@ -1205,6 +1304,32 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 			return NULL;
 		}
 		return CL_RpHooks_NpcTalkCommand( v[0], v[1], v[2], ST_HasEmote( s ) ? v[3] : "", v[4] );
+
+	case ST_A_GIVE: {
+		// rpgive <player|all|-1> all | health|armor|ammo [amount] | weapon <name|all> | item <name|all>
+		const char *who = ST_Target( v[0], "all", error );
+
+		if ( !who )
+			return NULL;
+		if ( !Q_stricmp( v[1], "weapon" ) || !Q_stricmp( v[1], "item" ) ) {
+			const char *name = !Q_stricmp( v[1], "weapon" ) ? v[3] : v[4];
+
+			if ( !name[0] ) {
+				*error = !Q_stricmp( v[1], "weapon" ) ? "Pick the weapon" : "Pick the item";
+				return NULL;
+			}
+			Com_sprintf( cmd, sizeof( cmd ), "rpgive %s %s %s", who, v[1], name );
+		} else if ( Q_stricmp( v[1], "all" ) && v[2][0] ) {
+			if ( ST_Number( s, 2 ) < 0 ) {
+				*error = "The amount is 0 or more; none fills it up";
+				return NULL;
+			}
+			Com_sprintf( cmd, sizeof( cmd ), "rpgive %s %s %i", who, v[1], ST_Round( ST_Number( s, 2 ) ) );
+		} else {
+			Com_sprintf( cmd, sizeof( cmd ), "rpgive %s %s", who, v[1] );
+		}
+		return cmd;
+	}
 
 	case ST_A_OBJECTIVE:
 		if ( !v[1][0] && Q_stricmp( v[0], "clear" ) && Q_stricmp( v[0], "title" ) ) {
@@ -1382,10 +1507,12 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 		}
 		if ( !Q_stricmp( v[2], "player" ) ) {
 			if ( !v[3][0] ) {
-				*error = "Type the player's number";
+				*error = "Type the player's number, or who set it off";
 				return NULL;
 			}
-			Com_sprintf( cmd, sizeof( cmd ), "rpsound %s %s %s", verb, v[0], v[3] );
+			if ( !( value = ST_Target( v[3], "", error ) ) )
+				return NULL;
+			Com_sprintf( cmd, sizeof( cmd ), "rpsound %s %s %s", verb, v[0], value );
 		} else if ( !Q_stricmp( v[2], "spot" ) ) {
 			if ( strcmp( verb, "add" ) ) {
 				*error = "Only a looping sound plays at a spot";
@@ -2141,6 +2268,12 @@ static const char *ST_StepSummary( const stStep_t *s ) {
 	case ST_A_NPC_TALK:
 		Com_sprintf( buf, sizeof( buf ), "%s: %s", s->values[1][0] ? s->values[1] : s->values[0][0] ? s->values[0] : "?", s->values[4] );
 		break;
+	case ST_A_GIVE:
+		Com_sprintf( buf, sizeof( buf ), "Give %s %s%s%s", s->values[0][0] ? s->values[0] : "all", s->values[1],
+			!Q_stricmp( s->values[1], "weapon" ) || !Q_stricmp( s->values[1], "item" ) || s->values[2][0] ? " " : "",
+			!Q_stricmp( s->values[1], "weapon" ) ? s->values[3] : !Q_stricmp( s->values[1], "item" ) ? s->values[4]
+			: Q_stricmp( s->values[1], "all" ) ? s->values[2] : "" );
+		break;
 	case ST_A_OBJECTIVE:
 		Com_sprintf( buf, sizeof( buf ), "Objective %s%s%s", s->values[0], s->values[1][0] ? ": " : "", s->values[1] );
 		break;
@@ -2516,6 +2649,7 @@ static void ST_Continue( void ) {
 static void ST_PlayStory( const char *name, const char *prefix );
 
 static qboolean ST_Play( stRun_t *r, stStep_t *steps, int numSteps, const char *armed ) {
+	const stByScope byScope( r->by );
 	char prefix[MAX_QPATH + 32];
 	const char *cmd, *error;
 	qboolean local;
@@ -5491,6 +5625,22 @@ static void ST_DrawEdit( void ) {
 		const float fh = ST_TextBox( fx, y, fw, s->values[i], (qboolean)( st.focus == i ), f->kind == ST_K_NUMBER ? "number" : "type here" );
 		if ( ST_TextBoxClicked( fx, y, fw, fh, s->values[i] ) )
 			st.focus = i;
+	}
+
+	// a player field: whoever set off the When before it, or used the world trigger
+	{
+		const int pf = ST_PlayerField( s );
+
+		if ( pf >= 0 && ST_FieldShown( s, pf ) ) {
+			const qboolean on = ST_IsBy( s->values[pf] );
+
+			if ( ST_Button( ST_EDIT_X, y, ST_EDIT_W, on ? "To who set it off (the When before it)" : "To who set it off",
+				on, qtrue ) && !on ) {
+				Q_strncpyz( s->values[pf], "who set it off", ST_VALUE_LEN );
+				ST_Changed();
+			}
+			y += ST_CTRL_H + 4;
+		}
 	}
 
 	// a world thing used, or a walk-in zone: the one looked at or stood in, or from the map's story names
