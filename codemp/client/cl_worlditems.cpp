@@ -57,6 +57,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define WT_PLACE_REACH		128.0f		// dropped or built where you aim, this near
 #define WT_NEAR				768.0f		// world near lists the ones this near
 #define WT_RETRY_MS			20000
+#define WT_WAIT_MS		1500	// C1B3R not yet sure of this load of the map: asked again after this
 #define WT_BODY_UP			24.0f		// a player model's origin is this far over its feet
 #define WT_CROUCH_KEY		"1021"		// the crouch ending a held search: its own key number
 #define WT_CROUCH_MS		120
@@ -160,6 +161,7 @@ static struct {
 	int			num;
 	int			version;
 	char		mapAsked[MAX_QPATH];	// the map they were asked for
+	int			serverId;				// and the load of it: another starts blank
 	char		session[64];
 	qboolean	want;					// to be asked
 	int			retryAt;
@@ -390,6 +392,7 @@ static void WT_Unfield( char *out, int size, const char *in ) {
 typedef struct {
 	qboolean	first;
 	qboolean	otherMap;
+	qboolean	wait;			// C1B3R doesn't know this load of the map yet: none, asked again soon
 } wtListCtx_t;
 
 // ok <version> <map>, then thing <id> <kind> <item> <title> <model> <skin> <anim> <x y z> <p y r>
@@ -405,6 +408,8 @@ static void WT_ListLine( char **f, int n, void *ctx ) {
 		// for another map than this one now (it changed as it was asked): asked again
 		if ( n >= 3 && f[2][0] && Q_stricmp( f[2], WT_Map() ) )
 			c->otherMap = qtrue;
+		if ( n >= 4 && !strcmp( f[3], "wait" ) )
+			c->wait = qtrue;
 		return;
 	}
 	if ( c->otherMap || strcmp( f[0], "thing" ) || n < 15 || wt.num >= WT_MAX )
@@ -465,13 +470,18 @@ static void WT_KeepBodies( void ) {
 }
 
 static void WT_ReadList( const char *answer ) {
-	wtListCtx_t c = { qtrue, qfalse };
+	wtListCtx_t c = { qtrue, qfalse, qfalse };
 
 	wt.num = 0;
 	WT_Lines( answer, WT_ListLine, &c );
 	if ( c.otherMap ) {
 		wt.num = 0;
 		wt.want = qtrue;
+	}
+	if ( c.wait ) {
+		wt.num = 0;
+		wt.want = qtrue;
+		wt.retryAt = cls.realtime + WT_WAIT_MS;
 	}
 	WT_KeepBodies();
 }
@@ -873,6 +883,7 @@ void CL_WorldItems_Disconnect( void ) {
 	wt.num = 0;
 	wt.version = 0;
 	wt.mapAsked[0] = wt.session[0] = '\0';
+	wt.serverId = 0;
 	wt.want = qfalse;
 	wt.aim = wt.zone = -1;
 	wt.holdId = 0;
@@ -1222,12 +1233,25 @@ void CL_WorldItems_DumpCommand( void ) {
 	WT_Post( &wtDumpHttp, va( "/v2/world/dump/%s", wtDumpWhat ), f );
 }
 
+// which load of which map this game's in, as the presence says it (C1B3R's server state)
+static std::string WT_LoadFields( void ) {
+	const char *info = cl.gameState.stringData + cl.gameState.stringOffsets[CS_SERVERINFO];
+	std::string f;
+
+	if ( !cl.serverId )
+		return f;
+	f = va( ",\"serverId\":\"%i\",\"map\":", cl.serverId );
+	CL_Presence_Json( f, Info_ValueForKey( info, "mapname" ) );
+	return f;
+}
+
 void CL_WorldItems_Frame( void ) {
 	const char *session = CL_Presence_Session();
 
-	// another session or map: asked again
-	if ( Q_stricmp( wt.session, session ? session : "" ) || Q_stricmp( wt.mapAsked, WT_Map() ) ) {
-		if ( Q_stricmp( wt.mapAsked, WT_Map() ) ) {
+	// another session, map or load of it: asked again, and another map or load starts blank, so what
+	// went with the last isn't shown till C1B3R says what's here now
+	if ( Q_stricmp( wt.session, session ? session : "" ) || Q_stricmp( wt.mapAsked, WT_Map() ) || wt.serverId != cl.serverId ) {
+		if ( Q_stricmp( wt.mapAsked, WT_Map() ) || wt.serverId != cl.serverId ) {
 			wt.num = 0;
 			WR_Close();
 			WE_Close();
@@ -1235,6 +1259,7 @@ void CL_WorldItems_Frame( void ) {
 		}
 		Q_strncpyz( wt.session, session ? session : "", sizeof( wt.session ) );
 		Q_strncpyz( wt.mapAsked, WT_Map(), sizeof( wt.mapAsked ) );
+		wt.serverId = cl.serverId;
 		wt.want = qtrue;
 		wt.retryAt = 0;
 	}
@@ -1291,7 +1316,7 @@ void CL_WorldItems_Frame( void ) {
 			WE_Message( "Your inventory couldn't be read", qtrue );
 	}
 	if ( wt.want && session && wt.mapAsked[0] && cls.realtime >= wt.retryAt && wtListHttp.state != HTTP_BUSY
-		&& WT_Post( &wtListHttp, "/v2/world/list", "" ) )
+		&& WT_Post( &wtListHttp, "/v2/world/list", WT_LoadFields() ) )
 		wt.want = qfalse;
 	WE_PickFrame();
 	WT_UseFrame();
