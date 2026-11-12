@@ -81,9 +81,10 @@ static const char *wtPoses[] = {
 };
 #define WT_NUM_POSES	( (int)ARRAY_LEN( wtPoses ) )
 
-// how long one built is kept: never, or seconds from now
+// how long one built is kept: never, till the map loads again (-1), or seconds from now
+#define WT_TILL_MAP		-1
 static const struct { const char *name; int secs; } wtExpiries[] = {
-	{ "Never", 0 }, { "1 hour", 3600 }, { "1 day", 86400 }, { "7 days", 7 * 86400 }, { "30 days", 30 * 86400 },
+	{ "Never", 0 }, { "Till the map loads again", WT_TILL_MAP }, { "1 hour", 3600 }, { "1 day", 86400 }, { "7 days", 7 * 86400 }, { "30 days", 30 * 86400 },
 };
 #define WT_NUM_EXPIRIES	( (int)ARRAY_LEN( wtExpiries ) )
 
@@ -103,6 +104,8 @@ typedef struct {
 	int			loot;
 	qboolean	datapad, mine, hasLoot;
 	qboolean	text;				// it has a description to read
+	qboolean	mapOnly;			// gone when the server's map loads again
+	qboolean	ends;				// gone at a time set
 	char		story[WT_STORY_LEN];	// the storyteller's name for it, "" none
 	qboolean	walk;				// a zone walked into (for the storyteller), not used
 	char		verb[25];			// a used zone's word before its title (Hack, Open), "" none
@@ -419,6 +422,8 @@ static void WT_ListLine( char **f, int n, void *ctx ) {
 	t->mine = (qboolean)( Q_stristr( f[14], "mine" ) != NULL );
 	t->hasLoot = (qboolean)( Q_stristr( f[14], "loot" ) != NULL );
 	t->text = (qboolean)( Q_stristr( f[14], "text" ) != NULL );
+	t->mapOnly = (qboolean)( Q_stristr( f[14], "maponly" ) != NULL );
+	t->ends = (qboolean)( Q_stristr( f[14], "ends" ) != NULL );
 	t->panel = qtrue;
 	if ( n >= 19 ) {
 		WT_Unfield( t->verb, sizeof( t->verb ), f[17] );
@@ -1084,6 +1089,14 @@ static void WT_Said( const char *text, qboolean bad ) {
 	Com_Printf( "World: %s\n", text );
 }
 
+// saved: how long it stays is what was picked, shown as saved from now on
+static void WE_Saved( void ) {
+	if ( we.expiry >= 0 && we.expiry < WT_NUM_EXPIRIES ) {
+		we.d.mapOnly = (qboolean)( wtExpiries[we.expiry].secs == WT_TILL_MAP );
+		we.d.ends = (qboolean)( wtExpiries[we.expiry].secs > 0 );
+	}
+}
+
 static void WT_ActDone( void ) {
 	const char *answer = wtActHttp.answer[0] ? wtActHttp.answer : "C1B3R didn't answer";
 	const int number = wtActHttp.answer[2] == '\t' ? atoi( wtActHttp.answer + 3 ) : 0;
@@ -1109,6 +1122,7 @@ static void WT_ActDone( void ) {
 			WT_AskOpen( wr.id, qfalse );
 	} else if ( !strcmp( wtActWhat, "build" ) ) {
 		WT_Said( "Built", qfalse );
+		WE_Saved();
 		if ( we.open && we.sel == -1 && number > 0 ) {
 			for ( int s = 0; s < WT_BODIES; s++ ) {
 				if ( wtBodies[s].id == -1 )
@@ -1121,6 +1135,7 @@ static void WT_ActDone( void ) {
 		}
 	} else if ( !strcmp( wtActWhat, "edit" ) ) {
 		WT_Said( "Saved", qfalse );
+		WE_Saved();
 		we.changed = qfalse;
 		we.expiry = -1;
 	} else if ( !strcmp( wtActWhat, "lootadd" ) || !strcmp( wtActWhat, "lootremove" ) ) {
@@ -1954,7 +1969,7 @@ static void WE_New( int kind, qboolean container, qboolean walk ) {
 	we.descr[0] = '\0';
 	we.descrKnown = qtrue;
 	we.changed = qtrue;
-	we.expiry = 0;
+	we.expiry = 1;		// till the map loads again
 	we.mode = WE_MOVE;
 }
 
@@ -1992,8 +2007,11 @@ static void WE_Save( void ) {
 			WE_AddString( f, "verb", we.d.verb );
 		}
 	}
-	if ( we.expiry >= 0 )
-		f += va( ",\"expires\":%i", wtExpiries[we.expiry].secs );
+	if ( we.expiry >= 0 ) {
+		const int secs = wtExpiries[we.expiry].secs;
+
+		f += va( ",\"expires\":%i,\"maponly\":%i", secs == WT_TILL_MAP ? 0 : secs, secs == WT_TILL_MAP ? 1 : 0 );
+	}
 	if ( we.sel == -1 ) {
 		f += ",\"item\":0";
 		WT_Act( "build", "/v2/world/build", f );
@@ -2116,8 +2134,8 @@ static void WE_DrawList( float x, float y, float w, float bottom ) {
 
 		WT_FrameBox( x, ry, w, rowH - 2, WT_InRect( x, ry, w, rowH - 2 ) ? wtRowHover : wtRow );
 		WT_Text( x + 5, ry + 1, w - 10, WT_Name( t ), wtWhite, wt.font, WT_TEXT, qfalse );
-		WT_Text( x + 5, ry + 13, w - 10, va( "#%i %s%s%s%s, %.0f away", t->id, t->walk ? "Walk-in zone" : wtKindTitles[t->kind],
-			t->loot != WT_LOOT_NONE ? " with loot" : "", t->story[0] ? ", story " : "", t->story, Distance( t->pos, cl.snap.ps.origin ) ), wtDim, wt.font, WT_SMALL, qfalse );
+		WT_Text( x + 5, ry + 13, w - 10, va( "#%i %s%s%s%s%s, %.0f away", t->id, t->walk ? "Walk-in zone" : wtKindTitles[t->kind],
+			t->loot != WT_LOOT_NONE ? " with loot" : "", t->story[0] ? ", story " : "", t->story, t->mapOnly ? ", till the map loads" : "", Distance( t->pos, cl.snap.ps.origin ) ), wtDim, wt.font, WT_SMALL, qfalse );
 		if ( WT_Clicked( x, ry, w, rowH - 2 ) )
 			WE_Select( t->id );
 	}
@@ -2138,9 +2156,11 @@ static qboolean WE_Stepper( float x, float y, float w, const char *label, const 
 	return qtrue;
 }
 
-// how long it stays: "as it is" first, then wtExpiries
+// how long it stays: as it was saved first (left so), then wtExpiries
 static const char *WE_StaysAt( int i, void *ctx ) {
-	return i <= 0 ? "as it is" : i - 1 < WT_NUM_EXPIRIES ? wtExpiries[i - 1].name : "";
+	if ( i <= 0 )
+		return we.sel == -1 ? "as it is" : we.d.mapOnly ? "As saved: till the map loads" : we.d.ends ? "As saved: till its time" : "As saved: never";
+	return i - 1 < WT_NUM_EXPIRIES ? wtExpiries[i - 1].name : "";
 }
 
 // your items, one picked to go in the thing: the whole panel's, each with its model turning
