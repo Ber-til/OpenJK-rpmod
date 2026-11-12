@@ -924,6 +924,8 @@ void CL_ForwardCommandToServer( const char *string ) {
 
 	// noclip, nodraw, nonsolid and notarget at ourselves, for their replies
 	CL_AdminFlags_Command();
+	// rpdump: the world editor's things saved and loaded with it, on C1B3R
+	CL_WorldItems_DumpCommand();
 
 	// a chat given its capitals, then, too long for the server, in parts
 	if ( CL_ChatCaps_Forward( capped, sizeof( capped ) ) ) {

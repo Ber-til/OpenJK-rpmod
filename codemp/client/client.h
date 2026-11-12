@@ -1120,6 +1120,7 @@ void CL_WorldItems_Hook( char **argv, int argc );	// cmd:world/<version>
 void CL_WorldItems_Command( const char *what, const char *args );	// datapad place|remove|drop: the old names
 void CL_WorldItems_Drop( int item, const char *name );	// an item of yours put down where you aim
 void CL_WorldItems_PickUp( int world );
+void CL_WorldItems_DumpCommand( void );		// rpdump save|load|delete on its way: the world things go with it
 qboolean CL_WorldItems_Admin( void );
 const char *CL_WorldItems_AimedStory( qboolean walk );	// the story name of the thing looked at (walk: the walk-in zone stood in): "" none, NULL nothing there
 qboolean CL_WorldItems_ZoneBox( const char *story, vec3_t mins, vec3_t maxs );	// a walk-in zone, by its story name

@@ -203,7 +203,11 @@ static struct {
 
 // the editor
 enum { WE_MOVE, WE_TURN, WE_SIZE };
-enum { WF_NONE, WF_TITLE, WF_MODEL, WF_SKIN, WF_ANIM, WF_DESCR, WF_STORY, WF_VERB };
+enum { WF_NONE, WF_TITLE, WF_MODEL, WF_SKIN, WF_ANIM, WF_DESCR, WF_STORY, WF_VERB, WF_MAKE_NAME, WF_MAKE_DESCR, WF_MAKE_MODEL };
+
+// the kinds of item made inside a container, as C1B3R has them
+static const char *wtMakeKinds[] = { "misc", "datapad", "commlink", "hilt", "ship" };
+#define WT_NUM_MAKE_KINDS	( (int)ARRAY_LEN( wtMakeKinds ) )
 enum { WE_DRAG_NONE = -1, WE_DRAG_GIZMO = 1 };
 
 static const float weMoveSteps[3] = { 1.0f, 4.0f, 16.0f };
@@ -221,6 +225,9 @@ static struct {
 	wtLoot_t	loot[WT_LOOT_MAX];
 	int			numLoot;
 	qboolean	picking;			// your items listed, to put one in it
+	qboolean	making;				// a new item made straight inside it
+	char		makeName[64], makeDescr[256], makeModel[MAX_QPATH];
+	int			makeKind;			// wtMakeKinds
 	qboolean	modelPick;			// the model manager open to choose its model; the editor waits
 	int			modelPickFor;		// the thing it's chosen for (we.sel then)
 	wtMine_t	mine[WT_INV_MAX];
@@ -261,7 +268,8 @@ static struct {
 	qboolean	messageBad;
 } we;
 
-static httpRequest_t wtListHttp, wtActHttp, wtOpenHttp, wtMineHttp;
+static httpRequest_t wtListHttp, wtActHttp, wtOpenHttp, wtMineHttp, wtDumpHttp;
+static char wtDumpWhat[8], wtDumpName[MAX_QPATH];
 static char wtActWhat[16];
 static int wtOpenFor;					// the reader's or the editor's: its id
 static qboolean wtOpenForEditor;
@@ -1040,12 +1048,12 @@ static void WT_DrawPrompt( void ) {
 	if ( target < 0 || Key_GetCatcher() )
 		return;
 	t = &wt.things[target];
-	// a zone: its own verb, if it has one, and its title as it's written
-	if ( t->kind == WT_ZONE ) {
+	// its own verb, if it has one, and its title as it's written; a zone with none, the title alone
+	if ( t->verb[0] || t->kind == WT_ZONE ) {
 		WG_TypedText( 0, SCREEN_HEIGHT * 0.5f + 34, SCREEN_WIDTH, va( S_COLOR_YELLOW "[%s]" S_COLOR_WHITE " %s%s%s",
 			key >= 0 ? Key_KeynumToString( key ) : "use", t->verb, t->verb[0] ? " " : "", WT_Name( t ) ), wtWhite, wt.font, 0.8f, qtrue, qtrue );
 	} else {
-		verb = WT_OnlyUsed( t ) ? "Use" : t->kind == WT_BODY ? "Search" : t->kind == WT_ITEM ? "Look at" : "Read";
+		verb = WT_OnlyUsed( t ) ? "Use" : t->kind == WT_ITEM ? "Look at" : t->kind == WT_BODY || t->loot != WT_LOOT_NONE ? "Search" : "Read";
 		WG_TypedText( 0, SCREEN_HEIGHT * 0.5f + 34, SCREEN_WIDTH, va( S_COLOR_YELLOW "[%s]" S_COLOR_WHITE " %s \"%s\"",
 			key >= 0 ? Key_KeynumToString( key ) : "use", verb, WT_Name( t ) ), wtWhite, wt.font, 0.8f, qtrue, qtrue );
 	}
@@ -1138,6 +1146,12 @@ static void WT_ActDone( void ) {
 		WE_Saved();
 		we.changed = qfalse;
 		we.expiry = -1;
+	} else if ( !strcmp( wtActWhat, "lootnew" ) ) {
+		WT_Said( va( "Made in it: %s", we.makeName ), qfalse );
+		we.makeName[0] = we.makeDescr[0] = we.makeModel[0] = '\0';
+		we.making = qfalse;
+		if ( we.open && we.sel > 0 )
+			WT_AskOpen( we.sel, qtrue );
 	} else if ( !strcmp( wtActWhat, "lootadd" ) || !strcmp( wtActWhat, "lootremove" ) ) {
 		WT_Said( !strcmp( wtActWhat, "lootadd" ) ? "Put in it" : "Taken out: back in your inventory", qfalse );
 		if ( we.open && we.sel > 0 )
@@ -1152,6 +1166,60 @@ static void WT_ActDone( void ) {
 	}
 	wt.want = qtrue;
 	wt.retryAt = 0;
+}
+
+/*
+===============================================================================
+
+RPDUMPS: the map's things kept with one by C1B3R, and built again when it's loaded
+
+===============================================================================
+*/
+
+static void WT_DumpDone( void ) {
+	const int count = wtDumpHttp.answer[2] == '\t' ? atoi( wtDumpHttp.answer + 3 ) : 0;
+	char why[160];
+
+	if ( wtDumpHttp.status == 200 && !strncmp( wtDumpHttp.answer, "ok", 2 ) ) {
+		if ( !strcmp( wtDumpWhat, "save" ) )
+			Com_Printf( "World: %i world thing%s kept with the dump %s\n", count, count == 1 ? "" : "s", wtDumpName );
+		else if ( !strcmp( wtDumpWhat, "load" ) )
+			Com_Printf( "World: the map's world things swapped for the %i kept with %s\n", count, wtDumpName );
+		return;
+	}
+	Q_strncpyz( why, wtDumpHttp.answer[0] ? wtDumpHttp.answer : "C1B3R didn't answer", sizeof( why ) );
+	if ( strchr( why, '\n' ) )
+		*strchr( why, '\n' ) = '\0';
+	if ( wtDumpHttp.status == 404 )
+		Com_Printf( S_COLOR_YELLOW "World: %s; the world things here stay\n", why );
+	else
+		Com_Printf( S_COLOR_YELLOW "World: rpdump %s %s, world things: %s\n", wtDumpWhat, wtDumpName, why );
+}
+
+// rpdump save <what> <name>, load <name> or delete <name>, on its way to the server: the world
+// things go with it
+void CL_WorldItems_DumpCommand( void ) {
+	const char *verb = Cmd_Argv( 1 ), *name;
+	std::string f;
+
+	if ( Q_stricmp( Cmd_Argv( 0 ), "rpdump" ) || Cmd_Argc() < 3 || !CL_Presence_Session() || !CL_WorldItems_Admin() )
+		return;
+	if ( !Q_stricmp( verb, "save" ) )
+		name = Cmd_Argv( Cmd_Argc() >= 4 ? 3 : 2 );
+	else if ( !Q_stricmp( verb, "load" ) || !Q_stricmp( verb, "delete" ) )
+		name = Cmd_Argv( 2 );
+	else
+		return;
+	if ( wtDumpHttp.state == HTTP_BUSY ) {
+		Com_Printf( S_COLOR_YELLOW "World: still busy with the last rpdump; the world things don't go with this one\n" );
+		return;
+	}
+	Q_strncpyz( wtDumpWhat, verb, sizeof( wtDumpWhat ) );
+	Q_strlwr( wtDumpWhat );
+	Q_strncpyz( wtDumpName, name, sizeof( wtDumpName ) );
+	f += ",\"name\":";
+	CL_Presence_Json( f, name );
+	WT_Post( &wtDumpHttp, va( "/v2/world/dump/%s", wtDumpWhat ), f );
 }
 
 void CL_WorldItems_Frame( void ) {
@@ -1183,6 +1251,8 @@ void CL_WorldItems_Frame( void ) {
 	}
 	if ( HTTP_Poll( &wtActHttp ) )
 		WT_ActDone();
+	if ( HTTP_Poll( &wtDumpHttp ) )
+		WT_DumpDone();
 	if ( HTTP_Poll( &wtOpenHttp ) ) {
 		const qboolean ok = (qboolean)( wtOpenHttp.status == 200 && !strncmp( wtOpenHttp.answer, "ok", 2 ) );
 
@@ -1880,7 +1950,7 @@ static void WE_Open( void ) {
 	we.gzHot = we.gzPart = -1;
 	we.freeCam = qfalse;
 	we.haveView = qfalse;
-	we.picking = qfalse;
+	we.picking = we.making = qfalse;
 	we.modelPick = qfalse;
 	we.cursorX = SCREEN_WIDTH * 0.5f;
 	we.cursorY = SCREEN_HEIGHT * 0.5f;
@@ -1897,7 +1967,7 @@ static void WE_Select( int id ) {
 	WE_DropDrag();
 	WG_EditReset();
 	we.focus = WF_NONE;
-	we.picking = qfalse;
+	we.picking = we.making = qfalse;
 	we.confirmRemove = qfalse;
 	we.changed = qfalse;
 	we.expiry = -1;
@@ -2002,10 +2072,9 @@ static void WE_Save( void ) {
 		WE_AddVec( f, "size", we.d.size );
 		f += va( ",\"usetime\":%.1f,\"loot\":\"%s\"", we.d.usetime, wtLoots[we.d.loot] );
 		WE_AddString( f, "story", we.d.story );
-		if ( we.d.kind == WT_ZONE ) {
+		WE_AddString( f, "verb", we.d.verb );
+		if ( we.d.kind == WT_ZONE )
 			f += va( ",\"walk\":%i,\"panel\":%i", we.d.walk ? 1 : 0, we.d.panel ? 1 : 0 );
-			WE_AddString( f, "verb", we.d.verb );
-		}
 	}
 	if ( we.expiry >= 0 ) {
 		const int secs = wtExpiries[we.expiry].secs;
@@ -2097,6 +2166,9 @@ static char *WE_FocusBuf( int *size ) {
 	case WF_DESCR:	*size = sizeof( we.descr ); return we.descr;
 	case WF_STORY:	*size = sizeof( we.d.story ); return we.d.story;
 	case WF_VERB:	*size = sizeof( we.d.verb ); return we.d.verb;
+	case WF_MAKE_NAME:	*size = sizeof( we.makeName ); return we.makeName;
+	case WF_MAKE_DESCR:	*size = sizeof( we.makeDescr ); return we.makeDescr;
+	case WF_MAKE_MODEL:	*size = sizeof( we.makeModel ); return we.makeModel;
 	default:		return NULL;
 	}
 }
@@ -2156,6 +2228,10 @@ static qboolean WE_Stepper( float x, float y, float w, const char *label, const 
 	return qtrue;
 }
 
+static const char *WE_MakeKindAt( int i, void *ctx ) {
+	return i >= 0 && i < WT_NUM_MAKE_KINDS ? wtMakeKinds[i] : "";
+}
+
 // how long it stays: as it was saved first (left so), then wtExpiries
 static const char *WE_StaysAt( int i, void *ctx ) {
 	if ( i <= 0 )
@@ -2205,6 +2281,44 @@ static void WE_DrawPicking( float x, float y, float w, float bottom ) {
 	}
 }
 
+// a new item made straight inside it: its name, kind, description and model
+static void WE_DrawMaking( float x, float y, float w ) {
+	const float row = WT_CTRL_H + 3;
+
+	WT_Text( x, y, w, "Make a new item in it:", wtOrange, wt.font, WT_TEXT, qfalse );
+	y += 16;
+	WE_Field( x, y, w, WF_MAKE_NAME, we.makeName, "Its name" );
+	y += row;
+	WT_Text( x, y + 2, w * 0.42f, "Kind", wtDim, wt.font, WT_SMALL, qfalse );
+	{
+		wgStyle_t style;
+		wgMouse_t m;
+
+		WT_Style( &style );
+		WE_PopMouse( &m );
+		WG_Choice( &style, &m, x + w * 0.42f, y, w * 0.58f, WT_CTRL_H, &we.makeKind, WT_NUM_MAKE_KINDS, WE_MakeKindAt, NULL, qtrue );
+	}
+	y += row;
+	WE_Field( x, y, w, WF_MAKE_DESCR, we.makeDescr, "Its description" );
+	y += row;
+	WE_Field( x, y, w, WF_MAKE_MODEL, we.makeModel, "Model (empty: its kind's own)" );
+	y += row + 4;
+	if ( WT_Button( x, y, w, wtActHttp.state == HTTP_BUSY ? "Making..." : "Make it", qtrue, (qboolean)( we.makeName[0] && wtActHttp.state != HTTP_BUSY ) ) ) {
+		std::string f = va( ",\"id\":%i,\"kind\":\"%s\"", we.sel, wtMakeKinds[we.makeKind] );
+
+		f += ",\"name\":";
+		CL_Presence_Json( f, we.makeName );
+		f += ",\"descr\":";
+		CL_Presence_Json( f, we.makeDescr );
+		f += ",\"model\":";
+		CL_Presence_Json( f, we.makeModel );
+		WT_Act( "lootnew", "/v2/world/loot/new", f );
+	}
+	y += row;
+	WT_Text( x, y, w, "Like what you put in from your inventory, it's lost", wtDim, wt.font, WT_SMALL, qfalse );
+	WT_Text( x, y + 11, w, "with the container unless someone takes it out", wtDim, wt.font, WT_SMALL, qfalse );
+}
+
 static void WE_DrawEdit( float x, float y, float w, float bottom ) {
 	wtThing_t *d = &we.d;
 	const float half = ( w - 4 ) * 0.5f, row = WT_CTRL_H + 3;
@@ -2212,10 +2326,10 @@ static void WE_DrawEdit( float x, float y, float w, float bottom ) {
 	const qboolean looted = (qboolean)( d->kind != WT_ITEM && we.sel > 0 && d->loot != WT_LOOT_NONE );
 
 	if ( !looted )
-		we.picking = qfalse;
-	if ( WT_Button( x, y, 60, we.picking ? "< Back" : "< List", qfalse, qtrue ) ) {
-		if ( we.picking )
-			we.picking = qfalse;
+		we.picking = we.making = qfalse;
+	if ( WT_Button( x, y, 60, we.picking || we.making ? "< Back" : "< List", qfalse, qtrue ) ) {
+		if ( we.picking || we.making )
+			we.picking = we.making = qfalse;
 		else
 			WE_Select( 0 );
 		return;
@@ -2226,6 +2340,10 @@ static void WE_DrawEdit( float x, float y, float w, float bottom ) {
 	// putting things in: the panel is the list of what you carry
 	if ( we.picking ) {
 		WE_DrawPicking( x, y, w, bottom );
+		return;
+	}
+	if ( we.making ) {
+		WE_DrawMaking( x, y, w );
 		return;
 	}
 
@@ -2240,6 +2358,10 @@ static void WE_DrawEdit( float x, float y, float w, float bottom ) {
 		y += row;
 		WE_Field( x, y, w, WF_STORY, d->story, d->walk ? "Story name (the storyteller's world zone)" : "Story name (the storyteller waits on its use)" );
 		y += row;
+		if ( d->kind != WT_ZONE ) {
+			WE_Field( x, y, w, WF_VERB, d->verb, va( "Verb (empty: %s)", d->kind == WT_BODY || d->loot != WT_LOOT_NONE ? "Search" : "Read" ) );
+			y += row;
+		}
 		if ( d->kind == WT_ZONE ) {
 			if ( WT_Button( x, y, half, "Used (+use)", (qboolean)!d->walk, qtrue ) && d->walk ) {
 				d->walk = qfalse;
@@ -2436,7 +2558,12 @@ static void WE_DrawEdit( float x, float y, float w, float bottom ) {
 				WT_Act( "lootremove", "/v2/world/loot/remove", va( ",\"id\":%i,\"item\":%i", we.sel, l->item ) );
 			y += row;
 		}
-		if ( WT_Button( x, Q_min( y, listBottom ), w, "Put an item from your inventory in it", qfalse, qtrue ) ) {
+		if ( WT_Button( x + half + 4, Q_min( y, listBottom ), half, "Make a new item", qfalse, qtrue ) ) {
+			we.making = qtrue;
+			we.focus = WF_MAKE_NAME;
+			WG_EditReset();
+		}
+		if ( WT_Button( x, Q_min( y, listBottom ), half, "From your inventory", qfalse, qtrue ) ) {
 			we.picking = qtrue;
 			we.mineScroll = 0;
 			we.numMine = 0;
@@ -2699,8 +2826,8 @@ void CL_WorldItems_Escape( void ) {
 		WG_EditReset();
 		return;
 	}
-	if ( we.picking ) {
-		we.picking = qfalse;
+	if ( we.picking || we.making ) {
+		we.picking = we.making = qfalse;
 		return;
 	}
 	WE_Close();
