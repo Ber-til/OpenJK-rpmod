@@ -205,7 +205,7 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ "Command", ST_K_TEXT, "", NULL } } },
 	{ "say", "Say", "Speech", "Says this in chat, as you, or as one of the players on the server: by their number or a part of their name, or who set it off. As a player it shows in chat as theirs for everyone with this client (sent through C1B3R).", -1, -1, 3, {
 		{ "Text", ST_K_TEXT, "", NULL },
-		{ "As", ST_K_CHOICE, "me", "me|a player" },
+		{ "As", ST_K_CHOICE, "me", "me|a player|who set it off" },
 		{ "Player", ST_K_TEXT, "", NULL } } },
 	{ "center", "Center message", "Speech", "Shows the text in the middle of the screen with rpcentersay, for everyone (all), one player, or who set it off (the When before it). 0 seconds keeps each player's own setting. Place moves it down: to the bottom of the screen, or a number of lines. Typewriter shows it a letter at a time, each with the sound, this many ms apart.", -1, -1, 8, {
 		{ "Who", ST_K_TEXT, "all", NULL },
@@ -313,7 +313,7 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 	{ "sound", "Play sound", "World", "Plays a sound with rpsound: once, looping (until removed) or local, to everyone, you, a player (or who set it off) or at a spot. Pick it in the sound manager to hear it first.", 4, -1, 7, {
 		{ "Sound", ST_K_TEXT, "", NULL },
 		{ "Play", ST_K_CHOICE, "once", "once|loop|local" },
-		{ "To", ST_K_CHOICE, "everyone", "everyone|me|player|spot" },
+		{ "To", ST_K_CHOICE, "everyone", "everyone|me|player|who set it off|spot" },
 		{ "Player", ST_K_TEXT, "", NULL },
 		{ "X", ST_K_NUMBER, "", NULL },
 		{ "Y", ST_K_NUMBER, "", NULL },
@@ -1098,14 +1098,13 @@ static qboolean ST_IsBy( const char *value ) {
 	return (qboolean)( !Q_stricmp( value, "who set it off" ) );
 }
 
-// the step's field naming a player, -1 if it has none
+// the step's typed field naming a player, -1 if it has none (Say and Play sound pick who set it
+// off from their As and To)
 static int ST_PlayerField( const stStep_t *s ) {
 	switch ( s->action ) {
 	case ST_A_CENTER:
 	case ST_A_NOTIFY:
 	case ST_A_GIVE:		return 0;
-	case ST_A_SAY:		return !Q_stricmp( s->values[1], "a player" ) ? 2 : -1;
-	case ST_A_SOUND:	return 3;
 	default:			return -1;
 	}
 }
@@ -1258,8 +1257,9 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 			*error = "Type what to say";
 			return NULL;
 		}
-		if ( !Q_stricmp( v[1], "a player" ) ) {
+		if ( !Q_stricmp( v[1], "a player" ) || ST_IsBy( v[1] ) ) {
 			static char why[MAX_STRING_CHARS];
+			const char *player = ST_IsBy( v[1] ) ? v[1] : v[2];
 			int num;
 
 			// shown as their chat, which only this client's hook can do
@@ -1267,16 +1267,16 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 				*error = RP_EXPERIMENTAL_OFF;
 				return NULL;
 			}
-			if ( !v[2][0] ) {
+			if ( !player[0] ) {
 				*error = "Type the player's number or a part of their name";
 				return NULL;
 			}
-			if ( ST_IsBy( v[2] ) ) {
-				if ( !( value = ST_Target( v[2], "", error ) ) )
+			if ( ST_IsBy( player ) ) {
+				if ( !( value = ST_Target( player, "", error ) ) )
 					return NULL;
 				num = atoi( value );
-			} else if ( ( num = ST_FindPlayer( v[2] ) ) < 0 ) {
-				Com_sprintf( why, sizeof( why ), "No player %s on the server", v[2] );
+			} else if ( ( num = ST_FindPlayer( player ) ) < 0 ) {
+				Com_sprintf( why, sizeof( why ), "No player %s on the server", player );
 				*error = why;
 				return NULL;
 			}
@@ -1505,12 +1505,12 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 			*error = "An mp3 only plays once in this engine: loop a .wav, or play this once";
 			return NULL;
 		}
-		if ( !Q_stricmp( v[2], "player" ) ) {
-			if ( !v[3][0] ) {
-				*error = "Type the player's number, or who set it off";
+		if ( !Q_stricmp( v[2], "player" ) || ST_IsBy( v[2] ) ) {
+			if ( !Q_stricmp( v[2], "player" ) && !v[3][0] ) {
+				*error = "Type the player's number";
 				return NULL;
 			}
-			if ( !( value = ST_Target( v[3], "", error ) ) )
+			if ( !( value = ST_Target( ST_IsBy( v[2] ) ? v[2] : v[3], "", error ) ) )
 				return NULL;
 			Com_sprintf( cmd, sizeof( cmd ), "rpsound %s %s %s", verb, v[0], value );
 		} else if ( !Q_stricmp( v[2], "spot" ) ) {
@@ -2308,7 +2308,9 @@ static const char *ST_StepSummary( const stStep_t *s ) {
 		Com_sprintf( buf, sizeof( buf ), "Remap %s", s->values[0][0] ? s->values[0] : "?" );
 		break;
 	case ST_A_SAY:
-		if ( !Q_stricmp( s->values[1], "a player" ) )
+		if ( ST_IsBy( s->values[1] ) )
+			Com_sprintf( buf, sizeof( buf ), "Say as who set it off: %s", s->values[0] );
+		else if ( !Q_stricmp( s->values[1], "a player" ) )
 			Com_sprintf( buf, sizeof( buf ), "Say as %s" S_COLOR_WHITE ": %s", s->values[2][0] ? s->values[2] : "?", s->values[0] );
 		else
 			Com_sprintf( buf, sizeof( buf ), "Say: %s", s->values[0] );

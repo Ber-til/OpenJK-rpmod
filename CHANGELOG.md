@@ -27,8 +27,9 @@ OpenJK-rpmod is built on [OpenJK](https://github.com/JACoders/OpenJK); for the c
 - [Added] `Storyteller: world zones`. **When someone enters a world zone**, and an If's **world zone**, wait on a walk-in zone by its story name as on a map trigger: who is in it, For, teams, players out of sight; its marker is a box round it.
 - [Changed] `Storyteller: World triggers`. **When someone enters a world zone** and **When someone uses a world trigger** have their own World triggers part in the list of steps. **When someone comes near a spot** and **near an effect** are no longer offered (a walk-in world zone does it), for a When or an If; stories that have them still play them.
 - [Added] `World editor: a used zone's verb, and zones that are only triggers`. A zone that's used has a **Verb** shown before its title when it's looked at (Hack, Open; none to start with, the title alone), and opens its panel or is **only a trigger**: using it opens nothing and the storyteller's **When someone uses a world trigger** hears it.
-- [Added] `Storyteller: who set it off`. Give, Center message, Notification, Say as a player and Play sound to a player can go **to who set it off**: whoever set off the When before them, or used the world trigger.
+- [Added] `Storyteller: who set it off`. Give, Center message, Notification (a button under their player), Say (As) and Play sound (To) can go **to who set it off**: whoever set off the When before them, or used the world trigger.
 - [Added] `Storyteller: Give`. A new Players step gives a player, everyone or who set it off health, armour, ammo (set to an amount, or filled up), a weapon, an item, or all of them, with `rpgive`.
+- [Fixed] `Lists picked in the tools`. Picking from one of a step's lists in the storyteller (Give's weapon, say) could set another of its values instead; the cinematic manager's lists could do the same.
 
 ## 0.9.2 - Nov 10th 2026
 

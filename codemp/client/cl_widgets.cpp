@@ -1052,6 +1052,8 @@ static const vec4_t wgPopHover = { 1.0f, 1.0f, 1.0f, 0.12f };
 static struct {
 	int			kind;
 	const void	*id;
+	float		ox, oy;				// where its control was when it opened: tools pass the same local
+									// for several controls, so the address alone doesn't tell them apart
 	int			seenFrame;			// the control was drawn then
 	wgStyle_t	style;
 	float		bx, by, bw, bh;		// its value box
@@ -1072,6 +1074,11 @@ static struct {
 	char		buf[32];
 	qboolean	apply;				// typed: set when the control is drawn next
 } wgPop;
+
+// the popup open is this control's: the same id, opened where it's drawn
+static qboolean WG_PopIs( int kind, const void *id, float x, float y ) {
+	return (qboolean)( wgPop.kind == kind && wgPop.id == id && fabsf( wgPop.ox - x ) < 0.5f && fabsf( wgPop.oy - y ) < 0.5f );
+}
 
 static void WG_PopClose( void ) {
 	if ( wgPop.kind == WG_POP_NUMBER && wg.buf == wgPop.buf )
@@ -1318,7 +1325,7 @@ static void WG_PopPlace( const wgStyle_t *st, float x, float y, float w, float h
 
 qboolean WG_Choice( const wgStyle_t *st, const wgMouse_t *m, float x, float y, float w, float h,
 	int *index, int count, wgLabel_t label, void *ctx, qboolean wrap ) {
-	const qboolean open = (qboolean)( wgPop.kind == WG_POP_LIST && wgPop.id == index );
+	const qboolean open = WG_PopIs( WG_POP_LIST, index, x, y );
 	const int before = *index;
 	qboolean valueClicked;
 	int steps;
@@ -1348,7 +1355,7 @@ qboolean WG_Choice( const wgStyle_t *st, const wgMouse_t *m, float x, float y, f
 			*index = Com_Clampi( 0, count - 1, *index + steps );
 	}
 	if ( valueClicked && count > 0 ) {
-		if ( wgPop.kind == WG_POP_LIST && wgPop.id == index ) {
+		if ( WG_PopIs( WG_POP_LIST, index, x, y ) ) {
 			WG_PopClose();
 		} else {
 			const int n = Q_min( count, WG_POP_MAX );
@@ -1357,6 +1364,8 @@ qboolean WG_Choice( const wgStyle_t *st, const wgMouse_t *m, float x, float y, f
 			WG_PopClose();
 			wgPop.kind = WG_POP_LIST;
 			wgPop.id = index;
+			wgPop.ox = x;
+			wgPop.oy = y;
 			wgPop.pick = -1;
 			wgPop.labels.resize( n );
 			for ( int i = 0; i < n; i++ ) {
@@ -1414,7 +1423,7 @@ qboolean WG_ChoiceBox( const wgStyle_t *st, const wgMouse_t *m, float x, float y
 
 qboolean WG_NumberAt( const void *id, const wgStyle_t *st, const wgMouse_t *m, float x, float y, float w, float h,
 	float *v, float step, float min, float max, float scale, const char *shown ) {
-	const qboolean open = (qboolean)( wgPop.kind == WG_POP_NUMBER && wgPop.id == id );
+	const qboolean open = WG_PopIs( WG_POP_NUMBER, id, x, y );
 	const float before = *v;
 	qboolean valueClicked;
 	int steps;
@@ -1436,7 +1445,7 @@ qboolean WG_NumberAt( const void *id, const wgStyle_t *st, const wgMouse_t *m, f
 			WG_PopClose();
 		}
 	}
-	if ( wgPop.kind == WG_POP_NUMBER && wgPop.id == id ) {
+	if ( WG_PopIs( WG_POP_NUMBER, id, x, y ) ) {
 		const float bw = h, vx = x + bw + 1, vw = w - bw * 2 - 2;
 
 		// typed in: - and + still step it; a click in it moves the cursor
@@ -1460,6 +1469,8 @@ qboolean WG_NumberAt( const void *id, const wgStyle_t *st, const wgMouse_t *m, f
 		WG_PopClose();
 		wgPop.kind = WG_POP_NUMBER;
 		wgPop.id = id;
+		wgPop.ox = x;
+		wgPop.oy = y;
 		WG_PopPlace( st, x, y, w, h );
 		Com_sprintf( wgPop.buf, sizeof( wgPop.buf ), "%g", *v * scale );
 		// all of it chosen: what's typed takes its place
