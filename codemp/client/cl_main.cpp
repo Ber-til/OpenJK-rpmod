@@ -2546,6 +2546,7 @@ void CL_InitRenderer( void ) {
 	CL_Presets_RendererRestarted();
 	CL_Holster_RendererRestarted();
 	CL_WorldItems_RendererRestarted();
+	CL_MapEditor_WeatherRestarted();
 	g_console_field_width = cls.glconfig.vidWidth / SMALLCHAR_WIDTH - 2;
 	g_consoleField.widthInChars = g_console_field_width;
 

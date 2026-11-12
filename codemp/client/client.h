@@ -950,6 +950,8 @@ void CL_MapEditor_CharEvent( int ch );
 void CL_MapEditor_MouseEvent( int dx, int dy );
 void CL_MapEditor_Escape( void );
 void CL_MapEditor_Frame( void );
+void CL_MapEditor_MapWeather( const char *command );	// a weather command of the cgame's (the map's own)
+void CL_MapEditor_WeatherRestarted( void );				// the renderer started again: our weather given again
 void CL_MapEditor_Draw( void );
 void CL_MapEditor_Sounds( const vec3_t ear );
 void CL_MapEditor_AddToScene( const refdef_t *fd );

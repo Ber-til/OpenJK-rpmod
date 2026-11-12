@@ -65,6 +65,8 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #include "client.h"
 #include "qcommon/cm_public.h"
 #include "cl_widgets.h"
+#include <string>
+#include <vector>
 
 #define ME_TOGGLE_CMD		"mapedit"
 #define ME_DIR				"mapedits"
@@ -109,6 +111,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define ME_GIZMO_PX			6.0f		// an arrow is pointed at this near, on the 640x480 screen
 #define ME_MAX_FOGS			64
 #define ME_FOG_NONE			65536.0f	// a fog this thin isn't seen
+#define ME_WEATHER_MAX		4000		// a weather box's particles, at most
 #define ME_MAX_TEXNAMES		64			// textures given to the map's surfaces
 #define ME_TEX_CHUNK		200			// surface numbers in one saved or shared edit, in characters
 #define ME_MAX_TEXEDITS		512			// shared edits of textures
@@ -125,12 +128,43 @@ typedef enum {
 	ME_TAB_STYLES,
 	ME_TAB_LOCKS,
 	ME_TAB_FOG,
+	ME_TAB_WEATHER,
 	ME_TAB_TEXTURES,
 	ME_NUM_TABS
 } meTab_t;
 
-static const char *meTabNames[ME_NUM_TABS] = { "Map", "Models", "Lights", "Sounds", "Styles", "Locks", "Fog", "Textures" };
-#define ME_TABS_PER_ROW		4
+static const char *meTabNames[ME_NUM_TABS] = { "Map", "Models", "Lights", "Sounds", "Styles", "Locks", "Fog", "Weather", "Textures" };
+#define ME_TABS_PER_ROW		5
+
+// the renderer's weathers, each as it falls by itself (tr_WorldEffects.cpp): its particles, pull
+// down, width, height, fade, colour and blending (1 additive)
+static const struct {
+	const char	*command, *name;
+	int			count;
+	float		gravity, width, height, fade;
+	float		color[4];
+	int			blend;
+} meWeathers[] = {
+	{ "lightrain",		"Light rain",	500,	2000,	1.2f,	80,		100,	{ 0.5f, 0.5f, 0.5f, 0.5f },		1 },
+	{ "rain",			"Rain",			1000,	2000,	1.2f,	80,		100,	{ 0.5f, 0.5f, 0.5f, 0.5f },		1 },
+	{ "heavyrain",		"Heavy rain",	1000,	2800,	1.2f,	80,		15,		{ 0.5f, 0.5f, 0.5f, 0.5f },		1 },
+	{ "acidrain",		"Acid rain",	1000,	2000,	2.0f,	80,		100,	{ 0.34f, 0.7f, 0.34f, 0.7f },	1 },
+	{ "snow",			"Snow",			1000,	300,	1.0f,	1,		10,		{ 0.75f, 0.75f, 0.75f, 0.75f },	1 },
+	{ "spacedust",		"Space dust",	1000,	0,		1.2f,	1.2f,	10,		{ 0.75f, 0.75f, 0.75f, 0.75f },	1 },
+	{ "sand",			"Sand",			400,	0,		70,		70,		5,		{ 0.9f, 0.6f, 0.0f, 0.5f },		0 },
+	{ "fog",			"Fog clouds",	60,		0,		70,		70,		5,		{ 0.2f, 0.2f, 0.2f, 0.2f },		1 },
+	{ "heavyrainfog",	"Rain fog",		70,		0,		100,	100,	1,		{ 0.3f, 0.3f, 0.3f, 0.3f },		1 },
+	{ "light_fog",		"Light fog",	40,		0,		100,	100,	0.1f,	{ 0.19f, 0.6f, 0.7f, 0.12f },	1 },
+};
+#define ME_NUM_WEATHERS		( (int)ARRAY_LEN( meWeathers ) )
+
+static int ME_WeatherIndex( const char *command ) {
+	for ( int i = 0; i < ME_NUM_WEATHERS; i++ ) {
+		if ( !Q_stricmp( meWeathers[i].command, command ) )
+			return i;
+	}
+	return 1;		// rain
+}
 
 // what can be chosen
 typedef enum {
@@ -166,7 +200,8 @@ typedef enum {
 	ME_ITEM_LIGHT,
 	ME_ITEM_PROP,		// a prop of the map's, lifted out
 	ME_ITEM_SPEAKER,	// a sound playing round and round
-	ME_ITEM_FOG			// a fog volume of ours: a box, its colour, how thick
+	ME_ITEM_FOG,		// a fog volume of ours: a box, its colour, how thick
+	ME_ITEM_WEATHER		// weather of ours: rain, snow, sand... falling in a box
 } meItemKind_t;
 
 typedef struct {
@@ -196,6 +231,16 @@ typedef struct {
 	// it takes to see nothing through it
 	vec3_t		size;
 	float		fogDepth;
+
+	// weather: its kind (meWeathers) in the box size either way from org, and how it falls: its
+	// particles, their colour (color, and wAlpha), size, pull down, fading in and out, blending
+	// (additive or not), a wind of its own, and whether only where the map is outdoors in it too
+	int			wType;
+	int			wCount;
+	float		wGravity, wWidth, wHeight, wFade, wAlpha;
+	int			wBlend;
+	vec3_t		wWind;
+	qboolean	wOutside;
 
 	// a map prop: the pieces it's found from, surface and triangle, where it was, and
 	// whether it's gone; org, ang and scale are a model's
@@ -325,6 +370,8 @@ typedef struct {
 	int			fogScroll;
 	qboolean	fogAdded;			// the tab shows ours, not the map's
 	unsigned	fogItemsSum;		// ours as they were last applied
+	unsigned	weatherSum;			// our weather as it was last given the renderer, 0 none
+	qboolean	weatherApplied;		// ours is in the renderer, over the map's own
 	unsigned	cineFogKey;			// a cinematic's fog as it was last applied
 	qhandle_t	hidden[ME_MAX_HIDDEN];
 	int			numHidden;
@@ -826,12 +873,26 @@ void CL_MapEditor_OpenForStory( void ) {
 
 static int ME_ItemTab( int kind ) {
 	return kind == ME_ITEM_MODEL || kind == ME_ITEM_PROP ? ME_TAB_MODELS : kind == ME_ITEM_LIGHT ? ME_TAB_LIGHTS
-		: kind == ME_ITEM_SPEAKER ? ME_TAB_SOUNDS : ME_TAB_FOG;
+		: kind == ME_ITEM_SPEAKER ? ME_TAB_SOUNDS : kind == ME_ITEM_WEATHER ? ME_TAB_WEATHER : ME_TAB_FOG;
 }
 
 static int ME_TabItemKind( int tab ) {
 	return tab == ME_TAB_MODELS ? ME_ITEM_MODEL : tab == ME_TAB_LIGHTS ? ME_ITEM_LIGHT : tab == ME_TAB_SOUNDS ? ME_ITEM_SPEAKER
-		: ME_ITEM_FOG;
+		: tab == ME_TAB_WEATHER ? ME_ITEM_WEATHER : ME_ITEM_FOG;
+}
+
+// a weather of a kind as it falls by itself
+static void ME_WeatherDefaults( meItem_t *it, int type ) {
+	type = Com_Clampi( 0, ME_NUM_WEATHERS - 1, type );
+	it->wType = type;
+	it->wCount = meWeathers[type].count;
+	it->wGravity = meWeathers[type].gravity;
+	it->wWidth = meWeathers[type].width;
+	it->wHeight = meWeathers[type].height;
+	it->wFade = meWeathers[type].fade;
+	VectorCopy( meWeathers[type].color, it->color );
+	it->wAlpha = meWeathers[type].color[3];
+	it->wBlend = meWeathers[type].blend;
 }
 
 /*
@@ -2255,6 +2316,10 @@ static void ME_AddItem( int kind ) {
 		VectorSet( it->color, 0.6f, 0.62f, 0.66f );
 		it->fogDepth = 768.0f;
 	}
+	if ( kind == ME_ITEM_WEATHER ) {
+		VectorSet( it->size, 512, 512, 256 );
+		ME_WeatherDefaults( it, 1 );
+	}
 	if ( kind == ME_ITEM_MODEL ) {
 		Q_strncpyz( it->model, me.pickModel, sizeof( it->model ) );
 		if ( it->model[0] != '#' )
@@ -2683,6 +2748,15 @@ static int ME_SaveTo( const char *path ) {
 			ME_Print( f, "size", ME_Vec( it->size ) );
 			ME_Print( f, "_color", va( "%g %g %g", it->color[0], it->color[1], it->color[2] ) );
 			ME_Print( f, "depth", va( "%i", ME_Round( it->fogDepth ) ) );
+		} else if ( it->kind == ME_ITEM_WEATHER ) {
+			ME_Print( f, "classname", "rpm_weather" );
+			ME_Print( f, "origin", ME_Vec( it->org ) );
+			ME_Print( f, "size", ME_Vec( it->size ) );
+			ME_Print( f, "weather", meWeathers[Com_Clampi( 0, ME_NUM_WEATHERS - 1, it->wType )].command );
+			ME_Print( f, "_color", va( "%g %g %g %g", it->color[0], it->color[1], it->color[2], it->wAlpha ) );
+			ME_Print( f, "falling", va( "%i %g %g %g %g %i %i", it->wCount, it->wGravity, it->wWidth, it->wHeight, it->wFade, it->wBlend,
+				it->wOutside ? 1 : 0 ) );
+			ME_Print( f, "wind", ME_Vec( it->wWind ) );
 		} else if ( it->kind == ME_ITEM_LIGHT ) {
 			ME_Print( f, "classname", "rpm_light" );
 			ME_Print( f, "origin", ME_Vec( it->org ) );
@@ -2853,6 +2927,32 @@ static void ME_LoadEntity( const meKv_t *kv, int num ) {
 			it->size[i] = Com_Clamp( 1.0f, 16384.0f, it->size[i] );
 		ME_ParseVector( ME_Value( kv, num, "_color", "0.6 0.6 0.6" ), it->color );
 		it->fogDepth = Com_Clamp( 16.0f, ME_FOG_NONE, atof( ME_Value( kv, num, "depth", "768" ) ) );
+		me.numItems++;
+	} else if ( !Q_stricmp( classname, "rpm_weather" ) ) {
+		float c[4] = { 1, 1, 1, 1 }, g[7] = { 0 };
+
+		if ( !( it = ME_NewItem( ME_ITEM_WEATHER ) ) )
+			return;
+		ME_ParseVector( ME_Value( kv, num, "origin", "0 0 0" ), it->org );
+		ME_ParseVector( ME_Value( kv, num, "size", "512 512 256" ), it->size );
+		for ( int i = 0; i < 3; i++ )
+			it->size[i] = Com_Clamp( 8.0f, 32768.0f, it->size[i] );
+		ME_WeatherDefaults( it, ME_WeatherIndex( ME_Value( kv, num, "weather", "rain" ) ) );
+		if ( sscanf( ME_Value( kv, num, "_color", "" ), "%f %f %f %f", &c[0], &c[1], &c[2], &c[3] ) == 4 ) {
+			for ( int i = 0; i < 3; i++ )
+				it->color[i] = Com_Clamp( 0.0f, 1.0f, c[i] );
+			it->wAlpha = Com_Clamp( 0.0f, 1.0f, c[3] );
+		}
+		if ( sscanf( ME_Value( kv, num, "falling", "" ), "%f %f %f %f %f %f %f", &g[0], &g[1], &g[2], &g[3], &g[4], &g[5], &g[6] ) == 7 ) {
+			it->wCount = Com_Clampi( 1, ME_WEATHER_MAX, (int)g[0] );
+			it->wGravity = Com_Clamp( -8000.0f, 8000.0f, g[1] );
+			it->wWidth = Com_Clamp( 0.1f, 512.0f, g[2] );
+			it->wHeight = Com_Clamp( 0.1f, 512.0f, g[3] );
+			it->wFade = Com_Clamp( 0.01f, 100.0f, g[4] );
+			it->wBlend = g[5] != 0.0f;
+			it->wOutside = (qboolean)( g[6] != 0.0f );
+		}
+		ME_ParseVector( ME_Value( kv, num, "wind", "0 0 0" ), it->wWind );
 		me.numItems++;
 	} else if ( !Q_stricmp( classname, "rpm_fog" ) ) {
 		const int fog = atoi( ME_Value( kv, num, "fog", "0" ) );
@@ -3099,6 +3199,10 @@ static const char *ME_ShareItem( const meItem_t *it ) {
 	} else if ( it->kind == ME_ITEM_FOG ) {
 		Q_strcat( out, sizeof( out ), va( "v %s", ME_Vec( it->org ) ) );
 		Q_strcat( out, sizeof( out ), va( " %s %g %g %g %i", ME_Vec( it->size ), it->color[0], it->color[1], it->color[2], ME_Round( it->fogDepth ) ) );
+	} else if ( it->kind == ME_ITEM_WEATHER ) {
+		Q_strcat( out, sizeof( out ), va( "w %s %s %i", ME_Vec( it->org ), ME_Vec( it->size ), it->wType ) );
+		Q_strcat( out, sizeof( out ), va( " %g %g %g %g %i %g %g %g %g %i %i %s", it->color[0], it->color[1], it->color[2], it->wAlpha,
+			it->wCount, it->wGravity, it->wWidth, it->wHeight, it->wFade, it->wBlend, it->wOutside ? 1 : 0, ME_Vec( it->wWind ) ) );
 	} else if ( it->kind == ME_ITEM_SPEAKER && it->noise[0] ) {
 		Q_strcat( out, sizeof( out ), va( "a %s %i ", ME_Vec( it->org ), ( it->off ? 2 : 1 ) | ( it->global ? 4 : 0 ) ) );
 		ME_AppendSplit( out, sizeof( out ), it->noise );
@@ -3304,6 +3408,22 @@ static void ME_ApplyShared( const char *edit ) {
 		ME_KV( "_color", va( "%g %g %g", f[6], f[7], f[8] ) );
 		ME_KV( "depth", va( "%g", f[9] ) );
 		break;
+	case 'w': {
+		// w <org> <size> <type> <r g b a> <count gravity width height fade blend outside> <wind>
+		float g[21];
+
+		if ( sscanf( edit + 1, "%f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f %f", &g[0], &g[1], &g[2], &g[3], &g[4], &g[5],
+			&g[6], &g[7], &g[8], &g[9], &g[10], &g[11], &g[12], &g[13], &g[14], &g[15], &g[16], &g[17], &g[18], &g[19], &g[20] ) < 21 )
+			return;
+		ME_KV( "classname", "rpm_weather" );
+		ME_KV( "origin", va( "%g %g %g", g[0], g[1], g[2] ) );
+		ME_KV( "size", va( "%g %g %g", g[3], g[4], g[5] ) );
+		ME_KV( "weather", meWeathers[Com_Clampi( 0, ME_NUM_WEATHERS - 1, (int)g[6] )].command );
+		ME_KV( "_color", va( "%g %g %g %g", g[7], g[8], g[9], g[10] ) );
+		ME_KV( "falling", va( "%g %g %g %g %g %g %g", g[11], g[12], g[13], g[14], g[15], g[16], g[17] ) );
+		ME_KV( "wind", va( "%g %g %g", g[18], g[19], g[20] ) );
+		break;
+	}
 	case 'f':
 		if ( sscanf( edit + 1, "%f %f %f %f %f", &f[0], &f[1], &f[2], &f[3], &f[4] ) < 5 )
 			return;
@@ -3449,6 +3569,8 @@ static void ME_CheckMap( void ) {
 		Com_Printf( S_COLOR_YELLOW "Map editor: the edits for %s weren't saved\n", me.map );
 	me.reparse = qfalse;
 	Q_strncpyz( me.map, cl.mapname, sizeof( me.map ) );
+	me.weatherSum = 0;
+	me.weatherApplied = qfalse;
 	me.numShare = me.shareSent = 0;
 	me.rxId = 0;
 	me.layoutSel = -1;
@@ -3668,7 +3790,7 @@ static float ME_RayPoint( const vec3_t org, const vec3_t dir, const vec3_t p, fl
 }
 
 static void ME_ItemBounds( meItem_t *it, vec3_t mins, vec3_t maxs ) {
-	if ( it->kind == ME_ITEM_FOG ) {
+	if ( it->kind == ME_ITEM_FOG || it->kind == ME_ITEM_WEATHER ) {
 		VectorSubtract( it->org, it->size, mins );
 		VectorAdd( it->org, it->size, maxs );
 		return;
@@ -4319,6 +4441,107 @@ static void ME_EditorFrame( void ) {
 	}
 }
 
+/*
+===============================================================================
+
+Weather: the map's own (the cgame's commands, kept), with ours over it
+
+The renderer's weather (tr_WorldEffects.cpp) is its particle clouds; ours each have a box of their
+own, and settings after their kind. A change clears them all: the map's are given again, then ours.
+
+===============================================================================
+*/
+
+static std::vector<std::string> meMapWeather;
+
+// a weather command of the cgame's (the map's own), on its way to the renderer
+void CL_MapEditor_MapWeather( const char *command ) {
+	char word[32];
+	const char *p = command;
+
+	if ( !command )
+		return;
+	while ( *p == ' ' )
+		p++;
+	Q_strncpyz( word, p, sizeof( word ) );
+	for ( char *c = word; *c; c++ ) {
+		if ( *c == ' ' ) {
+			*c = '\0';
+			break;
+		}
+	}
+	if ( !Q_stricmp( word, "die" ) || !Q_stricmp( word, "clear" ) ) {
+		meMapWeather.clear();
+		me.weatherApplied = qfalse;
+		me.weatherSum = 0;		// ours given again over what's left
+		return;
+	}
+	// zones stay in the renderer through a clear; the toggles would flip again
+	if ( !Q_stricmp( word, "zone" ) || !Q_stricmp( word, "freeze" ) || !Q_stricmp( word, "outsideshake" ) || !Q_stricmp( word, "outsidepain" ) )
+		return;
+	for ( size_t i = 0; i < meMapWeather.size(); i++ ) {
+		if ( !Q_stricmp( meMapWeather[i].c_str(), p ) )
+			return;		// the cgame started again: the same weather
+	}
+	meMapWeather.push_back( p );
+}
+
+// a weather box's command: its kind, then its box and how it falls
+static const char *ME_WeatherCommand( const meItem_t *it ) {
+	static char cmd[512];
+	const int type = Com_Clampi( 0, ME_NUM_WEATHERS - 1, it->wType );
+	const char *v = meWeathers[type].command;
+
+	Com_sprintf( cmd, sizeof( cmd ), "%s%s box ( %g %g %g ) ( %g %g %g ) outside %i count %i color ( %g %g %g %g ) gravity %g width %g height %g "
+		"fade %g wind ( %g %g %g ) blend %i", v, !Q_stricmp( v, "spacedust" ) ? va( " %i", it->wCount ) : "",
+		it->org[0] - it->size[0], it->org[1] - it->size[1], it->org[2] - it->size[2], it->org[0] + it->size[0], it->org[1] + it->size[1],
+		it->org[2] + it->size[2], it->wOutside ? 1 : 0, it->wCount, it->color[0], it->color[1], it->color[2], it->wAlpha, it->wGravity,
+		it->wWidth, it->wHeight, it->wFade, it->wWind[0], it->wWind[1], it->wWind[2], it->wBlend );
+	return cmd;
+}
+
+// ours as they are (shown), to tell when they changed; 0 none
+static unsigned ME_WeatherSum( void ) {
+	unsigned sum = 0;
+
+	if ( !ME_Shown() )
+		return 0;
+	for ( int i = 0; i < me.numItems; i++ ) {
+		if ( me.items[i].kind != ME_ITEM_WEATHER )
+			continue;
+		for ( const char *c = ME_WeatherCommand( &me.items[i] ); *c; c++ )
+			sum = sum * 31 + (unsigned char)*c;
+		sum += 1;
+	}
+	return sum;
+}
+
+static void ME_ApplyWeather( void ) {
+	const unsigned sum = ME_WeatherSum();
+
+	if ( sum == me.weatherSum || !re || !re->WorldEffectCommand )
+		return;
+	me.weatherSum = sum;
+	if ( !sum && !me.weatherApplied )
+		return;		// none of ours, the map's left be
+	re->WorldEffectCommand( "clear" );
+	for ( size_t i = 0; i < meMapWeather.size(); i++ )
+		re->WorldEffectCommand( meMapWeather[i].c_str() );
+	if ( sum ) {
+		for ( int i = 0; i < me.numItems; i++ ) {
+			if ( me.items[i].kind == ME_ITEM_WEATHER )
+				re->WorldEffectCommand( ME_WeatherCommand( &me.items[i] ) );
+		}
+	}
+	me.weatherApplied = (qboolean)( sum != 0 );
+}
+
+// the renderer started again (its weather gone with it): ours given again
+void CL_MapEditor_WeatherRestarted( void ) {
+	me.weatherSum = 0;
+	me.weatherApplied = qfalse;
+}
+
 void CL_MapEditor_Frame( void ) {
 	if ( cls.state != CA_ACTIVE || !cls.cgameStarted )
 		return;
@@ -4344,6 +4567,7 @@ void CL_MapEditor_Frame( void ) {
 		ME_ReadFogs();
 	if ( me.fogsDirty || me.fogsShown != ME_Shown() || me.fogItemsSum != ME_FogItemsSum() || me.cineFogKey != ME_CineFogKey() )
 		ME_ApplyFogs();
+	ME_ApplyWeather();
 	ME_RunShare();
 	ME_RunLocks();
 	if ( me.open )
@@ -4680,9 +4904,13 @@ static void ME_AddEditorLines( void ) {
 		const qboolean sel = ME_IsSel( ME_SEL_ITEM, i ), hover = ME_IsHover( ME_SEL_ITEM, i );
 		vec3_t mins, maxs;
 
-		if ( it->kind == ME_ITEM_FOG ) {
+		if ( it->kind == ME_ITEM_FOG || it->kind == ME_ITEM_WEATHER ) {
 			byte color[4] = { (byte)Com_Clampi( 0, 255, ME_Round( it->color[0] * 255 ) ), (byte)Com_Clampi( 0, 255, ME_Round( it->color[1] * 255 ) ),
 				(byte)Com_Clampi( 0, 255, ME_Round( it->color[2] * 255 ) ), 255 };
+
+			if ( it->kind == ME_ITEM_WEATHER ) {
+				color[0] = 90; color[1] = 170; color[2] = 255;
+			}
 
 			ME_ItemBounds( it, mins, maxs );
 			ME_BoxLines( mins, maxs, sel || hover ? meSelColor : color );
@@ -5350,6 +5578,9 @@ static meItem_t *ME_DrawItemList( float *py, float x, float w, int kind, const c
 		else if ( kind == ME_ITEM_FOG )
 			text = va( "%i  fog volume" S_COLOR_GREY "  %i x %i x %i, opaque at %i", r + me.itemScroll[tab] + 1, ME_Round( row->size[0] * 2 ),
 				ME_Round( row->size[1] * 2 ), ME_Round( row->size[2] * 2 ), ME_Round( row->fogDepth ) );
+		else if ( kind == ME_ITEM_WEATHER )
+			text = va( "%i  %s" S_COLOR_GREY "  %i x %i x %i, %i falling", r + me.itemScroll[tab] + 1, meWeathers[Com_Clampi( 0, ME_NUM_WEATHERS - 1, row->wType )].name,
+				ME_Round( row->size[0] * 2 ), ME_Round( row->size[1] * 2 ), ME_Round( row->size[2] * 2 ), row->wCount );
 		else
 			text = va( "%i  %s" S_COLOR_GREY "  %s%s", r + me.itemScroll[tab] + 1, row->noise[0] ? COM_SkipPath( (char *)row->noise ) : S_COLOR_YELLOW "no sound",
 				row->global ? "everywhere" : "here", row->off ? ", stopped" : "" );
@@ -6032,6 +6263,82 @@ static void ME_DrawTexturesTab( float x, float y, float w ) {
 	ME_Text( x, y + ME_ROW_H, S_COLOR_GREY "ones are saved and shared with the layout", meWhite );
 }
 
+static const char *ME_WeatherAt( int i, void *ctx ) {
+	return i >= 0 && i < ME_NUM_WEATHERS ? meWeathers[i].name : "";
+}
+
+// our weather: boxes of rain, snow, sand or fog, each falling as set
+static void ME_DrawWeatherTab( float x, float y, float w ) {
+	const float half = ( w - 4 ) * 0.5f, row = ME_CTRL_H + ME_GAP;
+	meItem_t *it = ME_DrawItemList( &y, x, w, ME_ITEM_WEATHER, "Add" );
+
+	if ( !re || !re->WorldEffectCommand ) {
+		ME_Text( x, y + 4, S_COLOR_GREY "This renderer has no weather", meWhite );
+		return;
+	}
+	if ( !it ) {
+		ME_Text( x, y + 4, S_COLOR_GREY "Add puts a box of rain at the crosshair:", meWhite );
+		ME_Text( x, y + 4 + ME_ROW_H, S_COLOR_GREY "it falls in the box only, as set below", meWhite );
+		return;
+	}
+	y += 2;
+	// its kind, and the way that kind falls by itself
+	{
+		int type = it->wType;
+		wgMouse_t m;
+
+		ME_Text( x, y + 2, "Kind", meDim );
+		ME_CtlMouse( &m );
+		if ( WG_Choice( ME_CtlStyle(), &m, x + 62, y, half - 62 + half * 0.4f, ME_CTRL_H, &type, ME_NUM_WEATHERS, ME_WeatherAt, NULL, qtrue )
+			&& type != it->wType ) {
+			ME_WeatherDefaults( it, type );
+			ME_Changed();
+		}
+		if ( ME_Button( x + half + 4 + half * 0.4f, y, half * 0.6f, "As it falls", qfalse, qtrue ) ) {
+			ME_WeatherDefaults( it, it->wType );
+			ME_Changed();
+		}
+	}
+	y += row;
+	if ( ME_NumInt( x, y, half, "Count", va( "%i", it->wCount ), &it->wCount, 50, 1, ME_WEATHER_MAX ) )
+		ME_Changed();
+	ME_Num( x + half + 4, y, half, "Falls", va( "%i", ME_Round( it->wGravity ) ), &it->wGravity, 50.0f, -8000.0f, 8000.0f, 1.0f );
+	y += row;
+	ME_Num( x, y, half, "Width", va( "%g", it->wWidth ), &it->wWidth, 0.5f, 0.1f, 512.0f, 1.0f );
+	ME_Num( x + half + 4, y, half, "Height", va( "%g", it->wHeight ), &it->wHeight, 1.0f, 0.1f, 512.0f, 1.0f );
+	y += row;
+	ME_Num( x, y, half, "Fade", va( "%g", it->wFade ), &it->wFade, 1.0f, 0.01f, 100.0f, 1.0f );
+	ME_Num( x + half + 4, y, half, "Alpha", va( "%i", ME_Round( it->wAlpha * 255 ) ), &it->wAlpha, 0.05f, 0.0f, 1.0f, 255.0f );
+	y += row;
+	ME_Num( x, y, half, "Red", va( "%i", ME_Round( it->color[0] * 255 ) ), &it->color[0], 0.05f, 0.0f, 1.0f, 255.0f );
+	ME_Num( x + half + 4, y, half, "Green", va( "%i", ME_Round( it->color[1] * 255 ) ), &it->color[1], 0.05f, 0.0f, 1.0f, 255.0f );
+	y += row;
+	ME_Num( x, y, half, "Blue", va( "%i", ME_Round( it->color[2] * 255 ) ), &it->color[2], 0.05f, 0.0f, 1.0f, 255.0f );
+	if ( ME_Button( x + half + 4, y, half, it->wBlend ? "Glowing (adds)" : "Solid (blends)", qfalse, qtrue ) ) {
+		it->wBlend = !it->wBlend;
+		ME_Changed();
+	}
+	y += row;
+	ME_Num( x, y, half, "Wind X", va( "%i", ME_Round( it->wWind[0] ) ), &it->wWind[0], 50.0f, -5000.0f, 5000.0f, 1.0f );
+	ME_Num( x + half + 4, y, half, "Wind Y", va( "%i", ME_Round( it->wWind[1] ) ), &it->wWind[1], 50.0f, -5000.0f, 5000.0f, 1.0f );
+	y += row;
+	ME_Num( x, y, half, "Wind Z", va( "%i", ME_Round( it->wWind[2] ) ), &it->wWind[2], 50.0f, -5000.0f, 5000.0f, 1.0f );
+	if ( ME_Button( x + half + 4, y, half, it->wOutside ? "Map's outdoors only" : "The whole box", it->wOutside, qtrue ) ) {
+		it->wOutside = (qboolean)!it->wOutside;
+		ME_Changed();
+	}
+	y += row;
+	{
+		static const char *names[3] = { "Width", "Depth", "Tall" };
+		const float third = ( w - 8 ) / 3.0f;
+
+		for ( int a = 0; a < 3; a++ )
+			ME_Num( x + a * ( third + 4 ), y, third, names[a], va( "%i", ME_Round( it->size[a] * 2 ) ), &it->size[a], 32.0f, 8.0f, 32768.0f, 2.0f );
+	}
+	y += row + 2;
+	ME_Text( x, y, S_COLOR_GREY "Falls where you are near it; everyone with this client sees it once shared", meWhite );
+}
+
 static void ME_DrawFogTab( float x, float y, float w ) {
 	const float half = ( w - 4 ) * 0.5f;
 	const meItem_t *sel = ME_SelectedItem();
@@ -6290,6 +6597,8 @@ static void ME_DrawLabels( void ) {
 			ME_Text( sx + 4, sy - 12, "light", meWhite );
 		else if ( it->kind == ME_ITEM_FOG )
 			ME_Text( sx + 4, sy - 12, "fog volume", meWhite );
+		else if ( it->kind == ME_ITEM_WEATHER )
+			ME_Text( sx + 4, sy - 12, meWeathers[Com_Clampi( 0, ME_NUM_WEATHERS - 1, it->wType )].name, meWhite );
 		else
 			ME_Text( sx + 4, sy - 12, "speaker", meWhite );
 	}
@@ -6537,6 +6846,7 @@ static void ME_DrawEditor( void ) {
 	case ME_TAB_SOUNDS:		ME_DrawSoundsTab( x, y, w );	break;
 	case ME_TAB_LOCKS:		ME_DrawLocksTab( x, y, w );		break;
 	case ME_TAB_FOG:		ME_DrawFogTab( x, y, w );		break;
+	case ME_TAB_WEATHER:	ME_DrawWeatherTab( x, y, w );	break;
 	case ME_TAB_TEXTURES:	ME_DrawTexturesTab( x, y, w );	break;
 	default:				ME_DrawStylesTab( x, y, w );	break;
 	}

@@ -352,6 +352,8 @@ static void RH_RemoveObjective( int i ) {
 }
 
 // cmd:objective/<verb>: <text or number>
+static void RH_CombatHook( const char *verb );
+
 static rhResult_t RH_Objective( char **argv, int argc, const char *message ) {
 	const char *verb = argc >= 1 && argv[0][0] ? argv[0] : "add";
 	int i;
@@ -489,6 +491,10 @@ static rhResult_t RH_Run( const char *text ) {
 		return RH_Npc( argv + 1, argc - 1, message );
 	if ( !Q_stricmp( argv[0], "objective" ) || !Q_stricmp( argv[0], "objectives" ) )
 		return RH_Objective( argv + 1, argc - 1, message );
+	if ( !Q_stricmp( argv[0], "combat" ) ) {
+		RH_CombatHook( argc >= 2 ? argv[1] : "" );
+		return RH_DROP;
+	}
 	if ( !Q_stricmp( argv[0], "cine" ) ) {
 		CL_Cinematic_Hook( argv + 1, argc - 1, message );
 		return RH_DROP;
@@ -930,17 +936,84 @@ static void CL_Objective_f( void ) {
 		: va( "rpnotify -1 1 " RH_PREFIX "objective/%s", verb ), qfalse );
 }
 
+/*
+===============================================================================
+
+COMBAT: lethal or not, for everyone with this client
+
+cmd:combat/lethal shows every cut a lightsaber makes, heads and bodies too (cg_dismember 2);
+cmd:combat/nonlethal none (0); cmd:combat/off each player's own setting back. Limbs only come off
+where the server has g_dismember on: this is what each game shows of it. C1B3R keeps the last one
+for who joins later (serverstate.py), until the map loads again.
+
+===============================================================================
+*/
+
+enum { RH_COMBAT_OFF, RH_COMBAT_LETHAL, RH_COMBAT_NONLETHAL };
+static int		rhCombat;
+static char		rhOwnDismember[16];		// the player's own cg_dismember, while it's set for them
+static qboolean	rhDismemberSaved;
+
+static void RH_SetCombat( int mode, qboolean say ) {
+	if ( mode == rhCombat )
+		return;
+	if ( mode != RH_COMBAT_OFF && !rhDismemberSaved ) {
+		Q_strncpyz( rhOwnDismember, Cvar_VariableString( "cg_dismember" ), sizeof( rhOwnDismember ) );
+		rhDismemberSaved = qtrue;
+	}
+	if ( mode == RH_COMBAT_LETHAL ) {
+		Cvar_Set( "cg_dismember", "2" );
+	} else if ( mode == RH_COMBAT_NONLETHAL ) {
+		Cvar_Set( "cg_dismember", "0" );
+	} else if ( rhDismemberSaved ) {
+		Cvar_Set( "cg_dismember", rhOwnDismember[0] ? rhOwnDismember : "0" );
+		rhDismemberSaved = qfalse;
+	}
+	rhCombat = mode;
+	if ( say && cls.state == CA_ACTIVE )
+		CL_QueueCgameCommand( mode == RH_COMBAT_LETHAL ? "cp \"^1Combat: Lethal\"" : mode == RH_COMBAT_NONLETHAL
+			? "cp \"^2Combat: Non-Lethal\"" : "cp \"^7Combat: as each player has it\"" );
+	Com_Printf( "Combat: %s\n", mode == RH_COMBAT_LETHAL ? "lethal (cuts shown)" : mode == RH_COMBAT_NONLETHAL ? "non-lethal (no cuts shown)"
+		: "your own dismemberment setting" );
+}
+
+static void RH_CombatHook( const char *verb ) {
+	RH_SetCombat( !Q_stricmp( verb, "lethal" ) ? RH_COMBAT_LETHAL : !Q_stricmp( verb, "nonlethal" ) ? RH_COMBAT_NONLETHAL : RH_COMBAT_OFF, qtrue );
+}
+
+static void CL_Combat_f( void ) {
+	const char *verb = Cmd_Argv( 1 );
+
+	if ( Q_stricmp( verb, "lethal" ) && Q_stricmp( verb, "nonlethal" ) && Q_stricmp( verb, "off" ) ) {
+		Com_Printf( "Combat is %s now\n"
+			"combat lethal    : every cut shown, for everyone with this client\n"
+			"combat nonlethal : none shown\n"
+			"combat off       : each player's own setting again\n"
+			"(Shown only where the server cuts: g_dismember on. Sent through C1B3R, for its RPMod admins.)\n",
+			rhCombat == RH_COMBAT_LETHAL ? "lethal" : rhCombat == RH_COMBAT_NONLETHAL ? "non-lethal" : "off" );
+		return;
+	}
+	if ( cls.state != CA_ACTIVE ) {
+		Com_Printf( "Not connected to a server.\n" );
+		return;
+	}
+	CL_AddReliableCommand( va( "rpnotify -1 1 " RH_PREFIX "combat/%s", Q_strlwr( (char *)va( "%s", verb ) ) ), qfalse );
+}
+
 void CL_RpHooks_Init( void ) {
 	memset( &rhObj, 0, sizeof( rhObj ) );
 	cl_rpExperimental = Cvar_Get( "cl_rpExperimental", "0", CVAR_ARCHIVE, "Experimental features on as the game starts (rpexperimental)" );
 	rhExperimental = (qboolean)( cl_rpExperimental->integer != 0 );
 	Cmd_AddCommand( "objective", CL_Objective_f, "Lists the mission objectives, or sends one to everyone with this client" );
 	Cmd_AddCommand( "rpexperimental", CL_RpExperimental_f, "Turns experimental features on or off, and keeps them so every time the game starts" );
+	Cmd_AddCommand( "combat", CL_Combat_f, "Lethal or non-lethal fights for everyone with this client: lightsaber cuts shown or not" );
 }
 
 void CL_RpHooks_Shutdown( void ) {
 	Cmd_RemoveCommand( "objective" );
 	Cmd_RemoveCommand( "rpexperimental" );
+	Cmd_RemoveCommand( "combat" );
+	RH_SetCombat( RH_COMBAT_OFF, qfalse );		// the player's own setting kept in their config
 }
 
 static int rhLoad;		// the load of the map (cl.serverId) the objectives are for
@@ -953,11 +1026,13 @@ void CL_RpHooks_NewLoad( void ) {
 	rhLoad = cl.serverId;
 	rhObj.count = 0;
 	rhObj.title[0] = '\0';
+	RH_SetCombat( RH_COMBAT_OFF, qfalse );
 }
 
 // a new server is a new story
 void CL_RpHooks_Disconnect( void ) {
 	rhLoad = 0;
+	RH_SetCombat( RH_COMBAT_OFF, qfalse );
 	memset( &rhObj, 0, sizeof( rhObj ) );
 	memset( &rhLast, 0, sizeof( rhLast ) );
 	memset( &rhSubs, 0, sizeof( rhSubs ) );

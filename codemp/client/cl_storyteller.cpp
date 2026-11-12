@@ -262,7 +262,7 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ "Route", ST_K_TEXT, "", NULL },
 		{ "Pace", ST_K_CHOICE, "walk", "walk|run" },
 		{ "Loop", ST_K_CHOICE, "no", "no|yes" } } },
-	{ "model", "Place model", "World", "Places a model at the spot with rpmodel add, as the model manager does. Scale is in percent.", 1, 5, 9, {
+	{ "model", "Place model", "World", "Places a model at the spot with rpmodel add, as the model manager does. Scale is in percent. A name gives it one in the model manager, as Shift+Enter does there: later steps, and modelmanager remove <name>, find it by it.", 1, 5, 10, {
 		{ "Model", ST_K_TEXT, "", NULL },
 		{ "X", ST_K_NUMBER, "", NULL },
 		{ "Y", ST_K_NUMBER, "", NULL },
@@ -271,7 +271,8 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ "Yaw", ST_K_NUMBER, "0", NULL },
 		{ "Roll", ST_K_NUMBER, "0", NULL },
 		{ "Scale", ST_K_NUMBER, "100", NULL },
-		{ "Solid", ST_K_CHOICE, "yes", "yes|no" } } },
+		{ "Solid", ST_K_CHOICE, "yes", "yes|no" },
+		{ "Name", ST_K_TEXT, "", NULL } } },
 	{ "effect", "Play effect", "World", "Plays an effect at the spot with rpeffect, once or looping.", 2, 6, 8, {
 		{ "Effect", ST_K_TEXT, "", NULL },
 		{ "Play", ST_K_CHOICE, "once", "once|loop" },
@@ -1039,6 +1040,14 @@ static const char *ST_StepExtra( const stStep_t *s, qboolean *local ) {
 	static char cmd[MAX_STRING_CHARS];
 
 	*local = qfalse;
+	// a model placed with a name: the model manager names it once the server lists it
+	if ( s->action == ST_A_MODEL && s->values[9][0] && s->values[0][0] ) {
+		*local = qtrue;
+		Com_sprintf( cmd, sizeof( cmd ), "modelmanager stated %s %s %s %s %s %s %s %s %i %i 1", s->values[9], s->values[0],
+			s->values[1], s->values[2], s->values[3], s->values[4][0] ? s->values[4] : "0", s->values[5][0] ? s->values[5] : "0",
+			s->values[6][0] ? s->values[6] : "0", s->values[7][0] ? atoi( s->values[7] ) : 100, Q_stricmp( s->values[8], "no" ) ? 1 : 0 );
+		return cmd;
+	}
 	if ( s->action != ST_A_NPC_TALK || !ST_HasEmote( s ) )
 		return NULL;
 	Com_sprintf( cmd, sizeof( cmd ), "npc emote %s %s", s->values[3], s->values[0] );
@@ -3136,6 +3145,31 @@ static qboolean ST_Load( const char *name ) {
 	return qtrue;
 }
 
+static void ST_StoreTab( void );
+
+// every story open, in its tab, armed: those starting with a When; how many
+static int ST_ArmAllTabs( int limit ) {
+	int armed = 0, skipped = 0;
+
+	ST_StoreTab();
+	for ( int i = 0; i < stNumTabs; i++ ) {
+		const stTab_t *t = &stTabs[i];
+		const char *name = t->name[0] ? t->name : va( "unsaved story %i", i + 1 );
+
+		if ( !t->steps || !t->numSteps || ST_ArmProblem( t->steps, t->numSteps ) ) {
+			skipped++;
+			continue;
+		}
+		if ( ST_Arm( name, t->steps, t->numSteps, limit, qfalse ) )
+			armed++;
+	}
+	ST_Message( va( "%s%i stor%s armed%s", armed ? S_COLOR_GREEN : S_COLOR_YELLOW, armed, armed == 1 ? "y" : "ies",
+		skipped ? va( "; %i not (they don't start with a When)", skipped ) : "" ) );
+	Com_Printf( "Storyteller: armed %i open stor%s%s\n", armed, armed == 1 ? "y" : "ies",
+		skipped ? va( ", %i not: they don't start with a When", skipped ) : "" );
+	return armed;
+}
+
 // a saved story armed, by the console
 static void ST_ArmSaved( const char *name, int limit ) {
 	stStep_t *steps = (stStep_t *)Z_Malloc( ST_MAX_STEPS * sizeof( stStep_t ), TAG_GENERAL, qfalse );
@@ -4827,14 +4861,16 @@ void CL_Storyteller_f( void ) {
 			Com_Printf( "Storyteller: couldn't open %s\n", Cmd_Argv( 2 ) );
 	} else if ( !Q_stricmp( arg, "arm" ) && Cmd_Argc() >= 3 ) {
 		const char *how = Cmd_Argv( 3 );
+		// all: every story open in a tab
+		const qboolean all = (qboolean)!Q_stricmp( Cmd_Argv( 2 ), "all" );
 
 		// once, again for every time, or a number of times
 		if ( !how[0] )
-			ST_ArmSaved( Cmd_Argv( 2 ), 1 );
+			all ? (void)ST_ArmAllTabs( 1 ) : ST_ArmSaved( Cmd_Argv( 2 ), 1 );
 		else if ( !Q_stricmp( how, "again" ) )
-			ST_ArmSaved( Cmd_Argv( 2 ), 0 );
+			all ? (void)ST_ArmAllTabs( 0 ) : ST_ArmSaved( Cmd_Argv( 2 ), 0 );
 		else if ( ST_IsNumber( how ) && atoi( how ) >= 1 )
-			ST_ArmSaved( Cmd_Argv( 2 ), atoi( how ) );
+			all ? (void)ST_ArmAllTabs( atoi( how ) ) : ST_ArmSaved( Cmd_Argv( 2 ), atoi( how ) );
 		else
 			Com_Printf( "Storyteller: arm it once, again (every time), or a number of times\n" );
 	} else if ( !Q_stricmp( arg, "disarm" ) ) {
@@ -4874,6 +4910,7 @@ void CL_Storyteller_f( void ) {
 		Com_Printf( "       storyteller list             list the saved stories\n" );
 		Com_Printf( "       storyteller arm <name> [again|<times>]  arm a saved story: it plays when its first step\n" );
 		Com_Printf( "                                    is set off, once, every time with again, or that many times\n" );
+		Com_Printf( "       storyteller arm all [again|<times>]  arm every story open in a tab (those starting with a When)\n" );
 		Com_Printf( "       storyteller disarm [name|all]  disarm one, or all\n" );
 		Com_Printf( "       storyteller armed            list the armed stories\n" );
 		Com_Printf( "       storyteller markers [on|off] where the armed stories wait, drawn on your screen\n" );
@@ -6081,11 +6118,20 @@ static void ST_DrawArmedPopup( void ) {
 		if ( ST_Button( x + 12 + bw, y + 76, bw, va( "Arm: %i times", st.armTimes ), qfalse, qtrue ) )
 			ST_Arm( name, st.steps, st.numSteps, st.armTimes, qfalse );
 	}
+	// every story open in a tab, at once
+	if ( stNumTabs > 1 ) {
+		const float bw = ( w - 20 ) * 0.5f;
+
+		if ( ST_Button( x + 8, y + h - 74, bw, va( "Arm all %i open: once", stNumTabs ), qfalse, qtrue ) )
+			ST_ArmAllTabs( 1 );
+		if ( ST_Button( x + 12 + bw, y + h - 74, bw, "Arm all open: every time", qfalse, qtrue ) )
+			ST_ArmAllTabs( 0 );
+	}
 
 	if ( !stNumArmed )
 		ST_Text( x + 8, y + 106, S_COLOR_GREY "Nothing armed yet", stWhite );
 	else
-		ST_List( &st.armedList, stNumArmed, x + 8, y + 104, w - 16, h - 162, ST_DrawArmedRow, NULL );
+		ST_List( &st.armedList, stNumArmed, x + 8, y + 104, w - 16, h - 162 - ( stNumTabs > 1 ? 24 : 0 ), ST_DrawArmedRow, NULL );
 	ST_TextWrapped( x + 8, y + h - 52, w - 16, S_COLOR_GREY "A copy: arm it again after changing it. Disarmed when the map changes.", stWhite, 2 );
 
 	if ( ST_Button( x + 8, y + h - 22, 80, "Disarm", qfalse, haveSel ) ) {

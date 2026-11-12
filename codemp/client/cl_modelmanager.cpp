@@ -243,6 +243,8 @@ static struct {
 
 	// a state being reloaded, waiting for the list it asked for
 	qboolean	reloading;
+	qboolean	reloadNamed;		// models named by modelmanager stated typed or run, not a state reloaded
+	int			reloadExecTime;		// a state file's reloadstate ran then: its stated lines are its own
 	int			reloadSeq;
 	char		reloadName[MAX_QPATH];
 	int			numStateModels;
@@ -2344,6 +2346,14 @@ static void MM_MatchState( void ) {
 
 	for ( int i = 0; i < mm.numPieces; i++ )
 		mm.pieces[i].mark = qfalse;
+	if ( mm.reloadNamed ) {
+		mm.reloadNamed = qfalse;
+		if ( matched == mm.numStateModels )
+			MM_Report( va( S_COLOR_GREEN "Named %i model%s", named, named == 1 ? "" : "s" ) );
+		else
+			MM_Report( va( S_COLOR_YELLOW "Named %i of %i models; the rest aren't on the map, or not where it was said", named, mm.numStateModels ) );
+		return;
+	}
 	if ( matched == mm.numStateModels )
 		MM_Report( va( S_COLOR_GREEN "Reloaded state %s: found all %i models, %i of them named", mm.reloadName, matched, named ) );
 	else
@@ -2360,6 +2370,36 @@ static void MM_CheckReload( void ) {
 	MM_MatchState();
 }
 
+// modelmanager stated <name> <model> <x y z> [<pitch yaw roll> <scale> <solid>], typed or run (the
+// storyteller's Place model): that model there named, once the server lists it; several together
+static void MM_NameStated( void ) {
+	const char *argv[13];
+	char defaults[6][8] = { "0", "0", "0", "100", "1", "0" };
+	const int argc = Cmd_Argc();
+	mmStateModel_t model;
+
+	if ( argc < 7 ) {
+		Com_Printf( "usage: modelmanager stated <name> <model> <x y z> [<pitch yaw roll> <scale> <solid>]\n" );
+		return;
+	}
+	for ( int i = 0; i < 13; i++ )
+		argv[i] = i < argc ? Cmd_Argv( i ) : defaults[i - 7];
+	if ( argc >= 10 )
+		argv[12] = "1";		// its angles said: matched by them too
+	if ( !MM_ParseStateModel( (char **)argv, 13, &model ) || !model.tag[0] || !MM_EnsureIndex() )
+		return;
+	if ( !mm.reloading ) {
+		mm.numStateModels = 0;
+		Q_strncpyz( mm.reloadName, "named", sizeof( mm.reloadName ) );
+		mm.reloading = qtrue;
+		mm.reloadNamed = qtrue;
+		MM_RequestList();
+		mm.reloadSeq = mm.listSeq;
+	}
+	if ( mm.numStateModels < MM_MAX_PIECES )
+		mm.stateModels[mm.numStateModels++] = model;
+}
+
 static void MM_ReloadState( const char *name ) {
 	int count;
 
@@ -2373,6 +2413,8 @@ static void MM_ReloadState( const char *name ) {
 	mm.numStateModels = count;
 	Q_strncpyz( mm.reloadName, name, sizeof( mm.reloadName ) );
 	mm.reloading = qtrue;
+	mm.reloadNamed = qfalse;
+	mm.reloadExecTime = cls.realtime;
 	MM_RequestList();
 	mm.reloadSeq = mm.listSeq;
 	MM_Report( va( "Reloading state %s: reading the map's models from the server", name ) );
@@ -2544,6 +2586,8 @@ static void MM_PrintUsage( void ) {
 	Com_Printf( "       modelmanager remove <name>      remove the models with that name from the map\n" );
 	Com_Printf( "       modelmanager savestate <name>   save the models placed or named, and their names\n" );
 	Com_Printf( "       modelmanager reloadstate <name> give the models of a state their names back, after rpdump load\n" );
+	Com_Printf( "       modelmanager stated <name> <model> <x y z> [<pitch yaw roll> <scale> <solid>]\n"
+		"                                       name the model there now, as a state would\n" );
 	Com_Printf( "       modelmanager scale <percent>    set the scale of the selection, or of new models\n" );
 	Com_Printf( "       modelmanager solid <0|1>        set whether the selection, or new models, are solid\n" );
 	Com_Printf( "       modelmanager angles <p> <y> <r> set the angles of the selection, or of new models\n" );
@@ -2631,7 +2675,10 @@ void CL_ModelManager_f( void ) {
 		COM_StripExtension( name, name, sizeof( name ) );
 		MM_ReloadState( name );
 	} else if ( !Q_stricmp( arg, "stated" ) ) {
-		// a model of a state being exec'd; its reloadstate line read them all
+		// a model of a state being exec'd: its reloadstate line read them all. Typed (or the
+		// storyteller's): that model named, as the state would
+		if ( !mm.reloading || mm.reloadNamed || cls.realtime != mm.reloadExecTime )
+			MM_NameStated();
 	} else if ( !Q_stricmp( arg, "scale" ) && argc >= 3 ) {
 		const int scale = Com_Clampi( MM_SCALE_MIN, MM_SCALE_MAX, atoi( Cmd_Argv( 2 ) ) );
 

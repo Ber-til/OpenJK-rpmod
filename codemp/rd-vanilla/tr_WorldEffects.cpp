@@ -48,7 +48,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define	MAX_WIND_ZONES			10
 #define MAX_WEATHER_ZONES		10
 #define	MAX_PUFF_SYSTEMS		2
-#define	MAX_PARTICLE_CLOUDS		5
+#define	MAX_PARTICLE_CLOUDS		16		// OpenJK-rpmod: 5 in JKA; the map editor's weather zones add more
 
 #define POINTCACHE_CELL_SIZE	96.0f
 
@@ -730,6 +730,9 @@ float R_IsOutsideCausingPain(vec3_t pos)
 ////////////////////////////////////////////////////////////////////////////////////////
 // Particle Cloud
 ////////////////////////////////////////////////////////////////////////////////////////
+// OpenJK-rpmod: a count asked for after the cloud's type ("rain count 2000"): the next cloud made has it
+static int weNextCount;
+
 class	CWeatherParticleCloud
 {
 private:
@@ -798,6 +801,14 @@ public:
 
 	bool		mWaterParticles;
 
+	// OpenJK-rpmod: a cloud of its own box (the map editor's weather), shown in it only (and there only
+	// where the map is outdoors too, with mBoxOutsideOnly); and a wind of its own, over the global one
+	bool		mBoxed;
+	bool		mBoxOutsideOnly;
+	CVec3		mBoxMins;
+	CVec3		mBoxMaxs;
+	CVec3		mExtraWind;
+
 
 
 
@@ -807,6 +818,11 @@ public:
 	////////////////////////////////////////////////////////////////////////////////////
 	void	Initialize(int count, const char* texturePath, int VertexCount=4)
 	{
+		if (weNextCount > 0)
+		{
+			count = weNextCount;
+			weNextCount = 0;
+		}
 		Reset();
 		assert(mParticleCount==0 && mParticles==0);
 		assert(mImage==0);
@@ -864,6 +880,11 @@ public:
 		mParticles			= 0;
 
 		mPopulated			= 0;
+		mBoxed				= false;
+		mBoxOutsideOnly		= false;
+		mBoxMins.Clear();
+		mBoxMaxs.Clear();
+		mExtraWind.Clear();
 
 
 
@@ -1015,6 +1036,7 @@ public:
 			// Apply Wind Velocity
 			//---------------------
 			force    += mGlobalWindVelocity;
+			force    += mExtraWind;
 		}
 
 
@@ -1098,7 +1120,17 @@ public:
 
 			partToCamera	= (part->mPosition - mCameraPosition);
 			partRendering	= part->mFlags.get_bit(CWeatherParticle::FLAG_RENDER);
-			partOutside		= mOutside.PointOutside(part->mPosition, mWidth, mHeight);
+			if (mBoxed)
+			{
+				partOutside	= (part->mPosition[0] >= mBoxMins[0] && part->mPosition[0] <= mBoxMaxs[0]
+					&& part->mPosition[1] >= mBoxMins[1] && part->mPosition[1] <= mBoxMaxs[1]
+					&& part->mPosition[2] >= mBoxMins[2] && part->mPosition[2] <= mBoxMaxs[2]
+					&& (!mBoxOutsideOnly || mOutside.PointOutside(part->mPosition, mWidth, mHeight)));
+			}
+			else
+			{
+				partOutside	= mOutside.PointOutside(part->mPosition, mWidth, mHeight);
+			}
 			partInRange		= mRange.In(part->mPosition);
 			partInView		= (partOutside && partInRange && (partToCamera.Dot(mCameraForward)>0.0f));
 
@@ -1473,11 +1505,28 @@ void RE_WorldEffectCommand(const char *command)
 	COM_BeginParseSession ("RE_WorldEffectCommand");
 
 	const char	*token;//, *origCommand;
+	const int	cloudsBefore = mParticleClouds.size();
+
+	// OpenJK-rpmod: "count N" anywhere after the type: the cloud's particles
+	{
+		const char *scan = command;
+		const char *word;
+
+		while ((word = COM_ParseExt(&scan, qfalse)) && word[0])
+		{
+			if (!Q_stricmp(word, "count"))
+			{
+				weNextCount = Com_Clampi(1, 6000, atoi(COM_ParseExt(&scan, qfalse)));
+				break;
+			}
+		}
+	}
 
 	token = COM_ParseExt(&command, qfalse);
 
 	if ( !token )
 	{
+		weNextCount = 0;
 		return;
 	}
 
@@ -1851,6 +1900,65 @@ void RE_WorldEffectCommand(const char *command)
 		ri.Printf( PRINT_ALL, "	light_fog\n" );
 		ri.Printf( PRINT_ALL, "	outsideshake\n" );
 		ri.Printf( PRINT_ALL, "	outsidepain\n" );
+		ri.Printf( PRINT_ALL, "  after a cloud's type: box (mins) (maxs), outside 0|1, count N, color r g b a,\n" );
+		ri.Printf( PRINT_ALL, "    gravity G, width W, height H, fade F, mass min max, wind (velocity), blend 0|1\n" );
+	}
+	weNextCount = 0;
+
+	// OpenJK-rpmod: a cloud just made, set as asked after its type (the map editor's weather)
+	if (mParticleClouds.size() > cloudsBefore)
+	{
+		CWeatherParticleCloud& cloud = mParticleClouds[mParticleClouds.size() - 1];
+
+		while ((token = COM_ParseExt(&command, qfalse)) && token[0])
+		{
+			vec3_t v;
+			float c[4];
+
+			if (!Q_stricmp(token, "box"))
+			{
+				vec3_t mins, maxs;
+				if (WE_ParseVector(&command, 3, mins) && WE_ParseVector(&command, 3, maxs))
+				{
+					cloud.mBoxed = true;
+					for (int k = 0; k < 3; k++)
+					{
+						cloud.mBoxMins[k] = Q_min(mins[k], maxs[k]);
+						cloud.mBoxMaxs[k] = Q_max(mins[k], maxs[k]);
+					}
+				}
+			}
+			else if (!Q_stricmp(token, "outside"))
+				cloud.mBoxOutsideOnly = (atoi(COM_ParseExt(&command, qfalse)) != 0);
+			else if (!Q_stricmp(token, "count"))
+				COM_ParseExt(&command, qfalse);		// taken as it was made
+			else if (!Q_stricmp(token, "color") && WE_ParseVector(&command, 4, c))
+			{
+				for (int k = 0; k < 4; k++)
+					cloud.mColor[k] = Com_Clamp(0.0f, 1.0f, c[k]);
+			}
+			else if (!Q_stricmp(token, "gravity"))
+				cloud.mGravity = atof(COM_ParseExt(&command, qfalse));
+			else if (!Q_stricmp(token, "width"))
+				cloud.mWidth = Q_max(0.1f, (float)atof(COM_ParseExt(&command, qfalse)));
+			else if (!Q_stricmp(token, "height"))
+				cloud.mHeight = Q_max(0.1f, (float)atof(COM_ParseExt(&command, qfalse)));
+			else if (!Q_stricmp(token, "fade"))
+				cloud.mFade = Com_Clamp(0.01f, 100.0f, atof(COM_ParseExt(&command, qfalse)));
+			else if (!Q_stricmp(token, "mass") && WE_ParseVector(&command, 2, v))
+			{
+				cloud.mMass.mMin = Q_max(0.1f, Q_min(v[0], v[1]));
+				cloud.mMass.mMax = Q_max(0.1f, Q_max(v[0], v[1]));
+			}
+			else if (!Q_stricmp(token, "wind") && WE_ParseVector(&command, 3, v))
+			{
+				cloud.mExtraWind[0] = v[0];
+				cloud.mExtraWind[1] = v[1];
+				cloud.mExtraWind[2] = v[2];
+			}
+			else if (!Q_stricmp(token, "blend"))
+				cloud.mBlendMode = (atoi(COM_ParseExt(&command, qfalse)) != 0) ? 1 : 0;
+		}
 	}
 }
 

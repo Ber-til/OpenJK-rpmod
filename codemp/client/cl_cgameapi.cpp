@@ -31,6 +31,13 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #include "FxUtil.h"
 #include "FxSystem.h"
 
+// the cgame's weather on its way to the renderer: the map editor keeps the map's own, to give it
+// again under its weather boxes (cl_mapeditor.cpp)
+static void CL_WorldEffectCommand( const char *command ) {
+	CL_MapEditor_MapWeather( command );
+	re->WorldEffectCommand( command );
+}
+
 extern IHeapAllocator *G2VertSpaceClient;
 extern botlib_export_t *botlib_export;
 
@@ -1864,7 +1871,7 @@ intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 		return 0;
 
 	case CG_R_WORLDEFFECTCOMMAND:
-		re->WorldEffectCommand((const char *)VMA(1));
+		CL_WorldEffectCommand((const char *)VMA(1));
 		return 0;
 
 	case CG_WE_ADDWEATHERZONE:
@@ -1999,7 +2006,7 @@ void CL_BindCGame( void ) {
 		cgi.R_SetLightStyle						= CL_R_SetLightStyle;
 		cgi.R_SetRangedFog						= re->SetRangedFog;
 		cgi.R_SetRefractionProperties			= re->SetRefractionProperties;
-		cgi.R_WorldEffectCommand				= re->WorldEffectCommand;
+		cgi.R_WorldEffectCommand				= CL_WorldEffectCommand;
 		cgi.RE_InitRendererTerrain				= RE_InitRendererTerrain;
 		cgi.WE_AddWeatherZone					= re->AddWeatherZone;
 		cgi.GetCurrentSnapshotNumber			= CL_GetCurrentSnapshotNumber;
