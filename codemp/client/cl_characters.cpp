@@ -147,7 +147,6 @@ static struct {
 	qboolean	newExtra;		// a new one: tagged extra (shared, for missions), else secondary
 	qboolean	setupGo;		// Enter on the setup page: set up as the button does
 	char		setupTold[64];	// the session told once that it has no character yet
-	qboolean	lit;			// the blades lit in its preview
 
 	std::string	lastSent;		// what was sent for the character played, to send it only when changed
 	int			nextSync;
@@ -932,16 +931,6 @@ static void CH_DrawList( void ) {
 	}
 }
 
-// a saber colour (the color1 userinfo: 0 red .. 5 purple) as the preview lights it
-static void CH_BladeColor( const char *value, vec3_t rgb ) {
-	static const float colors[6][3] = {
-		{ 1.0f, 0.2f, 0.2f }, { 1.0f, 0.5f, 0.1f }, { 1.0f, 1.0f, 0.2f }, { 0.2f, 1.0f, 0.2f }, { 0.2f, 0.4f, 1.0f }, { 0.8f, 0.2f, 1.0f }
-	};
-	const int c = value && value[0] ? atoi( value ) : 4;
-
-	VectorCopy( colors[c >= 0 && c < 6 ? c : 4], rgb );
-}
-
 // the picked one: its look turning, and playing it
 static void CH_DrawPicked( void ) {
 	const float x = CH_B_X, w = CH_B_W, h = 180;
@@ -956,21 +945,16 @@ static void CH_DrawPicked( void ) {
 	if ( ch.data.id != sel->id ) {
 		CH_Text( x, y + h * 0.5f - 6, w, "Asking C1B3R...", chDim, CH_TEXT, qtrue );
 	} else {
-		const int m = CH_KeyIndex( "model" ), s1 = CH_KeyIndex( "saber1" ), s2 = CH_KeyIndex( "saber2" ), c1 = CH_KeyIndex( "color1" );
+		const int m = CH_KeyIndex( "model" ), s1 = CH_KeyIndex( "saber1" ), s2 = CH_KeyIndex( "saber2" );
 		const char *model = m >= 0 && ch.data.look[m].size() ? ch.data.look[m].c_str() : NULL;
 
 		if ( model ) {
 			const char *saber1 = s1 >= 0 ? ch.data.look[s1].c_str() : "", *saber2 = s2 >= 0 ? ch.data.look[s2].c_str() : "";
-			const qboolean hilt = (qboolean)( ( saber1[0] && Q_stricmp( saber1, "none" ) ) || ( saber2[0] && Q_stricmp( saber2, "none" ) ) );
-			vec3_t rgb;
 
-			CH_BladeColor( c1 >= 0 ? ch.data.look[c1].c_str() : "", rgb );
-			CL_Presets_DrawCharacter( model, saber1, saber2, NULL, NULL, ch.lit && hilt ? rgb : NULL, x + 1, y + 1, w - 2, h - 2,
+			CL_Presets_DrawCharacter( model, saber1, saber2, NULL, NULL, NULL, x + 1, y + 1, w - 2, h - 2,
 				ch.yaw + (float)( cls.realtime % 24000 ) * 0.015f, NULL, NULL );
 			if ( CL_Presets_CharacterError() )
 				CH_Text( x, y + h - 26, w, CL_Presets_CharacterError(), chYellow, CH_SMALL, qtrue );
-			else if ( hilt && CH_Button( x + w - 64, y + h - CH_CTRL_H - 3, 61, ch.lit ? "Blades off" : "Light them", ch.lit, qtrue ) )
-				ch.lit = (qboolean)!ch.lit;
 		} else {
 			CH_Text( x, y + h * 0.5f - 6, w, "No look kept yet", chDim, CH_TEXT, qtrue );
 		}
