@@ -1253,6 +1253,21 @@ static void RC_StopAnims( qboolean editorToo ) {
 	}
 }
 
+// an animation played once on an entity and held on its last frame till let go (a dismembered
+// player's death, cl_dismember.cpp); already past, it's on its last frame at once
+void CL_RpCinematic_HoldAnim( int num, const char *anim, qboolean past ) {
+	CL_RpCinematic_ReleaseAnim( num );
+	RC_StartAnim( num, anim, 0, -1, RC_AM_PLAY, qfalse, 100, past ? -600000 : 0, 0, qfalse );
+}
+
+// the ones playing on an entity (not the cinematic editor's) let go
+void CL_RpCinematic_ReleaseAnim( int num ) {
+	for ( int i = 0; i < RC_MAX_PLAYING; i++ ) {
+		if ( rcPlaying[i].active && !rcPlaying[i].editor && rcPlaying[i].num == num )
+			RC_Release( &rcPlaying[i] );
+	}
+}
+
 void RC_TimelineAnims( const int *nums, const rcAnim_t *const *anims, const int *elapsed, int count ) {
 	for ( int j = 0; j < count; j++ ) {
 		const rcAnim_t *a = anims[j];

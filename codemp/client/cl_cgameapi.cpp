@@ -347,6 +347,8 @@ static void CL_R_AddRefEntityToScene( const refEntity_t *ent ) {
 	CL_EffectManager_AddEntity( ent );
 	// a lightsaber's blade lights what's around it
 	CL_SaberLight_Entity( ent );
+	// a body cut for the story (/dismember)
+	CL_Dismember_Entity( ent );
 	re->AddRefEntityToScene( ent );
 	// what they wear (/holster), on the body as it's drawn
 	CL_Holster_Entity( ent, bodyGhoul2 );
@@ -411,6 +413,8 @@ static void CL_R_RenderScene( const refdef_t *fd ) {
 	CL_Storyteller_AddToScene( fd );
 	// things in the world: dropped items, objects, bodies
 	CL_WorldItems_AddToScene( fd );
+	// limbs cut for the story, lying about
+	CL_Dismember_AddToScene( fd );
 	// where the crosshair looks, for an NPC's name under it
 	CL_NpcNames_View( fd );
 	CL_Aim_View( fd );

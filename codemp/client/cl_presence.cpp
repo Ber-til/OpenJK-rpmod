@@ -114,6 +114,7 @@ static struct {
 } psa;
 
 static std::deque<psHook_t>		psRelayOut;	// hooks going to C1B3R, one at a time
+static qboolean			psReplaying;		// a hook of the server's state, replayed to us, being run
 static httpRequest_t			psListHttp, psHelloHttp, psPollHttp, psHookHttp, psLinkHttp, psWaitHttp, psByeHttp, psStateHttp, psWebHttp;
 static cvar_t					*cl_presenceUrl, *cl_presenceLocal, *cl_c1b3rToken;
 
@@ -460,8 +461,11 @@ static void PS_ReadPoll( const char *answer ) {
 		if ( !line.compare( 0, 7, "replay\t" ) ) {
 			const size_t a = line.find( '\t', 7 );
 
-			if ( a != std::string::npos )
+			if ( a != std::string::npos ) {
+				psReplaying = qtrue;
 				CL_RpHooks_Deliver( PS_Unfield( line.c_str() + a + 1 ).c_str() );
+				psReplaying = qfalse;
+			}
 			continue;
 		}
 		if ( !line.compare( 0, 5, "hook\t" ) ) {
@@ -646,7 +650,7 @@ static const char *PS_HookCommand( const char *cmd, int *to ) {
 // the tools' hooks, which change what everyone sees: RPMod admins' only (C1B3R's relay.py ADMIN_HOOKS)
 static qboolean PS_AdminHook( const char *text ) {
 	static const char *tools[] = { "map", "combat", "story", "cine", "cin", "cinematic", "anim", "startcinematic", "endcinematic",
-		"objective", "objectives", "npc", "npcnames", "sky" };
+		"objective", "objectives", "npc", "npcnames", "sky", "dismember" };
 	char kind[32];
 	int n = 0;
 
@@ -662,6 +666,11 @@ static qboolean PS_AdminHook( const char *text ) {
 
 // for the datapad's apps (cl_pazaak.cpp): the session, and requests on it
 // a player on this server whose game is linked to C1B3R, as its list last said
+// the hook run now is the server's state replayed to someone new (a cut already made, not made now)
+qboolean CL_Presence_Replaying( void ) {
+	return psReplaying;
+}
+
 // this game is linked to a Discord account (/c1b3r link done: waiting for approval, or approved)
 qboolean CL_Presence_GameLinked( void ) {
 	return (qboolean)( PS_Token()[0] != '\0' );

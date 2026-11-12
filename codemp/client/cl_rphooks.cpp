@@ -491,6 +491,10 @@ static rhResult_t RH_Run( const char *text ) {
 		return RH_Npc( argv + 1, argc - 1, message );
 	if ( !Q_stricmp( argv[0], "objective" ) || !Q_stricmp( argv[0], "objectives" ) )
 		return RH_Objective( argv + 1, argc - 1, message );
+	if ( !Q_stricmp( argv[0], "dismember" ) ) {
+		CL_Dismember_Hook( argv + 1, argc - 1 );
+		return RH_DROP;
+	}
 	if ( !Q_stricmp( argv[0], "combat" ) ) {
 		RH_CombatHook( argc >= 2 ? argv[1] : "" );
 		return RH_DROP;
@@ -1027,6 +1031,7 @@ void CL_RpHooks_NewLoad( void ) {
 	rhObj.count = 0;
 	rhObj.title[0] = '\0';
 	RH_SetCombat( RH_COMBAT_OFF, qfalse );
+	CL_Dismember_Clear();
 }
 
 // a new server is a new story

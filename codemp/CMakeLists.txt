@@ -511,6 +511,7 @@ if(BuildMPEngine)
 		"${MPDir}/client/cl_inventory.cpp"
 		"${MPDir}/client/cl_inspect.cpp"
 		"${MPDir}/client/cl_holster.cpp"
+		"${MPDir}/client/cl_dismember.cpp"
 		"${MPDir}/client/cl_characters.cpp"
 		"${MPDir}/client/cl_aim.cpp"
 		"${MPDir}/client/cl_sabers.cpp"

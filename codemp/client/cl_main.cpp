@@ -2547,6 +2547,7 @@ void CL_InitRenderer( void ) {
 	CL_Holster_RendererRestarted();
 	CL_WorldItems_RendererRestarted();
 	CL_MapEditor_WeatherRestarted();
+	CL_Dismember_RendererRestarted();
 	g_console_field_width = cls.glconfig.vidWidth / SMALLCHAR_WIDTH - 2;
 	g_consoleField.widthInChars = g_console_field_width;
 
@@ -2980,6 +2981,7 @@ void CL_Init( void ) {
 	CL_Inventory_Init();
 	CL_Inspect_Init();
 	CL_Holster_Init();
+	CL_Dismember_Init();
 	CL_WorldItems_Init();
 	CL_Characters_Init();
 	CL_Datapad_Init ();
@@ -3226,6 +3228,7 @@ void CL_Shutdown( void ) {
 	CL_Update_Shutdown();
 	CL_Feedback_Shutdown();
 	CL_Presence_Shutdown();
+	CL_Dismember_Shutdown();
 	CL_RenderMenu_Shutdown();
 	CL_Discord_Shutdown();
 	Cmd_RemoveCommand( "+radial" );

@@ -950,6 +950,13 @@ void CL_MapEditor_CharEvent( int ch );
 void CL_MapEditor_MouseEvent( int dx, int dy );
 void CL_MapEditor_Escape( void );
 void CL_MapEditor_Frame( void );
+void CL_Dismember_Init( void );
+void CL_Dismember_Shutdown( void );
+void CL_Dismember_Clear( void );						// every body whole, the limbs gone
+void CL_Dismember_RendererRestarted( void );
+void CL_Dismember_Entity( const refEntity_t *ent );		// a model on its way to the renderer: cut as it's cut
+void CL_Dismember_AddToScene( const refdef_t *fd );		// the limbs lying about
+void CL_Dismember_Hook( char **argv, int argc );		// cmd:dismember/...
 void CL_MapEditor_MapWeather( const char *command );	// a weather command of the cgame's (the map's own)
 void CL_MapEditor_WeatherRestarted( void );				// the renderer started again: our weather given again
 void CL_MapEditor_Draw( void );
