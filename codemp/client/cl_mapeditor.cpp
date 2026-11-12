@@ -3412,6 +3412,20 @@ void CL_MapEditor_Hook( char **argv, int argc, const char *message ) {
 }
 
 // a new map: its entities, its styles, and the edits made for it
+static int meLoad;		// the load of the map (cl.serverId) the shared edits came in
+
+// a new load of the map, the same one too: the edits shared for the last are gone with it (C1B3R
+// replays what's kept for this load); your own stay
+void CL_MapEditor_NewLoad( void ) {
+	if ( cl.serverId == meLoad )
+		return;
+	meLoad = cl.serverId;
+	if ( me.shared ) {
+		ME_Load();
+		me.rxId = 0;
+	}
+}
+
 static void ME_CheckMap( void ) {
 	if ( !cl.mapname[0] )
 		return;

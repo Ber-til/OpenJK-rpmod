@@ -75,7 +75,7 @@ typedef enum {
 	INV_STAFF
 } invPage_t;
 
-static const char *invKinds[] = { "misc", "datapad", "commlink", "hilt", "ship" };
+static const char *invKinds[] = { "misc", "datapad", "commlink", "hilt" };	// ships come with 0.11.0
 #define INV_NUM_KINDS	( (int)ARRAY_LEN( invKinds ) )
 
 typedef struct {

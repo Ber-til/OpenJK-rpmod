@@ -208,7 +208,7 @@ enum { WE_MOVE, WE_TURN, WE_SIZE };
 enum { WF_NONE, WF_TITLE, WF_MODEL, WF_SKIN, WF_ANIM, WF_DESCR, WF_STORY, WF_VERB, WF_MAKE_NAME, WF_MAKE_DESCR, WF_MAKE_MODEL };
 
 // the kinds of item made inside a container, as C1B3R has them
-static const char *wtMakeKinds[] = { "misc", "datapad", "commlink", "hilt", "ship" };
+static const char *wtMakeKinds[] = { "misc", "datapad", "commlink", "hilt" };	// ships come with 0.11.0
 #define WT_NUM_MAKE_KINDS	( (int)ARRAY_LEN( wtMakeKinds ) )
 enum { WE_DRAG_NONE = -1, WE_DRAG_GIZMO = 1 };
 

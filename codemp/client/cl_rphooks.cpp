@@ -943,8 +943,21 @@ void CL_RpHooks_Shutdown( void ) {
 	Cmd_RemoveCommand( "rpexperimental" );
 }
 
+static int rhLoad;		// the load of the map (cl.serverId) the objectives are for
+
+// a new load of the map, the same one or another: the server's shared state starts again (as on
+// C1B3R, which replays what's kept for this load), so the objectives go
+void CL_RpHooks_NewLoad( void ) {
+	if ( cl.serverId == rhLoad )
+		return;
+	rhLoad = cl.serverId;
+	rhObj.count = 0;
+	rhObj.title[0] = '\0';
+}
+
 // a new server is a new story
 void CL_RpHooks_Disconnect( void ) {
+	rhLoad = 0;
 	memset( &rhObj, 0, sizeof( rhObj ) );
 	memset( &rhLast, 0, sizeof( rhLast ) );
 	memset( &rhSubs, 0, sizeof( rhSubs ) );
