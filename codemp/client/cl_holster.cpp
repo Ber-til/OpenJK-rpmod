@@ -1096,11 +1096,18 @@ static void HE_TogglePreset( hsItem_t *it, const char *id ) {
 		Q_strncpyz( it->presets[it->numPresets++], id, sizeof( it->presets[0] ) );
 }
 
+// the character's presets that can be added to the picked one, by their index in the presets list
+static int heAddable[256];
+
+static const char *HE_AddableAt( int i, void *ctx ) {
+	return i == 0 ? "Add it to a preset..." : CL_Presets_Title( heAddable[i - 1] );
+}
+
 static void HE_DrawWornWith( float x, float y, float w, float bottom ) {
 	hsItem_t *it = &he.items[he.sel];
 	const int character = CL_Characters_ActiveId();
 	const char *worn = CL_Presets_WornId( character );
-	int list[256], count = 0, rows;
+	int addable = 0, total = 0, rows;
 	const float rowH = HE_CTRL_H + 2;
 
 	HE_Text( x, y, w, "Worn with", heOrange, he.font, HE_SMALL, qfalse );
@@ -1110,38 +1117,67 @@ static void HE_DrawWornWith( float x, float y, float w, float bottom ) {
 		he.changed = qtrue;
 	}
 	y += rowH;
-	for ( int i = 0; i < CL_Presets_Count() && count < (int)ARRAY_LEN( list ); i++ ) {
+	if ( it->all )
+		return;
+	// the character's presets it isn't worn with yet, in one list to pick from
+	for ( int i = 0; i < CL_Presets_Count() && addable < (int)ARRAY_LEN( heAddable ); i++ ) {
 		const char *date;
 		qboolean favorite;
 		int owner;
 
 		CL_Presets_Get( i, 0, &date, &favorite, &owner );
-		if ( owner == character && character && CL_Presets_Id( i )[0] )
-			list[count++] = i;
+		if ( owner != character || !character || !CL_Presets_Id( i )[0] )
+			continue;
+		total++;
+		if ( !HE_HasPreset( it, CL_Presets_Id( i ) ) )
+			heAddable[addable++] = i;
 	}
-	if ( !count ) {
+	if ( !total ) {
 		HE_Text( x, y, w, character ? "This character has no presets yet" : "Presets need your characters (C1B3R)", heDim, he.font, 0.55f, qfalse );
 		return;
 	}
+	if ( addable ) {
+		static int pick;
+		wgStyle_t style;
+		wgMouse_t m;
+
+		HE_PopStyle( &style, heItem );
+		HE_PopMouse( &m );
+		pick = 0;
+		if ( WG_Choice( &style, &m, x, y, w, HE_CTRL_H, &pick, addable + 1, HE_AddableAt, NULL, qfalse ) && pick > 0
+			&& it->numPresets < HS_ITEM_PRESETS ) {
+			Q_strncpyz( it->presets[it->numPresets++], CL_Presets_Id( heAddable[pick - 1] ), sizeof( it->presets[0] ) );
+			he.changed = qtrue;
+		}
+	} else {
+		HE_Text( x, y + 2, w, "On every one of its presets", heDim, he.font, 0.55f, qfalse );
+	}
+	y += rowH + 2;
+	// those it's worn with: x takes one off; the one you're in now marked
+	if ( !it->numPresets ) {
+		HE_Text( x, y, w, "Not worn yet: add it to a preset", heYellow, he.font, 0.55f, qfalse );
+		return;
+	}
 	rows = Q_max( 1, (int)( ( bottom - y ) / rowH ) );
-	he.presetScroll = Com_Clampi( 0, Q_max( 0, count - rows ), he.presetScroll );
-	if ( count > rows ) {
-		WG_Scrollbar( x + w - WG_SCROLL_W, y, rows * rowH - 2, count, rows, &he.presetScroll, he.cursorX, he.cursorY, &he.click, he.clickX, he.clickY );
+	he.presetScroll = Com_Clampi( 0, Q_max( 0, it->numPresets - rows ), he.presetScroll );
+	if ( it->numPresets > rows ) {
+		WG_Scrollbar( x + w - WG_SCROLL_W, y, rows * rowH - 2, it->numPresets, rows, &he.presetScroll, he.cursorX, he.cursorY, &he.click, he.clickX, he.clickY );
 		w -= WG_SCROLL_W + 2;
 	}
-	for ( int r = 0; r < rows && he.presetScroll + r < count; r++, y += rowH ) {
-		const int i = list[he.presetScroll + r];
-		const char *date, *id = CL_Presets_Id( i );
-		qboolean favorite;
-		int owner;
-		const char *name = CL_Presets_Get( i, 0, &date, &favorite, &owner );
-		const qboolean in = HE_HasPreset( it, id );
+	for ( int r = 0; r < rows && he.presetScroll + r < it->numPresets; r++, y += rowH ) {
+		const int k = he.presetScroll + r;
+		const char *title = "(a preset since deleted)";
 
-		// greyed while every preset's on: they all are; the one you're in now marked
-		if ( HE_Button( x, y, w, va( "%s %s%s", in || it->all ? "[x]" : "[  ]", name, !strcmp( id, worn ) ? S_COLOR_WHITE " (now)" : "" ),
-			in, (qboolean)!it->all ) ) {
-			HE_TogglePreset( it, id );
+		for ( int i = 0; i < CL_Presets_Count(); i++ ) {
+			if ( !strcmp( CL_Presets_Id( i ), it->presets[k] ) )
+				title = CL_Presets_Title( i );
+		}
+		HE_Box( x, y, w - 22, HE_CTRL_H, heField );
+		HE_Text( x + 4, y + 2, w - 30, va( "%s%s", title, !strcmp( it->presets[k], worn ) ? S_COLOR_WHITE " (now)" : "" ), heWhite, he.font, HE_SMALL, qfalse );
+		if ( HE_Button( x + w - 20, y, 20, "x", qfalse, qtrue ) ) {
+			HE_TogglePreset( it, it->presets[k] );
 			he.changed = qtrue;
+			return;
 		}
 	}
 }
@@ -2253,4 +2289,55 @@ void CL_Holster_Init( void ) {
 
 void CL_Holster_Shutdown( void ) {
 	HE_Close();		// the camera put back too
+}
+
+/*
+===============================================================================
+
+On the presets window's cards
+
+===============================================================================
+*/
+
+// the holster of the character played: the editor's, while it's open, else the one saved
+static const hsItem_t *HS_OwnItems( int *num ) {
+	const hsClient_t *me = clc.clientNum >= 0 && clc.clientNum < MAX_CLIENTS ? &hsClients[clc.clientNum] : NULL;
+
+	if ( he.open ) {
+		*num = he.num;
+		return he.items;
+	}
+	if ( !me || me->state != 2 ) {
+		*num = 0;
+		return NULL;
+	}
+	*num = me->num;
+	return me->items;
+}
+
+// what it wears with this preset (its id): every preset's, and those worn with it
+static int HS_ForPreset( const char *id, hsItem_t *out ) {
+	int num, n = 0;
+	const hsItem_t *items = HS_OwnItems( &num );
+
+	for ( int i = 0; i < num; i++ ) {
+		if ( HS_WornWith( &items[i], id ) )
+			out[n++] = items[i];
+	}
+	return n;
+}
+
+int CL_Holster_CountForPreset( const char *id ) {
+	hsItem_t worn[HS_MAX];
+
+	return id && id[0] ? HS_ForPreset( id, worn ) : 0;
+}
+
+// a preset card's character: what its holster wears with that preset, on it (ctx: the preset's id)
+void CL_Holster_DrawForPreset( void *ctx, void *ghoul2, const refEntity_t *body ) {
+	hsItem_t worn[HS_MAX];
+	const char *id = (const char *)ctx;
+
+	if ( id && id[0] )
+		HS_AddItems( worn, HS_ForPreset( id, worn ), ghoul2, body, 0, HS_EMOTE_NO );
 }

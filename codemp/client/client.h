@@ -1183,7 +1183,9 @@ const char *CL_Characters_ActiveName( void );	// its name, "" none known
 int CL_Presets_Keys( const char ***keys );
 int CL_Presets_Count( void );
 const char *CL_Presets_Get( int i, int key, const char **date, qboolean *favorite, int *character );
-void CL_Presets_Import( int character, const char *date, const char **values, qboolean favorite, const char *id );
+void CL_Presets_Import( int character, const char *date, const char **values, qboolean favorite, const char *id, const char *label );
+const char *CL_Presets_Label( int i );					// a preset's own name, given by its player, "" none
+const char *CL_Presets_Title( int i );					// what tells it apart: its own name, else the name it gives
 const char *CL_Presets_Id( int i );					// a preset's own id (8 hex), "" none
 const char *CL_Presets_WornId( int character );		// the character's preset the look is now, "" none
 void CL_Presets_AddCurrent( int character );			// what you wear now, a preset of the character
@@ -1428,6 +1430,8 @@ void CL_EscMenu_MouseEvent( int dx, int dy );
 void CL_EscMenu_Escape( void );
 int CL_QuickConnect_Count( void );			// cl_quickconnect.cpp: JEDI's servers
 const char *CL_QuickConnect_Name( int i );
+void CL_Holster_DrawForPreset( void *ctx, void *ghoul2, const refEntity_t *body );	// a preset card's: ctx its id
+int CL_Holster_CountForPreset( const char *id );		// what the holster wears with this preset of the character played
 void CL_Presets_DrawPortrait( float x, float y, float w, float h, float yaw );	// cl_presets.cpp: you, as you are
 typedef void ( *clBodyExtra_t )( void *ctx, void *ghoul2, const refEntity_t *body );	// more drawn on a body (holster)
 void CL_Presets_DrawCharacter( const char *model, const char *saber1, const char *saber2, const char *torso, const char *legs,

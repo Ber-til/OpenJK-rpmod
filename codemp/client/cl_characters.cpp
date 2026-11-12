@@ -91,6 +91,7 @@ typedef struct {
 	qboolean					favorite;
 	std::vector<std::string>	values;		// CL_Presets_Keys' order
 	std::string					id;			// its own (8 hex), "" from before ids
+	std::string					label;		// its player's own name for it, "" none
 } chPreset_t;
 
 // a character's data, as C1B3R's lines gave it
@@ -308,6 +309,8 @@ static std::string CH_Snapshot( int id ) {
 				continue;
 			out += n++ ? ",{\"title\":" : "{\"title\":";
 			CL_Presence_Json( out, date );
+			out += ",\"label\":";
+			CL_Presence_Json( out, CL_Presets_Label( i ) );
 			out += va( ",\"id\":\"%s\",\"favorite\":%i,\"values\":{", CL_Presets_Id( i ), favorite ? 1 : 0 );
 			for ( int k = 0; k < numKeys; k++ ) {
 				out += k ? ",\"" : "\"";
@@ -422,6 +425,8 @@ static void CH_ReadData( const char *answer ) {
 			p.values.assign( f.begin() + 3, f.begin() + 3 + numKeys );
 			if ( (int)f.size() > 3 + numKeys )
 				p.id = f[3 + numKeys];
+			if ( (int)f.size() > 4 + numKeys )
+				p.label = f[4 + numKeys];
 			d.presets.push_back( p );
 		} else if ( kind == "datapad" && f.size() >= 3 ) {
 			for ( int i = 0; i < (int)ARRAY_LEN( chDatapad ); i++ ) {
@@ -464,7 +469,7 @@ static void CH_Apply( const chData_t &d ) {
 
 		for ( int k = 0; k < numKeys; k++ )
 			pv.push_back( d.presets[i].values[k].c_str() );
-		CL_Presets_Import( d.id, d.presets[i].title.c_str(), pv.data(), d.presets[i].favorite, d.presets[i].id.c_str() );
+		CL_Presets_Import( d.id, d.presets[i].title.c_str(), pv.data(), d.presets[i].favorite, d.presets[i].id.c_str(), d.presets[i].label.c_str() );
 	}
 	for ( int i = 0; i < (int)ARRAY_LEN( chDatapad ); i++ ) {
 		if ( d.hasDatapad[i] )

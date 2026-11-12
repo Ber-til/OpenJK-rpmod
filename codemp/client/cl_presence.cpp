@@ -110,7 +110,7 @@ static struct {
 } psa;
 
 static std::deque<psHook_t>		psRelayOut;	// hooks going to C1B3R, one at a time
-static httpRequest_t			psListHttp, psHelloHttp, psPollHttp, psHookHttp, psLinkHttp, psWaitHttp, psByeHttp, psStateHttp;
+static httpRequest_t			psListHttp, psHelloHttp, psPollHttp, psHookHttp, psLinkHttp, psWaitHttp, psByeHttp, psStateHttp, psWebHttp;
 static cvar_t					*cl_presenceUrl, *cl_presenceLocal, *cl_c1b3rToken;
 
 /*
@@ -629,6 +629,11 @@ static const char *PS_HookCommand( const char *cmd, int *to ) {
 
 // for the datapad's apps (cl_pazaak.cpp): the session, and requests on it
 // a player on this server whose game is linked to C1B3R, as its list last said
+// this game is linked to a Discord account (/c1b3r link done: waiting for approval, or approved)
+qboolean CL_Presence_GameLinked( void ) {
+	return (qboolean)( PS_Token()[0] != '\0' );
+}
+
 qboolean CL_Presence_Linked( int client ) {
 	for ( int i = 0; i < ps.numPlayers; i++ ) {
 		if ( ps.players[i].num == client )
@@ -741,6 +746,20 @@ static void PS_PollRequests( void ) {
 			PS_Note( "not sent: C1B3R says this game may not send now (/c1b3r shows why)" );
 		} else if ( psHookHttp.status == 404 ) {
 			PS_Lost();
+		}
+	}
+	// C1B3R's web pages, signed in as this game's Discord user
+	if ( HTTP_Poll( &psWebHttp ) ) {
+		char *field[2];
+		const int n = PS_Fields( psWebHttp.answer, field, 2 );
+
+		if ( psWebHttp.status == 200 && n == 2 && !strcmp( field[0], "ok" ) ) {
+			if ( Sys_OpenPath( field[1] ) )
+				Com_Printf( S_COLOR_GREEN "C1B3R: " S_COLOR_WHITE "your browser opened C1B3R's web pages, signed in\n" );
+			else
+				Com_Printf( "C1B3R: couldn't open a browser; type /web in Discord for a link\n" );
+		} else {
+			Com_Printf( S_COLOR_YELLOW "C1B3R: no web link (%i): %s\n", psWebHttp.status, psWebHttp.answer );
 		}
 	}
 	if ( HTTP_Poll( &psLinkHttp ) ) {
@@ -941,6 +960,25 @@ static void PS_C1b3r_f( void ) {
 		PS_Send( &psStateHttp, !Q_stricmp( Cmd_Argv( 2 ), "clear" ) ? "/v2/state/clear" : "/v2/state/list", body );
 		return;
 	}
+	// C1B3R's web pages in the browser, signed in: this game's link stands for its Discord user
+	if ( !Q_stricmp( arg, "web" ) ) {
+		std::string body = "{\"session\":";
+
+		if ( !PS_Active() || !psv.on ) {
+			Com_Printf( "C1B3R: join a server first, connected to C1B3R\n" );
+			return;
+		}
+		if ( !PS_Token()[0] ) {
+			Com_Printf( "C1B3R: this game isn't linked: /c1b3r link first\n" );
+			return;
+		}
+		if ( psWebHttp.state == HTTP_BUSY )
+			return;
+		PS_Json( body, psv.id );
+		body += "}";
+		PS_Send( &psWebHttp, "/v2/web/link", body );
+		return;
+	}
 	// Discord's page to add C1B3R to your account, so /link works in a DM without its server
 	if ( !Q_stricmp( arg, "discord" ) ) {
 		const char *url = PS_Url( "/discord" );
@@ -960,6 +998,7 @@ static void PS_C1b3r_f( void ) {
 		Com_Printf( "Waiting for " S_COLOR_CYAN "/link %s" S_COLOR_WHITE " in Discord\n", psa.code );
 	Com_Printf( "RPMod account: %s\n", !psa.known ? "not known yet" : psa.account[0] ? psa.account : "logged out" );
 	Com_Printf( "c1b3r link : link this game (logged in to your RPMod account), then /link <code> in Discord\n"
+		"c1b3r web : open C1B3R's web pages in your browser, signed in (a linked game)\n"
 		"c1b3r discord : add C1B3R to your Discord account, for /link in any DM\n"
 		"c1b3r unlink : end the link\n"
 		"c1b3r state [clear] : (RPMod admins) what's shared on this server for who joins later, and who did it; clear takes it back\n" );
@@ -972,7 +1011,7 @@ void CL_Presence_Init( void ) {
 	cl_c1b3rToken = Cvar_Get( "cl_c1b3rToken", "", CVAR_ARCHIVE_ND | CVAR_PROTECTED | CVAR_NORESTART,
 		"This game's link to C1B3R, made with /c1b3r link: keep it to yourself" );
 	Cmd_AddCommand( "clientusers", PS_ClientUsers_f, "Your link to C1B3R, and who on this server has this client" );
-	Cmd_AddCommand( "c1b3r", PS_C1b3r_f, "Your link to C1B3R; c1b3r link links this game in Discord, for admins to send; c1b3r discord adds C1B3R to your Discord account; c1b3r unlink ends it" );
+	Cmd_AddCommand( "c1b3r", PS_C1b3r_f, "Your link to C1B3R; c1b3r link links this game in Discord, for admins to send; c1b3r web opens C1B3R's web pages signed in; c1b3r discord adds C1B3R to your Discord account; c1b3r unlink ends it" );
 }
 
 void CL_Presence_Shutdown( void ) {

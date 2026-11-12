@@ -72,6 +72,7 @@ typedef struct {
 	qboolean	favorite;
 	int			character;		// the C1B3R character it belongs to (cl_characters.cpp), 0 none
 	char		id[9];			// its own: 8 hex, kept through renames (a holster item's presets name it)
+	char		label[48];		// its player's own name for it, to tell it apart ("" none: the name it gives shows)
 } prPreset_t;
 
 enum { PR_MODE_PRESETS, PR_MODE_SKINS };
@@ -113,6 +114,7 @@ static struct {
 	int			mode;
 	char		search[48];
 	qboolean	typing;
+	int			labelEdit;		// the card whose own name is being typed, -1 none
 	qboolean	favOnly;
 	qboolean	allChars;		// every character's presets, not only the one played's
 	int			shown[PR_MAX_SKINS + PR_MAX + 1];	// what the pages show, filtered: presets, or skins (-1 the parts card)
@@ -198,6 +200,18 @@ static void PR_Save( void ) {
 
 			FS_Write( line, strlen( line ), f );
 		}
+		if ( prPresets[i].label[0] ) {
+			char label[sizeof( prPresets[i].label )];
+
+			Q_strncpyz( label, prPresets[i].label, sizeof( label ) );
+			for ( char *c = label; *c; c++ ) {
+				if ( *c == '"' )
+					*c = '\'';
+			}
+			const char *line = va( "\tlabel \"%s\"\n", label );
+
+			FS_Write( line, strlen( line ), f );
+		}
 		FS_Write( "}\n", 2, f );
 	}
 	FS_FCloseFile( f );
@@ -271,6 +285,8 @@ static void PR_Load( void ) {
 				ps->character = atoi( token );
 			if ( !Q_stricmp( key, "id" ) && PR_IsId( token ) )
 				Q_strncpyz( ps->id, token, sizeof( ps->id ) );
+			if ( !Q_stricmp( key, "label" ) )
+				Q_strncpyz( ps->label, token, sizeof( ps->label ) );
 			for ( int k = 0; k < PR_NUM_KEYS; k++ ) {
 				if ( !Q_stricmp( key, prKeys[k] ) )
 					Q_strncpyz( ps->values[k], token, PR_VALUE_LEN );
@@ -339,6 +355,7 @@ static void PR_Apply( int i ) {
 }
 
 static void PR_Delete( int i ) {
+	pr.labelEdit = -1;		// the cards move: no name half typed lands on another
 	PR_FreeViews();
 	memmove( &prPresets[i], &prPresets[i + 1], ( prNumPresets - i - 1 ) * sizeof( prPresets[0] ) );
 	prNumPresets--;
@@ -358,6 +375,18 @@ int CL_Presets_Count( void ) {
 }
 
 // a preset's value for a key, its date, whether it's a favorite and whose it is
+// a preset's own name, "" none
+const char *CL_Presets_Label( int i ) {
+	return i >= 0 && i < prNumPresets ? prPresets[i].label : "";
+}
+
+// what tells a preset apart: its own name, else the name it gives
+const char *CL_Presets_Title( int i ) {
+	if ( i < 0 || i >= prNumPresets )
+		return "";
+	return prPresets[i].label[0] ? prPresets[i].label : prPresets[i].values[PR_K_NAME];
+}
+
 const char *CL_Presets_Get( int i, int key, const char **date, qboolean *favorite, int *character ) {
 	if ( i < 0 || i >= prNumPresets || key < 0 || key >= PR_NUM_KEYS )
 		return "";
@@ -368,16 +397,22 @@ const char *CL_Presets_Get( int i, int key, const char **date, qboolean *favorit
 }
 
 // a character's preset from C1B3R, kept here unless it is already (the same date and character)
-void CL_Presets_Import( int character, const char *date, const char **values, qboolean favorite, const char *id ) {
+void CL_Presets_Import( int character, const char *date, const char **values, qboolean favorite, const char *id, const char *label ) {
 	prPreset_t *ps;
 
 	CL_Presets_Count();
 	for ( int i = 0; i < prNumPresets; i++ ) {
 		if ( prPresets[i].character != character )
 			continue;
-		// known by its id; or the same date, which takes C1B3R's id when it has one
-		if ( PR_IsId( id ) && !Q_stricmp( prPresets[i].id, id ) )
+		// known by its id; or the same date, which takes C1B3R's id when it has one. Its own name
+		// as C1B3R has it (renamed on the web), unless it's being typed here
+		if ( PR_IsId( id ) && !Q_stricmp( prPresets[i].id, id ) ) {
+			if ( label && strcmp( prPresets[i].label, label ) && pr.labelEdit != i ) {
+				Q_strncpyz( prPresets[i].label, label, sizeof( prPresets[i].label ) );
+				PR_Save();
+			}
 			return;
+		}
 		if ( !Q_stricmp( prPresets[i].date, date ) ) {
 			if ( PR_IsId( id ) && Q_stricmp( prPresets[i].id, id ) ) {
 				Q_strncpyz( prPresets[i].id, id, sizeof( prPresets[i].id ) );
@@ -393,6 +428,7 @@ void CL_Presets_Import( int character, const char *date, const char **values, qb
 	for ( int k = 0; k < PR_NUM_KEYS; k++ )
 		Q_strncpyz( ps->values[k], values[k], PR_VALUE_LEN );
 	Q_strncpyz( ps->date, date, sizeof( ps->date ) );
+	Q_strncpyz( ps->label, label ? label : "", sizeof( ps->label ) );
 	ps->favorite = favorite;
 	ps->character = character;
 	if ( PR_IsId( id ) )
@@ -1010,9 +1046,12 @@ OPENING AND INPUT
 ===============================================================================
 */
 
+static void PR_LabelDone( void );
+
 static void PR_Close( void ) {
 	if ( !pr.open )
 		return;
+	PR_LabelDone();
 	pr.open = qfalse;
 	pr.typing = qfalse;
 	WG_PopupClose();
@@ -1124,6 +1163,7 @@ static void PR_SkinSelect_f( void ) {
 void CL_Presets_Init( void ) {
 	memset( &pr, 0, sizeof( pr ) );
 	pr.confirm = -1;
+	pr.labelEdit = -1;
 	Cmd_AddCommand( PR_CMD, PR_Cmd_f, "Characters saved, and swapped to in one click" );
 	Cmd_AddCommand( PR_SKIN_CMD, PR_SkinSelect_f, "Every skin of your model (or the one named), to wear in one click" );
 }
@@ -1160,6 +1200,16 @@ void CL_Presets_KeyEvent( int key, qboolean down ) {
 	}
 	if ( WG_PopupKey( key ) )
 		return;
+	// a preset's own name typed
+	if ( pr.labelEdit >= 0 && pr.labelEdit < prNumPresets ) {
+		if ( key == A_ENTER || key == A_KP_ENTER || key == A_TAB ) {
+			PR_LabelDone();
+			return;
+		}
+		WG_EditKey( prPresets[pr.labelEdit].label, sizeof( prPresets[0].label ), key, NULL );
+		if ( key != A_MWHEELUP && key != A_MWHEELDOWN && key != A_PAGE_UP && key != A_PAGE_DOWN )
+			return;
+	}
 	// typed in the search
 	if ( pr.typing ) {
 		if ( key == A_ENTER || key == A_KP_ENTER ) {
@@ -1200,6 +1250,11 @@ void CL_Presets_KeyEvent( int key, qboolean down ) {
 void CL_Presets_CharEvent( int ch ) {
 	if ( WG_PopupChar( ch ) )
 		return;
+	if ( pr.open && pr.labelEdit >= 0 && pr.labelEdit < prNumPresets ) {
+		if ( ch != '"' )
+			WG_EditChar( prPresets[pr.labelEdit].label, sizeof( prPresets[0].label ), ch, NULL );
+		return;
+	}
 	if ( pr.open && pr.typing && WG_EditChar( pr.search, sizeof( pr.search ), ch, NULL ) )
 		pr.page = 0;
 }
@@ -1213,6 +1268,10 @@ void CL_Presets_MouseEvent( int dx, int dy ) {
 void CL_Presets_Escape( void ) {
 	if ( WG_PopupOpen() ) {
 		WG_PopupClose();
+		return;
+	}
+	if ( pr.labelEdit >= 0 ) {
+		PR_LabelDone();
 		return;
 	}
 	if ( pr.typing ) {
@@ -1356,8 +1415,32 @@ static qboolean PR_Matches( const prPreset_t *ps ) {
 		return qtrue;
 	Q_strncpyz( name, ps->values[PR_K_NAME], sizeof( name ) );
 	Q_StripColor( name );
-	return (qboolean)( Q_stristr( name, pr.search ) || Q_stristr( ps->values[PR_K_MODEL], pr.search )
+	return (qboolean)( Q_stristr( name, pr.search ) || Q_stristr( ps->label, pr.search ) || Q_stristr( ps->values[PR_K_MODEL], pr.search )
 		|| Q_stristr( ps->values[PR_K_SABER1], pr.search ) || Q_stristr( ps->values[PR_K_SABER2], pr.search ) );
+}
+
+static void PR_FieldStyle( wgStyle_t *style ) {
+	style->font = pr.font;
+	style->scale = 0.65f;
+	style->lineH = 12.0f;
+	style->padX = 3.0f;
+	style->padY = 1.0f;
+	style->fill = prCardHover;
+	style->border = prBorder;
+	style->text = prWhite;
+	style->dim = prDim;
+}
+
+// the name being typed kept
+static void PR_LabelDone( void ) {
+	if ( pr.labelEdit < 0 )
+		return;
+	if ( pr.labelEdit < prNumPresets ) {
+		PR_Save();
+		if ( prPresets[pr.labelEdit].label[0] )
+			PR_Message( va( "Named it %s", prPresets[pr.labelEdit].label ) );
+	}
+	pr.labelEdit = -1;
 }
 
 static void PR_DrawCard( int i, float x, float y ) {
@@ -1375,23 +1458,54 @@ static void PR_DrawCard( int i, float x, float y ) {
 		PR_Message( prPresets[i].favorite ? va( "%s" S_COLOR_WHITE " is a favorite", ps->values[PR_K_NAME] ) : va( "%s" S_COLOR_WHITE " isn't a favorite now", ps->values[PR_K_NAME] ) );
 	}
 	PR_Text( x + PR_CARD_W - 16, y + 2, 14, "*", ps->favorite ? prAccent : PR_InRect( x + PR_CARD_W - 18, y + 2, 16, 16 ) ? prWhite : prBorder, 1.1f, qtrue );
-	// the name over the character, in its colours
-	PR_ColorText( x + 16, y + 4, PR_CARD_W - 32, ps->values[PR_K_NAME], 0.9f, qtrue );
+	// its own name over the character, else the name it gives, in its colours
+	if ( ps->label[0] )
+		PR_Text( x + 16, y + 4, PR_CARD_W - 32, ps->label, prAccent, 0.9f, qtrue );
+	else
+		PR_ColorText( x + 16, y + 4, PR_CARD_W - 32, ps->values[PR_K_NAME], 0.9f, qtrue );
 
 	PR_BuildView( &prViews[i], ps->values[PR_K_MODEL], ps->values[PR_K_SABER1], ps->values[PR_K_SABER2] );
-	if ( prViews[i].g2 )
-		PR_RenderView( &prViews[i], ps->values[PR_K_RED], ps->values[PR_K_GREEN], ps->values[PR_K_BLUE], x + 2, y + 20, PR_CARD_W - 4, PR_VIEW_H,
-			hover ? sinf( cls.realtime * 0.002f ) * 35.0f : 20.0f );
-	else
+	// the character played's: what its holster wears with this preset, on it
+	{
+		const qboolean played = (qboolean)( ps->character && ps->character == CL_Characters_ActiveId() && ps->id[0] );
+
+		if ( prViews[i].g2 )
+			PR_RenderView( &prViews[i], ps->values[PR_K_RED], ps->values[PR_K_GREEN], ps->values[PR_K_BLUE], x + 2, y + 20, PR_CARD_W - 4, PR_VIEW_H,
+				hover ? sinf( cls.realtime * 0.002f ) * 35.0f : 20.0f, NULL, NULL, NULL, played ? CL_Holster_DrawForPreset : NULL, (void *)ps->id );
+		if ( played && CL_Holster_CountForPreset( ps->id ) )
+			PR_Text( x + 4, y + 20, PR_CARD_W - 8, va( "holster: %i", CL_Holster_CountForPreset( ps->id ) ), prDim, 0.6f, qfalse );
+	}
+	if ( !prViews[i].g2 )
 		PR_Text( x + 4, y + 20 + PR_VIEW_H * 0.5f - 6, PR_CARD_W - 8, prViews[i].error ? prViews[i].error : "", prDim, PR_TEXT_SCALE, qtrue );
 
-	// the skin, the sabers and the date under it
+	// the skin and the sabers under it, its own name typed under them
 	Q_strncpyz( model, ps->values[PR_K_MODEL], sizeof( model ) );
 	if ( slash )
 		model[slash - ps->values[PR_K_MODEL]] = '\0';
-	PR_Text( x + 4, y + 22 + PR_VIEW_H, PR_CARD_W - 8, va( "%s, skin %s", model, slash && slash[1] ? slash + 1 : "default" ), prWhite, 0.7f, qtrue );
-	PR_Text( x + 4, y + 33 + PR_VIEW_H, PR_CARD_W - 8, PR_SaberText( ps ), prDim, 0.7f, qtrue );
-	PR_Text( x + 4, y + 44 + PR_VIEW_H, PR_CARD_W - 8, ps->date, prDim, 0.65f, qtrue );
+	if ( ps->label[0] )
+		PR_ColorText( x + 4, y + 21 + PR_VIEW_H, PR_CARD_W - 8, ps->values[PR_K_NAME], 0.65f, qtrue );
+	PR_Text( x + 4, y + ( ps->label[0] ? 30 : 22 ) + PR_VIEW_H, PR_CARD_W - 8, va( "%s, skin %s", model, slash && slash[1] ? slash + 1 : "default" ),
+		prWhite, 0.65f, qtrue );
+	PR_Text( x + 4, y + ( ps->label[0] ? 39 : 33 ) + PR_VIEW_H, PR_CARD_W - 8, PR_SaberText( ps ), prDim, 0.65f, qtrue );
+	// its own name, typed in place: a click on it, Enter or a click elsewhere keeps it
+	{
+		const float fy = y + 49 + PR_VIEW_H, fh = 12.0f;
+		const qboolean editing = (qboolean)( pr.labelEdit == i );
+		wgStyle_t style;
+
+		PR_FieldStyle( &style );
+		PR_Box( x + 4, fy, PR_CARD_W - 8, fh, editing ? prCardHover : prPanelLight );
+		WG_Field( &style, x + 4, fy, PR_CARD_W - 8, fh, prPresets[i].label, editing, "name it, to tell it apart", pr.cursorX, pr.cursorY );
+		if ( PR_Clicked( x + 4, fy, PR_CARD_W - 8, fh ) ) {
+			if ( !editing ) {
+				PR_LabelDone();
+				WG_EditReset();
+				pr.labelEdit = i;
+				pr.typing = qfalse;
+			}
+			WG_FieldClick( prPresets[i].label, pr.clickX, pr.clickY );
+		}
+	}
 
 	// keeping it up to date, or out
 	if ( PR_Button( x + 4, bottom - PR_CTRL_H - 3, 66, "Update", prPanelLight ) ) {
@@ -1589,6 +1703,7 @@ void CL_Presets_Draw( void ) {
 	if ( PR_Clicked( 16, 34, 200, WG_FieldHeight( &style, 200, PR_CTRL_H, pr.search, pr.typing ) ) ) {
 		if ( !pr.typing )
 			WG_EditReset();
+		PR_LabelDone();
 		pr.typing = qtrue;
 		WG_FieldClick( pr.search, pr.clickX, pr.clickY );
 	}
@@ -1657,9 +1772,11 @@ void CL_Presets_Draw( void ) {
 	}
 	if ( pr.message[0] && cls.realtime - pr.messageTime < PR_MESSAGE_MS )
 		PR_ColorText( 16, 458, SCREEN_WIDTH - 32, pr.message, PR_TEXT_SCALE, qfalse );
-	// a click anywhere else leaves the search
-	if ( pr.click )
+	// a click anywhere else leaves the search, and the name typed
+	if ( pr.click ) {
 		pr.typing = qfalse;
+		PR_LabelDone();
+	}
 	pr.click = qfalse;
 	pr.wheel = 0;
 	WG_DrawOverlay();
