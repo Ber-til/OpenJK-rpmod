@@ -1774,7 +1774,9 @@ const void	*RB_DrawSurfs( const void *data ) {
 	*/
 
 	// Render dynamic glowing/flaring objects.
-	if ( ( !(backEnd.refdef.rdflags & RDF_NOWORLDMODEL) || (backEnd.refdef.rdflags & RDF_UIGLOW) ) && g_bDynamicGlowSupported && r_DynamicGlow->integer )
+	// OpenJK-rpmod: not in a preview (RDF_UIGLOW) here: its pass over the whole screen, between 2D
+	// drawing, broke the screen up on some setups (Inspect at 1920x1080 windowed); Vulkan keeps it
+	if ( !(backEnd.refdef.rdflags & RDF_NOWORLDMODEL) && g_bDynamicGlowSupported && r_DynamicGlow->integer )
 	{
 		// Copy the normal scene to texture.
 		qglDisable( GL_TEXTURE_2D );

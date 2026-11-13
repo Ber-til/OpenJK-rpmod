@@ -23,8 +23,8 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 // they show, as C1B3R keeps them for their RPMod account (its /v2/char/view, by client number on
 // this server: their account is never said). Yours is edited here and saved to C1B3R.
 //
-// Aiming at someone with a character panel shows their character's name under the crosshair, with
-// the key that inspects them (cl_inspectHint). C1B3R tells every game on the server when a character
+// Aiming at someone with a character panel shows a small orange [i] under the crosshair: they can
+// be inspected (cl_inspectHint, off by default). C1B3R tells every game on the server when a character
 // changes (cmd:char/<client>/<version>): it's asked again then.
 
 #include <string>
@@ -412,10 +412,8 @@ static void INS_HintFrame( void ) {
 }
 
 void CL_Inspect_DrawHint( void ) {
-	const int key = Key_GetKey( INS_CMD );
 	const insHint_t *h;
-	const char *text;
-	vec4_t color = { 1.0f, 1.0f, 1.0f, 0.85f };
+	vec4_t orange = { 1.0f, 0.55f, 0.1f, 0.9f };
 
 	if ( !cl_inspectHint || !cl_inspectHint->integer || !cl_inspectOthers || !cl_inspectOthers->integer || cls.state != CA_ACTIVE || insHint.aimed < 0 || Key_GetCatcher()
 		|| !Cvar_VariableIntegerValue( "cg_draw2D" ) || cls.realtime - insHint.since < INS_HINT_WAIT_MS )
@@ -423,8 +421,8 @@ void CL_Inspect_DrawHint( void ) {
 	h = &insHints[insHint.aimed];
 	if ( h->state != 2 )
 		return;
-	text = va( "%s" S_COLOR_GREY "   %s: inspect", h->charName[0] ? h->charName : "A character", key >= 0 ? Key_KeynumToString( key ) : "/" INS_CMD );
-	WG_TypedText( 0, SCREEN_HEIGHT / 2 + 28, SCREEN_WIDTH, text, color, cls.menuFont, 0.6f, qtrue, qtrue );
+	// only that they can be: a small orange [i]
+	WG_TypedText( 0, SCREEN_HEIGHT / 2 + 14, SCREEN_WIDTH, "[i]", orange, cls.menuFont, 0.45f, qtrue, qtrue );
 }
 
 /*
@@ -1305,7 +1303,7 @@ static void INS_Inspect_f( void ) {
 		Com_Printf( "       " INS_CMD " me              your own character panel, to edit it\n" );
 		Com_Printf( "       " INS_CMD " <client|name>   a player by their client number or a part of their name\n" );
 		Com_Printf( "       " INS_CMD " off|on          keep the character you play from Inspect, or not\n" );
-		Com_Printf( "cl_inspectHint 0|1: their character's name under the crosshair when you aim at them\n" );
+		Com_Printf( "cl_inspectHint 0|1: a small orange [i] under the crosshair when you aim at someone who can be inspected (off by default)\n" );
 	} else {
 		const int client = INS_FindPlayer( Cmd_Args() );
 
@@ -1321,7 +1319,7 @@ void CL_Inspect_Init( void ) {
 	ins.focus = -1;
 	insHint.aimed = insHint.asking = -1;
 	cl_inspectOthers = Cvar_Get( "cl_inspectOthers", "1", CVAR_ARCHIVE_ND, "0: the character you play is kept from Inspect (set per character by /characters or /inspect off|on)" );
-	cl_inspectHint = Cvar_Get( "cl_inspectHint", "1", CVAR_ARCHIVE_ND, "Aiming at a player who has a character panel shows their character's name and the key that inspects them" );
+	cl_inspectHint = Cvar_Get( "cl_inspectHint", "0", CVAR_ARCHIVE_ND, "1: aiming at a player who can be inspected shows a small orange [i] under the crosshair" );
 	Cmd_AddCommand( INS_CMD, INS_Inspect_f, "A player's character: their model, character panel and what they show (yours, to edit it)" );
 }
 
