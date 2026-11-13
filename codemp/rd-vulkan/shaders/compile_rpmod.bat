@@ -42,12 +42,16 @@ call :frag rpmod_mblur_frag_spv glsl\rpmod\mblur.frag || exit /b 1
 call :frag rpmod_grade_frag_spv glsl\rpmod\grade.frag || exit /b 1
 call :frag rpmod_fxaa_frag_spv glsl\rpmod\fxaa.frag || exit /b 1
 call :frag rpmod_cas_frag_spv glsl\rpmod\cas.frag || exit /b 1
+call :frag rpmod_light_relief_frag_spv glsl\light_frag.tmpl -DUSE_RELIEF || exit /b 1
+call :frag rpmod_light_relief_fog_frag_spv glsl\light_frag.tmpl -DUSE_RELIEF -DUSE_FOG || exit /b 1
+call :frag rpmod_light_relief_line_frag_spv glsl\light_frag.tmpl -DUSE_RELIEF -DUSE_LINE || exit /b 1
+call :frag rpmod_light_relief_line_fog_frag_spv glsl\light_frag.tmpl -DUSE_RELIEF -DUSE_LINE -DUSE_FOG || exit /b 1
 
 del /Q %tmpf%
 echo done: %outf%
 exit /b 0
 
 :frag
-%cl% -S frag -V -o %tmpf% %2 %3 %4 || exit /b 1
+%cl% -S frag -V -o %tmpf% %2 %3 %4 %5 || exit /b 1
 %bh% %tmpf% +%outf% %1 || exit /b 1
 exit /b 0

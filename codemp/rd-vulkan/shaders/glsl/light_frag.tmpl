@@ -97,11 +97,42 @@ void main() {
 	base.xyz = base.xyz * ( 1.0 - fog.a );
 #endif
 
+#ifdef USE_RELIEF
+	// OpenJK-rpmod: surface relief (r_relief). The texture's brightness taken as height, its slope
+	// across the screen bends the normal (Mikkelsen's bump mapping of unparametrized surfaces: no
+	// tangents needed). lightPos.w: how deep the relief is, in world units; eyePos.w: the shine
+	vec3 n = normalize(N);
+	const vec3 lumW = vec3(0.299, 0.587, 0.114);
+	float h0 = dot(base.rgb, lumW);
+	{
+		// the height's slope across a pixel, from either side and a mip softer: grain from single
+		// texels isn't taken for relief
+		vec2 dUVx = dFdx(frag_tex_coord), dUVy = dFdy(frag_tex_coord);
+		vec2 gx = dUVx * 2.0, gy = dUVy * 2.0;
+		float hxp = dot(textureGrad(texture0, frag_tex_coord + dUVx, gx, gy).rgb, lumW);
+		float hxm = dot(textureGrad(texture0, frag_tex_coord - dUVx, gx, gy).rgb, lumW);
+		float hyp = dot(textureGrad(texture0, frag_tex_coord + dUVy, gx, gy).rgb, lumW);
+		float hym = dot(textureGrad(texture0, frag_tex_coord - dUVy, gx, gy).rgb, lumW);
+		vec3 sX = dFdx(-V.xyz), sY = dFdy(-V.xyz);		// the surface across a pixel
+		vec3 R1 = cross(sY, n), R2 = cross(n, sX);
+		float det = dot(sX, R1);
+		vec3 grad = sign(det) * (0.5 * (hxp - hxm) * R1 + 0.5 * (hyp - hym) * R2) * lightPos.w;
+		if (abs(det) > 1e-8)
+			n = normalize(abs(det) * n - grad);
+	}
+
+	// Lambertian diffuse reflection term (N.L)
+	float diffuse = dot(n, nL);
+
+	// specular reflection term (N.H)
+	float specFactor = dot(n, normalize(nL + nV));
+#else
 	// Lambertian diffuse reflection term (N.L)
 	float diffuse = dot(N, nL);
 
 	// specular reflection term (N.H)
 	float specFactor = dot(N, normalize(nL + nV));
+#endif
 
 	if ( abs_light != 0 )
 	{
@@ -113,8 +144,14 @@ void main() {
 		specFactor = abs( specFactor );
 	}
 
+#ifdef USE_RELIEF
+	// a tighter shine, brighter on bright texels: stone and metal catch the light
+	diffuse = max(diffuse, 0.0);
+	vec4 spec = vec4(pow(max(specFactor, 0.0), 24.0) * eyePos.w) * mix(base, vec4(h0), 0.5);
+#else
 	//float spec = pow(specFactor, 8.0) * 0.25;
 	vec4 spec = vec4(pow(specFactor, 10.0)*0.25) * base * 0.8;
+#endif
 
 	out_color = (base * vec4(diffuse) + spec) * vec4(intens, 1.0);
 }

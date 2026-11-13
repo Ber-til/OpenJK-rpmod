@@ -142,6 +142,7 @@ void vk_create_shader_modules( void )
     vk.shaders.frag.light[0][1] = SHADER_MODULE(frag_light_fog);
     vk.shaders.frag.light[1][0] = SHADER_MODULE(frag_light_line);
     vk.shaders.frag.light[1][1] = SHADER_MODULE(frag_light_line_fog);
+    vk_rpmod_light_modules(); // OpenJK-rpmod: with relief, if r_relief is on
     VK_SET_OBJECT_NAME(vk.shaders.frag.light[0][0], "light fragment module", VK_DEBUG_REPORT_OBJECT_TYPE_SHADER_MODULE_EXT);
     VK_SET_OBJECT_NAME(vk.shaders.frag.light[0][1], "light fog fragment module", VK_DEBUG_REPORT_OBJECT_TYPE_SHADER_MODULE_EXT);
     VK_SET_OBJECT_NAME(vk.shaders.frag.light[1][0], "linear light fragment module", VK_DEBUG_REPORT_OBJECT_TYPE_SHADER_MODULE_EXT);

@@ -44,6 +44,7 @@ static cvar_t	*r_softParticles;
 static cvar_t	*r_softParticlesDepth;
 static cvar_t	*r_fxaa;
 static cvar_t	*r_sharpen;
+static cvar_t	*r_relief, *r_reliefStrength, *r_reliefSpecular;
 static cvar_t	*r_tonemap;
 static cvar_t	*r_exposure;
 static cvar_t	*r_saturation;
@@ -128,6 +129,12 @@ void vk_rpmod_register_cvars( void ) {
 	ri.Cvar_CheckRange( r_softParticlesDepth, 1, 256, qtrue );
 	r_fxaa = ri.Cvar_Get( "r_fxaa", "0", CVAR_ARCHIVE_ND, va( "FXAA: smooths edges over the finished view, those of grass and fences too%s", fbo ) );
 	ri.Cvar_CheckRange( r_fxaa, 0, 1, qtrue );
+	r_relief = ri.Cvar_Get( "r_relief", "0", CVAR_ARCHIVE_ND | CVAR_LATCH, "Surface relief: dynamic lights and lit sabers pick out the relief of stone, metal and cloth, worked out from each texture (needs \\r_dlightMode 2; \\vid_restart to change)" );
+	ri.Cvar_CheckRange( r_relief, 0, 1, qtrue );
+	r_reliefStrength = ri.Cvar_Get( "r_reliefStrength", "8", CVAR_ARCHIVE_ND, "Surface relief: how deep it is, in world units" );
+	ri.Cvar_CheckRange( r_reliefStrength, 0, 64, qfalse );
+	r_reliefSpecular = ri.Cvar_Get( "r_reliefSpecular", "0.35", CVAR_ARCHIVE_ND, "Surface relief: how much the lit surfaces shine, 0 none" );
+	ri.Cvar_CheckRange( r_reliefSpecular, 0, 2, qfalse );
 	r_sharpen = ri.Cvar_Get( "r_sharpen", "0", CVAR_ARCHIVE_ND, va( "Sharpening, from 0 (off) to 1%s", fbo ) );
 	ri.Cvar_CheckRange( r_sharpen, 0, 1, qfalse );
 	r_tonemap = ri.Cvar_Get( "r_tonemap", "0", CVAR_ARCHIVE_ND, va( "Tone mapping: bright light rolled off instead of clipping to white. 1 soft: the rest of the picture as it is; 2 film (ACES): darker shadows too%s", fbo ) );
@@ -209,6 +216,33 @@ static VkShaderModule RP_ShaderModule( const unsigned char *bytes, size_t size, 
 }
 
 #define RP_MODULE( m, data, name ) m = RP_ShaderModule( data, sizeof( data ), name )
+
+// surface relief (r_relief, taken at vid_restart): the per-pixel lights' fragment shaders swapped for
+// the same with relief (light_frag.tmpl built with USE_RELIEF)
+void vk_rpmod_light_modules( void ) {
+	if ( !r_relief || !r_relief->integer )
+		return;
+	for ( int i = 0; i < 2; i++ ) {
+		for ( int j = 0; j < 2; j++ ) {
+			if ( vk.shaders.frag.light[i][j] != VK_NULL_HANDLE )
+				qvkDestroyShaderModule( vk.device, vk.shaders.frag.light[i][j], NULL );
+		}
+	}
+	RP_MODULE( vk.shaders.frag.light[0][0], rpmod_light_relief_frag_spv, "rpmod relief light" );
+	RP_MODULE( vk.shaders.frag.light[0][1], rpmod_light_relief_fog_frag_spv, "rpmod relief light fog" );
+	RP_MODULE( vk.shaders.frag.light[1][0], rpmod_light_relief_line_frag_spv, "rpmod relief linear light" );
+	RP_MODULE( vk.shaders.frag.light[1][1], rpmod_light_relief_line_fog_frag_spv, "rpmod relief linear light fog" );
+	ri.Printf( PRINT_ALL, "Surface relief on (r_relief)%s\n", r_dlightMode->integer == 2 ? "" : ": it needs r_dlightMode 2" );
+}
+
+// what the relief shader reads in the light's otherwise unused w: its depth, and the shine
+void vk_rpmod_light_params( float *depth, float *shine ) {
+	// a latched cvar keeps the value it started with until vid_restart, as the shaders do
+	const qboolean on = (qboolean)( r_relief && r_relief->integer );
+
+	*depth = on ? r_reliefStrength->value : 0.0f;
+	*shine = on ? r_reliefSpecular->value : 0.0f;
+}
 
 // the depth buffer read by a shader: its format has to allow it
 qboolean vk_rpmod_depth_readable( void ) {

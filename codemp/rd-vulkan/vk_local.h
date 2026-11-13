@@ -1147,6 +1147,8 @@ void		vk_end_render_pass( void );
 // occlusion, soft particles and the passes over the view
 #define VK_RPMOD_SETS 7	// its image sets, in the descriptor pool
 void		vk_rpmod_register_cvars( void );
+void		vk_rpmod_light_modules( void );						// OpenJK-rpmod: surface relief (r_relief)
+void		vk_rpmod_light_params( float *depth, float *shine );
 void		vk_rpmod_map_grade( const char *bspName );
 qboolean	vk_rpmod_depth_readable( void );
 void		vk_rpmod_init( void );
