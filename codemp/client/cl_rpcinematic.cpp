@@ -1306,14 +1306,70 @@ const rcAnimDef_t *RC_AnimDefs( int cfg, int *count ) {
 	return rcCfgs[cfg].defs;
 }
 
-// where an entity is drawn now, near enough: where its walk has it, else the snapshot's
+// the snapshot's entity of that number, NULL if it isn't in it
+static const entityState_t *RC_SnapEntity( int num ) {
+	for ( int i = 0; i < cl.snap.numEntities; i++ ) {
+		const entityState_t *es = &cl.parseEntities[( cl.snap.parseEntitiesNum + i ) & ( MAX_PARSE_ENTITIES - 1 )];
+
+		if ( es->number == num )
+			return es;
+	}
+	return NULL;
+}
+
+// a player or NPC drawn in the world now. The player state is whoever the view is of: you, or the
+// one you follow (then you aren't drawn anywhere); a spectator, or someone in nodraw, isn't either
+qboolean CL_EntityDrawn( int num ) {
+	const entityState_t *es;
+	vec3_t org;
+
+	if ( num == cl.snap.ps.clientNum )
+		return (qboolean)( cl.snap.ps.pm_type != PM_SPECTATOR && cl.snap.ps.pm_type != PM_INTERMISSION
+			&& !( cl.snap.ps.eFlags & EF_NODRAW ) );
+	if ( num == clc.clientNum )
+		return qfalse;
+	es = RC_SnapEntity( num );
+	if ( es )
+		return (qboolean)( ( es->eType == ET_PLAYER || es->eType == ET_NPC ) && !( es->eFlags & EF_NODRAW ) );
+	return (qboolean)( num >= MAX_CLIENTS && RC_EntityOrigin( num, org ) );		// an NPC walked here
+}
+
+// whose body a model drawn there is: of everyone drawn (players, NPCs, the one the view is of),
+// the nearest within near; -1 no one's. Two standing close each keep their own body
+int CL_BodyOwner( const vec3_t at, float near ) {
+	float best = near;
+	int who = -1;
+	vec3_t org;
+
+	if ( CL_EntityDrawn( cl.snap.ps.clientNum ) && Distance( cl.snap.ps.origin, at ) < best ) {
+		best = Distance( cl.snap.ps.origin, at );
+		who = cl.snap.ps.clientNum;
+	}
+	for ( int i = 0; i < cl.snap.numEntities; i++ ) {
+		const entityState_t *es = &cl.parseEntities[( cl.snap.parseEntitiesNum + i ) & ( MAX_PARSE_ENTITIES - 1 )];
+
+		if ( es->number == cl.snap.ps.clientNum || ( es->eType != ET_PLAYER && es->eType != ET_NPC ) || ( es->eFlags & EF_NODRAW )
+			|| !RC_EntityOrigin( es->number, org ) )
+			continue;
+		if ( Distance( org, at ) < best ) {
+			best = Distance( org, at );
+			who = es->number;
+		}
+	}
+	return who;
+}
+
+// where an entity is drawn now, near enough: where its walk has it, else the snapshot's. The player
+// state's is whoever the view is of (you, or the one you follow); you while following are nowhere
 qboolean RC_EntityOrigin( int num, vec3_t out ) {
 	npcWalkInfo_t w;
 
-	if ( num == clc.clientNum ) {
+	if ( num == cl.snap.ps.clientNum ) {
 		VectorCopy( cl.snap.ps.origin, out );
 		return qtrue;
 	}
+	if ( num == clc.clientNum )
+		return qfalse;
 	if ( CL_NpcWalk_PoseOf( num, out ) )
 		return qtrue;
 	for ( int i = 0; CL_NpcWalk_GetWalk( i, &w ); i++ ) {
@@ -1391,7 +1447,8 @@ static void RC_AnimateModel( const refEntity_t *ent ) {
 			pick = p;
 		}
 	}
-	if ( !pick )
+	// only on its own body: someone else standing nearer this one keeps theirs
+	if ( !pick || CL_BodyOwner( ent->origin, RC_ANIM_NEAR ) != pick->num )
 		return;
 	gla = re->G2API_GetGLAName( g2, 0 );
 	if ( !gla || !gla[0] )

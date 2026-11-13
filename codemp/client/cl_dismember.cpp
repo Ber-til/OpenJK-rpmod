@@ -196,29 +196,6 @@ static void DM_Drop( const refEntity_t *ent, int num, int part ) {
 	VectorSet( l->spin, DM_CRANDOM() * 300.0f, DM_CRANDOM() * 200.0f, DM_CRANDOM() * 300.0f );
 }
 
-// who of everyone in view (players, NPCs, you) is nearest a model drawn there: its body is theirs
-static int DM_Nearest( const vec3_t at ) {
-	float best = DM_NEAR;
-	int who = -1;
-
-	if ( Distance( cl.snap.ps.origin, at ) < best ) {
-		best = Distance( cl.snap.ps.origin, at );
-		who = clc.clientNum;
-	}
-	for ( int i = 0; i < cl.snap.numEntities; i++ ) {
-		const entityState_t *es = &cl.parseEntities[( cl.snap.parseEntitiesNum + i ) & ( MAX_PARSE_ENTITIES - 1 )];
-		vec3_t org;
-
-		if ( es->number == clc.clientNum || ( es->eType != ET_PLAYER && es->eType != ET_NPC ) || !RC_EntityOrigin( es->number, org ) )
-			continue;
-		if ( Distance( org, at ) < best ) {
-			best = Distance( org, at );
-			who = es->number;
-		}
-	}
-	return who;
-}
-
 // a model on its way to the renderer: a body cut, as it's cut (and its limbs dropped the first time)
 void CL_Dismember_Entity( const refEntity_t *ent ) {
 	int nearest = -2;
@@ -234,7 +211,7 @@ void CL_Dismember_Entity( const refEntity_t *ent ) {
 			continue;
 		// someone else nearer is who it is: two standing close each keep their own body
 		if ( nearest == -2 )
-			nearest = DM_Nearest( ent->origin );
+			nearest = CL_BodyOwner( ent->origin, DM_NEAR );
 		if ( nearest != b->num )
 			continue;
 		CGhoul2Info_v &g2 = *(CGhoul2Info_v *)ent->ghoul2;
