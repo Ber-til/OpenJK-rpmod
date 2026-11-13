@@ -98,6 +98,8 @@ static struct {
 	float			scroll, content, view;
 
 	char			user[CP_NAME_LEN], pass[CP_NAME_LEN];
+	char			retryPass[CP_NAME_LEN];	// kept for the one login tried again with ’ for ' (zeroed after)
+	qboolean		curly;			// this login: the name's ' sent as ’
 	char			reply[CP_REPLY_LEN];
 	int				focus;			// 0 none, 1 the name, 2 the password, 3 the reply
 	qboolean		replying;
@@ -739,11 +741,31 @@ static std::string CP_FormAction( const std::string &html, const char *id ) {
 	return "";
 }
 
+// the name as a form field, its ' sent as ’ (U+2019) when curly: the game types no ’, and a name
+// made on a phone often has one in place of ' (the forum takes them as different names)
+static std::string CP_NameField( qboolean curly ) {
+	std::string out;
+
+	for ( const char *p = cp.user; *p; p++ ) {
+		if ( curly && *p == '\'' )
+			out += "%E2%80%99";
+		else
+			out += HTML_FormEncode( std::string( 1, *p ) );
+	}
+	return out;
+}
+
+static void CP_ForgetRetry( void ) {
+	memset( cp.retryPass, 0, sizeof( cp.retryPass ) );
+}
+
 static void CP_StartLogin( void ) {
 	if ( !cp.user[0] || !cp.pass[0] ) {
 		CP_Message( "Type your Comport name and password" );
 		return;
 	}
+	cp.curly = qfalse;
+	CP_ForgetRetry();
 	if ( CP_Request( &cpActHttp, CP_SITE "ucp.php?mode=login", NULL, qfalse ) ) {
 		cp.act = CP_ACT_LOGIN_FORM;
 		cp.formPage = CP_SITE "ucp.php?mode=login";
@@ -818,11 +840,14 @@ static void CP_ActAnswer( void ) {
 		HTML_Inputs( html, fields );
 		if ( action.empty() || !fields.count( "form_token" ) ) {
 			cp.act = CP_ACT_NONE;
+			CP_ForgetRetry();
 			CP_Message( "The Comport's login page didn't read as expected" );
 			break;
 		}
-		fields["username"] = cp.user;
-		fields["password"] = cp.pass;
+		// the password typed, or kept for the try with ’
+		fields["password"] = cp.curly ? cp.retryPass : cp.pass;
+		if ( !cp.curly && strchr( cp.user, '\'' ) )
+			Q_strncpyz( cp.retryPass, cp.pass, sizeof( cp.retryPass ) );
 		fields["login"] = "Login";
 		if ( cp.stay )
 			fields["autologin"] = "on";
@@ -831,7 +856,8 @@ static void CP_ActAnswer( void ) {
 		fields.erase( "viewonline" );
 		// sent in a moment (CL_Comport_Frame): the forum takes no form in the second it gave it
 		cp.waitUrl = action;
-		cp.waitBody = CP_FormBody( fields );
+		fields.erase( "username" );
+		cp.waitBody = CP_FormBody( fields ) + "&username=" + CP_NameField( cp.curly );
 		cp.waitTime = cls.realtime + 1500;
 		cp.act = CP_ACT_LOGIN_WAIT;
 		memset( cp.pass, 0, sizeof( cp.pass ) );
@@ -840,12 +866,23 @@ static void CP_ActAnswer( void ) {
 	case CP_ACT_LOGIN:
 		cp.act = CP_ACT_NONE;
 		if ( CP_LoggedIn() ) {
+			CP_ForgetRetry();
 			CP_Message( va( "Logged in as %s", cp.user ) );
 			CP_SaveCookies();
 			CP_Load( CP_INDEX, CP_SITE "index.php" );
 		} else {
 			const std::string why = CP_ErrorText( html );
 
+			// a name with ' the forum doesn't know: once more with ’, as a phone writes it
+			if ( !cp.curly && cp.retryPass[0] && Q_stristr( why.c_str(), "username" )
+				&& CP_Request( &cpActHttp, CP_SITE "ucp.php?mode=login", NULL, qfalse ) ) {
+				cp.curly = qtrue;
+				cp.act = CP_ACT_LOGIN_FORM;
+				cp.formPage = CP_SITE "ucp.php?mode=login";
+				CP_Message( "Logging in..." );
+				break;
+			}
+			CP_ForgetRetry();
 			CP_Message( why.empty() ? "Not logged in: check your name and password" : why.c_str() );
 		}
 		break;
