@@ -28,7 +28,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 //
 // The body is cut as JKA's cgame cuts one (cg_ents.c): the part's surfaces off on the model the cgame
 // draws, the stump's cap on; the right arm or hand cut, its player's own game drops their weapon
-// (rpdrop weapon). With fall, a copy of the model rooted at the part drops from the cut,
+// (rpdrop weapon), unless it's a saber. With fall, a copy of the model rooted at the part drops from the cut,
 // tumbles and lies where it lands; with an animation (die: BOTH_DEATH1) they play it once and stay on
 // its last frame, through the cinematic animations (cl_rpcinematic.cpp). Restore puts it all back.
 
@@ -348,8 +348,9 @@ void CL_Dismember_Hook( char **argv, int argc ) {
 		return;
 	b->cut |= 1 << part;
 	b->restore &= ~( 1 << part );
-	// my own weapon hand cut off: I drop what I hold, as RPMod has it (not again for a replay)
-	if ( num == clc.clientNum && ( part == DM_RARM || part == DM_RHAND ) && !replay )
+	// my own weapon hand cut off: I drop what I hold, as RPMod has it (not again for a replay). Not a
+	// saber: RPMod's drop leaves the server holding it as thrown, its hilt bouncing at every strike
+	if ( num == clc.clientNum && ( part == DM_RARM || part == DM_RHAND ) && !replay && cl.snap.ps.weapon != WP_SABER )
 		CL_AddReliableCommand( "rpdrop weapon", qfalse );
 	// one who joins later sees it cut, not falling again
 	if ( argc >= 3 && atoi( argv[2] ) && !replay )

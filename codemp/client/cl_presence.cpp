@@ -20,8 +20,8 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 
 // cl_presence.cpp -- the link to C1B3R: everyone with this client on a server, and what they share
 //
-// Once loaded into a server the game opens a session with C1B3R (cl_presenceUrl, the same as
-// cl_feedbackUrl), which is also who's playing with the client, and keeps a poll open that brings
+// Once loaded into a server the game opens a session with C1B3R (cl_c1b3rUrl, also where feedback
+// goes), which is also who's playing with the client, and keeps a poll open that brings
 // what the others send as soon as it's sent: the tools' hooks (cl_rphooks.cpp). Everyone with the
 // client is connected, and receives.
 //
@@ -47,7 +47,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #include <deque>
 #include <string>
 
-#define PS_DEFAULT_URL		"https://c1b3r.keztor.tech"	// the feedback bot, as cl_feedbackUrl
+#define PS_DEFAULT_URL		"https://c1b3r.keztor.tech"
 #define PS_RETRY_MS			30000				// after C1B3R didn't answer
 #define PS_NOTE_MS			30000				// "not sent" said at most this often
 #define PS_RELAY_MAX		1024				// hooks waiting to go to C1B3R
@@ -973,7 +973,7 @@ void CL_Presence_Disconnect( void ) {
 
 static void PS_ClientUsers_f( void ) {
 	if ( !PS_Active() ) {
-		Com_Printf( "clientusers: only on a server, with cl_presenceUrl set\n" );
+		Com_Printf( "clientusers: only on a server, with cl_c1b3rUrl set\n" );
 		return;
 	}
 	if ( !psv.on ) {
@@ -1056,7 +1056,7 @@ static void PS_C1b3r_f( void ) {
 		const char *url = PS_Url( "/discord" );
 
 		if ( Q_stricmpn( url, "https://", 8 ) && Q_stricmpn( url, "http://", 7 ) ) {
-			Com_Printf( "C1B3R: cl_presenceUrl isn't a web address\n" );
+			Com_Printf( "C1B3R: cl_c1b3rUrl isn't a web address\n" );
 		} else if ( !Sys_OpenPath( url ) ) {
 			Com_Printf( "C1B3R: couldn't open a browser; go to %s\n", url );
 		} else {
@@ -1076,9 +1076,34 @@ static void PS_C1b3r_f( void ) {
 		"c1b3r state [clear] : (RPMod admins) what's shared on this server for who joins later, and who did it; clear takes it back\n" );
 }
 
+// C1B3R's one address, for everything that talks to it. It was two before (cl_presenceUrl and
+// cl_feedbackUrl): one of those set to an address of its own is carried over the first time
+cvar_t *CL_C1b3rUrl( void ) {
+	static cvar_t *url;
+
+	if ( !url ) {
+		const qboolean fresh = (qboolean)( Cvar_Flags( "cl_c1b3rUrl" ) == CVAR_NONEXISTENT );
+
+		url = Cvar_Get( "cl_c1b3rUrl", PS_DEFAULT_URL, CVAR_ARCHIVE_ND | CVAR_PROTECTED,
+			"C1B3R's address: the link to everyone with this client on the server, what the tools share, /feedback, the datapad's apps" );
+		if ( fresh ) {
+			const char *olds[] = { "cl_presenceUrl", "cl_feedbackUrl" };
+
+			for ( int i = 0; i < (int)ARRAY_LEN( olds ); i++ ) {
+				const char *old = Cvar_VariableString( olds[i] );
+
+				if ( old[0] && Q_stricmp( old, PS_DEFAULT_URL ) ) {
+					Cvar_Set( "cl_c1b3rUrl", old );
+					break;
+				}
+			}
+		}
+	}
+	return url;
+}
+
 void CL_Presence_Init( void ) {
-	cl_presenceUrl = Cvar_Get( "cl_presenceUrl", PS_DEFAULT_URL, CVAR_ARCHIVE_ND | CVAR_PROTECTED,
-		"C1B3R's address: the link to everyone with this client on the server, and what the tools share with them" );
+	cl_presenceUrl = CL_C1b3rUrl();
 	cl_presenceLocal = Cvar_Get( "cl_presenceLocal", "0", CVAR_TEMP | CVAR_INTERNAL, "Talk to C1B3R on a server of your own too, logged in as a test admin, to try it" );
 	cl_c1b3rToken = Cvar_Get( "cl_c1b3rToken", "", CVAR_ARCHIVE_ND | CVAR_PROTECTED | CVAR_NORESTART,
 		"This game's link to C1B3R, made with /c1b3r link: keep it to yourself" );

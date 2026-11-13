@@ -45,6 +45,7 @@ float		DP_CursorX( void );
 float		DP_CursorY( void );
 void		DP_PlaySound( sfxHandle_t sound );
 const char	*DP_JediDate( long long utc );		// a moment as JEDI's date: <year>.<day> ABY
+const char	*DP_JediStamp( long long utc );		// a moment as JEDI's date and time: <year>.<day> @<hour><minute>
 
 void		DP_Fill( float x, float y, float w, float h, const float *color );
 void		DP_Frame( float x, float y, float w, float h, const float *color );
@@ -90,4 +91,8 @@ void		CL_Notes_Draw( const dpRect_t *screen );
 void		CL_Notes_Shown( qboolean shown );
 qboolean	CL_Notes_Key( int key );
 void		CL_Notes_Char( int ch );
+void		CL_Chat_Draw( const dpRect_t *screen );		// cl_chat.cpp
+void		CL_Chat_Shown( qboolean shown );
+qboolean	CL_Chat_Key( int key );
+void		CL_Chat_Char( int ch );
 void		CL_Notes_Owner( int item, int world, const char *name );	// whose: your character's (0, 0), a datapad item's or a placed one's

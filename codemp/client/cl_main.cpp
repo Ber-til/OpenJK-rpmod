@@ -2421,6 +2421,7 @@ void CL_Frame ( int msec ) {
 	CL_EffectSwap_Frame();
 	CL_Pazaak_Frame();
 	CL_Notes_Frame();
+	CL_Chat_Frame();
 	CL_Inventory_Frame();
 	CL_Inspect_Frame();
 	CL_Holster_PollFrame();

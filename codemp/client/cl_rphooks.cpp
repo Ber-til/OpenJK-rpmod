@@ -491,6 +491,10 @@ static rhResult_t RH_Run( const char *text ) {
 		return RH_Npc( argv + 1, argc - 1, message );
 	if ( !Q_stricmp( argv[0], "objective" ) || !Q_stricmp( argv[0], "objectives" ) )
 		return RH_Objective( argv + 1, argc - 1, message );
+	if ( !Q_stricmp( argv[0], "chat" ) ) {
+		CL_Chat_Hook( argv + 1, argc - 1, message );
+		return RH_DROP;
+	}
 	if ( !Q_stricmp( argv[0], "dismember" ) ) {
 		CL_Dismember_Hook( argv + 1, argc - 1 );
 		return RH_DROP;

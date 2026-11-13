@@ -1117,6 +1117,13 @@ void CL_Datapad_CharEvent( int ch );
 void CL_Pazaak_Frame( void );		// cl_pazaak.cpp
 void CL_Datapad_OpenItem( int item, const char *name, int world );	// a datapad item's (or a placed one's) Notes
 void CL_Notes_Frame( void );		// cl_notes.cpp
+void CL_Chat_Init( void );			// cl_chat.cpp: the datapad's Chat
+void CL_Chat_Frame( void );
+void CL_Chat_Disconnect( void );
+void CL_Chat_Hook( char **argv, int argc, const char *message );	// cmd:chat/...
+qboolean CL_Chat_CaptureSound( const char *cmd );	// the sound manager's Send, while Chat picks a sound
+int CL_Chat_Unread( void );
+void CL_SoundManager_OpenForChat( void );
 void CL_Notes_Disconnect( void );
 void CL_Notes_PickedUp( int item );	// the placed datapad shown is yours now: this item
 void CL_Notes_Message( const char *text, qboolean bad );

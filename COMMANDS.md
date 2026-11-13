@@ -221,7 +221,7 @@ The console commands, keys and settings this client adds. What each feature does
 
 ## Presets
 
-- `/presets` opens or closes them (the in-game menu's PRESETS)
+- `/presets` opens or closes them (the in-game menu's TOOLS)
 - `/presets save` saves who you are now as a preset; `/presets list` lists them, numbered (`*` a favorite); `/presets <number>` makes you that one
 - `/skinselect` the skins of your model, to wear in a click; `/skinselect <model>` another model's
 - `/assetmanager` what's on the map and the pk3 each is from; `/assetmanager scan` asks the server again; `/assetmanager list` prints it; `/assetmanager build [name]` packs the custom ones checked into `assetpacks/<name>.pk3`
@@ -287,9 +287,8 @@ The console commands, keys and settings this client adds. What each feature does
 - `rpc_removeExtraColorsInConsole 0` shows RPMod's extra colors in the console
 - `rpc_chatRangeConsole_mode <0-3>`, `rpc_chatRangeConsole_min`, `rpc_chatRangeConsole_max`, `rpc_chatRangeConsole_alpha` set the chat range in the console
 - `cl_updateCheck 0` never asks GitHub whether there's a newer OpenJK-rpmod
-- `cl_feedbackUrl` is where /feedback sends reports and asks for their answers
 - `cl_c1b3rToken` is this game's link, made by `/c1b3r link`: keep it to yourself
-- `cl_presenceUrl` is C1B3R's address: the link to everyone with this client, through which the tools' hooks go; empty, nothing is shared and hooks show on your screen only
+- `cl_c1b3rUrl` is C1B3R's address, for everything that talks to it: the link to everyone with this client, through which the tools' hooks go, /feedback's reports and answers, and the datapad's apps; empty, nothing is shared and hooks show on your screen only. It replaces cl_presenceUrl and cl_feedbackUrl (one set to an address of its own is carried over)
 - `renderersettings sync` / `apply`: what Setup's RENDERER page uses to show the renderer settings and to set them at the next `vid_restart`
 - `cl_renderer rd-vulkan` then `vid_restart` draws the game with the Vulkan renderer *(experimental)*, `cl_renderer rd-vanilla` with the usual one; the Vulkan one's own settings (`r_fbo`, `r_bloom`, `r_ext_multisample`, `r_vbo`, `r_ext_supersample`, `r_ssao`, `r_softParticles`, `r_fxaa`, `r_sharpen`, `r_sunShafts`, `r_tonemap`, `r_motionBlur` and more) are in [FEATURES.md](FEATURES.md#vulkan-renderer-experimental)
 - `cl_whisper 1` shows whispers (chat in ^k) only to those close by, `cl_whisperHear` and `cl_whisperNotice` set how close

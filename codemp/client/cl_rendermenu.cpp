@@ -32,8 +32,8 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 // a name box, < and > going through the saved ones and loading each, Save and Delete.
 //
 // Setup's Game Options get a Camera Settings row (ui_cameraSettings), and the in-game menu, the bar
-// Esc opens: no Vote, Call Vote or Add Bot, a PRESETS button between Profile and Controls (see
-// cl_presets.cpp), and with Camera Settings on a panel of the third person camera's settings, the
+// Esc opens: no Vote, Call Vote or Add Bot, a CHARACTERS button between Profile and Controls (see
+// cl_characters.cpp), and with Camera Settings on a panel of the third person camera's settings, the
 // game's own cg_thirdPerson* and cg_fov. QUICK CONNECT and TOOLS open panels under the bar: the
 // servers, and every tool this client adds (Feedback with them), five a page. Under the bar at the
 // left, C1B3R: its web pages signed in for a linked game, linking it otherwise.
@@ -1093,7 +1093,7 @@ static std::string IM_C1b3rButtons( void ) {
 	return out;
 }
 
-// the in-game menu: no votes, PRESETS, the camera panel
+// the in-game menu: no votes, CHARACTERS, the camera panel
 static const char *IM_Patch( const char *filename, const char *text, int *length ) {
 	static const char *drop[] = { "vote", "voteButton", "callvote", "callvoteButton", "addBot", "addBotButton" };
 	std::string s( text, *length );
@@ -1102,7 +1102,7 @@ static const char *IM_Patch( const char *filename, const char *text, int *length
 	std::string add;
 	size_t menu, menuOpen, menuEnd;
 
-	if ( RM_FindWord( s, "presetsButton", 0 ) != RM_NONE )
+	if ( RM_FindWord( s, "charactersButton", 0 ) != RM_NONE )
 		return NULL;	// done already
 	RM_Items( s, items );
 	controls = RM_Item( items, "controls" );
@@ -1112,21 +1112,21 @@ static const char *IM_Patch( const char *filename, const char *text, int *length
 		return NULL;
 	}
 
-	// PRESETS: Controls' button and its frame, in the gap after Profile
+	// CHARACTERS: Controls' button and its frame, in the gap after Profile (Presets was there before)
 	{
 		std::string button = s.substr( controls->start, controls->end - controls->start );
 		std::string frame = s.substr( controlsButton->start, controlsButton->end - controlsButton->start );
 		const size_t rect = RM_FindWord( button, "rect", 0 );
 		size_t start, end;
 
-		RM_ReplaceWord( button, "controlsButton", "presetsButton" );
-		RM_SetValue( button, "name", "presets" );
-		RM_SetValue( button, "text", RM_Quote( "Presets" ) );
+		RM_ReplaceWord( button, "controlsButton", "charactersButton" );
+		RM_SetValue( button, "name", "characters" );
+		RM_SetValue( button, "text", RM_Quote( "Characters" ) );
 		RM_RemoveValue( button, "cvarTest" );
 		RM_ReplaceBlock( button, "hideCvar", "" );
 		RM_ReplaceBlock( button, "showCvar", "" );
-		RM_ReplaceBlock( button, "action", "action { play \"sound/interface/button1.wav\" ; uiScript closeingame ; exec \"presets\" }" );
-		RM_SetValue( frame, "name", "presetsButton" );
+		RM_ReplaceBlock( button, "action", "action { play \"sound/interface/button1.wav\" ; uiScript closeingame ; exec \"characters\" }" );
+		RM_SetValue( frame, "name", "charactersButton" );
 		// x 215: where Voice Chat and Add Bot were
 		for ( std::string *item : { &button, &frame } ) {
 			const size_t r = RM_FindWord( *item, "rect", 0 );

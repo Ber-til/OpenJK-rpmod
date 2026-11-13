@@ -729,6 +729,8 @@ float R_IsOutsideCausingPain(vec3_t pos)
 ////////////////////////////////////////////////////////////////////////////////////////
 // OpenJK-rpmod: a count asked for after the cloud's type ("rain count 2000"): the next cloud made has it
 static int weNextCount;
+// where the world's weather was last drawn from: a cloud in a box is here only while that's in it
+static vec3_t weViewOrg;
 
 class	CWeatherParticleCloud
 {
@@ -1390,6 +1392,8 @@ void RB_RenderWorldEffects(void)
 	Com_Memcpy(vk_world.modelview_transform, backEnd.viewParms.world.modelViewMatrix, 64);
 	vk_update_mvp(NULL);
 
+	VectorCopy(backEnd.viewParms.ori.origin, weViewOrg);
+
 	// Calculate Elapsed Time For Scale Purposes
 	//-------------------------------------------
 	mMillisecondsElapsed = backEnd.refdef.frametime;
@@ -1966,13 +1970,31 @@ void RE_WorldEffectCommand(const char *command)
 
 
 
+// OpenJK-rpmod: a cloud in a box of its own (the map editor's weather) counts only while the view is
+// in its box: rain somewhere on the map doesn't fizz a saber, nor make it rain, everywhere else
+static bool WE_Here(const CWeatherParticleCloud &cloud)
+{
+	if (!cloud.mBoxed)
+	{
+		return true;
+	}
+	for (int k = 0; k < 3; k++)
+	{
+		if (weViewOrg[k] < cloud.mBoxMins[k] || weViewOrg[k] > cloud.mBoxMaxs[k])
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
 float R_GetChanceOfSaberFizz()
 {
  	float	chance = 0.0f;
 	int		numWater = 0;
 	for (int i=0; i<mParticleClouds.size(); i++)
 	{
-		if (mParticleClouds[i].mWaterParticles)
+		if (mParticleClouds[i].mWaterParticles && WE_Here(mParticleClouds[i]))
 		{
 			chance += (mParticleClouds[i].mGravity/20000.0f);
 			numWater ++;
@@ -1987,7 +2009,14 @@ float R_GetChanceOfSaberFizz()
 
 bool R_IsRaining()
 {
-	return !mParticleClouds.empty();
+	for (int i=0; i<mParticleClouds.size(); i++)
+	{
+		if (WE_Here(mParticleClouds[i]))
+		{
+			return true;
+		}
+	}
+	return false;
 }
 
 bool R_IsPuffing()

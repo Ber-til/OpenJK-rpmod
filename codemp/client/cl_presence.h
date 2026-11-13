@@ -25,6 +25,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #include <string>
 #include "cl_http.h"
 
+cvar_t		*CL_C1b3rUrl( void );			// cl_c1b3rUrl: C1B3R's address, for presence, feedback and the rest
 const char	*CL_Presence_Session( void );		// the session's id, NULL while there's none
 qboolean	CL_Presence_Hook( int to, const char *text );	// cmd:... to everyone here (to -1) or one player, through C1B3R
 qboolean	CL_Presence_Replaying( void );	// the hook run now is the state replayed to someone new

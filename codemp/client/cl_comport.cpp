@@ -50,8 +50,12 @@ typedef enum {
 	CP_LOGIN,
 	CP_INDEX,
 	CP_FORUM,
-	CP_TOPIC
+	CP_TOPIC,
+	CP_PMS,			// the private messages: the inbox
+	CP_PM			// one of them, read as a topic is, and answered
 } cpPage_t;
+
+#define CP_INBOX		CP_SITE "ucp.php?i=pm&folder=inbox"
 
 typedef enum {
 	CP_ACT_NONE,
@@ -88,7 +92,8 @@ static struct {
 	std::string		url;			// the page on screen
 	std::string		title, pageText, prevUrl, nextUrl, upUrl, replyUrl;
 	std::vector<cpForum_t>	forums;
-	std::vector<cpTopic_t>	topics;
+	std::vector<cpTopic_t>	topics;		// a forum's, or the inbox's messages
+	int				newPms;			// unread private messages, as the forum's header says
 	std::vector<cpPost_t>	posts;
 	float			scroll, content, view;
 
@@ -453,6 +458,168 @@ static void CP_ReadTopic( const std::string &html ) {
 	}
 }
 
+// the inbox: each message's subject, who sent it and when (prosilver's pm list, rows as a forum's)
+static void CP_ReadPms( const std::string &html ) {
+	htmlElement_t li;
+	size_t pos = 0;
+
+	cp.topics.clear();
+	cp.title = "Private messages";
+	while ( HTML_Find( html, pos, "li", "row", li ) ) {
+		htmlElement_t a, dt;
+		cpTopic_t t;
+		const std::string cls = HTML_Attr( li.attrs, "class" );
+
+		pos = li.end;
+		if ( !HTML_Find( html, li.innerStart, "a", "topictitle", a ) || a.start >= li.end )
+			continue;
+		t.title = HTML_Text( HTML_Inner( html, a ) );
+		t.url = CP_Link( HTML_Attr( a.attrs, "href" ) );
+		t.pinned = (qboolean)( cls.find( "unread" ) != std::string::npos );
+		// the line under the subject: by whom, when
+		if ( HTML_Find( html, li.innerStart, "dt", "", dt ) && dt.start < li.end ) {
+			std::string line = HTML_Text( HTML_Inner( html, dt ) );
+			const size_t at = line.find( t.title );
+
+			if ( at != std::string::npos )
+				line.erase( at, t.title.size() );
+			while ( !line.empty() && ( line[0] == ' ' || line[0] == '\n' ) )
+				line.erase( 0, 1 );
+			t.by = line;
+		}
+		cp.topics.push_back( t );
+	}
+	CP_ReadPages( html );
+	cp.upUrl = CP_SITE "index.php";
+}
+
+// "Sent: <date> From: ..." or "Sent: <date> by ...": the date
+static std::string CP_SentDate( const std::string &line ) {
+	size_t from = line.find( "Sent:" ), to;
+
+	if ( from == std::string::npos )
+		return "";
+	from += 5;
+	to = line.find( "From:", from );
+	if ( to == std::string::npos )
+		to = line.find( " by ", from );
+	std::string date = line.substr( from, to == std::string::npos ? std::string::npos : to - from );
+	while ( !date.empty() && date[0] == ' ' )
+		date.erase( 0, 1 );
+	while ( !date.empty() && date[date.size() - 1] == ' ' )
+		date.erase( date.size() - 1 );
+	return date;
+}
+
+// one message (div.post.pm: its sender's profile, "Sent:" in p.author, div.content), then its history
+// (div.topicreview's div.post, newest first: who and when in p.author), the one read left out of it;
+// its subject, and the reply the forum offers
+static void CP_ReadPm( const std::string &html ) {
+	htmlElement_t post, el, review;
+	size_t pos = 0, reviewStart = std::string::npos, reviewEnd = std::string::npos;
+	const std::string current = HTML_Param( cp.url, "p" );
+
+	cp.posts.clear();
+	if ( HTML_Find( html, 0, "div", "topicreview", review ) ) {
+		reviewStart = review.start;
+		reviewEnd = review.end;
+	}
+	// the message
+	while ( HTML_Find( html, pos, "div", "post", post ) && post.start < reviewStart ) {
+		cpPost_t p;
+
+		pos = post.end;
+		if ( HTML_Find( html, post.innerStart, "dl", "postprofile", el ) && el.start < post.end ) {
+			const std::string profile = HTML_Inner( html, el );
+			htmlElement_t name;
+
+			if ( HTML_Find( profile, 0, "a", "username-coloured", name ) || HTML_Find( profile, 0, "a", "username", name )
+				|| HTML_Find( profile, 0, "span", "username", name ) )
+				p.author = HTML_Text( HTML_Inner( profile, name ) );
+			p.rank = CP_TextOf( profile, 0, profile.size(), "dd", "profile-rank" );
+		}
+		p.date = CP_SentDate( CP_TextOf( html, post.innerStart, post.end, "p", "author" ) );
+		if ( HTML_Find( html, post.innerStart, "div", "content", el ) && el.start < post.end )
+			HTML_Blocks( HTML_Inner( html, el ), cp.url.c_str(), p.blocks );
+		if ( !p.author.empty() || !p.blocks.empty() ) {
+			cp.posts.push_back( p );
+			break;
+		}
+	}
+	// the history, under a heading
+	if ( reviewStart != std::string::npos ) {
+		qboolean headed = qfalse;
+
+		pos = review.innerStart;
+		while ( HTML_Find( html, pos, "div", "post", post ) && post.start < reviewEnd ) {
+			cpPost_t p;
+			htmlElement_t body, name;
+			const std::string author = CP_TextOf( html, post.innerStart, post.end, "p", "author" );
+
+			pos = post.end;
+			// the one read, again in its history
+			if ( HTML_Find( html, post.innerStart, "div", "postbody", body ) && body.start < post.end
+				&& !current.empty() && HTML_Attr( body.attrs, "id" ) == "pr" + current )
+				continue;
+			if ( HTML_Find( html, post.innerStart, "a", "username", name ) && name.start < post.end )
+				p.author = HTML_Text( HTML_Inner( html, name ) );
+			p.date = CP_SentDate( author );
+			if ( HTML_Find( html, post.innerStart, "div", "content", el ) && el.start < post.end )
+				HTML_Blocks( HTML_Inner( html, el ), cp.url.c_str(), p.blocks );
+			if ( p.author.empty() && p.blocks.empty() )
+				continue;
+			if ( !headed ) {
+				cpPost_t heading;
+
+				heading.author = "Message history";
+				heading.rank = "earlier messages, newest first";
+				cp.posts.push_back( heading );
+				headed = qtrue;
+			}
+			cp.posts.push_back( p );
+		}
+	}
+	cp.title = CP_TextOf( html, 0, html.size(), "h3", "first" );
+	if ( cp.title.empty() )
+		cp.title = "Private message";
+	cp.replyUrl.clear();
+	pos = 0;
+	while ( HTML_Find( html, pos, "a", "", el ) ) {
+		const std::string href = HTML_Attr( el.attrs, "href" );
+
+		pos = el.innerStart;
+		if ( href.find( "ucp.php" ) != std::string::npos && href.find( "mode=compose" ) != std::string::npos
+			&& href.find( "action=reply" ) != std::string::npos ) {
+			cp.replyUrl = CP_Link( href );
+			break;
+		}
+	}
+	cp.prevUrl.clear();
+	cp.nextUrl.clear();
+	cp.pageText.clear();
+	cp.upUrl = CP_INBOX;
+}
+
+// unread private messages, from the header's link to the inbox ("Private messages 2")
+static void CP_ReadNewPms( const std::string &html ) {
+	htmlElement_t el;
+	size_t pos = 0;
+
+	while ( HTML_Find( html, pos, "a", "", el ) ) {
+		const std::string href = HTML_Attr( el.attrs, "href" );
+
+		pos = el.innerStart;
+		if ( href.find( "ucp.php" ) != std::string::npos && href.find( "i=pm" ) != std::string::npos
+			&& href.find( "folder=inbox" ) != std::string::npos ) {
+			const std::string text = HTML_Text( HTML_Inner( html, el ) );
+			const size_t digit = text.find_first_of( "0123456789" );
+
+			cp.newPms = digit == std::string::npos ? 0 : atoi( text.c_str() + digit );
+			return;
+		}
+	}
+}
+
 static qboolean CP_IsLoginPage( const std::string &html ) {
 	htmlElement_t form;
 
@@ -697,7 +864,8 @@ static void CP_ActAnswer( void ) {
 		cp.act = CP_ACT_NONE;
 		// the forum sends the new post's page: there; or says it's posted, on a page that goes on to it
 		if ( cpActHttp.status == 302 || cpActHttp.status == 301 || cpActHttp.status == 303
-			|| ( cpActHttp.status == 200 && ( Q_stristr( html.c_str(), "posted successfully" ) || Q_stristr( html.c_str(), "http-equiv=\"refresh\"" ) ) ) ) {
+			|| ( cpActHttp.status == 200 && ( Q_stristr( html.c_str(), "posted successfully" ) || Q_stristr( html.c_str(), "sent successfully" )
+				|| Q_stristr( html.c_str(), "http-equiv=\"refresh\"" ) ) ) ) {
 			const char *loc = Q_stristr( cpActHttp.respHeaders, "location:" );
 			std::string where = cp.url;
 
@@ -712,6 +880,12 @@ static void CP_ActAnswer( void ) {
 			cp.reply[0] = '\0';
 			cp.replying = qfalse;
 			cp.focus = 0;
+			if ( cp.page == CP_PM ) {
+				// a private message answered: back to the inbox
+				CP_Message( "Your answer is sent" );
+				CP_Load( CP_PMS, CP_INBOX );
+				break;
+			}
 			CP_Message( "Your reply is posted" );
 			CP_Load( CP_TOPIC, where );
 		} else {
@@ -752,6 +926,12 @@ void CL_Comport_Frame( void ) {
 				CP_ReadForum( html );
 			else if ( cp.page == CP_TOPIC )
 				CP_ReadTopic( html );
+			else if ( cp.page == CP_PMS )
+				CP_ReadPms( html );
+			else if ( cp.page == CP_PM )
+				CP_ReadPm( html );
+			if ( CP_LoggedIn() )
+				CP_ReadNewPms( html );
 			// the forum may have given a new session: kept with the rest
 			if ( cp.stay )
 				CP_SaveCookies();
@@ -837,8 +1017,12 @@ static float CP_TopBar( const dpRect_t *s, const char *title, cpPage_t back, con
 			CP_Load( back, backUrl );
 		tx += DP_Wide( 52 );
 	}
-	DP_Text( tx, y + 1, w - ( tx - x ) - DP_Wide( 70 ), title, dpText, DP_Font(), 0.66f, qfalse );
+	DP_Text( tx, y + 1, w - ( tx - x ) - DP_Wide( CP_LoggedIn() ? 128 : 70 ), title, dpText, DP_Font(), 0.66f, qfalse );
 	if ( CP_LoggedIn() ) {
+		// the private messages, how many unread on it
+		if ( DP_Button( x + w - DP_Wide( 64 + 4 + 54 ), y, DP_Wide( 54 ), cp.newPms > 0 ? va( "PMs (%i)", cp.newPms ) : "PMs",
+			(qboolean)( cp.page == CP_PMS || cp.page == CP_PM ) ) )
+			CP_Load( CP_PMS, CP_INBOX );
 		if ( DP_Button( x + w - DP_Wide( 64 ), y, DP_Wide( 64 ), "Log out", qfalse ) )
 			CP_Logout();
 	} else if ( DP_Button( x + w - DP_Wide( 64 ), y, DP_Wide( 64 ), "Log in", qfalse ) ) {
@@ -922,24 +1106,26 @@ static void CP_Pages( float x, float y, float w, cpPage_t page ) {
 		CP_Load( page, cp.nextUrl );
 }
 
+// a forum's topics, or the inbox's messages (pinned: unread)
 static void CP_DrawForum( const dpRect_t *s ) {
+	const qboolean pms = (qboolean)( cp.page == CP_PMS );
 	const float x = s->x + DP_Wide( 8 ), w = s->w - DP_Wide( 18 );
 	const float top = CP_TopBar( s, cp.title.c_str(), CP_INDEX, CP_SITE "index.php" ) + DP_CTRL_H + 6, bottom = s->y + s->h - 4;
 	float y = top - cp.scroll;
 
-	CP_Pages( x, top - DP_CTRL_H - 6, w, CP_FORUM );
+	CP_Pages( x, top - DP_CTRL_H - 6, w, pms ? CP_PMS : CP_FORUM );
 	for ( const cpTopic_t &t : cp.topics ) {
 		if ( CP_Row( x, y, w, 38, top, bottom ) )
-			CP_Load( CP_TOPIC, t.url );
+			CP_Load( pms ? CP_PM : CP_TOPIC, t.url );
 		if ( y >= top && y + 38 <= bottom ) {
-			DP_Text( x + DP_Wide( 4 ), y + 2, w - DP_Wide( 8 ), va( "%s%s", t.pinned ? "^3* ^7" : "", t.title.c_str() ), dpText, DP_Font(), 0.62f, qfalse );
+			DP_Text( x + DP_Wide( 4 ), y + 2, w - DP_Wide( 8 ), va( "%s%s", t.pinned ? ( pms ? "^2new ^7" : "^3* ^7" ) : "", t.title.c_str() ), dpText, DP_Font(), 0.62f, qfalse );
 			DP_Text( x + DP_Wide( 4 ), y + 14, w - DP_Wide( 8 ), t.by.c_str(), dpDim, DP_Font(), 0.55f, qfalse );
 			DP_Text( x + DP_Wide( 4 ), y + 25, w - DP_Wide( 8 ), t.counts.c_str(), dpDim, DP_Font(), 0.52f, qfalse );
 		}
 		y += 41;
 	}
 	if ( cp.topics.empty() )
-		DP_Text( x, top + 6, w, cpPageHttp.state == HTTP_BUSY ? "Reading..." : "No topics you can see here", dpDim, DP_Font(), 0.6f, qfalse );
+		DP_Text( x, top + 6, w, cpPageHttp.state == HTTP_BUSY ? "Reading..." : pms ? "No private messages" : "No topics you can see here", dpDim, DP_Font(), 0.6f, qfalse );
 	cp.view = bottom - top;
 	cp.content = y + cp.scroll - top;
 	DP_ScrollBar( s->x + s->w - DP_Wide( 6 ), top, cp.view, cp.scroll, cp.content );
@@ -947,11 +1133,13 @@ static void CP_DrawForum( const dpRect_t *s ) {
 
 static void CP_DrawTopic( const dpRect_t *s ) {
 	const float x = s->x + DP_Wide( 8 ), w = s->w - DP_Wide( 18 );
-	const float top = CP_TopBar( s, cp.title.c_str(), CP_FORUM, cp.upUrl.empty() ? std::string( CP_SITE "index.php" ) : cp.upUrl ) + DP_CTRL_H + 6;
+	const qboolean pm = (qboolean)( cp.page == CP_PM );
+	const float top = CP_TopBar( s, cp.title.c_str(), pm ? CP_PMS : CP_FORUM, cp.upUrl.empty() ? std::string( CP_SITE "index.php" ) : cp.upUrl ) + DP_CTRL_H + 6;
 	const float bottom = s->y + s->h - 4;
 	float y = top - cp.scroll;
 
-	CP_Pages( x, top - DP_CTRL_H - 6, w - DP_Wide( 70 ), CP_TOPIC );
+	if ( !pm )
+		CP_Pages( x, top - DP_CTRL_H - 6, w - DP_Wide( 70 ), CP_TOPIC );
 	if ( DP_Button( x + w - DP_Wide( 64 ), top - DP_CTRL_H - 6, DP_Wide( 64 ), "On the web", qfalse ) )
 		Sys_OpenPath( cp.url.c_str() );
 	for ( const cpPost_t &p : cp.posts ) {
@@ -977,7 +1165,7 @@ static void CP_DrawTopic( const dpRect_t *s ) {
 	// a reply, at the bottom
 	if ( CP_LoggedIn() && !cp.replyUrl.empty() ) {
 		if ( !cp.replying ) {
-			if ( y >= top && y + DP_CTRL_H <= bottom && DP_Button( x, y, w, "Reply", qfalse ) ) {
+			if ( y >= top && y + DP_CTRL_H <= bottom && DP_Button( x, y, w, pm ? "Answer" : "Reply", qfalse ) ) {
 				cp.replying = qtrue;
 				cp.focus = 3;
 				CP_StartReply();
@@ -992,7 +1180,8 @@ static void CP_DrawTopic( const dpRect_t *s ) {
 				CP_FieldStyle( &style );
 				DP_Fill( x, y, w, boxH, dpButton );
 				DP_Frame( x, y, w, boxH, cp.focus == 3 ? dpWhite : dpGlow );
-				WG_TextBox( &style, x, y, w, boxH, cp.reply, (qboolean)( cp.focus == 3 ), "Your reply (Enter: a new paragraph; BBCode as on the site)", DP_CursorX(), DP_CursorY() );
+				WG_TextBox( &style, x, y, w, boxH, cp.reply, (qboolean)( cp.focus == 3 ), pm ? "Your answer (Enter: a new paragraph; BBCode as on the site)"
+					: "Your reply (Enter: a new paragraph; BBCode as on the site)", DP_CursorX(), DP_CursorY() );
 				if ( DP_Clicked( x, y, w, boxH ) ) {
 					cp.focus = 3;
 					WG_FieldClick( cp.reply, DP_CursorX(), DP_CursorY() );
@@ -1023,6 +1212,8 @@ void CL_Comport_Draw( const dpRect_t *s ) {
 	case CP_INDEX:	CP_DrawIndex( s );	break;
 	case CP_FORUM:	CP_DrawForum( s );	break;
 	case CP_TOPIC:	CP_DrawTopic( s );	break;
+	case CP_PMS:	CP_DrawForum( s );	break;
+	case CP_PM:		CP_DrawTopic( s );	break;
 	default:		CP_DrawLogin( s );	break;
 	}
 	if ( cp.message[0] && cls.realtime - cp.messageTime < 5000 ) {

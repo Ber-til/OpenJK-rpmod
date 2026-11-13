@@ -524,7 +524,7 @@ Every animation in the game, emotes made of emotes, and emotes of your own. `/an
 
 Characters saved, and swapped to in one click: for missions, or anyone you play.
 
-- **PRESETS** in the in-game menu (between Profile and Controls), or `/presets`
+- **Presets** in the in-game menu's TOOLS panel, or `/presets`
 - **Save who I am now** keeps your name, model and skin, its colours, and your sabers and their colours, with the date
 - Each preset is a card: the name in its colours (RPMod's too), the character standing with its hilts in hand, the skin, the sabers and when it was saved
 - Click a card to become that character at once; **Update** saves who you are now over it, **Delete** (twice) takes it out
@@ -568,7 +568,7 @@ A menu drawn by this client, with room for everything, in two looks: **Modern** 
 
 ## In-game Menu and Camera Settings
 
-- The in-game menu (Esc) has no Vote, Call Vote or Add Bot, and a **PRESETS** button between Profile and Controls
+- The in-game menu (Esc) has no Vote, Call Vote or Add Bot, and a **CHARACTERS** button between Profile and Controls (your characters, `/characters`)
 - **TOOLS** between Quick Connect and Exit opens a panel of every tool this client adds, in the menu's own look, five a page with **Back** and **Next**: the Model, NPC, Effect, Shader, Sound, Music, Animation and Asset managers, the Map Editor, the Storyteller, the Cinematic Manager, Presets, Skin Select, Languages, Radial Menus, Console Settings and [Feedback](#feedback). Each says what it does and its command; clicked, the menu closes and the tool opens. Esc puts the panel away
 - **QUICK CONNECT** after Setup: JEDI Temple, Grounds, Region and Galaxy, each with its address and its map and players as the server says now (asked when it opens, or **Refresh**); click one, or its **Connect**, to go there
 - **Admin flags** (`cl_adminFlags 1`, off by default): when noclip, nodraw, nonsolid or notarget is turned on for you, a small line at the bottom says which are on (green) and off (red), until they're all off. They're read from the commands' replies (noclip from the game too); it hides with the HUD (`cg_draw2D 0`, `cg_drawStatus 0`), `/adminflags` lists them, `/adminflags reset` takes them all as off
@@ -846,7 +846,7 @@ The tools share what they do with everyone with this client ("hooks": NPC walks 
 - Not linked, waiting for approval, or logged in to another account, your hooks show on your screen only, and the console says why. Staff can revoke a link with the button under it; `/unlink` in Discord or `/c1b3r unlink` in game ends it too. C1B3R keeps only the token's fingerprint, and the token works only with your game's own private key; it never shows your account to other players
 - Hooks don't go through `rpnotify` any more: a client from before, still using it, neither reaches this one nor hears from it
 - `/c1b3r` shows your link (connected, linked, approved, the RPMod account you're on); `/clientusers` shows who on the server has the client: linked, and who sends
-- `cl_presenceUrl` is C1B3R's address; empty, nothing is shared and hooks show on your screen only. On a server of your own (`/devmap`) hooks show on your screen only
+- `cl_c1b3rUrl` is C1B3R's address (it was cl_presenceUrl and cl_feedbackUrl); empty, nothing is shared and hooks show on your screen only. On a server of your own (`/devmap`) hooks show on your screen only
 
 ## Vulkan Renderer *(experimental)*
 

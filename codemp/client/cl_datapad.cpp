@@ -77,11 +77,12 @@ typedef enum {
 	DP_HOLONET,
 	DP_COMPORT,
 	DP_NOTES,
+	DP_CHAT,
 	DP_NUM_APPS
 } dpApp_t;
 
 // an app that needs the room has the datapad bigger while it's on its screen
-static const qboolean dpAppFull[DP_NUM_APPS] = { qfalse, qfalse, qtrue, qtrue, qtrue, qtrue };
+static const qboolean dpAppFull[DP_NUM_APPS] = { qfalse, qfalse, qtrue, qtrue, qtrue, qtrue, qtrue };
 
 // the apps in files of their own: what each is told and given
 static void DP_AppShown( dpApp_t app, qboolean shown ) {
@@ -93,6 +94,8 @@ static void DP_AppShown( dpApp_t app, qboolean shown ) {
 		CL_Comport_Shown( shown );
 	else if ( app == DP_NOTES )
 		CL_Notes_Shown( shown );
+	else if ( app == DP_CHAT )
+		CL_Chat_Shown( shown );
 }
 
 typedef enum {
@@ -380,6 +383,7 @@ void CL_Datapad_Disconnect( void ) {
 		dp.app = dp.appFrom = DP_HOME;
 	}
 	CL_Notes_Disconnect();
+	CL_Chat_Disconnect();
 	CL_WorldItems_Disconnect();
 	dp.binding = DP_BIND_NONE;
 	if ( dp.state == DP_OPEN ) {
@@ -743,6 +747,14 @@ const char *DP_JediDate( long long utc ) {
 	return va( "%i.%02i ABY", DP_JediYear( &ny ), ny.tm_mday );
 }
 
+// a moment (Unix seconds) as JEDI's date and time: <year>.<day> @<hour><minute>, as "474.12 @1919"
+const char *DP_JediStamp( long long utc ) {
+	struct tm ny;
+
+	DP_NewYorkAt( (time_t)utc, &ny );
+	return va( "%i.%02i @%02i%02i", DP_JediYear( &ny ), ny.tm_mday, ny.tm_hour, ny.tm_min );
+}
+
 static void DP_StatusBar( const dpRect_t *s, float scale ) {
 	const char *when = DP_JediTime(), *server;
 	const float tw = re->Font_StrLenPixels( when, dp.font, scale ) + DP_Wide( 8 );
@@ -815,6 +827,14 @@ static void DP_NotesPicture( float x, float y, float w, float h ) {
 		DP_Fill( x + w * 0.32f, y + h * ( 0.28f + 0.12f * i ), w * ( i == 3 ? 0.22f : 0.36f ), h * 0.04f, dpButton );
 }
 
+// Chat's picture: a bubble with its three dots
+static void DP_ChatPicture( float x, float y, float w, float h ) {
+	DP_Fill( x + w * 0.16f, y + h * 0.22f, w * 0.68f, h * 0.44f, dpWhite );
+	DP_Fill( x + w * 0.24f, y + h * 0.66f, w * 0.12f, h * 0.12f, dpWhite );
+	for ( int i = 0; i < 3; i++ )
+		DP_Fill( x + w * ( 0.3f + 0.15f * i ), y + h * 0.4f, w * 0.09f, h * 0.09f, dpButton );
+}
+
 static void DP_DrawHome( const dpRect_t *s ) {
 	const float size = 34.0f;
 	const float x = s->x + DP_Wide( 10 ), y = s->y + DP_STATUS_H + 10;
@@ -829,6 +849,7 @@ static void DP_DrawHome( const dpRect_t *s ) {
 		{ DP_COMPORT,	"Comport",	DP_ComportPicture },
 		{ DP_PAZAAK,	"Pazaak",	DP_PazaakPicture },
 		{ DP_NOTES,		"Notes",	DP_NotesPicture },
+		{ DP_CHAT,		"Chat",		DP_ChatPicture },
 		{ DP_SETTINGS,	"Settings",	DP_SettingsPicture },
 	};
 
@@ -932,6 +953,8 @@ static void DP_DrawApps( const dpRect_t *s ) {
 			CL_Comport_Draw( s );
 		else if ( dp.app == DP_NOTES )
 			CL_Notes_Draw( s );
+		else if ( dp.app == DP_CHAT )
+			CL_Chat_Draw( s );
 		return;
 	}
 	if ( t >= 1.0f || dp.app == dp.appFrom ) {
@@ -1043,7 +1066,8 @@ void CL_Datapad_KeyEvent( int key, qboolean down ) {
 		return;
 	}
 	if ( ( dp.app == DP_PAZAAK && CL_Pazaak_Key( key ) ) || ( dp.app == DP_HOLONET && CL_HoloNet_Key( key ) )
-		|| ( dp.app == DP_COMPORT && CL_Comport_Key( key ) ) || ( dp.app == DP_NOTES && CL_Notes_Key( key ) ) )
+		|| ( dp.app == DP_COMPORT && CL_Comport_Key( key ) ) || ( dp.app == DP_NOTES && CL_Notes_Key( key ) )
+		|| ( dp.app == DP_CHAT && CL_Chat_Key( key ) ) )
 		return;
 	// its keys work while it's open, as they do in the game
 	binding = Key_GetBinding( key );
@@ -1058,6 +1082,8 @@ void CL_Datapad_CharEvent( int ch ) {
 		CL_Comport_Char( ch );
 	else if ( dp.state == DP_OPEN && dp.app == DP_NOTES )
 		CL_Notes_Char( ch );
+	else if ( dp.state == DP_OPEN && dp.app == DP_CHAT )
+		CL_Chat_Char( ch );
 }
 
 void CL_Datapad_MouseEvent( int dx, int dy ) {
@@ -1110,14 +1136,14 @@ static void DP_Datapad_f( void ) {
 	} else if ( !Q_stricmp( arg, "open" ) ) {
 		DP_Set( DP_OPEN );
 	} else if ( !Q_stricmp( arg, "settings" ) || !Q_stricmp( arg, "pazaak" ) || !Q_stricmp( arg, "holonet" ) || !Q_stricmp( arg, "comport" )
-		|| !Q_stricmp( arg, "notes" ) ) {
+		|| !Q_stricmp( arg, "notes" ) || !Q_stricmp( arg, "chat" ) ) {
 		// yours, not a datapad item's
 		if ( dp.state == DP_OPEN && dp.itemMode )
 			DP_Set( DP_CLOSED );
 		DP_Set( DP_OPEN );
 		if ( dp.state == DP_OPEN )
 			DP_SetApp( !Q_stricmp( arg, "pazaak" ) ? DP_PAZAAK : !Q_stricmp( arg, "holonet" ) ? DP_HOLONET
-				: !Q_stricmp( arg, "comport" ) ? DP_COMPORT : !Q_stricmp( arg, "notes" ) ? DP_NOTES : DP_SETTINGS );
+				: !Q_stricmp( arg, "comport" ) ? DP_COMPORT : !Q_stricmp( arg, "notes" ) ? DP_NOTES : !Q_stricmp( arg, "chat" ) ? DP_CHAT : DP_SETTINGS );
 		// straight to an article, or a forum
 		if ( dp.state == DP_OPEN && Cmd_Argc() > 2 ) {
 			if ( !Q_stricmp( arg, "holonet" ) )
@@ -1144,7 +1170,7 @@ static void DP_Datapad_f( void ) {
 		Com_Printf( "usage: " DP_CMD "                opens the datapad, or puts it away\n" );
 		Com_Printf( "       " DP_CMD " open|close\n" );
 		Com_Printf( "       " DP_CMD " settings       open on its Settings\n" );
-		Com_Printf( "       " DP_CMD " pazaak|holonet|comport|notes   open on that app\n" );
+		Com_Printf( "       " DP_CMD " pazaak|holonet|comport|notes|chat   open on that app\n" );
 		Com_Printf( "       (things in the world, datapads too: /world)\n" );
 		Com_Printf( "       " DP_CMD " pos <x> <y>    where it opens, on the 640x480 screen (its top left)\n" );
 		Com_Printf( "       " DP_CMD " pos            back in the bottom right corner, above the HUD\n" );
@@ -1161,4 +1187,5 @@ void CL_Datapad_Init( void ) {
 	Cmd_AddCommand( DP_CMD, DP_Datapad_f, "The datapad: open like a phone, folded in the corner, or put away" );
 	CL_Pazaak_Init();
 	CL_Comport_Init();
+	CL_Chat_Init();
 }
