@@ -302,6 +302,15 @@ const char *CL_EmotePreview_Anim( const char *emote ) {
 	return e ? e->torso : NULL;
 }
 
+// its legs' animation: the torso's when they're the same; NULL if it isn't known
+const char *CL_EmotePreview_Legs( const char *emote ) {
+	const epEmote_t *e;
+
+	EP_Load();
+	e = EP_Find( emote );
+	return !e ? NULL : e->legs[0] ? e->legs : e->torso;
+}
+
 static void EP_Save( void ) {
 	fileHandle_t f = FS_FOpenFileWrite( EP_FILE );
 

@@ -1645,6 +1645,36 @@ static int NM_PreviewScale( const nmType_t *t ) {
 	return (int)( f <= 10.0f ? f * 100.0f + 0.5f : f );
 }
 
+// the tags of a .glm (its surfaces named *...: *hip_r, *back...), at most max: how many
+int CL_GlmTags( const char *path, char tags[][MAX_QPATH], int max ) {
+	const mdxmHeader_t *header;
+	const mdxmHierarchyOffsets_t *offsets;
+	byte *buf;
+	int len, numSurfaces, n = 0;
+
+	len = FS_ReadFile( path, (void **)&buf );
+	if ( len <= 0 || !buf )
+		return 0;
+	header = (const mdxmHeader_t *)buf;
+	numSurfaces = len >= (int)sizeof( *header ) ? LittleLong( header->numSurfaces ) : 0;
+	if ( LittleLong( header->ident ) == MDXM_IDENT && numSurfaces > 0 && numSurfaces < len / 4
+		&& (int)sizeof( *header ) + numSurfaces * 4 <= len ) {
+		offsets = (const mdxmHierarchyOffsets_t *)( buf + sizeof( *header ) );
+		for ( int i = 0; i < numSurfaces && n < max; i++ ) {
+			const int ofs = (int)sizeof( *header ) + LittleLong( offsets->offsets[i] );
+			const mdxmSurfHierarchy_t *surf;
+
+			if ( ofs < 0 || ofs > len - (int)sizeof( mdxmSurfHierarchy_t ) )
+				break;
+			surf = (const mdxmSurfHierarchy_t *)( buf + ofs );
+			if ( surf->name[0] == '*' )
+				Q_strncpyz( tags[n++], va( "%.*s", MAX_QPATH - 1, surf->name ), MAX_QPATH );
+		}
+	}
+	FS_FreeFile( buf );
+	return n;
+}
+
 // the bind pose bounds of a .glm's first LOD, or why it can't be shown
 const char *CL_GlmBounds( const char *path, vec3_t mins, vec3_t maxs ) {
 	byte *buf;
@@ -1785,48 +1815,13 @@ static const struct {
 	{ "WP_DET_PACK",		"models/weapons2/detpack/det_pack_proj.glm" },
 };
 
-// a saber's hilt, from the first block with its name in ext_data/sabers/*.sab
+// a saber's hilt, from the first block with its name in ext_data/sabers/*.sab (cl_sabers.cpp)
 static void NM_SaberModel( const char *saber, char *out, int size ) {
-	char **files, *buf, name[MAX_QPATH], key[64];
-	const char *p, *token;
-	int numFiles;
-	qboolean found = qfalse;
+	clSaber_t info;
 
 	Q_strncpyz( out, "models/weapons2/saber/saber_w.glm", size );	// DEFAULT_SABER_MODEL
-	files = FS_ListFiles( "ext_data/sabers", ".sab", &numFiles );
-	for ( int i = 0; i < numFiles && !found; i++ ) {
-		const char *path = va( "ext_data/sabers/%s", files[i] );
-
-		if ( FS_ReadFile( path, (void **)&buf ) <= 0 || !buf )
-			continue;
-		p = buf;
-		COM_BeginParseSession( path );
-		while ( !found ) {
-			token = COM_ParseExt( &p, qtrue );
-			if ( !token[0] )
-				break;
-			Q_strncpyz( name, token, sizeof( name ) );
-			if ( Q_stricmp( COM_ParseExt( &p, qtrue ), "{" ) )
-				break;
-			if ( Q_stricmp( name, saber ) ) {
-				SkipBracedSection( &p, 1 );
-				continue;
-			}
-			found = qtrue;
-			while ( 1 ) {
-				token = COM_ParseExt( &p, qtrue );
-				if ( !token[0] || !Q_stricmp( token, "}" ) )
-					break;
-				Q_strncpyz( key, token, sizeof( key ) );
-				token = COM_ParseExt( &p, qfalse );
-				if ( !Q_stricmp( key, "saberModel" ) && token[0] )
-					Q_strncpyz( out, token, size );
-				SkipRestOfLine( &p );
-			}
-		}
-		FS_FreeFile( buf );
-	}
-	FS_FreeFileList( files );
+	if ( CL_Saber_Find( saber, &info ) && info.model[0] )
+		Q_strncpyz( out, info.model, size );
 }
 
 // puts a weapon model in the preview's slot 1 or 2, held by the given hand bolt
@@ -2781,6 +2776,10 @@ static qboolean NM_Open( nmTab_t tab ) {
 	CL_Presets_Close();
 	CL_SpecialMoves_Close();
 	CL_ChatLog_Close();
+	CL_Inventory_Close();
+	CL_Inspect_Close();
+	CL_Holster_Close();
+	CL_Characters_Close();
 	if ( !nm.indexed )
 		NM_BuildIndex();
 

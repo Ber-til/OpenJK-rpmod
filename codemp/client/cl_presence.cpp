@@ -20,8 +20,8 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 
 // cl_presence.cpp -- the link to C1B3R: everyone with this client on a server, and what they share
 //
-// Once loaded into a server the game opens a session with C1B3R (cl_presenceUrl, the same as
-// cl_feedbackUrl), which is also who's playing with the client, and keeps a poll open that brings
+// Once loaded into a server the game opens a session with C1B3R (cl_c1b3rUrl, also where feedback
+// goes), which is also who's playing with the client, and keeps a poll open that brings
 // what the others send as soon as it's sent: the tools' hooks (cl_rphooks.cpp). Everyone with the
 // client is connected, and receives.
 //
@@ -32,10 +32,13 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 // with: the game reads the account from rpinfo, its reply kept out of the console. /c1b3r unlink, or
 // /unlink in Discord, ends it.
 //
-// The tools still make their hooks as RPMod's rpnotify (rpnotify -1 1 cmd:...). Taken here from
-// CL_AddReliableCommand, a hook never reaches the server: it runs here at once, as the server's echo
-// did, and goes to C1B3R once, for everyone or the one player it names. With nobody to send it to
-// (a local server, no C1B3R) it only runs here.
+// The tools send their hooks with CL_Presence_Hook, or as the command c1b3rhook <all|client> cmd:...
+// (a story's steps, binds); rpnotify -1 1 cmd:..., as they were made before C1B3R, is still taken.
+// Taken here from CL_AddReliableCommand, a hook never reaches the server: it runs here at once and
+// goes to C1B3R once, for everyone or the one player it names. With nobody to send it to (a local
+// server, no C1B3R) it only runs here. The tools' (map edits, cinematics, stories, NPCs, the sky,
+// objectives, combat) are RPMod admins' only, as C1B3R says (relay.py ADMIN_HOOKS): from anyone else
+// they're not even run here.
 
 #include "client.h"
 #include "cl_http.h"
@@ -44,7 +47,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #include <deque>
 #include <string>
 
-#define PS_DEFAULT_URL		"https://c1b3r.keztor.tech"	// the feedback bot, as cl_feedbackUrl
+#define PS_DEFAULT_URL		"https://c1b3r.keztor.tech"
 #define PS_RETRY_MS			30000				// after C1B3R didn't answer
 #define PS_NOTE_MS			30000				// "not sent" said at most this often
 #define PS_RELAY_MAX		1024				// hooks waiting to go to C1B3R
@@ -67,6 +70,7 @@ typedef struct {
 typedef struct {
 	std::string	text;
 	int			to;					// a player, -1 everyone
+	int			serverId;			// the load of the map it was made in (C1B3R's server state follows it)
 } psHook_t;
 
 static struct {
@@ -95,6 +99,7 @@ static struct {
 	qboolean	linked;				// its token is for a link that's pending or approved
 	qboolean	approved;
 	qboolean	sends;
+	qboolean	admin;				// an RPMod admin, as C1B3R last heard from RPMod: the tools' hooks are theirs to send
 	int			helloStatus;		// C1B3R's last answer to a hello, for /clientusers
 } psv;
 
@@ -109,7 +114,8 @@ static struct {
 } psa;
 
 static std::deque<psHook_t>		psRelayOut;	// hooks going to C1B3R, one at a time
-static httpRequest_t			psListHttp, psHelloHttp, psPollHttp, psHookHttp, psLinkHttp, psWaitHttp, psByeHttp;
+static qboolean			psReplaying;		// a hook of the server's state, replayed to us, being run
+static httpRequest_t			psListHttp, psHelloHttp, psPollHttp, psHookHttp, psLinkHttp, psWaitHttp, psByeHttp, psStateHttp, psWebHttp;
 static cvar_t					*cl_presenceUrl, *cl_presenceLocal, *cl_c1b3rToken;
 
 /*
@@ -330,13 +336,15 @@ static const char *PS_Token( void ) {
 	return cl_c1b3rToken->string;
 }
 
-// what C1B3R says this session may do: linked, approved, sends
-static void PS_SetState( const char *linked, const char *approved, const char *sends ) {
+// what C1B3R says this session may do: linked, approved, sends, and the tools' as an RPMod admin
+static void PS_SetState( const char *linked, const char *approved, const char *sends, const char *admin ) {
 	const qboolean wasSending = psv.sends;
 
 	psv.linked = (qboolean)!strcmp( linked, "1" );
 	psv.approved = (qboolean)!strcmp( approved, "1" );
 	psv.sends = (qboolean)!strcmp( sends, "1" );
+	// a C1B3R from before it said (the VPS until it's updated): whoever sends, as then
+	psv.admin = admin ? (qboolean)!strcmp( admin, "1" ) : psv.sends;
 	if ( psv.sends && !wasSending && PS_Token()[0] )
 		Com_Printf( S_COLOR_GREEN "C1B3R: " S_COLOR_WHITE "you may send what the tools share\n" );
 }
@@ -349,13 +357,16 @@ static const char *PS_Rank( void ) {
 }
 
 // a session for where we are: made when there's none, or the server, number, name, account, rank or link changed
+static void PS_MapFields( std::string &body, int serverId );
+
 static void PS_Hello( void ) {
 	char key[512];
 	std::string body;
 
 	if ( psHelloHttp.state == HTTP_BUSY || cls.realtime < psv.helloNext )
 		return;
-	Com_sprintf( key, sizeof( key ), "%s|%i|%s|%s|%s|%s", ps.server, clc.clientNum, PS_MyName(), PS_Token(), psa.account, PS_Rank() );
+	Com_sprintf( key, sizeof( key ), "%s|%i|%s|%s|%s|%s|%s", ps.server, clc.clientNum, PS_MyName(), PS_Token(), psa.account, PS_Rank(),
+		Cvar_VariableString( "saber1" ) );
 	if ( psv.on && !strcmp( key, psv.key ) )
 		return;
 	body = "{\"key\":";
@@ -374,12 +385,27 @@ static void PS_Hello( void ) {
 	PS_Json( body, psa.account );
 	body += ",\"rank\":";
 	PS_Json( body, PS_Rank() );
+	// the saber carried: the inventory's hilt is it (C1B3R's characters.py)
+	body += ",\"saber\":";
+	PS_Json( body, Cvar_VariableString( "saber1" ) );
+	PS_MapFields( body, cl.serverId );
 	body += "}";
 	if ( !PS_Send( &psHelloHttp, "/v2/hello", body ) ) {
 		psv.helloNext = cls.realtime + PS_HELLO_RETRY_MS;
 		return;
 	}
 	Q_strncpyz( psv.asked, key, sizeof( psv.asked ) );
+}
+
+// which map, and which load of it, this game is in: C1B3R clears the server's state when it's
+// another (serverstate.py)
+static void PS_MapFields( std::string &body, int serverId ) {
+	const char *info = cl.gameState.stringData + cl.gameState.stringOffsets[CS_SERVERINFO];
+
+	if ( !serverId )
+		return;
+	body += va( ",\"serverId\":\"%i\",\"map\":", serverId );
+	PS_Json( body, Info_ValueForKey( info, "mapname" ) );
 }
 
 // the poll kept open: C1B3R answers it when there's a hook for us, or after a while with none
@@ -389,7 +415,9 @@ static void PS_Poll( void ) {
 	if ( !psv.on || psPollHttp.state == HTTP_BUSY || cls.realtime < psv.pollNext )
 		return;
 	PS_Json( body, psv.id );
-	body += va( ",\"after\":%i}", psv.seq );
+	body += va( ",\"after\":%i", psv.seq );
+	PS_MapFields( body, cl.serverId );
+	body += "}";
 	psPollHttp.waitMs = PS_POLL_WAIT_MS;
 	if ( !PS_Send( &psPollHttp, "/v2/poll", body ) )
 		psv.pollNext = cls.realtime + PS_POLL_RETRY_MS;
@@ -421,11 +449,23 @@ static void PS_ReadPoll( const char *answer ) {
 		}
 		// what we may do now: staff may have approved or taken it back since
 		if ( !line.compare( 0, 6, "state\t" ) ) {
-			char buf[64], *field[4];
+			char buf[64], *field[5];
+			int n;
 
 			Q_strncpyz( buf, line.c_str(), sizeof( buf ) );
-			if ( PS_Fields( buf, field, 4 ) == 4 )
-				PS_SetState( field[1], field[2], field[3] );
+			if ( ( n = PS_Fields( buf, field, 5 ) ) >= 4 )
+				PS_SetState( field[1], field[2], field[3], n >= 5 ? field[4] : NULL );
+			continue;
+		}
+		// someone new on the server: its state, as C1B3R keeps it (serverstate.py), before the hooks
+		if ( !line.compare( 0, 7, "replay\t" ) ) {
+			const size_t a = line.find( '\t', 7 );
+
+			if ( a != std::string::npos ) {
+				psReplaying = qtrue;
+				CL_RpHooks_Deliver( PS_Unfield( line.c_str() + a + 1 ).c_str() );
+				psReplaying = qfalse;
+			}
 			continue;
 		}
 		if ( !line.compare( 0, 5, "hook\t" ) ) {
@@ -562,19 +602,29 @@ static void PS_RelayFrame( void ) {
 	PS_Json( body, h.text.c_str() );
 	if ( h.to >= 0 )
 		body += va( ",\"to\":[%i]", h.to );
+	PS_MapFields( body, h.serverId );
 	body += "}";
 	if ( PS_Send( &psHookHttp, "/v2/hook", body ) )
 		psRelayOut.pop_front();
 }
 
-// rpnotify <who> <seconds> cmd:...: the hook, and who it's for (-1 everyone); NULL if it isn't one
+// c1b3rhook <who> cmd:..., or rpnotify <who> <seconds> cmd:...: the hook, and who it's for (-1 everyone);
+// NULL if it isn't one
 static const char *PS_HookCommand( const char *cmd, int *to ) {
 	char who[32];
 	const char *p = cmd;
+	int skip = 2;		// rpnotify's who and seconds, from before
 
-	if ( Q_stricmpn( p, "rpnotify ", 9 ) )
+	// c1b3rhook <all|client> cmd:..., as the tools write their hooks; or the rpnotify that carried them
+	// before C1B3R (binds, stories): never sent to the server either way
+	if ( !Q_stricmpn( p, "c1b3rhook ", 10 ) ) {
+		p += 10;
+		skip = 1;
+	} else if ( !Q_stricmpn( p, "rpnotify ", 9 ) ) {
+		p += 9;
+	} else {
 		return NULL;
-	p += 9;
+	}
 	while ( *p == ' ' )
 		p++;
 	Q_strncpyz( who, p, sizeof( who ) );
@@ -584,8 +634,8 @@ static const char *PS_HookCommand( const char *cmd, int *to ) {
 			break;
 		}
 	}
-	// past who and the seconds
-	for ( int i = 0; i < 2; i++ ) {
+	// past who (and the seconds)
+	for ( int i = 0; i < skip; i++ ) {
 		while ( *p && *p != ' ' )
 			p++;
 		while ( *p == ' ' )
@@ -597,7 +647,43 @@ static const char *PS_HookCommand( const char *cmd, int *to ) {
 	return p;
 }
 
+// the tools' hooks, which change what everyone sees: RPMod admins' only (C1B3R's relay.py ADMIN_HOOKS)
+static qboolean PS_AdminHook( const char *text ) {
+	static const char *tools[] = { "map", "combat", "story", "cine", "cin", "cinematic", "anim", "startcinematic", "endcinematic",
+		"objective", "objectives", "npc", "npcnames", "sky", "dismember" };
+	char kind[32];
+	int n = 0;
+
+	for ( const char *p = text + 4; *p && *p != '/' && *p != ':' && n < (int)sizeof( kind ) - 1; p++ )
+		kind[n++] = *p;
+	kind[n] = '\0';
+	for ( size_t i = 0; i < ARRAY_LEN( tools ); i++ ) {
+		if ( !Q_stricmp( kind, tools[i] ) )
+			return qtrue;
+	}
+	return qfalse;
+}
+
 // for the datapad's apps (cl_pazaak.cpp): the session, and requests on it
+// a player on this server whose game is linked to C1B3R, as its list last said
+// the hook run now is the server's state replayed to someone new (a cut already made, not made now)
+qboolean CL_Presence_Replaying( void ) {
+	return psReplaying;
+}
+
+// this game is linked to a Discord account (/c1b3r link done: waiting for approval, or approved)
+qboolean CL_Presence_GameLinked( void ) {
+	return (qboolean)( PS_Token()[0] != '\0' );
+}
+
+qboolean CL_Presence_Linked( int client ) {
+	for ( int i = 0; i < ps.numPlayers; i++ ) {
+		if ( ps.players[i].num == client )
+			return ps.players[i].linked;
+	}
+	return qfalse;
+}
+
 const char *CL_Presence_Session( void ) {
 	return psv.on && PS_Active() ? psv.id : NULL;
 }
@@ -621,7 +707,25 @@ qboolean CL_Presence_Outgoing( const char *cmd ) {
 
 	if ( !text )
 		return qfalse;
-	// run here, as the server's echo of an rpnotify used to
+	CL_Presence_Hook( to, text );
+	return qtrue;
+}
+
+// a hook (cmd:...) to everyone with this client here (to -1) or one player, through C1B3R; shown here
+// too. The tools' only from an RPMod admin: not even here otherwise, as it goes nowhere else
+qboolean CL_Presence_Hook( int to, const char *text ) {
+	if ( !text || Q_stricmpn( text, "cmd:", 4 ) )
+		return qfalse;
+	// (with no C1B3R for this server, a local one, it runs here as ever: it can't reach anyone else)
+	if ( PS_AdminHook( text ) && to != clc.clientNum && PS_Active() && !( psv.on && psv.sends && psv.admin ) ) {
+		if ( !ps.noteTime || cls.realtime - ps.noteTime >= PS_NOTE_MS ) {
+			ps.noteTime = cls.realtime;
+			Com_Printf( S_COLOR_YELLOW "%s\n", !psv.on || !psv.sends ? "Not done: the tools go through C1B3R, for RPMod admins whose game is linked (/c1b3r)"
+				: "Not done: the tools are for RPMod admins (RPMod's word for your account)" );
+		}
+		return qfalse;
+	}
+	// run here, as everyone else gets it
 	if ( to < 0 || to == clc.clientNum )
 		CL_RpHooks_Deliver( text );
 	if ( to == clc.clientNum || !PS_Active() )
@@ -641,7 +745,7 @@ qboolean CL_Presence_Outgoing( const char *cmd ) {
 		PS_Note( "not sent: too many waiting to go to C1B3R" );
 		return qtrue;
 	}
-	psRelayOut.push_back( psHook_t{ text, to } );
+	psRelayOut.push_back( psHook_t{ text, to, cl.serverId } );
 	return qtrue;
 }
 
@@ -656,21 +760,22 @@ Each frame
 // C1B3R's answers
 static void PS_PollRequests( void ) {
 	if ( HTTP_Poll( &psHelloHttp ) ) {
-		char *field[6];
-		const int n = PS_Fields( psHelloHttp.answer, field, 6 );
+		char *field[7];
+		const int n = PS_Fields( psHelloHttp.answer, field, 7 );
 
 		psv.helloStatus = psHelloHttp.status;
 		Com_DPrintf( "clientusers: C1B3R hello %i\n", psHelloHttp.status );
-		if ( psHelloHttp.status == 200 && n == 6 && !strcmp( field[0], "ok" ) && !Q_stricmpn( psv.asked, ps.server, strlen( ps.server ) ) ) {
+		if ( psHelloHttp.status == 200 && n >= 6 && !strcmp( field[0], "ok" ) && !Q_stricmpn( psv.asked, ps.server, strlen( ps.server ) ) ) {
 			psv.on = qtrue;
 			Q_strncpyz( psv.id, field[1], sizeof( psv.id ) );
 			psv.seq = atoi( field[2] );
-			PS_SetState( field[3], field[4], field[5] );
+			PS_SetState( field[3], field[4], field[5], n >= 7 ? field[6] : NULL );
 			// a token C1B3R no longer knows (unlinked in Discord, denied): forgotten
 			if ( PS_Token()[0] && !psv.linked ) {
 				Com_Printf( S_COLOR_YELLOW "C1B3R: " S_COLOR_WHITE "this game's link was ended (denied, revoked or unlinked); /c1b3r link to link it again\n" );
 				Cvar_Set( "cl_c1b3rToken", "" );
-				Q_strncpyz( psv.asked, va( "%s|%i|%s||%s|%s", ps.server, clc.clientNum, PS_MyName(), psa.account, PS_Rank() ), sizeof( psv.asked ) );
+				Q_strncpyz( psv.asked, va( "%s|%i|%s||%s|%s|%s", ps.server, clc.clientNum, PS_MyName(), psa.account, PS_Rank(),
+					Cvar_VariableString( "saber1" ) ), sizeof( psv.asked ) );
 			}
 			Q_strncpyz( psv.key, psv.asked, sizeof( psv.key ) );
 			psv.pollNext = 0;
@@ -696,11 +801,25 @@ static void PS_PollRequests( void ) {
 	if ( HTTP_Poll( &psHookHttp ) && psHookHttp.status != 200 ) {
 		Com_DPrintf( "clientusers: C1B3R didn't take a hook (%i)\n", psHookHttp.status );
 		if ( psHookHttp.status == 403 ) {
-			psv.sends = qfalse;
-			psRelayOut.clear();
-			PS_Note( "not sent: C1B3R says this game may not send now (/c1b3r shows why)" );
+			// the tools' refused (no RPMod admin rank), or all of it (the link taken back): the next
+			// poll's state says which
+			PS_Note( "not sent: C1B3R refused it (/c1b3r shows why)" );
 		} else if ( psHookHttp.status == 404 ) {
 			PS_Lost();
+		}
+	}
+	// C1B3R's web pages, signed in as this game's Discord user
+	if ( HTTP_Poll( &psWebHttp ) ) {
+		char *field[2];
+		const int n = PS_Fields( psWebHttp.answer, field, 2 );
+
+		if ( psWebHttp.status == 200 && n == 2 && !strcmp( field[0], "ok" ) ) {
+			if ( Sys_OpenPath( field[1] ) )
+				Com_Printf( S_COLOR_GREEN "C1B3R: " S_COLOR_WHITE "your browser opened C1B3R's web pages, signed in\n" );
+			else
+				Com_Printf( "C1B3R: couldn't open a browser; type /web in Discord for a link\n" );
+		} else {
+			Com_Printf( S_COLOR_YELLOW "C1B3R: no web link (%i): %s\n", psWebHttp.status, psWebHttp.answer );
 		}
 	}
 	if ( HTTP_Poll( &psLinkHttp ) ) {
@@ -767,12 +886,53 @@ static void PS_Reset( void ) {
 	psa.account[0] = '\0';
 }
 
+// /c1b3r state's answer: what C1B3R keeps of this server, and who changed it
+static void PS_StateAnswer( void ) {
+	std::string all;
+	size_t at = 0;
+	int n = 0;
+
+	if ( !HTTP_Poll( &psStateHttp ) )
+		return;
+	if ( psStateHttp.status != 200 ) {
+		Com_Printf( "C1B3R: %s", psStateHttp.answer[0] ? psStateHttp.answer : "no answer\n" );
+		return;
+	}
+	all = psStateHttp.answer;
+	if ( !all.compare( 0, 3, "ok\t" ) ) {
+		Com_Printf( "C1B3R: the server's shared state is cleared (%s kinds taken back for everyone)\n", all.c_str() + 3 );
+		return;
+	}
+	while ( at < all.size() ) {
+		size_t end = all.find( '\n', at );
+		char line[1024], *f[6];
+
+		if ( end == std::string::npos )
+			end = all.size();
+		Q_strncpyz( line, all.substr( at, end - at ).c_str(), sizeof( line ) );
+		at = end + 1;
+		if ( strncmp( line, "entry\t", 6 ) || PS_Fields( line, f, 6 ) < 6 )
+			continue;
+		{
+			const time_t when = (time_t)atoi( f[4] );
+			const struct tm *t = localtime( &when );
+
+			Com_Printf( "%02i:%02i  %-8s %s" S_COLOR_WHITE " (%s)  %s\n", t ? t->tm_hour : 0, t ? t->tm_min : 0, f[1],
+				PS_Unfield( f[3] ).c_str(), f[2], PS_Unfield( f[5] ).c_str() );
+		}
+		n++;
+	}
+	Com_Printf( n ? "C1B3R: %i shown to everyone with the client here, and to who joins later\n"
+		: "C1B3R: nothing shared on this server now\n", n );
+}
+
 void CL_Presence_Frame( void ) {
 	const char *server;
 
 	if ( !cl_presenceUrl )
 		return;
 	PS_PollRequests();
+	PS_StateAnswer();
 	if ( !PS_Active() ) {
 		if ( ps.server[0] )
 			PS_Reset();
@@ -813,7 +973,7 @@ void CL_Presence_Disconnect( void ) {
 
 static void PS_ClientUsers_f( void ) {
 	if ( !PS_Active() ) {
-		Com_Printf( "clientusers: only on a server, with cl_presenceUrl set\n" );
+		Com_Printf( "clientusers: only on a server, with cl_c1b3rUrl set\n" );
 		return;
 	}
 	if ( !psv.on ) {
@@ -828,6 +988,18 @@ static void PS_ClientUsers_f( void ) {
 }
 
 // /c1b3r: your link; /c1b3r link: link this game in Discord; /c1b3r unlink
+// c1b3rhook <all|client> cmd:...: typed, bound or a story's command run here
+static void PS_HookCmd_f( void ) {
+	const char *who = Cmd_Argv( 1 );
+	const char *text = Cmd_ArgsFrom( 2 );
+
+	if ( Cmd_Argc() < 3 || Q_stricmpn( text, "cmd:", 4 ) ) {
+		Com_Printf( "usage: c1b3rhook <all|client number> cmd:<kind>/...\n" );
+		return;
+	}
+	CL_Presence_Hook( Q_isanumber( who ) && atoi( who ) >= 0 ? atoi( who ) : -1, text );
+}
+
 static void PS_C1b3r_f( void ) {
 	const char *arg = Cmd_Argv( 1 );
 
@@ -845,12 +1017,46 @@ static void PS_C1b3r_f( void ) {
 		PS_Unlink();
 		return;
 	}
+	// for RPMod admins: what C1B3R keeps of this server for who joins later, or all of it taken back
+	if ( !Q_stricmp( arg, "state" ) ) {
+		std::string body = "{\"session\":";
+
+		if ( !PS_Active() || !psv.on ) {
+			Com_Printf( "C1B3R: join a server first, connected to C1B3R\n" );
+			return;
+		}
+		if ( psStateHttp.state == HTTP_BUSY )
+			return;
+		PS_Json( body, psv.id );
+		body += "}";
+		PS_Send( &psStateHttp, !Q_stricmp( Cmd_Argv( 2 ), "clear" ) ? "/v2/state/clear" : "/v2/state/list", body );
+		return;
+	}
+	// C1B3R's web pages in the browser, signed in: this game's link stands for its Discord user
+	if ( !Q_stricmp( arg, "web" ) ) {
+		std::string body = "{\"session\":";
+
+		if ( !PS_Active() || !psv.on ) {
+			Com_Printf( "C1B3R: join a server first, connected to C1B3R\n" );
+			return;
+		}
+		if ( !PS_Token()[0] ) {
+			Com_Printf( "C1B3R: this game isn't linked: /c1b3r link first\n" );
+			return;
+		}
+		if ( psWebHttp.state == HTTP_BUSY )
+			return;
+		PS_Json( body, psv.id );
+		body += "}";
+		PS_Send( &psWebHttp, "/v2/web/link", body );
+		return;
+	}
 	// Discord's page to add C1B3R to your account, so /link works in a DM without its server
 	if ( !Q_stricmp( arg, "discord" ) ) {
 		const char *url = PS_Url( "/discord" );
 
 		if ( Q_stricmpn( url, "https://", 8 ) && Q_stricmpn( url, "http://", 7 ) ) {
-			Com_Printf( "C1B3R: cl_presenceUrl isn't a web address\n" );
+			Com_Printf( "C1B3R: cl_c1b3rUrl isn't a web address\n" );
 		} else if ( !Sys_OpenPath( url ) ) {
 			Com_Printf( "C1B3R: couldn't open a browser; go to %s\n", url );
 		} else {
@@ -864,21 +1070,50 @@ static void PS_C1b3r_f( void ) {
 		Com_Printf( "Waiting for " S_COLOR_CYAN "/link %s" S_COLOR_WHITE " in Discord\n", psa.code );
 	Com_Printf( "RPMod account: %s\n", !psa.known ? "not known yet" : psa.account[0] ? psa.account : "logged out" );
 	Com_Printf( "c1b3r link : link this game (logged in to your RPMod account), then /link <code> in Discord\n"
+		"c1b3r web : open C1B3R's web pages in your browser, signed in (a linked game)\n"
 		"c1b3r discord : add C1B3R to your Discord account, for /link in any DM\n"
-		"c1b3r unlink : end the link\n" );
+		"c1b3r unlink : end the link\n"
+		"c1b3r state [clear] : (RPMod admins) what's shared on this server for who joins later, and who did it; clear takes it back\n" );
+}
+
+// C1B3R's one address, for everything that talks to it. It was two before (cl_presenceUrl and
+// cl_feedbackUrl): one of those set to an address of its own is carried over the first time
+cvar_t *CL_C1b3rUrl( void ) {
+	static cvar_t *url;
+
+	if ( !url ) {
+		const qboolean fresh = (qboolean)( Cvar_Flags( "cl_c1b3rUrl" ) == CVAR_NONEXISTENT );
+
+		url = Cvar_Get( "cl_c1b3rUrl", PS_DEFAULT_URL, CVAR_ARCHIVE_ND | CVAR_PROTECTED,
+			"C1B3R's address: the link to everyone with this client on the server, what the tools share, /feedback, the datapad's apps" );
+		if ( fresh ) {
+			const char *olds[] = { "cl_presenceUrl", "cl_feedbackUrl" };
+
+			for ( int i = 0; i < (int)ARRAY_LEN( olds ); i++ ) {
+				const char *old = Cvar_VariableString( olds[i] );
+
+				if ( old[0] && Q_stricmp( old, PS_DEFAULT_URL ) ) {
+					Cvar_Set( "cl_c1b3rUrl", old );
+					break;
+				}
+			}
+		}
+	}
+	return url;
 }
 
 void CL_Presence_Init( void ) {
-	cl_presenceUrl = Cvar_Get( "cl_presenceUrl", PS_DEFAULT_URL, CVAR_ARCHIVE_ND | CVAR_PROTECTED,
-		"C1B3R's address: the link to everyone with this client on the server, and what the tools share with them" );
+	cl_presenceUrl = CL_C1b3rUrl();
 	cl_presenceLocal = Cvar_Get( "cl_presenceLocal", "0", CVAR_TEMP | CVAR_INTERNAL, "Talk to C1B3R on a server of your own too, logged in as a test admin, to try it" );
 	cl_c1b3rToken = Cvar_Get( "cl_c1b3rToken", "", CVAR_ARCHIVE_ND | CVAR_PROTECTED | CVAR_NORESTART,
 		"This game's link to C1B3R, made with /c1b3r link: keep it to yourself" );
 	Cmd_AddCommand( "clientusers", PS_ClientUsers_f, "Your link to C1B3R, and who on this server has this client" );
-	Cmd_AddCommand( "c1b3r", PS_C1b3r_f, "Your link to C1B3R; c1b3r link links this game in Discord, for admins to send; c1b3r discord adds C1B3R to your Discord account; c1b3r unlink ends it" );
+	Cmd_AddCommand( "c1b3rhook", PS_HookCmd_f, "c1b3rhook <all|client> cmd:<...>: a hook to everyone with this client (or one player), through C1B3R" );
+	Cmd_AddCommand( "c1b3r", PS_C1b3r_f, "Your link to C1B3R; c1b3r link links this game in Discord, for admins to send; c1b3r web opens C1B3R's web pages signed in; c1b3r discord adds C1B3R to your Discord account; c1b3r unlink ends it" );
 }
 
 void CL_Presence_Shutdown( void ) {
 	Cmd_RemoveCommand( "clientusers" );
 	Cmd_RemoveCommand( "c1b3r" );
+	Cmd_RemoveCommand( "c1b3rhook" );
 }

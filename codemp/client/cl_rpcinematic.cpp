@@ -1253,6 +1253,21 @@ static void RC_StopAnims( qboolean editorToo ) {
 	}
 }
 
+// an animation played once on an entity and held on its last frame till let go (a dismembered
+// player's death, cl_dismember.cpp); already past, it's on its last frame at once
+void CL_RpCinematic_HoldAnim( int num, const char *anim, qboolean past ) {
+	CL_RpCinematic_ReleaseAnim( num );
+	RC_StartAnim( num, anim, 0, -1, RC_AM_PLAY, qfalse, 100, past ? -600000 : 0, 0, qfalse );
+}
+
+// the ones playing on an entity (not the cinematic editor's) let go
+void CL_RpCinematic_ReleaseAnim( int num ) {
+	for ( int i = 0; i < RC_MAX_PLAYING; i++ ) {
+		if ( rcPlaying[i].active && !rcPlaying[i].editor && rcPlaying[i].num == num )
+			RC_Release( &rcPlaying[i] );
+	}
+}
+
 void RC_TimelineAnims( const int *nums, const rcAnim_t *const *anims, const int *elapsed, int count ) {
 	for ( int j = 0; j < count; j++ ) {
 		const rcAnim_t *a = anims[j];
@@ -1518,7 +1533,7 @@ static void RC_RunAnimSend( void ) {
 	if ( !rcSend.pending || cls.state != CA_ACTIVE || !CL_NpcWalk_CanSend() )
 		return;
 	rcSend.pending = qfalse;
-	Q_strncpyz( hook, "rpnotify -1 1 cmd:anim", sizeof( hook ) );
+	Q_strncpyz( hook, "c1b3rhook all cmd:anim", sizeof( hook ) );
 	for ( int i = 0; i < rcSend.count; i++ ) {
 		const rcAnim_t *a = &rcSend.anims[i];
 		int nums[16];
@@ -2612,7 +2627,7 @@ static void CL_CinCam_f( void ) {
 		Com_Printf( S_COLOR_YELLOW "Not sent: an empty part would make a // the server cuts the line at\n" );
 		return;
 	}
-	CL_AddReliableCommand( va( "rpnotify -1 1 cmd:%s", hook ), qfalse );
+	CL_AddReliableCommand( va( "c1b3rhook all cmd:%s", hook ), qfalse );
 	if ( !Q_stricmp( verb, "play" ) )
 		CL_RpCinematic_ShotWalks( Cmd_Argv( 2 ), qfalse );
 }

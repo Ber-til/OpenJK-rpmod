@@ -732,11 +732,17 @@ void CL_ShutdownCGame( void ) {
 	CL_Presets_Shutdown();
 	CL_EscMenu_Close();
 	CL_SpecialMoves_Shutdown();
+	CL_Inventory_Shutdown();
+	CL_Inspect_Shutdown();
+	CL_Holster_Shutdown();
+	CL_Dismember_Clear();
+	CL_Characters_Shutdown();
 	CL_AssetManager_Shutdown();
 	CL_RadialMenu_Shutdown();
 	CL_Languages_Shutdown();
 	CL_EmotePreview_Shutdown();
 	CL_Extras_Shutdown();
+	CL_WorldItems_Shutdown();
 	CL_RpCinematic_Reset();
 	CL_NpcWalk_Reset();
 	CL_FighterAssist_Shutdown();

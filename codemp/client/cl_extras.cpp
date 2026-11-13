@@ -230,11 +230,60 @@ static void EX_AddSaber( extra_t *x, const char *glm, const char *hand, int blad
 	}
 }
 
+// a player model ("model", "model/skin", "model/head|torso|legs" skins) or any glm path, loaded with
+// its skin; its animation.cfg in *cfg (-1 none). qfalse when it couldn't be
+static qboolean EX_LoadModel( const char *model, CGhoul2Info_v **g2, int *cfg ) {
+	char name[MAX_QPATH], glm[MAX_QPATH], skinPath[MAX_QPATH], *slash;
+	const char *skin = "default", *gla;
+	qhandle_t hSkin = 0;
+
+	*g2 = NULL;
+	*cfg = -1;
+	if ( !Q_stricmp( COM_GetExtension( model ), "glm" ) ) {
+		// any ghoul2 model, as it is
+		if ( FS_ReadFile( model, NULL ) <= 0 || re->G2API_InitGhoul2Model( g2, model, 0, 0, 0, 0, 0 ) < 0 || !*g2 ) {
+			if ( *g2 )
+				re->G2API_CleanGhoul2Models( g2 );
+			*g2 = NULL;
+			return qfalse;
+		}
+	} else {
+		Q_strncpyz( name, model[0] ? model : "kyle", sizeof( name ) );
+		if ( ( slash = strchr( name, '/' ) ) != NULL ) {
+			*slash = '\0';
+			if ( slash[1] )
+				skin = slash + 1;
+		}
+		Com_sprintf( glm, sizeof( glm ), "models/players/%s/model.glm", name );
+		if ( FS_ReadFile( glm, NULL ) <= 0 ) {
+			Com_sprintf( glm, sizeof( glm ), "models/players/kyle/model.glm" );
+			Q_strncpyz( name, "kyle", sizeof( name ) );
+			skin = "default";
+		}
+		if ( strchr( skin, '|' ) ) {
+			Com_sprintf( skinPath, sizeof( skinPath ), "models/players/%s/|%s", name, skin );
+		} else {
+			Com_sprintf( skinPath, sizeof( skinPath ), "models/players/%s/model_%s.skin", name, skin );
+			if ( FS_ReadFile( skinPath, NULL ) <= 0 )
+				Com_sprintf( skinPath, sizeof( skinPath ), "models/players/%s/model_default.skin", name );
+		}
+		hSkin = re->RegisterSkin( skinPath );
+		if ( re->G2API_InitGhoul2Model( g2, glm, 0, hSkin, 0, 0, 0 ) < 0 || !*g2 ) {
+			if ( *g2 )
+				re->G2API_CleanGhoul2Models( g2 );
+			*g2 = NULL;
+			return qfalse;
+		}
+		re->G2API_SetSkin( **g2, 0, hSkin, hSkin );
+	}
+	gla = re->G2API_GetGLAName( **g2, 0 );
+	*cfg = gla && gla[0] ? RC_AnimCfg( gla ) : -1;
+	return qtrue;
+}
+
 // its model, skin and sabers, made when they change
 static void EX_Build( extra_t *x ) {
-	char key[sizeof( x->key )], name[MAX_QPATH], glm[MAX_QPATH], skinPath[MAX_QPATH], *slash;
-	const char *skin = "default", *gla;
-	qhandle_t hSkin;
+	char key[sizeof( x->key )];
 
 	Com_sprintf( key, sizeof( key ), "%s|%i", x->model, x->saber );
 	if ( !Q_stricmp( key, x->key ) )
@@ -243,35 +292,10 @@ static void EX_Build( extra_t *x ) {
 	Q_strncpyz( x->key, key, sizeof( x->key ) );
 	x->cfg = -1;
 	x->numBlades = 0;
-
-	Q_strncpyz( name, x->model, sizeof( name ) );
-	if ( ( slash = strchr( name, '/' ) ) != NULL ) {
-		*slash = '\0';
-		if ( slash[1] )
-			skin = slash + 1;
+	if ( !EX_LoadModel( x->model, &x->g2, &x->cfg ) ) {
+		x->g2 = NULL;
+		return;		// the key kept: not again every frame
 	}
-	Com_sprintf( glm, sizeof( glm ), "models/players/%s/model.glm", name );
-	if ( FS_ReadFile( glm, NULL ) <= 0 ) {
-		Com_sprintf( glm, sizeof( glm ), "models/players/kyle/model.glm" );
-		Q_strncpyz( name, "kyle", sizeof( name ) );
-		skin = "default";
-	}
-	if ( strchr( skin, '|' ) ) {
-		Com_sprintf( skinPath, sizeof( skinPath ), "models/players/%s/|%s", name, skin );
-	} else {
-		Com_sprintf( skinPath, sizeof( skinPath ), "models/players/%s/model_%s.skin", name, skin );
-		if ( FS_ReadFile( skinPath, NULL ) <= 0 )
-			Com_sprintf( skinPath, sizeof( skinPath ), "models/players/%s/model_default.skin", name );
-	}
-	hSkin = re->RegisterSkin( skinPath );
-	if ( re->G2API_InitGhoul2Model( &x->g2, glm, 0, hSkin, 0, 0, 0 ) < 0 || !x->g2 ) {
-		EX_FreeModel( x );
-		Q_strncpyz( x->key, key, sizeof( x->key ) );	// not again every frame
-		return;
-	}
-	re->G2API_SetSkin( *x->g2, 0, hSkin, hSkin );
-	gla = re->G2API_GetGLAName( *x->g2, 0 );
-	x->cfg = gla && gla[0] ? RC_AnimCfg( gla ) : -1;
 	if ( x->saber == CL_EXTRA_SABER_SINGLE || x->saber == CL_EXTRA_SABER_TWO )
 		EX_AddSaber( x, EX_SABER_SINGLE, "*r_hand", 1 );
 	if ( x->saber == CL_EXTRA_SABER_TWO )
@@ -388,4 +412,52 @@ void CL_Extras_AddToScene( const refdef_t *fd ) {
 		for ( int b = 0; b < x->numBlades; b++ )
 			EX_Blade( x, b, x->ang, x->pos );
 	}
+}
+
+/*
+===============================================================================
+
+A body posed and held: a player model lying in a death pose, for the world's things (cl_worlditems.cpp).
+Not an extra: the cinematic's slots never let it go
+
+===============================================================================
+*/
+
+// its model made when it changes, and the animation set when it does, held on its last frame from
+// the start (no fall played); qfalse when there's no model to draw
+qboolean CL_Extras_PoseBody( clPosedBody_t *b, const char *model, const char *anim ) {
+	CGhoul2Info_v *g2 = (CGhoul2Info_v *)b->g2;
+	const rcAnimDef_t *d;
+
+	if ( Q_stricmp( b->key, model ) ) {
+		CL_Extras_FreeBody( b );
+		Q_strncpyz( b->key, model, sizeof( b->key ) );
+		if ( !EX_LoadModel( model, &g2, &b->cfg ) )
+			return qfalse;
+		b->g2 = g2;
+	}
+	if ( !g2 )
+		return qfalse;
+	if ( Q_stricmp( b->anim, anim ) ) {
+		Q_strncpyz( b->anim, anim, sizeof( b->anim ) );
+		if ( b->cfg >= 0 && anim[0] && ( d = RC_FindAnim( b->cfg, anim ) ) != NULL && d->num > 0 ) {
+			const int last = d->fps >= 0.0f ? d->first + d->num - 1 : d->first;
+			const float speed = fabsf( d->fps ) / 20.0f;
+
+			re->G2API_SetBoneAnim( *g2, 0, "model_root", d->first, d->first + d->num, BONE_ANIM_OVERRIDE_FREEZE,
+				speed > 0.0f ? speed : 1.0f, re->G2API_GetTime( cl.serverTime ), (float)last, 0 );
+			re->G2API_SetBoneAnim( *g2, 0, "lower_lumbar", d->first, d->first + d->num, BONE_ANIM_OVERRIDE_FREEZE,
+				speed > 0.0f ? speed : 1.0f, re->G2API_GetTime( cl.serverTime ), (float)last, 0 );
+		}
+	}
+	return qtrue;
+}
+
+void CL_Extras_FreeBody( clPosedBody_t *b ) {
+	CGhoul2Info_v *g2 = (CGhoul2Info_v *)b->g2;
+
+	if ( g2 )
+		re->G2API_CleanGhoul2Models( &g2 );
+	memset( b, 0, sizeof( *b ) );
+	b->cfg = -1;
 }

@@ -31,6 +31,13 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #include "FxUtil.h"
 #include "FxSystem.h"
 
+// the cgame's weather on its way to the renderer: the map editor keeps the map's own, to give it
+// again under its weather boxes (cl_mapeditor.cpp)
+static void CL_WorldEffectCommand( const char *command ) {
+	CL_MapEditor_MapWeather( command );
+	re->WorldEffectCommand( command );
+}
+
 extern IHeapAllocator *G2VertSpaceClient;
 extern botlib_export_t *botlib_export;
 
@@ -325,6 +332,7 @@ static void CL_R_AddRefEntityToScene( const refEntity_t *ent ) {
 	ent = CL_RpCinematic_Entity( ent, &copy );
 	if ( !ent )
 		return;
+	void *bodyGhoul2 = ent->ghoul2;	// the body as the cgame made it, before an emote's copy
 	// someone playing a custom emote: a copy of their body playing it, drawn in its place
 	{
 		static refEntity_t emoteCopy;
@@ -339,7 +347,13 @@ static void CL_R_AddRefEntityToScene( const refEntity_t *ent ) {
 	CL_EffectManager_AddEntity( ent );
 	// a lightsaber's blade lights what's around it
 	CL_SaberLight_Entity( ent );
+	// a body cut for the story (/dismember)
+	CL_Dismember_Entity( ent );
+	// the E-11's burst charging: where its muzzle is
+	CL_BurstFire_Entity( ent );
 	re->AddRefEntityToScene( ent );
+	// what they wear (/holster), on the body as it's drawn
+	CL_Holster_Entity( ent, bodyGhoul2 );
 }
 
 // cgame's lights wait for the scene, so the saber light can leave out the one it gives a blade
@@ -399,9 +413,17 @@ static void CL_R_RenderScene( const refdef_t *fd ) {
 	CL_Cinematic_AddToScene( fd );
 	// where the stories armed wait, for the storyteller
 	CL_Storyteller_AddToScene( fd );
+	// things in the world: dropped items, objects, bodies
+	CL_WorldItems_AddToScene( fd );
+	// limbs cut for the story, lying about
+	CL_Dismember_AddToScene( fd );
+	// the E-11's burst charging: a glow at the muzzle
+	CL_BurstFire_AddToScene( fd );
 	// where the crosshair looks, for an NPC's name under it
 	CL_NpcNames_View( fd );
-	if ( !CL_NpcManager_RenderScene( fd ) && !CL_ShaderManager_RenderScene( fd ) && !CL_EffectManager_RenderScene( fd )
+	CL_Aim_View( fd );
+	// the holster's live editing first: it closes the managers as it opens
+	if ( !CL_WorldItems_RenderScene( fd ) && !CL_Holster_RenderScene( fd ) && !CL_NpcManager_RenderScene( fd ) && !CL_ShaderManager_RenderScene( fd ) && !CL_EffectManager_RenderScene( fd )
 		&& !CL_MapEditor_RenderScene( fd ) && !CL_RpCinematic_RenderScene( fd ) )
 		CL_ModelManager_RenderScene( fd );
 }
@@ -1857,7 +1879,7 @@ intptr_t CL_CgameSystemCalls( intptr_t *args ) {
 		return 0;
 
 	case CG_R_WORLDEFFECTCOMMAND:
-		re->WorldEffectCommand((const char *)VMA(1));
+		CL_WorldEffectCommand((const char *)VMA(1));
 		return 0;
 
 	case CG_WE_ADDWEATHERZONE:
@@ -1992,7 +2014,7 @@ void CL_BindCGame( void ) {
 		cgi.R_SetLightStyle						= CL_R_SetLightStyle;
 		cgi.R_SetRangedFog						= re->SetRangedFog;
 		cgi.R_SetRefractionProperties			= re->SetRefractionProperties;
-		cgi.R_WorldEffectCommand				= re->WorldEffectCommand;
+		cgi.R_WorldEffectCommand				= CL_WorldEffectCommand;
 		cgi.RE_InitRendererTerrain				= RE_InitRendererTerrain;
 		cgi.WE_AddWeatherZone					= re->AddWeatherZone;
 		cgi.GetCurrentSnapshotNumber			= CL_GetCurrentSnapshotNumber;

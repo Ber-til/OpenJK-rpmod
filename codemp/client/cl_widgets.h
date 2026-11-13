@@ -72,10 +72,24 @@ scrolled to the cursor when focused. A click in it goes to WG_FieldClick, as a f
 void		WG_TextBox( const wgStyle_t *style, float x, float y, float w, float h, char *buf, qboolean focused,
 				const char *placeholder, float cursorX, float cursorY );
 
+/*
+A text area: many lines typed in, Enter a new line in it, PgUp and PgDn a page. Wrapped to its width,
+its scrollbar on the right (dragged: it takes the click, *click false) and the wheel through
+WG_TextAreaScroll; scrolled to the cursor when it moves. A click in it goes to WG_FieldClick.
+*/
+void		WG_TextArea( const wgStyle_t *style, float x, float y, float w, float h, char *buf, qboolean focused,
+				const char *placeholder, float cursorX, float cursorY, qboolean *click, float clickX, float clickY );
+void		WG_TextAreaScroll( int lines );		// the focused area's view, lines down (up when negative)
+
 // text to read, wrapped to w: how many lines it takes, and those from first on drawn at x, y
 // (count of them). A ^ is drawn as itself
 int			WG_TextLines( const wgStyle_t *style, const char *text, float w );
 void		WG_DrawText( const wgStyle_t *style, float x, float y, float w, const char *text, int first, int count, const float *color );
+
+// one line with colour codes in it, RPMod's too (^a-^z, ^A-^Z, as the console shows them): each run
+// in its colour, at color's alpha; too long for w, cut with ... at the end. A player's name, say
+void		WG_TypedText( float x, float y, float w, const char *text, const float *color, int font, float scale,
+				qboolean centred, qboolean shadow );
 
 // the field typed in: its cursor and selection forgotten, as when another one is clicked
 void		WG_EditReset( void );

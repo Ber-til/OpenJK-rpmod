@@ -50,3 +50,17 @@ void GZ_Begin( gzDrag_t *drag, const gzView_t *v, const vec3_t pivot, int axis, 
 float GZ_Amount( const gzDrag_t *drag, float mx, float my, int grid );
 void GZ_Target( const gzDrag_t *drag, float mx, float my, int grid, vec3_t out );
 void GZ_DrawCursor( float x, float y );
+
+// the same along any three ways (unit vectors), not the world's; names NULL for X Y Z
+void GZ_DrawAxes( const gzView_t *v, const vec3_t pivot, const vec3_t dirs[3], int hot, const char * const *names );
+int GZ_HitAxes( const gzView_t *v, const vec3_t pivot, const vec3_t dirs[3], float mx, float my );
+void GZ_BeginDir( gzDrag_t *drag, const gzView_t *v, const vec3_t pivot, const vec3_t dir, int axis, float mx, float my );
+
+// rings round three axes (unit vectors), to turn; the one at the mouse, -1 none
+void GZ_DrawRings( const gzView_t *v, const vec3_t pivot, const vec3_t axes[3], int hot );
+int GZ_HitRings( const gzView_t *v, const vec3_t pivot, const vec3_t axes[3], float mx, float my );
+// the mouse's angle round pivot on the screen, and which way a positive turn round axis goes there
+float GZ_ScreenAngle( const gzView_t *v, const vec3_t pivot, float mx, float my );
+float GZ_RingSign( const gzView_t *v, const vec3_t pivot, const vec3_t axis );
+void GZ_Basis( const vec3_t axis, vec3_t u, vec3_t v );
+void GZ_AxisAngles( const matrix3_t axis, vec3_t angles );

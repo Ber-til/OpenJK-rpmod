@@ -105,7 +105,6 @@ extern IHeapAllocator *G2VertSpaceClient;
 #define SM_SHARE_WORD		32		// longer words go in pieces
 #define SM_SHARE_GAP_MS		400		// between hooks, for the server's flood protection
 #define SM_SHARE_START_MS	5000	// shared this long into a map
-#define SM_SHARE_JOIN_MS	4000	// and this long after someone joins
 #define SM_MAX_SHARED		64		// player shaders taken from one player
 
 typedef enum {
@@ -708,7 +707,7 @@ const refEntity_t *CL_ShaderManager_MineEntity( const refEntity_t *ent, refEntit
 
 SHARED PLAYER SHADERS
 
-Through RPMod's rpnotify, to everyone with this client: cmd:mine/<client>/<part>/<parts>:
+Through C1B3R, to everyone with this client: cmd:mine/<client>/<part>/<parts>:
 <shader>><shader>|..., the words split for the server and joined again; cmd:mine/<client>/clear.
 
 ===============================================================================
@@ -729,7 +728,7 @@ static void SM_AppendSplit( std::string &out, const char *word ) {
 }
 
 static void SM_QueueShare( const char *text ) {
-	sm.shareQueue.push_back( va( "rpnotify -1 1 %s", text ) );
+	sm.shareQueue.push_back( va( "c1b3rhook all %s", text ) );
 }
 
 // this player's player shaders, in as few hooks as fit
@@ -780,8 +779,7 @@ static void SM_MineFrame( void ) {
 			SM_RebuildMapped();
 		}
 	}
-	if ( players > sm.sharePlayers && sm.sharePlayers && !sm.mineFrom.empty() )
-		sm.shareAt = cls.realtime + SM_SHARE_JOIN_MS;
+	// someone joining later gets them from C1B3R, which keeps the server's state (serverstate.py)
 	sm.sharePlayers = players;
 
 	if ( sm.shareAt && cls.realtime >= sm.shareAt ) {
@@ -2276,6 +2274,10 @@ static void SM_Open( void ) {
 	CL_Presets_Close();
 	CL_SpecialMoves_Close();
 	CL_ChatLog_Close();
+	CL_Inventory_Close();
+	CL_Inspect_Close();
+	CL_Holster_Close();
+	CL_Characters_Close();
 
 	sm.font = re->RegisterFont( "arialnb" );
 	if ( !sm.font )
@@ -3790,9 +3792,9 @@ static void SM_DrawSkyTab( float x, float y, float w ) {
 		if ( !CL_RpHooks_Experimental() )
 			SM_SetStatus( S_COLOR_YELLOW "Sharing the sky is experimental: TOGGLE EXPERIMENTAL in the npcmanager first" );
 		else if ( !SM_SkyAltered( &sm.sky ) )
-			SM_Send( "rpnotify -1 1 cmd:sky/off" );
+			SM_Send( "c1b3rhook all cmd:sky/off" );
 		else
-			SM_Send( va( "rpnotify -1 1 cmd:sky/%g %g %g/%g/%g %g %g/%g %g %g%s%s", sm.sky.tint[0], sm.sky.tint[1], sm.sky.tint[2], sm.sky.spin,
+			SM_Send( va( "c1b3rhook all cmd:sky/%g %g %g/%g/%g %g %g/%g %g %g%s%s", sm.sky.tint[0], sm.sky.tint[1], sm.sky.tint[2], sm.sky.spin,
 				sm.sky.angles[0], sm.sky.angles[1], sm.sky.angles[2], sm.sky.shift[0], sm.sky.shift[1], sm.sky.shift[2],
 				sm.sky.portalOn ? va( "/%g %g %g", sm.sky.portalOrg[0], sm.sky.portalOrg[1], sm.sky.portalOrg[2] ) : sm.sky.zoom != 1.0f ? "/-" : "",
 				sm.sky.zoom != 1.0f ? va( "/%g", sm.sky.zoom ) : "" ) );
@@ -3802,7 +3804,7 @@ static void SM_DrawSkyTab( float x, float y, float w ) {
 			SM_SetStatus( S_COLOR_YELLOW "Sharing the sky is experimental: TOGGLE EXPERIMENTAL in the npcmanager first" );
 		} else {
 			SM_SkyDefault( &sm.sky );
-			SM_Send( "rpnotify -1 1 cmd:sky/off" );
+			SM_Send( "c1b3rhook all cmd:sky/off" );
 		}
 	}
 	y += 22;
@@ -4146,6 +4148,46 @@ static void SM_MineClearAll( void ) {
 		sm.shareAt = cls.realtime;
 	SM_RebuildMineView();
 	SM_SetStatus( "Every player shader back to the standard" );
+}
+
+// for Characters (cl_characters.cpp): your player shaders as pairs, and a whole set put in their place
+int CL_ShaderManager_MineCount( void ) {
+	if ( !sm.mineLoaded )
+		SM_LoadMine();
+	return (int)sm.mineFrom.size();
+}
+
+qboolean CL_ShaderManager_MineGet( int i, const char **from, const char **to ) {
+	if ( i < 0 || i >= CL_ShaderManager_MineCount() )
+		return qfalse;
+	*from = sm.mineFrom[i].c_str();
+	*to = sm.mineTo[i].c_str();
+	return qtrue;
+}
+
+void CL_ShaderManager_MineReplace( const char **from, const char **to, int num ) {
+	char f[MAX_QPATH], t[MAX_QPATH];
+
+	if ( !sm.mineLoaded )
+		SM_LoadMine();
+	sm.mineFrom.clear();
+	sm.mineTo.clear();
+	for ( int i = 0; i < num; i++ ) {
+		SM_ShaderKey( from[i], f, sizeof( f ) );
+		SM_ShaderKey( to[i], t, sizeof( t ) );
+		if ( f[0] && t[0] && strcmp( f, t ) && SM_MineIndex( f ) < 0 ) {
+			sm.mineFrom.push_back( f );
+			sm.mineTo.push_back( t );
+		}
+	}
+	if ( sm.mineApplied )
+		SM_BuildMineHandles();
+	else
+		sm.mineHandles.clear();
+	SM_SaveMine();
+	if ( SM_ShareOn() )
+		sm.shareAt = cls.realtime + 1;
+	SM_RebuildMineView();
 }
 
 static void SM_MineEnter( void ) {

@@ -613,6 +613,10 @@ void CL_ParseGamestate( msg_t *msg ) {
 		//clc.downloadRestart = qtrue;
 	}
 
+	// a new load of the map: what was shared for the last is gone (C1B3R replays this one's)
+	CL_RpHooks_NewLoad();
+	CL_MapEditor_NewLoad();
+
 	// This used to call CL_StartHunkUsers, but now we enter the download state before loading the
 	// cgame
 	CL_InitDownloads();

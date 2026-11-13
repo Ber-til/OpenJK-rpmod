@@ -36,9 +36,10 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 // rest of the map is watched two more ways (see FAR AWAY): players with this client are
 // told where the stories wait and say when they come or go, and the others' positions are
 // asked of the server with rporigin, one a command. NPCs out of sight still can't be seen.
-// It can also wait for someone to use one of the map editor's use triggers, by its name. A use
-// trigger a story waits on later than the step it's at is too early: hidden from the players, or
-// it shows them a message instead of being used (its step's Too early), until the story gets there.
+// It can also wait for someone to use a world thing (cl_worlditems.cpp) by its story name, or come
+// into a walk-in world zone. A thing a story waits on later than the step it's at is too early:
+// hidden from the players, or it shows them a message instead of being used (its step's Too early),
+// until the story gets there.
 //
 // An If can ask who set off the When it's under, by name; a Play story step plays another saved
 // story alongside. A Go back step plays again from an earlier step: the When before it, which
@@ -126,6 +127,7 @@ typedef enum {
 	ST_A_NOTIFY,
 	ST_A_NPC_TALK,
 	ST_A_OBJECTIVE,
+	ST_A_GIVE,			// rpgive: health, armour, ammo, weapons or items
 	ST_A_NPC_SPAWN,
 	ST_A_NPC_TELE,
 	ST_A_NPC_CMD,
@@ -160,6 +162,8 @@ typedef struct {
 	stFieldDef_t	fields[ST_MAX_FIELDS];
 } stActionDef_t;
 
+#define ST_GIVE_WEAPONS		"stun_baton|melee|saber|blaster_pistol|concussion_rifle|bryar_pistol|blaster|disruptor|bowcaster|repeater|demp2|flechette|rocket_launcher|thermal|trip_mine|det_pack|all"
+#define ST_GIVE_ITEMS		"seeker|shield|medpac|medpac_big|binoculars|sentry_gun|jetpack|healthdisp|ammodisp|eweb_holdable|cloak|all"
 #define ST_NPC_COMMANDS		"kill|freeze|unfreeze|emote|stop emote|follow me|stop following|dialog|no dialog|hologram|projector|no hologram"
 
 static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
@@ -167,8 +171,8 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ "Seconds", ST_K_NUMBER, "2", NULL } } },
 	{ "pause", "Wait for me", "Flow", "Stops until you press Continue, or run /storyteller continue (bind it to a key). The note shows while it waits.", -1, -1, 1, {
 		{ "Note", ST_K_TEXT, "", NULL } } },
-	{ "trigger", "When someone comes", "Flow", "Waits until someone comes into a map trigger or near a spot or an effect, a door moves, someone says one of the words (| between them), or someone uses one of the map editor's use triggers (by its name). Who can be a team's players only, red or blue. With For, they have to stay in that many seconds. A story starting with it can be armed. Players out of sight are found too: those with this client say where they are (with experimental on), the others are asked for with rporigin.", 5, -1, 11, {
-		{ "Where", ST_K_CHOICE, "map trigger", "map trigger|near a spot|near an effect|door|someone says|someone uses" },
+	{ "trigger", "When someone comes", "Flow", "Waits until someone comes into a map trigger, a door moves, someone says one of the words (| between them), someone uses a world trigger (a world thing by its story name, from the world editor), or comes into a walk-in world zone. Who can be a team's players only, red or blue. With For, they have to stay in that many seconds. A story starting with it can be armed. Players out of sight are found too: those with this client say where they are (with experimental on), the others are asked for with rporigin.", 5, -1, 11, {
+		{ "Where", ST_K_CHOICE, "map trigger", "map trigger|world zone|door|someone says|someone uses" },
 		{ "Which", ST_K_TEXT, "", NULL },
 		{ "Who", ST_K_CHOICE, "any player", "any player|any NPC|anyone|me|named|red team|blue team" },
 		{ "Name", ST_K_TEXT, "", NULL },
@@ -179,8 +183,8 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ "For (s)", ST_K_NUMBER, "0", NULL },
 		{ "Too early", ST_K_CHOICE, "as ever", "as ever|hidden|a message" },
 		{ "Message", ST_K_TEXT, "Maybe you should do something else first.", NULL } } },
-	{ "if", "If", "Flow", "Goes under a When step, and looks once, when the story gets to it: how many are in a map trigger or near a spot or an effect, or whether someone has said one of the words (| between them), or used the use trigger by that name, since the story began, or whether who set off the When above it has that name. True, the steps after it play; false, the ones after its Else, or after its End if.", 5, -1, 10, {
-		{ "Where", ST_K_CHOICE, "map trigger", "map trigger|near a spot|near an effect|someone says|someone uses|who set it off" },
+	{ "if", "If", "Flow", "Goes under a When step, and looks once, when the story gets to it: how many are in a map trigger or a walk-in world zone, or whether someone has said one of the words (| between them), or used the world thing by that story name, since the story began, or whether who set off the When above it has that name. True, the steps after it play; false, the ones after its Else, or after its End if.", 5, -1, 10, {
+		{ "Where", ST_K_CHOICE, "map trigger", "map trigger|world zone|someone says|someone uses|who set it off" },
 		{ "Which", ST_K_TEXT, "", NULL },
 		{ "Who", ST_K_CHOICE, "any player", "any player|any NPC|anyone|me|named|red team|blue team" },
 		{ "Name", ST_K_TEXT, "", NULL },
@@ -199,11 +203,11 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ "Name", ST_K_TEXT, "", NULL } } },
 	{ "command", "Run a command", "Flow", "Runs it as if typed in the console, e.g. rpcinematic intro, or exec mission.cfg. Separate several with ;", -1, -1, 1, {
 		{ "Command", ST_K_TEXT, "", NULL } } },
-	{ "say", "Say", "Speech", "Says this in chat, as you, or as one of the players on the server: by their number or a part of their name. As a player it shows in chat as theirs for everyone with this client (sent through C1B3R).", -1, -1, 3, {
+	{ "say", "Say", "Speech", "Says this in chat, as you, or as one of the players on the server: by their number or a part of their name, or who set it off. As a player it shows in chat as theirs for everyone with this client (sent through C1B3R).", -1, -1, 3, {
 		{ "Text", ST_K_TEXT, "", NULL },
-		{ "As", ST_K_CHOICE, "me", "me|a player" },
+		{ "As", ST_K_CHOICE, "me", "me|a player|who set it off" },
 		{ "Player", ST_K_TEXT, "", NULL } } },
-	{ "center", "Center message", "Speech", "Shows the text in the middle of the screen with rpcentersay, for everyone (all), or one player. 0 seconds keeps each player's own setting. Place moves it down: to the bottom of the screen, or a number of lines. Typewriter shows it a letter at a time, each with the sound, this many ms apart.", -1, -1, 8, {
+	{ "center", "Center message", "Speech", "Shows the text in the middle of the screen with rpcentersay, for everyone (all), one player, or who set it off (the When before it). 0 seconds keeps each player's own setting. Place moves it down: to the bottom of the screen, or a number of lines. Typewriter shows it a letter at a time, each with the sound, this many ms apart.", -1, -1, 8, {
 		{ "Who", ST_K_TEXT, "all", NULL },
 		{ "Seconds", ST_K_NUMBER, "3", NULL },
 		{ "Text", ST_K_TEXT, "", NULL },
@@ -212,7 +216,7 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ "Typewriter", ST_K_CHOICE, "no", "no|yes" },
 		{ "Letter ms", ST_K_NUMBER, "100", NULL },
 		{ "Sound", ST_K_TEXT, "sound/interface/sub_select", NULL } } },
-	{ "notify", "Notification", "Speech", "Shows the text in the top left corner with rpnotify, for everyone (all) or one player, this many seconds. A countdown is a live count of the seconds left (rpnotify's <timer>), on each player's screen; or type <timer> in the text where it goes.", -1, -1, 4, {
+	{ "notify", "Notification", "Speech", "Shows the text in the top left corner with rpnotify, for everyone (all), one player or who set it off, this many seconds. A countdown is a live count of the seconds left (rpnotify's <timer>), on each player's screen; or type <timer> in the text where it goes.", -1, -1, 4, {
 		{ "Who", ST_K_TEXT, "all", NULL },
 		{ "Seconds", ST_K_NUMBER, "10", NULL },
 		{ "Text", ST_K_TEXT, "", NULL },
@@ -226,6 +230,12 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 	{ "objective", "Objective", "Speech", "Adds to the mission's objectives, listed on the left while Esc is up, for everyone with this client (sent through C1B3R). Done strikes one through; it and undone and remove take its number or its text. Clear takes them all, or with done only the struck ones.", -1, -1, 2, {
 		{ "Do", ST_K_CHOICE, "add", "add|done|undone|remove|clear|title" },
 		{ "Text", ST_K_TEXT, "", NULL } } },
+	{ "give", "Give", "Players", "Gives a player, or everyone (all), health, armour, ammo, weapons or items with rpgive. An amount for health, armour or ammo is what it's set to; none fills it up. Player who set it off gives it to whoever set off the When before it (or used the world trigger).", -1, -1, 5, {
+		{ "Player", ST_K_TEXT, "all", NULL },
+		{ "Give", ST_K_CHOICE, "weapon", "weapon|item|health|armor|ammo|all" },
+		{ "Amount", ST_K_NUMBER, "", NULL },
+		{ "Weapon", ST_K_CHOICE, "blaster", ST_GIVE_WEAPONS },
+		{ "Item", ST_K_CHOICE, "medpac", ST_GIVE_ITEMS } } },
 	{ "npcspawn", "Spawn NPC", "NPCs", "Spawns an NPC at the spot, as the NPC manager does. Give it a targetname to command it in later steps.", 6, 9, 10, {
 		{ "Type", ST_K_TEXT, "", NULL },
 		{ "Targetname", ST_K_TEXT, "", NULL },
@@ -252,7 +262,7 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ "Route", ST_K_TEXT, "", NULL },
 		{ "Pace", ST_K_CHOICE, "walk", "walk|run" },
 		{ "Loop", ST_K_CHOICE, "no", "no|yes" } } },
-	{ "model", "Place model", "World", "Places a model at the spot with rpmodel add, as the model manager does. Scale is in percent.", 1, 5, 9, {
+	{ "model", "Place model", "World", "Places a model at the spot with rpmodel add, as the model manager does. Scale is in percent. A name gives it one in the model manager, as Shift+Enter does there: later steps, and modelmanager remove <name>, find it by it.", 1, 5, 10, {
 		{ "Model", ST_K_TEXT, "", NULL },
 		{ "X", ST_K_NUMBER, "", NULL },
 		{ "Y", ST_K_NUMBER, "", NULL },
@@ -261,7 +271,8 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ "Yaw", ST_K_NUMBER, "0", NULL },
 		{ "Roll", ST_K_NUMBER, "0", NULL },
 		{ "Scale", ST_K_NUMBER, "100", NULL },
-		{ "Solid", ST_K_CHOICE, "yes", "yes|no" } } },
+		{ "Solid", ST_K_CHOICE, "yes", "yes|no" },
+		{ "Name", ST_K_TEXT, "", NULL } } },
 	{ "effect", "Play effect", "World", "Plays an effect at the spot with rpeffect, once or looping.", 2, 6, 8, {
 		{ "Effect", ST_K_TEXT, "", NULL },
 		{ "Play", ST_K_CHOICE, "once", "once|loop" },
@@ -300,10 +311,10 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ "Target", ST_K_TEXT, "", NULL },
 		{ "Rank", ST_K_NUMBER, "0", NULL },
 		{ "Name", ST_K_TEXT, "", NULL } } },
-	{ "sound", "Play sound", "World", "Plays a sound with rpsound: once, looping (until removed) or local, to everyone, you, a player or at a spot. Pick it in the sound manager to hear it first.", 4, -1, 7, {
+	{ "sound", "Play sound", "World", "Plays a sound with rpsound: once, looping (until removed) or local, to everyone, you, a player (or who set it off) or at a spot. Pick it in the sound manager to hear it first.", 4, -1, 7, {
 		{ "Sound", ST_K_TEXT, "", NULL },
 		{ "Play", ST_K_CHOICE, "once", "once|loop|local" },
-		{ "To", ST_K_CHOICE, "everyone", "everyone|me|player|spot" },
+		{ "To", ST_K_CHOICE, "everyone", "everyone|me|player|who set it off|spot" },
 		{ "Player", ST_K_TEXT, "", NULL },
 		{ "X", ST_K_NUMBER, "", NULL },
 		{ "Y", ST_K_NUMBER, "", NULL },
@@ -403,7 +414,7 @@ typedef enum {
 	ST_PICK_SOUND,
 	ST_PICK_MUSIC,
 	ST_PICK_LOCK,
-	ST_PICK_TRIGGER,	// a map trigger, a door or a use trigger, clicked in the map editor
+	ST_PICK_TRIGGER,	// a map trigger or a door, clicked in the map editor
 	ST_PICK_CENTER_SOUND	// a typewriter centre message's sound
 } stPick_t;
 
@@ -422,17 +433,22 @@ typedef struct {
 // the kinds of "when", each its own action in the list; its Where, in the story file
 #define ST_WHEN_ARMED	" A story starting with it can be armed: it plays each time it's set off."
 #define ST_WHEN_FAR		" Players out of sight are found too: those with this client say where they are (with experimental on), the others are asked for with rporigin."
+// world: listed under World triggers; old: no longer in the list to add (comes near a spot or
+// an effect, from before the world editor's zones), stories that have them still play them
 static const struct {
 	const char	*where;
 	const char	*name;
 	const char	*desc;
+	qboolean	world;
+	qboolean	old;
 } stWhenKinds[] = {
-	{ "map trigger", "When someone enters a map trigger", "Waits until someone comes into one of the map's own triggers: stand in it and press I stand in, or pick it from the list. With For, they have to stay in that many seconds." ST_WHEN_ARMED ST_WHEN_FAR },
-	{ "near a spot", "When someone comes near a spot", "Waits until someone comes within the radius of a spot, where you stand when it's added. With For, they have to stay that many seconds." ST_WHEN_ARMED ST_WHEN_FAR },
-	{ "near an effect", "When someone comes near an effect", "Waits until someone comes within the radius of an effect placed with the effect manager. With For, they have to stay that many seconds." ST_WHEN_ARMED ST_WHEN_FAR },
-	{ "door", "When a door moves", "Waits until one of the map's doors opens or closes: aim at it, or pick it from the list. Your game only sees a door while it's near you." ST_WHEN_ARMED },
-	{ "someone says", "When someone says", "Waits until someone says one of the words in chat, | between them." ST_WHEN_ARMED },
-	{ "someone uses", "When someone uses a trigger", "Waits until someone uses one of the map editor's use triggers, by its name: one with Hold use only once it's been held that long. Too early: while the story is at an earlier step (or waits armed for its first), the trigger is hidden from the players with this client, or shows them the message instead of being used; as ever, it's left as it is." ST_WHEN_ARMED },
+	{ "map trigger", "When someone enters a map trigger", "Waits until someone comes into one of the map's own triggers: stand in it and press I stand in, or pick it from the list. With For, they have to stay in that many seconds." ST_WHEN_ARMED ST_WHEN_FAR, qfalse, qfalse },
+	{ "near a spot", "When someone comes near a spot", "Waits until someone comes within the radius of a spot, where you stand when it's added. With For, they have to stay that many seconds." ST_WHEN_ARMED ST_WHEN_FAR, qfalse, qtrue },
+	{ "near an effect", "When someone comes near an effect", "Waits until someone comes within the radius of an effect placed with the effect manager. With For, they have to stay that many seconds." ST_WHEN_ARMED ST_WHEN_FAR, qfalse, qtrue },
+	{ "world zone", "When someone enters a world zone", "Waits until someone comes into a walk-in zone built with the world editor (/world), by its story name: stand in it, or pick it from the list. With For, they have to stay in that many seconds." ST_WHEN_ARMED ST_WHEN_FAR, qtrue, qfalse },
+	{ "door", "When a door moves", "Waits until one of the map's doors opens or closes: aim at it, or pick it from the list. Your game only sees a door while it's near you." ST_WHEN_ARMED, qfalse, qfalse },
+	{ "someone says", "When someone says", "Waits until someone says one of the words in chat, | between them." ST_WHEN_ARMED, qfalse, qfalse },
+	{ "someone uses", "When someone uses a world trigger", "Waits until someone uses a world thing (an object, a zone or a body built with /world) by its story name: one with a search time only once it's been held that long. Too early: while the story is at an earlier step (or waits armed for its first), the thing is hidden from the players with this client, or shows them the message instead of being used; as ever, it's left as it is." ST_WHEN_ARMED, qtrue, qfalse },
 };
 
 static int ST_WhenKind( const char *where ) {
@@ -700,9 +716,14 @@ static qboolean ST_TriggerChat( const stStep_t *s ) {
 	return (qboolean)!Q_stricmp( s->values[0], "someone says" );
 }
 
-// one of the map editor's use triggers used, by its name
+// a world thing used, by its story name
 static qboolean ST_TriggerUse( const stStep_t *s ) {
 	return (qboolean)!Q_stricmp( s->values[0], "someone uses" );
+}
+
+// a walk-in world zone, by its story name: an area like a map trigger
+static qboolean ST_TriggerZone( const stStep_t *s ) {
+	return (qboolean)!Q_stricmp( s->values[0], "world zone" );
 }
 
 // an If asking who set off the When it's under: by the name in its Name
@@ -725,7 +746,9 @@ static const char *ST_FieldLabel( const stStep_t *s, int field, const char *labe
 	if ( field == 1 && ST_Watches( s ) && ST_TriggerChat( s ) )
 		return "Words";
 	if ( field == 1 && ST_Watches( s ) && ST_TriggerUse( s ) )
-		return "Trigger";
+		return "Story name";
+	if ( field == 1 && ST_Watches( s ) && ST_TriggerZone( s ) )
+		return "Zone";
 	if ( field == 3 && ST_IfWho( s ) )
 		return "It was";
 	return label;
@@ -746,6 +769,14 @@ static qboolean ST_Typewriter( const stStep_t *s );
 
 // a "when someone comes" step shows only what its kind of trigger uses
 static qboolean ST_FieldShown( const stStep_t *s, int field ) {
+	if ( s->action == ST_A_GIVE ) {
+		switch ( field ) {
+		case 2:		return (qboolean)( !Q_stricmp( s->values[1], "health" ) || !Q_stricmp( s->values[1], "armor" ) || !Q_stricmp( s->values[1], "ammo" ) );
+		case 3:		return (qboolean)!Q_stricmp( s->values[1], "weapon" );
+		case 4:		return (qboolean)!Q_stricmp( s->values[1], "item" );
+		default:	return qtrue;
+		}
+	}
 	if ( s->action == ST_A_SOUND ) {
 		if ( field == 3 )
 			return (qboolean)!Q_stricmp( s->values[2], "player" );
@@ -890,6 +921,8 @@ static int ST_CenterLines( const stStep_t *s ) {
 	return 0;
 }
 
+static const char *ST_Target( const char *value, const char *def, const char **error );
+
 // the rpcentersay for a centre message showing text: its lines down first, as \n's
 static const char *ST_CenterCommand( const stStep_t *s, const char *text ) {
 	static char cmd[MAX_STRING_CHARS];
@@ -901,7 +934,9 @@ static const char *ST_CenterCommand( const stStep_t *s, const char *text ) {
 			Q_strcat( lines, sizeof( lines ), " " );
 		Q_strcat( lines, sizeof( lines ), "\\n" );
 	}
-	Com_sprintf( cmd, sizeof( cmd ), "rpcentersay %s %i %s%s%s", s->values[0][0] ? s->values[0] : "all", ST_Round( ST_Number( s, 1 ) ), lines,
+	const char *error = NULL, *who = ST_Target( s->values[0], "all", &error );
+
+	Com_sprintf( cmd, sizeof( cmd ), "rpcentersay %s %i %s%s%s", who ? who : "all", ST_Round( ST_Number( s, 1 ) ), lines,
 		lines[0] ? " " : "", ST_CenterText( text ) );
 	return cmd;
 }
@@ -1005,6 +1040,14 @@ static const char *ST_StepExtra( const stStep_t *s, qboolean *local ) {
 	static char cmd[MAX_STRING_CHARS];
 
 	*local = qfalse;
+	// a model placed with a name: the model manager names it once the server lists it
+	if ( s->action == ST_A_MODEL && s->values[9][0] && s->values[0][0] ) {
+		*local = qtrue;
+		Com_sprintf( cmd, sizeof( cmd ), "modelmanager stated %s %s %s %s %s %s %s %s %i %i 1", s->values[9], s->values[0],
+			s->values[1], s->values[2], s->values[3], s->values[4][0] ? s->values[4] : "0", s->values[5][0] ? s->values[5] : "0",
+			s->values[6][0] ? s->values[6] : "0", s->values[7][0] ? atoi( s->values[7] ) : 100, Q_stricmp( s->values[8], "no" ) ? 1 : 0 );
+		return cmd;
+	}
 	if ( s->action != ST_A_NPC_TALK || !ST_HasEmote( s ) )
 		return NULL;
 	Com_sprintf( cmd, sizeof( cmd ), "npc emote %s %s", s->values[3], s->values[0] );
@@ -1047,6 +1090,75 @@ static int ST_FindPlayer( const char *who ) {
 			found = i;
 	}
 	return found;
+}
+
+// who set off the story being played (its When, or the world trigger used), while a step of it is
+// sent; NULL when a step is only looked at
+static const char *stBy;
+
+struct stByScope {
+	const char *was;
+	stByScope( const char *by ) : was( stBy ) { stBy = by; }
+	~stByScope() { stBy = was; }
+};
+
+// a step's player field asking for whoever set it off
+static qboolean ST_IsBy( const char *value ) {
+	return (qboolean)( !Q_stricmp( value, "who set it off" ) );
+}
+
+// the step's typed field naming a player, -1 if it has none (Say and Play sound pick who set it
+// off from their As and To)
+static int ST_PlayerField( const stStep_t *s ) {
+	switch ( s->action ) {
+	case ST_A_CENTER:
+	case ST_A_NOTIFY:
+	case ST_A_GIVE:		return 0;
+	default:			return -1;
+	}
+}
+
+// the player on the server by that whole name, colours left out; -1 if none (an NPC, or gone)
+static int ST_PlayerNamed( const char *who ) {
+	char want[MAX_QPATH], name[MAX_QPATH];
+
+	Q_strncpyz( want, who, sizeof( want ) );
+	Q_StripColor( want );
+	if ( !want[0] )
+		return -1;
+	for ( int i = 0; i < MAX_CLIENTS; i++ ) {
+		Q_strncpyz( name, ST_PlayerName( i ), sizeof( name ) );
+		Q_StripColor( name );
+		if ( name[0] && !Q_stricmp( name, want ) )
+			return i;
+	}
+	return -1;
+}
+
+// a step's player as its command takes it: who set it off made their number. Only looked at, it
+// stands as player 0, found when it's played; NULL and why if no player set it off
+static const char *ST_Target( const char *value, const char *def, const char **error ) {
+	static char num[16], why[MAX_STRING_CHARS];
+	int n;
+
+	if ( !value[0] )
+		return def;
+	if ( !ST_IsBy( value ) )
+		return value;
+	if ( !stBy ) {
+		Q_strncpyz( num, "0", sizeof( num ) );
+		return num;
+	}
+	if ( ( n = ST_PlayerNamed( stBy ) ) < 0 ) {
+		if ( stBy[0] )
+			Com_sprintf( why, sizeof( why ), "%s set it off, and isn't a player on the server", stBy );
+		else
+			Q_strncpyz( why, "Nobody set it off: who set it off goes after a When", sizeof( why ) );
+		*error = why;
+		return NULL;
+	}
+	Com_sprintf( num, sizeof( num ), "%i", n );
+	return num;
 }
 
 // what a step sends: a server command, or with *local a console command; NULL and why if it can't
@@ -1101,9 +1213,10 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 				*error = "Type the words to listen for, | between them";
 				return NULL;
 			}
-		} else if ( ST_TriggerUse( s ) ) {
+		} else if ( ST_TriggerUse( s ) || ST_TriggerZone( s ) ) {
 			if ( !v[1][0] ) {
-				*error = "Type the name of the use trigger, as the map editor's Triggers tab has it";
+				*error = ST_TriggerZone( s ) ? "Pick the walk-in zone: stand in it, or pick it from the list (the world editor gives it its story name)"
+					: "Pick the world thing: look at it, or pick it from the list (the world editor gives it its story name)";
 				return NULL;
 			}
 		} else if ( !ST_TriggerNear( s ) && !ST_ModelNum( v[1] ) ) {
@@ -1142,7 +1255,9 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 			*error = "Type the text, or have it count down";
 			return NULL;
 		}
-		Com_sprintf( cmd, sizeof( cmd ), "rpnotify %s %g %s", v[0][0] ? v[0] : "all", ST_Number( s, 1 ), text );
+		if ( !( value = ST_Target( v[0], "all", error ) ) )
+			return NULL;
+		Com_sprintf( cmd, sizeof( cmd ), "rpnotify %s %g %s", value, ST_Number( s, 1 ), text );
 		return cmd;
 	}
 
@@ -1151,8 +1266,9 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 			*error = "Type what to say";
 			return NULL;
 		}
-		if ( !Q_stricmp( v[1], "a player" ) ) {
+		if ( !Q_stricmp( v[1], "a player" ) || ST_IsBy( v[1] ) ) {
 			static char why[MAX_STRING_CHARS];
+			const char *player = ST_IsBy( v[1] ) ? v[1] : v[2];
 			int num;
 
 			// shown as their chat, which only this client's hook can do
@@ -1160,12 +1276,16 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 				*error = RP_EXPERIMENTAL_OFF;
 				return NULL;
 			}
-			if ( !v[2][0] ) {
+			if ( !player[0] ) {
 				*error = "Type the player's number or a part of their name";
 				return NULL;
 			}
-			if ( ( num = ST_FindPlayer( v[2] ) ) < 0 ) {
-				Com_sprintf( why, sizeof( why ), "No player %s on the server", v[2] );
+			if ( ST_IsBy( player ) ) {
+				if ( !( value = ST_Target( player, "", error ) ) )
+					return NULL;
+				num = atoi( value );
+			} else if ( ( num = ST_FindPlayer( player ) ) < 0 ) {
+				Com_sprintf( why, sizeof( why ), "No player %s on the server", player );
 				*error = why;
 				return NULL;
 			}
@@ -1179,6 +1299,8 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 			*error = "Type the text to show";
 			return NULL;
 		}
+		if ( !ST_Target( v[0], "all", error ) )
+			return NULL;
 		return ST_CenterCommand( s, v[2] );
 
 	case ST_A_NPC_TALK:
@@ -1192,15 +1314,41 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 		}
 		return CL_RpHooks_NpcTalkCommand( v[0], v[1], v[2], ST_HasEmote( s ) ? v[3] : "", v[4] );
 
+	case ST_A_GIVE: {
+		// rpgive <player|all|-1> all | health|armor|ammo [amount] | weapon <name|all> | item <name|all>
+		const char *who = ST_Target( v[0], "all", error );
+
+		if ( !who )
+			return NULL;
+		if ( !Q_stricmp( v[1], "weapon" ) || !Q_stricmp( v[1], "item" ) ) {
+			const char *name = !Q_stricmp( v[1], "weapon" ) ? v[3] : v[4];
+
+			if ( !name[0] ) {
+				*error = !Q_stricmp( v[1], "weapon" ) ? "Pick the weapon" : "Pick the item";
+				return NULL;
+			}
+			Com_sprintf( cmd, sizeof( cmd ), "rpgive %s %s %s", who, v[1], name );
+		} else if ( Q_stricmp( v[1], "all" ) && v[2][0] ) {
+			if ( ST_Number( s, 2 ) < 0 ) {
+				*error = "The amount is 0 or more; none fills it up";
+				return NULL;
+			}
+			Com_sprintf( cmd, sizeof( cmd ), "rpgive %s %s %i", who, v[1], ST_Round( ST_Number( s, 2 ) ) );
+		} else {
+			Com_sprintf( cmd, sizeof( cmd ), "rpgive %s %s", who, v[1] );
+		}
+		return cmd;
+	}
+
 	case ST_A_OBJECTIVE:
 		if ( !v[1][0] && Q_stricmp( v[0], "clear" ) && Q_stricmp( v[0], "title" ) ) {
 			*error = !Q_stricmp( v[0], "add" ) ? "Type the objective" : "Type the objective's number or text";
 			return NULL;
 		}
 		if ( v[1][0] )
-			Com_sprintf( cmd, sizeof( cmd ), "rpnotify -1 1 cmd:objective/%s: %s", v[0], v[1] );
+			Com_sprintf( cmd, sizeof( cmd ), "c1b3rhook all cmd:objective/%s: %s", v[0], v[1] );
 		else
-			Com_sprintf( cmd, sizeof( cmd ), "rpnotify -1 1 cmd:objective/%s", v[0] );
+			Com_sprintf( cmd, sizeof( cmd ), "c1b3rhook all cmd:objective/%s", v[0] );
 		return cmd;
 
 	case ST_A_CINEMATIC: {
@@ -1222,7 +1370,7 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 	}
 
 	case ST_A_CIN_START:
-		Com_sprintf( cmd, sizeof( cmd ), "rpnotify -1 1 cmd:cin/start%s%s", !Q_stricmp( v[0], "show" ) ? "/hud" : "",
+		Com_sprintf( cmd, sizeof( cmd ), "c1b3rhook all cmd:cin/start%s%s", !Q_stricmp( v[0], "show" ) ? "/hud" : "",
 			!Q_stricmp( v[1], "on" ) ? "/bars" : "" );
 		return cmd;
 
@@ -1240,7 +1388,7 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 			*error = why;
 			return NULL;
 		}
-		Com_sprintf( cmd, sizeof( cmd ), "rpnotify -1 1 cmd:%s", hook );
+		Com_sprintf( cmd, sizeof( cmd ), "c1b3rhook all cmd:%s", hook );
 		return cmd;
 	}
 
@@ -1249,15 +1397,15 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 			*error = "Set the FOV, e.g. 40 to zoom in, 80 for the usual";
 			return NULL;
 		}
-		Com_sprintf( cmd, sizeof( cmd ), "rpnotify -1 1 cmd:cin/fov/%g/%g", ST_Number( s, 0 ), ST_Number( s, 1 ) );
+		Com_sprintf( cmd, sizeof( cmd ), "c1b3rhook all cmd:cin/fov/%g/%g", ST_Number( s, 0 ), ST_Number( s, 1 ) );
 		return cmd;
 
 	case ST_A_CIN_BARS:
-		Com_sprintf( cmd, sizeof( cmd ), "rpnotify -1 1 cmd:cin/bars/%s/%g", !Q_stricmp( v[0], "off" ) ? "off" : "on", ST_Number( s, 1 ) );
+		Com_sprintf( cmd, sizeof( cmd ), "c1b3rhook all cmd:cin/bars/%s/%g", !Q_stricmp( v[0], "off" ) ? "off" : "on", ST_Number( s, 1 ) );
 		return cmd;
 
 	case ST_A_CIN_END:
-		return "rpnotify -1 1 cmd:cin/end";
+		return "c1b3rhook all cmd:cin/end";
 
 	case ST_A_COMMAND:
 		if ( !v[0][0] ) {
@@ -1366,12 +1514,14 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 			*error = "An mp3 only plays once in this engine: loop a .wav, or play this once";
 			return NULL;
 		}
-		if ( !Q_stricmp( v[2], "player" ) ) {
-			if ( !v[3][0] ) {
+		if ( !Q_stricmp( v[2], "player" ) || ST_IsBy( v[2] ) ) {
+			if ( !Q_stricmp( v[2], "player" ) && !v[3][0] ) {
 				*error = "Type the player's number";
 				return NULL;
 			}
-			Com_sprintf( cmd, sizeof( cmd ), "rpsound %s %s %s", verb, v[0], v[3] );
+			if ( !( value = ST_Target( ST_IsBy( v[2] ) ? v[2] : v[3], "", error ) ) )
+				return NULL;
+			Com_sprintf( cmd, sizeof( cmd ), "rpsound %s %s %s", verb, v[0], value );
 		} else if ( !Q_stricmp( v[2], "spot" ) ) {
 			if ( strcmp( verb, "add" ) ) {
 				*error = "Only a looping sound plays at a spot";
@@ -1461,7 +1611,7 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 		vec3_t tint = { 255, 255, 255 }, shift = { 0, 0, 0 };
 
 		if ( !Q_stricmp( v[0], "reset" ) )
-			return "rpnotify -1 1 cmd:sky/off";
+			return "c1b3rhook all cmd:sky/off";
 		if ( v[1][0] && sscanf( v[1], "%f %f %f", &tint[0], &tint[1], &tint[2] ) != 3 ) {
 			*error = "Type the colour as red green blue, 0 to 255, e.g. 255 180 120";
 			return NULL;
@@ -1470,7 +1620,7 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 			*error = "Type the move as x y z, e.g. 0 0 128";
 			return NULL;
 		}
-		Com_sprintf( cmd, sizeof( cmd ), "rpnotify -1 1 cmd:sky/%g %g %g/%g/%g %g %g/%g %g %g", Com_Clamp( 0, 255, tint[0] ),
+		Com_sprintf( cmd, sizeof( cmd ), "c1b3rhook all cmd:sky/%g %g %g/%g/%g %g %g/%g %g %g", Com_Clamp( 0, 255, tint[0] ),
 			Com_Clamp( 0, 255, tint[1] ), Com_Clamp( 0, 255, tint[2] ), ST_Number( s, 2 ), ST_Number( s, 4 ), ST_Number( s, 3 ),
 			ST_Number( s, 5 ), shift[0], shift[1], shift[2] );
 		return cmd;
@@ -1657,6 +1807,8 @@ static const char *ST_AreaText( const stStep_t *s ) {
 		return va( "near %s", s->values[1][0] ? s->values[1] : "an effect" );
 	if ( ST_TriggerNear( s ) )
 		return va( "within %g of %s %s %s", ST_Number( s, 4 ) > 0 ? ST_Number( s, 4 ) : 96.0f, s->values[5], s->values[6], s->values[7] );
+	if ( ST_TriggerZone( s ) )
+		return va( "in world zone %s", s->values[1][0] ? s->values[1] : "?" );
 	return va( "in %s", ST_EntLabel( s->values[1] ) );
 }
 
@@ -1666,7 +1818,7 @@ static const char *ST_IfSummary( const stStep_t *s ) {
 	if ( ST_TriggerChat( s ) )
 		return va( "If %s said \"%s\"", ST_WhoText( s ), s->values[1] );
 	if ( ST_TriggerUse( s ) )
-		return va( "If %s used %s", ST_WhoText( s ), s->values[1][0] ? s->values[1] : "a use trigger" );
+		return va( "If %s used %s", ST_WhoText( s ), s->values[1][0] ? s->values[1] : "a world thing" );
 	return va( "If %s %i %s %s", s->values[8], (int)ST_Number( s, 9 ), ST_WhoPlural( s ), ST_AreaText( s ) );
 }
 
@@ -1678,7 +1830,7 @@ static const char *ST_TriggerSummary( const stStep_t *s ) {
 	if ( ST_TriggerChat( s ) )
 		return va( "When %s says \"%s\"", ST_WhoText( s ), s->values[1] );
 	if ( ST_TriggerUse( s ) )
-		return va( "When %s uses %s%s", ST_WhoText( s ), s->values[1][0] ? s->values[1] : "a use trigger",
+		return va( "When %s uses %s%s", ST_WhoText( s ), s->values[1][0] ? s->values[1] : "a world thing",
 			s->action != ST_A_TRIGGER ? "" : !Q_stricmp( s->values[9], "hidden" ) ? S_COLOR_GREY " (hidden before)"
 			: !Q_stricmp( s->values[9], "a message" ) ? S_COLOR_GREY " (a message before)" : "" );
 	if ( stay > 0 )
@@ -1688,12 +1840,21 @@ static const char *ST_TriggerSummary( const stStep_t *s ) {
 	if ( ST_TriggerNear( s ) )
 		return va( "When %s comes within %g of %s %s %s", ST_WhoText( s ), ST_Number( s, 4 ) > 0 ? ST_Number( s, 4 ) : 96.0f,
 			s->values[5], s->values[6], s->values[7] );
-	return va( "When %s comes into %s", ST_WhoText( s ), ST_EntLabel( s->values[1] ) );
+	return va( "When %s comes %s", ST_WhoText( s ), ST_AreaText( s ) );
 }
 
 // a player's box, near enough for an NPC's too
 static const vec3_t stPersonMins = { -15, -15, -24 };
 static const vec3_t stPersonMaxs = { 15, 15, 40 };
+
+// a person's box touching a box (a walk-in world zone's)
+static qboolean ST_InBox( const vec3_t mins, const vec3_t maxs, const vec3_t org ) {
+	for ( int k = 0; k < 3; k++ ) {
+		if ( org[k] + stPersonMaxs[k] < mins[k] || org[k] + stPersonMins[k] > maxs[k] )
+			return qfalse;
+	}
+	return qtrue;
+}
 
 static qboolean ST_InTrigger( int model, const vec3_t org ) {
 	trace_t tr;
@@ -1853,6 +2014,11 @@ static qboolean ST_Inside( const stStep_t *s, const vec3_t org ) {
 
 		ST_GetPos( s, pos );
 		return (qboolean)( Distance( org, pos ) <= radius );
+	}
+	if ( ST_TriggerZone( s ) ) {
+		vec3_t mins, maxs;
+
+		return (qboolean)( CL_WorldItems_ZoneBox( s->values[1], mins, maxs ) && ST_InBox( mins, maxs, org ) );
 	}
 	return ST_InTrigger( ST_ModelNum( s->values[1] ), org );
 }
@@ -2111,6 +2277,12 @@ static const char *ST_StepSummary( const stStep_t *s ) {
 	case ST_A_NPC_TALK:
 		Com_sprintf( buf, sizeof( buf ), "%s: %s", s->values[1][0] ? s->values[1] : s->values[0][0] ? s->values[0] : "?", s->values[4] );
 		break;
+	case ST_A_GIVE:
+		Com_sprintf( buf, sizeof( buf ), "Give %s %s%s%s", s->values[0][0] ? s->values[0] : "all", s->values[1],
+			!Q_stricmp( s->values[1], "weapon" ) || !Q_stricmp( s->values[1], "item" ) || s->values[2][0] ? " " : "",
+			!Q_stricmp( s->values[1], "weapon" ) ? s->values[3] : !Q_stricmp( s->values[1], "item" ) ? s->values[4]
+			: Q_stricmp( s->values[1], "all" ) ? s->values[2] : "" );
+		break;
 	case ST_A_OBJECTIVE:
 		Com_sprintf( buf, sizeof( buf ), "Objective %s%s%s", s->values[0], s->values[1][0] ? ": " : "", s->values[1] );
 		break;
@@ -2145,7 +2317,9 @@ static const char *ST_StepSummary( const stStep_t *s ) {
 		Com_sprintf( buf, sizeof( buf ), "Remap %s", s->values[0][0] ? s->values[0] : "?" );
 		break;
 	case ST_A_SAY:
-		if ( !Q_stricmp( s->values[1], "a player" ) )
+		if ( ST_IsBy( s->values[1] ) )
+			Com_sprintf( buf, sizeof( buf ), "Say as who set it off: %s", s->values[0] );
+		else if ( !Q_stricmp( s->values[1], "a player" ) )
 			Com_sprintf( buf, sizeof( buf ), "Say as %s" S_COLOR_WHITE ": %s", s->values[2][0] ? s->values[2] : "?", s->values[0] );
 		else
 			Com_sprintf( buf, sizeof( buf ), "Say: %s", s->values[0] );
@@ -2486,6 +2660,7 @@ static void ST_Continue( void ) {
 static void ST_PlayStory( const char *name, const char *prefix );
 
 static qboolean ST_Play( stRun_t *r, stStep_t *steps, int numSteps, const char *armed ) {
+	const stByScope byScope( r->by );
 	char prefix[MAX_QPATH + 32];
 	const char *cmd, *error;
 	qboolean local;
@@ -2970,6 +3145,31 @@ static qboolean ST_Load( const char *name ) {
 	return qtrue;
 }
 
+static void ST_StoreTab( void );
+
+// every story open, in its tab, armed: those starting with a When; how many
+static int ST_ArmAllTabs( int limit ) {
+	int armed = 0, skipped = 0;
+
+	ST_StoreTab();
+	for ( int i = 0; i < stNumTabs; i++ ) {
+		const stTab_t *t = &stTabs[i];
+		const char *name = t->name[0] ? t->name : va( "unsaved story %i", i + 1 );
+
+		if ( !t->steps || !t->numSteps || ST_ArmProblem( t->steps, t->numSteps ) ) {
+			skipped++;
+			continue;
+		}
+		if ( ST_Arm( name, t->steps, t->numSteps, limit, qfalse ) )
+			armed++;
+	}
+	ST_Message( va( "%s%i stor%s armed%s", armed ? S_COLOR_GREEN : S_COLOR_YELLOW, armed, armed == 1 ? "y" : "ies",
+		skipped ? va( "; %i not (they don't start with a When)", skipped ) : "" ) );
+	Com_Printf( "Storyteller: armed %i open stor%s%s\n", armed, armed == 1 ? "y" : "ies",
+		skipped ? va( ", %i not: they don't start with a When", skipped ) : "" );
+	return armed;
+}
+
 // a saved story armed, by the console
 static void ST_ArmSaved( const char *name, int limit ) {
 	stStep_t *steps = (stStep_t *)Z_Malloc( ST_MAX_STEPS * sizeof( stStep_t ), TAG_GENERAL, qfalse );
@@ -3159,26 +3359,54 @@ OPEN / CLOSE
 ===============================================================================
 */
 
+// a "when" of each kind in the list, those of the world editor or the others
+static void ST_AddWhenRows( qboolean world ) {
+	for ( int k = 0; k < (int)ARRAY_LEN( stWhenKinds ); k++ ) {
+		if ( stWhenKinds[k].old || stWhenKinds[k].world != world )
+			continue;
+		st.actionRows[st.numActionRows].header = NULL;
+		st.actionRows[st.numActionRows].action = ST_A_TRIGGER;
+		st.actionRows[st.numActionRows].kind = k;
+		st.numActionRows++;
+	}
+}
+
+// World triggers: the "when"s on what the world editor builds, after the category of the others
+static void ST_AddWorldTriggerRows( void ) {
+	st.actionRows[st.numActionRows].header = "World triggers";
+	st.numActionRows++;
+	ST_AddWhenRows( qtrue );
+}
+
 static void ST_BuildActionRows( void ) {
 	const char *category = NULL;
+	qboolean world = qfalse;
 
 	st.numActionRows = 0;
 	for ( int i = 0; i < ST_NUM_ACTIONS; i++ ) {
 		if ( ST_OldAction( i ) )
 			continue;
 		if ( !category || Q_stricmp( category, stActions[i].category ) ) {
+			if ( world ) {
+				ST_AddWorldTriggerRows();
+				world = qfalse;
+			}
 			category = stActions[i].category;
 			st.actionRows[st.numActionRows].header = category;
 			st.numActionRows++;
 		}
-		// a "when", once for each kind
-		for ( int k = 0; k < ( i == ST_A_TRIGGER ? (int)ARRAY_LEN( stWhenKinds ) : 1 ); k++ ) {
-			st.actionRows[st.numActionRows].header = NULL;
-			st.actionRows[st.numActionRows].action = (stAction_t)i;
-			st.actionRows[st.numActionRows].kind = i == ST_A_TRIGGER ? k : -1;
-			st.numActionRows++;
+		if ( i == ST_A_TRIGGER ) {
+			ST_AddWhenRows( qfalse );
+			world = qtrue;
+			continue;
 		}
+		st.actionRows[st.numActionRows].header = NULL;
+		st.actionRows[st.numActionRows].action = (stAction_t)i;
+		st.actionRows[st.numActionRows].kind = -1;
+		st.numActionRows++;
 	}
+	if ( world )
+		ST_AddWorldTriggerRows();
 }
 
 static qboolean ST_Open( void ) {
@@ -3199,6 +3427,10 @@ static qboolean ST_Open( void ) {
 	CL_Presets_Close();
 	CL_SpecialMoves_Close();
 	CL_ChatLog_Close();
+	CL_Inventory_Close();
+	CL_Inspect_Close();
+	CL_Holster_Close();
+	CL_Characters_Close();
 	CL_MapEditor_Close();
 
 	st.font = re->RegisterFont( "arialnb" );
@@ -3370,7 +3602,7 @@ FAR AWAY: who's out of sight, and the use triggers used
 
 The server sends this client only who is near it. A storyteller whose stories wait on
 areas or use triggers (armed, or the one playing) tells everyone with this client where and
-which, in a hidden rpnotify, again every while for who joins later:
+which, in a C1B3R hook, again every while for who joins later:
 	cmd:story/watch/<its client number>: <map> | m <inline model> | s <x y z> <radius> | u <name> | ...
 	cmd:story/unwatch/<its client number>
 Their client says, in a tell hidden from both of them, where its player is each time they go
@@ -3393,10 +3625,12 @@ when the storyteller's an admin that can. NPCs out of sight can't be found eithe
 #define ST_MAX_USES			32
 
 typedef struct {
-	qboolean	sphere;				// near a spot; else a map trigger
+	qboolean	sphere;				// near a spot; else a map trigger, or a box
+	qboolean	box;				// a walk-in world zone: mins to maxs
 	int			model;
 	vec3_t		pos;
 	float		radius;
+	vec3_t		mins, maxs;
 } stArea_t;
 
 // a use trigger asked for too early: a story waits on it at a later step than the one it's at
@@ -3406,7 +3640,7 @@ typedef struct {
 	char		text[96];
 } stLock_t;
 
-// as a storyteller: the use triggers our own stories have too early, for our own map editor too
+// as a storyteller: the use triggers (world things' story names) our own stories have too early, for our own game too
 static stLock_t	stOwnLocks[ST_MAX_AREAS];
 static int		stNumOwnLocks;
 
@@ -3483,13 +3717,18 @@ static void ST_StepAreas( const stStep_t *steps, int numSteps, stArea_t *out, in
 			a.sphere = qtrue;
 			ST_GetPos( s, a.pos );
 			a.radius = ST_Number( s, 4 ) > 0 ? ST_Number( s, 4 ) : 96.0f;
+		} else if ( ST_TriggerZone( s ) ) {
+			if ( !CL_WorldItems_ZoneBox( s->values[1], a.mins, a.maxs ) )
+				continue;
+			a.box = qtrue;
 		} else {
 			a.model = ST_ModelNum( s->values[1] );
 			if ( !a.model )
 				continue;
 		}
 		for ( int k = 0; k < *n; k++ ) {
-			if ( out[k].sphere == a.sphere && out[k].model == a.model && VectorCompare( out[k].pos, a.pos ) && out[k].radius == a.radius )
+			if ( out[k].sphere == a.sphere && out[k].box == a.box && out[k].model == a.model && VectorCompare( out[k].pos, a.pos )
+				&& out[k].radius == a.radius && VectorCompare( out[k].mins, a.mins ) && VectorCompare( out[k].maxs, a.maxs ) )
 				dup = qtrue;
 		}
 		if ( !dup )
@@ -3627,9 +3866,9 @@ static unsigned ST_AreasSum( const stArea_t *areas, int n ) {
 	unsigned sum = (unsigned)n;
 
 	for ( int i = 0; i < n; i++ ) {
-		sum = sum * 31 + ( areas[i].sphere ? 1 : 2 ) + areas[i].model * 7;
+		sum = sum * 31 + ( areas[i].sphere ? 1 : areas[i].box ? 3 : 2 ) + areas[i].model * 7;
 		for ( int k = 0; k < 3; k++ )
-			sum = sum * 31 + (unsigned)ST_Round( areas[i].pos[k] );
+			sum = sum * 31 + (unsigned)ST_Round( areas[i].pos[k] ) + (unsigned)ST_Round( areas[i].mins[k] ) * 7 + (unsigned)ST_Round( areas[i].maxs[k] ) * 13;
 		sum = sum * 31 + (unsigned)ST_Round( areas[i].radius );
 	}
 	return sum;
@@ -3666,11 +3905,14 @@ static void ST_FarFrame( void ) {
 		if ( ( n || nu ) && ( !stFar.watchSent || sum != stFar.sentSum || cls.realtime - stFar.sentTime > ST_WATCH_RESEND ) ) {
 			char text[MAX_STRING_CHARS];
 
-			Com_sprintf( text, sizeof( text ), "rpnotify -1 1 cmd:story/watch/%i: %s", clc.clientNum, cl.mapname );
+			Com_sprintf( text, sizeof( text ), "c1b3rhook all cmd:story/watch/%i: %s", clc.clientNum, cl.mapname );
 			for ( int i = 0; i < n; i++ ) {
 				if ( areas[i].sphere )
 					Q_strcat( text, sizeof( text ), va( " | s %i %i %i %i", ST_Round( areas[i].pos[0] ), ST_Round( areas[i].pos[1] ),
 						ST_Round( areas[i].pos[2] ), ST_Round( areas[i].radius ) ) );
+				else if ( areas[i].box )
+					Q_strcat( text, sizeof( text ), va( " | b %i %i %i %i %i %i", ST_Round( areas[i].mins[0] ), ST_Round( areas[i].mins[1] ),
+						ST_Round( areas[i].mins[2] ), ST_Round( areas[i].maxs[0] ), ST_Round( areas[i].maxs[1] ), ST_Round( areas[i].maxs[2] ) ) );
 				else
 					Q_strcat( text, sizeof( text ), va( " | m %i", areas[i].model ) );
 			}
@@ -3687,7 +3929,7 @@ static void ST_FarFrame( void ) {
 			return;
 		}
 		if ( !n && !nu && stFar.watchSent ) {
-			CL_AddReliableCommand( va( "rpnotify -1 1 cmd:story/unwatch/%i", clc.clientNum ), qfalse );
+			CL_AddReliableCommand( va( "c1b3rhook all cmd:story/unwatch/%i", clc.clientNum ), qfalse );
 			stFar.watchSent = qfalse;
 			st.nextSend = cls.realtime + ST_CommandGap();
 			return;
@@ -3921,6 +4163,12 @@ void CL_Storyteller_Hook( char **argv, int argc, const char *message ) {
 		if ( sscanf( part, " %c %f %f %f %f", &kind, &a->pos[0], &a->pos[1], &a->pos[2], &a->radius ) == 5 && kind == 's' ) {
 			a->sphere = qtrue;
 			stWatchers[slot].numAreas++;
+		} else if ( kind == 'b' && sscanf( part, " %c %f %f %f %f %f %f", &kind, &a->mins[0], &a->mins[1], &a->mins[2],
+			&a->maxs[0], &a->maxs[1], &a->maxs[2] ) == 7 ) {
+			VectorClear( a->pos );
+			a->radius = 0;
+			a->box = qtrue;
+			stWatchers[slot].numAreas++;
 		} else if ( sscanf( part, " %c %i", &kind, &a->model ) == 2 && kind == 'm' && a->model > 0 && a->model < CM_NumInlineModels() ) {
 			stWatchers[slot].numAreas++;
 		}
@@ -3932,7 +4180,8 @@ static unsigned ST_AreasHere( const stArea_t *areas, int n, const vec3_t org ) {
 	unsigned mask = 0;
 
 	for ( int i = 0; i < n; i++ ) {
-		if ( areas[i].sphere ? Distance( org, areas[i].pos ) <= areas[i].radius : ST_InTrigger( areas[i].model, org ) )
+		if ( areas[i].sphere ? Distance( org, areas[i].pos ) <= areas[i].radius
+			: areas[i].box ? ST_InBox( areas[i].mins, areas[i].maxs, org ) : ST_InTrigger( areas[i].model, org ) )
 			mask |= 1u << i;
 	}
 	return mask;
@@ -3983,7 +4232,7 @@ static void ST_ReportFrame( void ) {
 	}
 }
 
-// the map editor's: whether a use trigger is asked for too early, by our own stories or a
+// the world editor's: whether a thing's story name is asked for too early, by our own stories or a
 // storyteller watching: 0 not, 1 hidden, 2 its message shown instead (in *text)
 int CL_Storyteller_UseLock( const char *name, const char **text ) {
 	if ( !name || !name[0] || cls.state != CA_ACTIVE )
@@ -4010,7 +4259,7 @@ int CL_Storyteller_UseLock( const char *name, const char **text ) {
 	return 0;
 }
 
-// the map editor's use trigger by that name was used here: heard by our own stories, and told to
+// the world thing by that story name was used here: heard by our own stories, and told to
 // the storytellers watching
 void CL_Storyteller_TriggerUsed( const char *name ) {
 	if ( !name || !name[0] )
@@ -4069,8 +4318,7 @@ static qboolean ST_PickOpen( void ) {
 	}
 }
 
-// the step's trigger, clicked in the map editor's free camera: 0 a map trigger, 1 a door or
-// button, 2 a use trigger
+// the step's trigger, clicked in the map editor's free camera: 0 a map trigger, 1 a door or button
 static void ST_StartTriggerPick( int kind ) {
 	st.pick = ST_PICK_TRIGGER;
 	st.pickStep = st.stepList.sel;
@@ -4079,7 +4327,7 @@ static void ST_StartTriggerPick( int kind ) {
 	CL_MapEditor_PickForStory( kind );
 }
 
-// the map editor's click: "*12" for a map trigger or a door, the name of a use trigger
+// the map editor's click: "*12" for a map trigger or a door
 void CL_Storyteller_TriggerPicked( const char *value ) {
 	if ( st.pick != ST_PICK_TRIGGER )
 		return;
@@ -4214,9 +4462,19 @@ static qboolean ST_NpcStep( char **argv, int argc, stStep_t *s ) {
 	return qtrue;
 }
 
-// rpnotify -1 1 cmd:npc/talk/<npc>/<name>/<colour>/<emote>: <text>, as NPC talk sends it
+// a hook written as before C1B3R (rpnotify -1 1 cmd:...), as it's written now (c1b3rhook all cmd:...)
+static const char *ST_HookNow( const char *cmd ) {
+	static char now[MAX_STRING_CHARS];
+
+	if ( Q_stricmpn( cmd, "rpnotify -1 1 cmd:", 18 ) )
+		return cmd;
+	Com_sprintf( now, sizeof( now ), "c1b3rhook all %s", cmd + 14 );
+	return now;
+}
+
+// c1b3rhook all cmd:npc/talk/<npc>/<name>/<colour>/<emote>: <text>, as NPC talk sends it
 static qboolean ST_TalkStep( const char *cmd, stStep_t *s ) {
-	static const char prefix[] = "rpnotify -1 1 cmd:npc/talk/";
+	static const char prefix[] = "c1b3rhook all cmd:npc/talk/";
 	const char *p = cmd + strlen( prefix ), *colon;
 
 	if ( Q_stricmpn( cmd, prefix, strlen( prefix ) ) || !( colon = strchr( p, ':' ) ) )
@@ -4247,10 +4505,11 @@ static void ST_StepFromCommand( const char *cmd, stStep_t *s ) {
 
 	memset( s, 0, sizeof( *s ) );
 	s->enabled = qtrue;
+	cmd = ST_HookNow( cmd );
 
-	// rpnotify -1 1 cmd:sky/<r g b>/<spin>/<pitch yaw roll>/<x y z>, or cmd:sky/off: the shader manager's
+	// c1b3rhook all cmd:sky/<r g b>/<spin>/<pitch yaw roll>/<x y z>, or cmd:sky/off: the shader manager's
 	// sky look; its parts have spaces in them
-	if ( !Q_stricmpn( cmd, "rpnotify -1 1 cmd:sky/", 22 ) ) {
+	if ( !Q_stricmpn( cmd, "c1b3rhook all cmd:sky/", 22 ) ) {
 		vec3_t tint = { 255, 255, 255 }, angles = { 0, 0, 0 }, shift = { 0, 0, 0 };
 		float spin = 0.0f;
 
@@ -4482,6 +4741,10 @@ static void ST_PickFrame( void ) {
 	CL_Presets_Close();
 	CL_SpecialMoves_Close();
 	CL_ChatLog_Close();
+	CL_Inventory_Close();
+	CL_Inspect_Close();
+	CL_Holster_Close();
+	CL_Characters_Close();
 	if ( st.pick == ST_PICK_LOCK || st.pick == ST_PICK_TRIGGER )
 		CL_MapEditor_Close();
 	// a trigger clicked: the step's
@@ -4609,14 +4872,16 @@ void CL_Storyteller_f( void ) {
 			Com_Printf( "Storyteller: couldn't open %s\n", Cmd_Argv( 2 ) );
 	} else if ( !Q_stricmp( arg, "arm" ) && Cmd_Argc() >= 3 ) {
 		const char *how = Cmd_Argv( 3 );
+		// all: every story open in a tab
+		const qboolean all = (qboolean)!Q_stricmp( Cmd_Argv( 2 ), "all" );
 
 		// once, again for every time, or a number of times
 		if ( !how[0] )
-			ST_ArmSaved( Cmd_Argv( 2 ), 1 );
+			all ? (void)ST_ArmAllTabs( 1 ) : ST_ArmSaved( Cmd_Argv( 2 ), 1 );
 		else if ( !Q_stricmp( how, "again" ) )
-			ST_ArmSaved( Cmd_Argv( 2 ), 0 );
+			all ? (void)ST_ArmAllTabs( 0 ) : ST_ArmSaved( Cmd_Argv( 2 ), 0 );
 		else if ( ST_IsNumber( how ) && atoi( how ) >= 1 )
-			ST_ArmSaved( Cmd_Argv( 2 ), atoi( how ) );
+			all ? (void)ST_ArmAllTabs( atoi( how ) ) : ST_ArmSaved( Cmd_Argv( 2 ), atoi( how ) );
 		else
 			Com_Printf( "Storyteller: arm it once, again (every time), or a number of times\n" );
 	} else if ( !Q_stricmp( arg, "disarm" ) ) {
@@ -4656,6 +4921,7 @@ void CL_Storyteller_f( void ) {
 		Com_Printf( "       storyteller list             list the saved stories\n" );
 		Com_Printf( "       storyteller arm <name> [again|<times>]  arm a saved story: it plays when its first step\n" );
 		Com_Printf( "                                    is set off, once, every time with again, or that many times\n" );
+		Com_Printf( "       storyteller arm all [again|<times>]  arm every story open in a tab (those starting with a When)\n" );
 		Com_Printf( "       storyteller disarm [name|all]  disarm one, or all\n" );
 		Com_Printf( "       storyteller armed            list the armed stories\n" );
 		Com_Printf( "       storyteller markers [on|off] where the armed stories wait, drawn on your screen\n" );
@@ -5122,8 +5388,16 @@ static const char *ST_ChoiceLabel( int i, void *ctx ) {
 
 // one of a field's '|' separated choices: - and + go round, the value opens the list
 static qboolean ST_ChoiceCtl( float x, float y, float w, const char *choices, char *value ) {
-	int at = ST_ChoiceIndex( choices, value ), wheel;
+	static char withOld[MAX_STRING_CHARS];
+	int at, wheel;
 	wgMouse_t m;
+
+	// a value no longer offered (near a spot, in an older story) shows as it is, last
+	if ( value[0] && Q_stricmp( ST_Choice( choices, ST_ChoiceIndex( choices, value ) ), value ) ) {
+		Com_sprintf( withOld, sizeof( withOld ), "%s|%s", choices, value );
+		choices = withOld;
+	}
+	at = ST_ChoiceIndex( choices, value );
 
 	ST_CtlMouse( &m, &wheel );
 	if ( !WG_Choice( ST_CtlStyle(), &m, x, y, w, ST_CTRL_H, &at, ST_NumChoices( choices ), ST_ChoiceLabel, (void *)choices, qtrue ) ) {
@@ -5403,26 +5677,58 @@ static void ST_DrawEdit( void ) {
 			st.focus = i;
 	}
 
-	// a use trigger: the one looked at
-	if ( ST_Watches( s ) && ST_TriggerUse( s ) ) {
-		const float bw = ( ST_EDIT_W - 4 ) * 0.5f;
+	// a player field: whoever set off the When before it, or used the world trigger
+	{
+		const int pf = ST_PlayerField( s );
 
-		if ( ST_Button( ST_EDIT_X + bw + 4, y, bw, "Pick in the map", qfalse, qtrue ) )
-			ST_StartTriggerPick( 2 );
-		if ( ST_Button( ST_EDIT_X, y, bw, "The one I look at", qfalse, qtrue ) ) {
-			const char *name = CL_MapEditor_AimedUseTrigger();
+		if ( pf >= 0 && ST_FieldShown( s, pf ) ) {
+			const qboolean on = ST_IsBy( s->values[pf] );
+
+			if ( ST_Button( ST_EDIT_X, y, ST_EDIT_W, on ? "To who set it off (the When before it)" : "To who set it off",
+				on, qtrue ) && !on ) {
+				Q_strncpyz( s->values[pf], "who set it off", ST_VALUE_LEN );
+				ST_Changed();
+			}
+			y += ST_CTRL_H + 4;
+		}
+	}
+
+	// a world thing used, or a walk-in zone: the one looked at or stood in, or from the map's story names
+	if ( ST_Watches( s ) && ( ST_TriggerUse( s ) || ST_TriggerZone( s ) ) ) {
+		const qboolean zone = ST_TriggerZone( s );
+		const float bw = ( ST_EDIT_W - 4 ) * 0.5f;
+		static char names[64][48];
+		static char choices[64 * 48 + 16];
+		static char picked[ST_VALUE_LEN];
+		const int n = CL_WorldItems_Stories( names, 64, zone );
+
+		if ( ST_Button( ST_EDIT_X, y, bw, zone ? "The one I stand in" : "The one I look at", qfalse, qtrue ) ) {
+			const char *name = CL_WorldItems_AimedStory( zone );
 
 			if ( name && name[0] ) {
 				Q_strncpyz( s->values[1], name, ST_VALUE_LEN );
 				ST_Changed();
 			} else {
-				ST_Message( name ? S_COLOR_YELLOW "That use trigger has no name: give it one in the map editor's Triggers tab"
-					: S_COLOR_YELLOW "Look at one of the map editor's use triggers first, close enough to use it" );
+				ST_Message( name ? S_COLOR_YELLOW "It has no story name: give it one in the world editor (/world)"
+					: zone ? S_COLOR_YELLOW "Stand in a walk-in world zone first (/world builds them)"
+					: S_COLOR_YELLOW "Look at a world thing first, close enough to use it, or stand in its zone" );
 			}
+		}
+		if ( n ) {
+			Q_strncpyz( choices, "From the list", sizeof( choices ) );
+			for ( int i = 0; i < n; i++ )
+				Q_strcat( choices, sizeof( choices ), va( "|%s", names[i] ) );
+			Q_strncpyz( picked, "From the list", sizeof( picked ) );
+			if ( ST_ChoiceCtl( ST_EDIT_X + bw + 4, y, bw, choices, picked ) && Q_stricmp( picked, "From the list" ) ) {
+				Q_strncpyz( s->values[1], picked, ST_VALUE_LEN );
+				ST_Changed();
+			}
+		} else {
+			ST_Button( ST_EDIT_X + bw + 4, y, bw, zone ? "No walk-in zones here" : "No story names here", qfalse, qfalse );
 		}
 		y += ST_CTRL_H + 4;
 	}
-	if ( ST_Watches( s ) && !ST_TriggerNear( s ) && !ST_TriggerChat( s ) && !ST_TriggerUse( s ) ) {
+	if ( ST_Watches( s ) && !ST_TriggerNear( s ) && !ST_TriggerChat( s ) && !ST_TriggerUse( s ) && !ST_TriggerZone( s ) ) {
 		const qboolean door = ST_TriggerDoor( s );
 		const float bw = ( ST_EDIT_W - 8 ) / 3.0f;
 
@@ -5558,7 +5864,7 @@ static void ST_DrawEdit( void ) {
 		ST_TextWrapped( ST_EDIT_X, y + ( lines + 1 ) * ST_ROW_H, ST_EDIT_W, ST_TriggerDoor( s )
 			? "Whoever opens it: your game can't see who used it."
 			: ST_TriggerChat( s ) ? "Said in chat from when this step starts waiting, any of the words, | between them."
-			: ST_TriggerUse( s ) ? "Used from when this step starts waiting: by you, or by anyone with this client with experimental on."
+			: ST_TriggerUse( s ) ? "Used from when this step starts waiting: by you, or by anyone with this client with experimental on. The world editor (/world) gives things their story names."
 			: ST_Number( s, 8 ) > 0 ? "Someone in already counts from when the step starts. Players out of sight count too; NPCs only near you."
 			: "Someone already in has to leave and come back. Players out of sight count too; NPCs only near you.", stDim, 3 );
 	} else if ( s->action == ST_A_IF && ST_UnderWhen( st.steps, st.stepList.sel ) ) {
@@ -5823,11 +6129,20 @@ static void ST_DrawArmedPopup( void ) {
 		if ( ST_Button( x + 12 + bw, y + 76, bw, va( "Arm: %i times", st.armTimes ), qfalse, qtrue ) )
 			ST_Arm( name, st.steps, st.numSteps, st.armTimes, qfalse );
 	}
+	// every story open in a tab, at once
+	if ( stNumTabs > 1 ) {
+		const float bw = ( w - 20 ) * 0.5f;
+
+		if ( ST_Button( x + 8, y + h - 74, bw, va( "Arm all %i open: once", stNumTabs ), qfalse, qtrue ) )
+			ST_ArmAllTabs( 1 );
+		if ( ST_Button( x + 12 + bw, y + h - 74, bw, "Arm all open: every time", qfalse, qtrue ) )
+			ST_ArmAllTabs( 0 );
+	}
 
 	if ( !stNumArmed )
 		ST_Text( x + 8, y + 106, S_COLOR_GREY "Nothing armed yet", stWhite );
 	else
-		ST_List( &st.armedList, stNumArmed, x + 8, y + 104, w - 16, h - 162, ST_DrawArmedRow, NULL );
+		ST_List( &st.armedList, stNumArmed, x + 8, y + 104, w - 16, h - 162 - ( stNumTabs > 1 ? 24 : 0 ), ST_DrawArmedRow, NULL );
 	ST_TextWrapped( x + 8, y + h - 52, w - 16, S_COLOR_GREY "A copy: arm it again after changing it. Disarmed when the map changes.", stWhite, 2 );
 
 	if ( ST_Button( x + 8, y + h - 22, 80, "Disarm", qfalse, haveSel ) ) {
@@ -6033,8 +6348,11 @@ static qboolean ST_DrawTrigger( const stStep_t *s, const byte *color, vec3_t top
 		return qtrue;
 	}
 
-	// a box round the map's trigger, door or button
-	{
+	// a box round the map's trigger, door or button, or a walk-in world zone
+	if ( ST_TriggerZone( s ) ) {
+		if ( !CL_WorldItems_ZoneBox( s->values[1], mins, maxs ) )
+			return qfalse;
+	} else {
 		const int model = ST_ModelNum( s->values[1] );
 		qboolean found = qfalse;
 

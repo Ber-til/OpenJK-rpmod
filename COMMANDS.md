@@ -221,7 +221,7 @@ The console commands, keys and settings this client adds. What each feature does
 
 ## Presets
 
-- `/presets` opens or closes them (the in-game menu's PRESETS)
+- `/presets` opens or closes them (the in-game menu's TOOLS)
 - `/presets save` saves who you are now as a preset; `/presets list` lists them, numbered (`*` a favorite); `/presets <number>` makes you that one
 - `/skinselect` the skins of your model, to wear in a click; `/skinselect <model>` another model's
 - `/assetmanager` what's on the map and the pk3 each is from; `/assetmanager scan` asks the server again; `/assetmanager list` prints it; `/assetmanager build [name]` packs the custom ones checked into `assetpacks/<name>.pk3`
@@ -245,10 +245,18 @@ The console commands, keys and settings this client adds. What each feature does
 
 - `/escmenu [modern|kotor|classic] [category]` opens the Esc menu in that style, on that category or tab (`/escmenu kotor options`); `cl_escMenu` picks what Esc opens: 0 the game's own (default), 1 Modern, 2 KOTOR
 - `/chatlog` opens or closes the chat log window; `/chatlog start` and `/chatlog stop` record or stop on this server; `/chatlog open` opens today's page in your browser, `/chatlog folder` the folder
+- `/inspect` shows the player you aim at, or yourself; `/inspect off|on` lets others Inspect your character or not; `/inspect me` your own (Edit there), `/inspect <client number|name>` a player by number or name; `cl_inspectHint 1` shows a small orange [i] under the crosshair when you aim at someone who can be inspected (off by default)
+- `/characters` opens your characters; `/characters list` lists them; `/characters play <name>` plays one (its look, settings, inventory, panel and holster); `/characters offers` lists copies offered to you, `/characters accept|decline <n>` takes one or turns it down
+- `/holster` opens the holster editor (models worn on your character); `/holster live` opens it as a small panel, what you edit worn on you in the world (drag the arrows to move it and the rings to turn it; Tab move/turn, L tag or world axes, G step, arrows and PgUp/PgDn a step, `[ ]` size, J hides them; F a free camera: hold the right button to look, WASD, Space and C to fly); `/holster list` lists who wears something here; `/holster debug` says why someone's aren't drawn; `cl_holster 0` draws no one's
+- `/inventory` opens what your RPMod account carries, or closes it (`/inventory staff` on its staff page, for RPMod admins); `/inventory list` prints your items as last asked, `/inventory give <item> [client]` gives one to the player you aim at (or that client number), `/inventory show|hide <item>` shows it on Inspect or not
 - `/datapad` opens your datapad in the bottom right corner, or puts it away; `/datapad open`, `/datapad close` and `/datapad settings` go straight there. Its Settings set the keys that open and close it; Esc puts it away
 - `/datapad holonet [n]` opens the HoloNet on it (the n-th article); `/datapad comport [guest|<forum number>]` the Comport (its forums, or that one)
 - `/datapad pazaak` opens Pazaak on it; `/pazaak create [name]`, `/pazaak join <table>`, `/pazaak watch <table>`, `/pazaak end`, `/pazaak stand`, `/pazaak play <card 0-3> [1|-1] [1|2]` and `/pazaak leave` do what its buttons do, for binds; `cl_pazaakDeck` is the side deck you play with
-- `cl_datapadColor` (0-6) is its colour; `cl_datapadEmote 1` has your character hold a datapad (`/emlift`) while it's open
+- `/burstfire [on|off]` or `cl_burstFire 1` (the default): the E-11's alt fire in bursts (0.4 s charge with a glow at the muzzle and the Bryar's charge sound, 4 shots, 1.5 s cool down)
+- `/datapad notes` opens Notes
+- `/world` opens the world editor (RPMod admins): objects, zones (used, or walked into for the storyteller), bodies and containers on this map, each with an optional story name for the storyteller; `/world read` reads what you aim at or stand in, `/world drop` drops the item picked in the Inventory, `/world near` lists what's near you, `/world edit <id>` edits one; Use on a thing reads it
+- `rpdump save <what> <name>` / `rpdump load <name>` / `rpdump delete <name>` (RPMod's own) also save, swap in or forget the map's world things on C1B3R (RPMod admins)
+- `cl_datapadColor` (0-6) is its colour; `cl_datapadEmote 1` has your character hold a datapad (`/emlift`) while it's open; `cl_datapadHand 1` shows a datapad model in the hand then, seen by everyone with the client (`cl_datapadHandPos "<tag> <x y z> <pitch yaw roll> <scale>"` where it sits)
 - `/datapad pos <x> <y>` moves where it opens on the 640x480 screen (its top left; `cl_datapadX`, `cl_datapadY`); `/datapad pos` puts it back above the HUD
 - `cl_chatLog 1` records by itself on joining a server; `cl_chatLogTells`, `cl_chatLogTeam`, `cl_chatLogWhispers`, `cl_chatLogOOC`, `cl_chatLogEmotes`, `cl_chatLogAdmin` (1 or 0) keep those kinds of chat or not
 
@@ -258,6 +266,7 @@ The console commands, keys and settings this client adds. What each feature does
 - `/c1b3r link` links this game, logged in to your RPMod account: your browser opens, you log in with Discord there, and staff approve it. Then you send what the tools share. The code it shows also works as `/link <code>` in Discord
 - `/c1b3r discord` opens the page to add C1B3R to your Discord account, so `/link` works in a DM without being in the project's Discord
 - `/c1b3r unlink` ends the link
+- `/c1b3r state` (RPMod admins) lists what's shared on this server for everyone who joins later, who shared it and when; `/c1b3r state clear` takes it all back for everyone
 - `/clientusers` shows who on this server has this client, who's linked and who sends: the players the tools' hooks go to
 - `/version` shows your OpenJK-rpmod version and whether it's the newest, with the link to a newer one; `/version check` asks GitHub again
 - `/rpexperimental [on|off]` turns the experimental features on or off, and keeps them so every time the game starts; on Temple only for Department Head, Council and God, and turned off for anyone else
@@ -278,11 +287,10 @@ The console commands, keys and settings this client adds. What each feature does
 - `rpc_removeExtraColorsInConsole 0` shows RPMod's extra colors in the console
 - `rpc_chatRangeConsole_mode <0-3>`, `rpc_chatRangeConsole_min`, `rpc_chatRangeConsole_max`, `rpc_chatRangeConsole_alpha` set the chat range in the console
 - `cl_updateCheck 0` never asks GitHub whether there's a newer OpenJK-rpmod
-- `cl_feedbackUrl` is where /feedback sends reports and asks for their answers
 - `cl_c1b3rToken` is this game's link, made by `/c1b3r link`: keep it to yourself
-- `cl_presenceUrl` is C1B3R's address: the link to everyone with this client, through which the tools' hooks go; empty, nothing is shared and hooks show on your screen only
+- `cl_c1b3rUrl` is C1B3R's address, for everything that talks to it: the link to everyone with this client, through which the tools' hooks go, /feedback's reports and answers, and the datapad's apps; empty, nothing is shared and hooks show on your screen only. It replaces cl_presenceUrl and cl_feedbackUrl (one set to an address of its own is carried over)
 - `renderersettings sync` / `apply`: what Setup's RENDERER page uses to show the renderer settings and to set them at the next `vid_restart`
-- `cl_renderer rd-vulkan` then `vid_restart` draws the game with the Vulkan renderer *(experimental)*, `cl_renderer rd-vanilla` with the usual one; the Vulkan one's own settings (`r_fbo`, `r_bloom`, `r_ext_multisample`, `r_vbo`, `r_ext_supersample`, `r_ssao`, `r_softParticles`, `r_fxaa`, `r_sharpen`, `r_sunShafts`, `r_tonemap`, `r_motionBlur` and more) are in [FEATURES.md](FEATURES.md#vulkan-renderer-experimental)
+- `cl_renderer rd-vulkan` then `vid_restart` draws the game with the Vulkan renderer *(experimental)*, `cl_renderer rd-vanilla` with the usual one; the Vulkan one's own settings (`r_fbo`, `r_bloom`, `r_ext_multisample`, `r_vbo`, `r_ext_supersample`, `r_relief`, `r_ssao`, `r_softParticles`, `r_fxaa`, `r_sharpen`, `r_sunShafts`, `r_volumetric`, `r_ssr`, `r_shadowMaps`, `r_tonemap`, `r_motionBlur` and more) are in [FEATURES.md](FEATURES.md#vulkan-renderer-experimental)
 - `cl_whisper 1` shows whispers (chat in ^k) only to those close by, `cl_whisperHear` and `cl_whisperNotice` set how close
 - `cl_shaderCrosshair 1` names the shader under your crosshair
 - `cl_fighterTakeoffGuard 0` turns the fighter takeoff guard off

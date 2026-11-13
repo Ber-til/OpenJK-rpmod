@@ -284,8 +284,9 @@ Assemble a mission out of steps, then play it: NPCs, models, effects, sounds, mu
 
 ![](https://i.ibb.co/cc1QJSmd/openjk-x86-2026-10-14-20-17-25-677.png)
 
-- **Flow**: wait a number of seconds, "wait for me" until you press Continue (or `/storyteller continue`), a "when" for each kind of trigger (someone enters a map trigger, comes near a spot or an effect, a door moves, someone says something or uses a use trigger), If / Else / End if under a "when", **Go back** and **Mark**, play another saved story alongside (**Play story**), and run any console command
+- **Flow**: wait a number of seconds, "wait for me" until you press Continue (or `/storyteller continue`), a "when" for each kind of trigger (someone enters a map trigger, a door moves, someone says something; and under **World triggers**, someone enters a world zone or uses a world trigger), If / Else / End if under a "when", **Go back** and **Mark**, play another saved story alongside (**Play story**), and run any console command
 - **Speech**: say a line in chat, as you or as one of the players on the server *(experimental)*, a center message for everyone or one player, a notification with a countdown, NPC talk and objectives *(experimental)*
+- **Players**: **Give** a player or everyone health, armour, ammo, weapons or items (`rpgive`)
 - **NPCs**: spawn an NPC, teleport NPCs, walk them along a route *(experimental)*, and any `npc` command on them
 - **World**: place a model, play an effect, a screen effect (fade, shake...), remap a shader, a screen overlay, the sky's look *(experimental)*, lock or unlock a door, play a sound, change the music
 - **Cinematic** *(experimental)*: play a cinematic made in the Cinematic Manager, and wait for it to end
@@ -296,12 +297,14 @@ Assemble a mission out of steps, then play it: NPCs, models, effects, sounds, mu
 
 ### Conditions and timers
 
-- **If** goes under a "when" step and looks once, when the story gets to it: how many players, NPCs or people are in a map trigger or near a spot or an effect (at least, at most or exactly so many), whether someone has said one of the words you give since the story began, or **who set off** the "when" above it, by name (the whole of it, or a part of three letters or more). True, the steps after it play; false, the ones after its **Else**. **End if** closes it, and Ifs can sit inside Ifs. If, Else and End if are greyed out until there's a "when" above where they'd go; one left above every "when" shows in red, and the story stops there
+- **If** goes under a "when" step and looks once, when the story gets to it: how many players, NPCs or people are in a map trigger or a world zone (at least, at most or exactly so many), whether someone has said one of the words you give since the story began, or **who set off** the "when" above it, by name (the whole of it, or a part of three letters or more). True, the steps after it play; false, the ones after its **Else**. **End if** closes it, and Ifs can sit inside Ifs. If, Else and End if are greyed out until there's a "when" above where they'd go; one left above every "when" shows in red, and the story stops there
 - A "when" on an area can wait for them to **stay** in it a number of seconds; "When someone says" waits for one of the words you give (`|` between them)
-- **Teams**: a "when" or an If's **Who** can be **red team** or **blue team**: only that team's players set it off or count, by the team the server has them on (when they said it or used it, for words and use triggers). Only one team can move the story on, siege style
+- **Teams**: a "when" or an If's **Who** can be **red team** or **blue team**: only that team's players set it off or count, by the team the server has them on (when they said it or used it, for words and things used). Only one team can move the story on, siege style
 - **Go back** plays the story again from an earlier step: the "when" before it, which waits again for someone new, the start, or a **Mark** step by its name. Under an Else it makes a console reusable and only right for some: "When someone uses console", "If who set it off is Rex", open the door, "Else", "Go back". Words said and triggers used count again from when it went back
-- "When someone uses a trigger" waits for one of the Map Editor's use triggers, the one you look at or pick in a free camera (a held one once it's been held long enough); If can ask whether someone used it too
-- Its **Too early** keeps the story in order: while the story is at an earlier step (or waits armed for its first), the use trigger is hidden from the players, or shows them its message instead of being used, until the story gets there. Dinner after breakfast: one story, "When someone uses breakfast", then "When someone uses dinner" with Too early set. For players with this client, while the storyteller is on the map
+- "When someone uses a world trigger" waits for a world thing (an object, a zone or a body built with `/world`) by its story name, the one you look at or picked from the map's list (one with a search time once it's been held long enough); If can ask whether someone used it too. "When someone enters a world zone" waits for someone in one of the world editor's walk-in zones, as on a map trigger
+- A used zone has its own verb before its title when it's looked at (Hack, Open; none to start with), and either opens its panel or is **only a trigger**: using it (held, if it has a hold time) only tells the storyteller
+- **Who set it off**: Give, Center message and Notification (a button under their player), Say (As) and Play sound (To) can go to whoever set off the When before them, or used the world trigger: only they get the weapon, the others in the room don't
+- Its **Too early** keeps the story in order: while the story is at an earlier step (or waits armed for its first), the thing is hidden from the players, or shows them its message instead of being used, until the story gets there. Dinner after breakfast: one story, "When someone uses breakfast", then "When someone uses dinner" with Too early set. For players with this client, while the storyteller is on the map
 - **Play story** plays a saved story alongside the one playing, which goes on: from its start, or once its own first "when" is set off. "When someone uses lever", then "Play story Story2", and the lever starts Story2
 - **Diagram** shows the story as a flowchart: the "whens", each If splitting into a yes and a no side that join again at its End if, and the stories it plays; click a step to pick it, or a Play story's *open* to open that story's diagram. The wheel or the arrows scroll, Esc goes back
   - It's edited there too: drag a block to move it (an If with all of it, to its End if; several picked, all of them), Ctrl+click and Shift+click pick several, and Ctrl+C, Ctrl+X, Ctrl+V, Ctrl+A and Del work as in the list
@@ -321,7 +324,7 @@ Assemble a mission out of steps, then play it: NPCs, models, effects, sounds, mu
 
 ![](https://i.ibb.co/SD6KTCD8/openjk-x86-2026-10-14-20-17-31-527.png)
 
-- A story that starts with a "when" can be **armed**: it waits in the background and plays by itself when a player or NPC walks into a map trigger, comes near a spot or an effect, a door moves, or someone says or uses what it waits for
+- A story that starts with a "when" can be **armed**: it waits in the background and plays by itself when a player or NPC walks into a map trigger or a world zone, a door moves, or someone says or uses what it waits for
 - Have it fire once, every time, or a set number of times
 - Several stories can be armed at once; they're disarmed when the map changes
 - People too far away to be seen set it off too *(experimental)*: those with this client say when they walk into a watched area, and an admin's client asks RPMod where the others are
@@ -403,9 +406,6 @@ Edit the map on your own screen: move or hide any part of it, place models, ligh
 - **Models**: place models, carry them to the crosshair, turn and scale them. The map's own props can be lifted out too, to move or remove them; or swapped for another model: pick it in the list and **Swap for ...** hides the prop and stands the model where it was, as big as fits in its place, ready to turn and scale. It takes the light around it rather than the light baked into the map
   - Other maps too, whole: type *map* in the list, pick one and Add puts it at the crosshair, its middle there and its lowest point on what you're looking at; move, turn and scale it like a model to fuse the two maps; it turns and scales around that spot, and its sky and fog are left out. It's drawn only: no one can walk on it, as the server only knows its own map. Others see it shared if they have that map too
 - **Lights**: dynamic lights with a color and reach, that can follow a light style
-- **Triggers**: boxes that run a console command when you walk in
-- **Use triggers**: boxes players use (+use), with a name shown when they look at one; their character reaches out to it, and the Storyteller can wait for it. Shared with the edits
-- **Hold use**: a use trigger can be held, in milliseconds as JKA's `usetime`: it's only used once the use key has been held on it that long, a bar showing how far along, while the character works the console (`emconsole`) and stops when it's done or let go
 - **Sounds**: speakers that play any music or sound, heard near them or everywhere, looping
 - **Styles**: give the map's switchable lights a new pattern (flicker, pulse, strobe...) and color, change its existing light styles, or the lighting of the whole map
 - **Fog**: the color and thickness of each of the map's fogs, `No fog` to take one away, or fog volumes of your own. *Needs the release's renderer, OpenGL (rd-vanilla_x86.dll) or Vulkan (rd-vulkan_x86.dll); with Vulkan's own fog (`r_drawfog 2`, its default) up to 16 fogs in all.*
@@ -422,7 +422,7 @@ Edit the map on your own screen: move or hide any part of it, place models, ligh
 - `Clear` takes away the edits shown
 - **Share** *(experimental)* sends your edits to everyone on the map who uses this client; **Unshare** takes them back
 - Shared edits show in place of the receiver's own without touching their files, until they're unshared or the map changes; `rpc_mapShare 0` opts out
-- Only the look of the map changes: hidden walls still block and moved props have no collision, since the server knows nothing of it. Triggers that run commands are never shared
+- Only the look of the map changes: hidden walls still block and moved props have no collision, since the server knows nothing of it. Triggers are the world editor's now (`/world`: zones used or walked into, kept by C1B3R)
 - Players who join later need it shared again
 
 ## Sound and Music Managers
@@ -524,7 +524,7 @@ Every animation in the game, emotes made of emotes, and emotes of your own. `/an
 
 Characters saved, and swapped to in one click: for missions, or anyone you play.
 
-- **PRESETS** in the in-game menu (between Profile and Controls), or `/presets`
+- **Presets** in the in-game menu's TOOLS panel, or `/presets`
 - **Save who I am now** keeps your name, model and skin, its colours, and your sabers and their colours, with the date
 - Each preset is a card: the name in its colours (RPMod's too), the character standing with its hilts in hand, the skin, the sabers and when it was saved
 - Click a card to become that character at once; **Update** saves who you are now over it, **Delete** (twice) takes it out
@@ -568,7 +568,7 @@ A menu drawn by this client, with room for everything, in two looks: **Modern** 
 
 ## In-game Menu and Camera Settings
 
-- The in-game menu (Esc) has no Vote, Call Vote or Add Bot, and a **PRESETS** button between Profile and Controls
+- The in-game menu (Esc) has no Vote, Call Vote or Add Bot, and a **CHARACTERS** button between Profile and Controls (your characters, `/characters`)
 - **TOOLS** between Quick Connect and Exit opens a panel of every tool this client adds, in the menu's own look, five a page with **Back** and **Next**: the Model, NPC, Effect, Shader, Sound, Music, Animation and Asset managers, the Map Editor, the Storyteller, the Cinematic Manager, Presets, Skin Select, Languages, Radial Menus, Console Settings and [Feedback](#feedback). Each says what it does and its command; clicked, the menu closes and the tool opens. Esc puts the panel away
 - **QUICK CONNECT** after Setup: JEDI Temple, Grounds, Region and Galaxy, each with its address and its map and players as the server says now (asked when it opens, or **Refresh**); click one, or its **Connect**, to go there
 - **Admin flags** (`cl_adminFlags 1`, off by default): when noclip, nodraw, nonsolid or notarget is turned on for you, a small line at the bottom says which are on (green) and off (red), until they're all off. They're read from the commands' replies (noclip from the game too); it hides with the HUD (`cg_draw2D 0`, `cg_drawStatus 0`), `/adminflags` lists them, `/adminflags reset` takes them all as off
@@ -846,7 +846,7 @@ The tools share what they do with everyone with this client ("hooks": NPC walks 
 - Not linked, waiting for approval, or logged in to another account, your hooks show on your screen only, and the console says why. Staff can revoke a link with the button under it; `/unlink` in Discord or `/c1b3r unlink` in game ends it too. C1B3R keeps only the token's fingerprint, and the token works only with your game's own private key; it never shows your account to other players
 - Hooks don't go through `rpnotify` any more: a client from before, still using it, neither reaches this one nor hears from it
 - `/c1b3r` shows your link (connected, linked, approved, the RPMod account you're on); `/clientusers` shows who on the server has the client: linked, and who sends
-- `cl_presenceUrl` is C1B3R's address; empty, nothing is shared and hooks show on your screen only. On a server of your own (`/devmap`) hooks show on your screen only
+- `cl_c1b3rUrl` is C1B3R's address (it was cl_presenceUrl and cl_feedbackUrl); empty, nothing is shared and hooks show on your screen only. On a server of your own (`/devmap`) hooks show on your screen only
 
 ## Vulkan Renderer *(experimental)*
 
@@ -857,6 +857,7 @@ The tools share what they do with everyone with this client ("hooks": NPC walks 
 - Anti-aliasing (`r_ext_multisample 2`, 4 or 8), bloom (`r_bloom 1`), HDR (`r_hdr`), dithering (`r_dither 1`) and a render resolution of its own (`r_renderScale`, `r_renderWidth`, `r_renderHeight`); most of them need `r_fbo 1`
 - `r_vbo 1` and `r_vbo_models 1` keep the map's and the models' surfaces on the graphics card, for more frames per second
 - `r_device` picks the graphics card when there's more than one
+- **Surface relief** (`r_relief 1`, then `vid_restart`; doesn't need `r_fbo`): dynamic lights and lit sabers (`cg_saberlight`) pick out the relief of stone, metal and cloth, worked out from each texture's own shading, with a little shine. `r_reliefStrength` is how deep it looks (8), `r_reliefSpecular` how much lit surfaces shine (0.35). It shows where per-pixel dynamic lights reach (`r_dlightMode 2`, the default): the map, doors and lifts, and simple models, not player and NPC models. On the RENDERER page as **Surface Relief**
 - **Supersampling** (`r_ext_supersample 1`, needs `r_fbo 1`): the picture drawn at twice the width and height and scaled down to the window, smoothing every edge, for about four times the drawing. Screenshots come out at the larger size
 - Effects of its own, each off until turned on, all needing `r_fbo 1`; all but colour grading are on the RENDERER page too:
   - **Ambient occlusion** (`r_ssao 1`): corners, creases and the ground under things darkened. `r_ssaoRadius` is how far it reaches (48 units), `r_ssaoIntensity` how dark (0.6); the RENDERER page's **AO Strength** under it sets that: Low (0.3), Medium (0.6, the default) or Strong (1)
@@ -864,6 +865,9 @@ The tools share what they do with everyone with this client ("hooks": NPC walks 
   - **FXAA** (`r_fxaa 1`): smooths edges over the finished picture, the edges of grass and fences too, which anti-aliasing misses
   - **Sharpening** (`r_sharpen`, 0 to 1): crisper detail, against the softness of FXAA or a lower `r_renderScale`
   - **Sun shafts** (`r_sunShafts 1`): beams of light from the sun through gaps, on maps whose sky has a sun; `r_sunShaftsIntensity` how bright (1)
+  - **Volumetric light** (`r_volumetric 1`): sabers, blaster bolts, torches, force effects and every other dynamic light glow in the air around them, the glow gathered round the light and fading out to its radius; with `cg_saberlight`, lit sabers too. `r_volumetricIntensity` is how thick the air is (0.5; the RENDERER page's **Volumetric Strength**: Low 0.25, Medium 0.5, High 1), `r_volumetricFog` how many times more it glows on a map with fog all over (2). The 12 lights that glow most in view take part
+  - **Reflections** (`r_ssr 1`): shiny floors mirror what's on screen: walls, players, sabers and lights, more at a glancing look. Which floors are shiny comes from the material the map gives each surface: marble, tiles, metal, glass, ice, plastic and water mirror, as does anything the map gives a chrome-like environment map; grass, dirt, sand, rock, carpet, wood and surfaces without a material never do. Only what's on screen can be reflected, so reflections fade toward the screen's edges. `r_ssrStrength` how strongly (0.8; the RENDERER page's **Reflection Strength**: Low 0.4, Medium 0.8, High 1.5)
+  - **Real shadows** (`r_shadowMaps 1`): players, NPCs and models cast soft shadows on the map and on each other (and themselves), in place of the blob under them: the blob (`cg_shadows 1`) is turned off while they're on and back on after. `r_shadowSun 0` casts them nearly straight down, which suits indoors; `r_shadowSun 1` from the map's sun (the RENDERER page's **Shadow Direction**). `r_shadowDistance` how far from you they're drawn (768; nearer is sharper), `r_shadowStrength` how dark (0.5), `r_shadowSoftness` how soft their edges are (2). Only what's in view casts them
   - **Tone mapping**: bright light rolls off instead of clipping to white. `r_tonemap 1` (**Soft**) leaves the rest of the picture as it is; `r_tonemap 2` (**Film**, ACES) is a film-like curve that also darkens the shadows, which on dim maps looks darker all over
   - **Colour grading**: `r_exposure` (1), `r_saturation` (1), `r_contrast` (1), `r_warmth` (-1 cold to 1 warm). A map can bring its own look in `maps/<map>.grade`, lines like `saturation 0.9` or `warmth 0.3` (and `exposure`, `contrast`, `tonemap 1` or `2`), used in place of yours while it's loaded unless `r_mapGrades 0`
   - **Motion blur** (`r_motionBlur`, 0 to 1): the picture smears when the camera moves or turns, as long a smear whatever the frame rate; cuts and teleports don't blur

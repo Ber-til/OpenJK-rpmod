@@ -37,6 +37,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #include "client.h"
 #include "cl_escmenu.h"
 #include "cl_escpages.h"
+#include "cl_presence.h"
 #include "cl_uiapi.h"
 #include "cl_widgets.h"
 
@@ -102,6 +103,10 @@ static const emEntry_t emBase[] = {
 	{ "Skin Select",		"Every skin of your model, worn in a click",		"skinselect",		EA_CMD,		MC_CHARACTER,	KT_EQUIPMENT },
 	{ "Languages",			"Your characters' languages",						"languages",		EA_CMD,		MC_CHARACTER,	KT_CHARACTER },
 	{ "Effect Replacer",	"Your own powers' and saber's effects as others",	"effectreplacer",	EA_CMD,		MC_CHARACTER,	KT_EQUIPMENT },
+	{ "Inventory",			"What you carry: shown on Inspect, given to others", "inventory",		EA_CMD,		MC_CHARACTER,	KT_INVENTORY },
+	{ "Characters",			"Your characters: each its own look, inventory, holster, panel and settings", "characters", EA_CMD, MC_CHARACTER, KT_CHARACTER },
+	{ "Your Character",		"Your character panel: what others see when they inspect you", "inspect me", EA_CMD,	MC_CHARACTER,	KT_CHARACTER },
+	{ "Holster",			"Models worn on your character: a hilt at the hip, a blaster on the back", "holster", EA_CMD, MC_CHARACTER, KT_EQUIPMENT },
 	{ "Special Moves",		"Saber moves explained, played from a key",			"specialmoves",		EA_CMD,		MC_ABILITIES,	KT_ABILITIES },
 	{ "Animation Manager",	"Every animation; emote chains, custom emotes",		"animationmanager",	EA_CMD,		MC_ABILITIES,	KT_ABILITIES },
 	{ "Radial Menus",		"Make radial menus and bind keys to them",			"radialsettings",	EA_CMD,		MC_ABILITIES,	KT_ABILITIES },
@@ -137,8 +142,13 @@ const escTool_t escTools[] = {
 	{ "Presets",			"presets",			"Characters saved, swapped to in a click" },
 	{ "Skin Select",		"skinselect",		"Every skin of your model, worn in a click" },
 	{ "Special Moves",		"specialmoves",		"Saber moves explained, played from a key" },
+	{ "Burst Fire (E-11)",	"burstfire",		"The E-11's alt fire in bursts: on or off" },
 	{ "Chat Log",			"chatlog",			"The chat kept as text and a console-like page" },
 	{ "Datapad",			"datapad",			"Your datapad: in the corner, or open on the right" },
+	{ "Inventory",			"inventory",		"What you carry: shown on Inspect, given to others" },
+	{ "Inspect",			"inspect",			"The player you aim at: their character panel and model" },
+	{ "Holster",			"holster",			"Models worn on your character, seen by everyone with this client" },
+	{ "Characters",			"characters",		"Your characters: each its own look, inventory, holster, panel and settings" },
 	{ "Languages",			"languages",		"Your characters' languages" },
 	{ "Radial Menus",		"radialsettings",	"Make radial menus and bind keys to them" },
 	{ "Console Settings",	"consolesettings",	"How the console looks" },
@@ -392,7 +402,7 @@ static void EM_BuildEntries( void ) {
 		e.arg = escTools[i].command;
 		e.kind = EA_CMD;
 		e.cat = MC_TOOLS;
-		e.tab = KT_INVENTORY;
+		e.tab = KT_OPTIONS;
 		emEntries.push_back( e );
 	}
 }
@@ -769,6 +779,16 @@ Modern
 #define MD_CARD_H		38.0f
 #define MD_CARD_GAP		6.0f
 
+// C1B3R: its web pages, signed in, for a linked game; linking it otherwise
+static void EM_C1b3r( float x, float y, float w, float h ) {
+	const qboolean linked = CL_Presence_GameLinked();
+
+	if ( !EM_Button( x, y, w, h, linked ? "C1B3R" : "Link to C1B3R", linked ? 0 : 1 ) )
+		return;
+	Cbuf_AddText( linked ? "c1b3r web\n" : "c1b3r link\n" );
+	EM_Message( linked ? "Opening C1B3R's web pages in your browser..." : "Linking this game: your browser opens to log in with Discord..." );
+}
+
 static void EM_DrawModern( void ) {
 	const float cx = MD_SIDE_W + 22, cw = SCREEN_WIDTH - cx - 22;
 	const float listY = 64, listH = SCREEN_HEIGHT - listY - 34;
@@ -789,8 +809,9 @@ static void EM_DrawModern( void ) {
 	EM_Fill( 16, 38, EM_Wide( 24 ), 2, mdAccent );
 	EM_Text( 16, 44, MD_SIDE_W - 28, EM_ServerName(), mdDim, em.font, 0.6f, 0 );
 	EM_Text( 16, 56, MD_SIDE_W - 28, Cvar_VariableString( "mapname" ), mdDim, em.font, 0.55f, 0 );
+	EM_C1b3r( 12, 66, MD_SIDE_W - 24, 14 );
 	for ( int c = 0; c < MC_NUM; c++ ) {
-		const float y = 82 + c * 32.0f;
+		const float y = 86 + c * 32.0f;
 		const qboolean on = (qboolean)( c == em.cat && !em.search[0] );
 		const qboolean hover = EM_In( 8, y, MD_SIDE_W - 16, 28 );
 		char letter[2] = { emModernCats[c][0], 0 };
@@ -950,7 +971,11 @@ static void EM_DrawKotor( void ) {
 	{
 		const float tw = EM_TextW( up, em.titleFont, 0.7f );
 
-		EM_Fill( KT_X + 20, KT_Y + 56, ( KT_W - tw ) * 0.5f - 30, 1, ktSteel );
+		const float bw = EM_Wide( 110 );
+
+		// C1B3R, at the left under the tabs; the line starts after it
+		EM_C1b3r( KT_X + 12, KT_Y + 46, bw, 18 );
+		EM_Fill( KT_X + 20 + bw, KT_Y + 56, ( KT_W - tw ) * 0.5f - 30 - bw, 1, ktSteel );
 		EM_Fill( KT_X + KT_W * 0.5f + tw * 0.5f + 10, KT_Y + 56, ( KT_W - tw ) * 0.5f - 30, 1, ktSteel );
 		EM_Text( KT_X, KT_Y + 47, KT_W, up, ktGold, em.titleFont, 0.7f, 1 );
 	}

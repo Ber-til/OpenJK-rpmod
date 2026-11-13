@@ -863,8 +863,13 @@ void CL_Disconnect( qboolean showMainMenu ) {
 	CL_RpAdmin_Disconnect();
 	CL_ChatLog_Disconnect();
 	CL_Datapad_Disconnect();
+	CL_Inventory_Disconnect();
+	CL_Inspect_Disconnect();
+	CL_Holster_Disconnect();
+	CL_Characters_Disconnect();
 	CL_Feedback_Disconnect();
 	CL_NpcNames_Disconnect();
+	CL_Aim_Disconnect();
 	CL_AdminFlags_Reset();
 	CL_RpCinematic_Reset();
 	CL_NpcWalk_Reset();
@@ -919,6 +924,8 @@ void CL_ForwardCommandToServer( const char *string ) {
 
 	// noclip, nodraw, nonsolid and notarget at ourselves, for their replies
 	CL_AdminFlags_Command();
+	// rpdump: the world editor's things saved and loaded with it, on C1B3R
+	CL_WorldItems_DumpCommand();
 
 	// a chat given its capitals, then, too long for the server, in parts
 	if ( CL_ChatCaps_Forward( capped, sizeof( capped ) ) ) {
@@ -2413,6 +2420,14 @@ void CL_Frame ( int msec ) {
 	CL_Presence_Frame();
 	CL_EffectSwap_Frame();
 	CL_Pazaak_Frame();
+	CL_Notes_Frame();
+	CL_Chat_Frame();
+	CL_RealShadows_Frame();
+	CL_Inventory_Frame();
+	CL_Inspect_Frame();
+	CL_Holster_PollFrame();
+	CL_Presets_Frame();			// previews let go of last frame freed, before this one draws
+	CL_Characters_Frame();
 	CL_DatapadWeb_Frame();
 	CL_AssetManager_Frame();
 	// the RENDERER page's effects, shown with Post Effects on
@@ -2529,6 +2544,12 @@ void CL_InitRenderer( void ) {
 	CL_ConSettings_RendererRestarted();
 	CL_Feedback_RendererRestarted();
 	CL_SaberLight_RendererRestarted();
+	CL_Inventory_RendererRestarted();
+	CL_Presets_RendererRestarted();
+	CL_Holster_RendererRestarted();
+	CL_WorldItems_RendererRestarted();
+	CL_MapEditor_WeatherRestarted();
+	CL_Dismember_RendererRestarted();
 	g_console_field_width = cls.glconfig.vidWidth / SMALLCHAR_WIDTH - 2;
 	g_consoleField.widthInChars = g_console_field_width;
 
@@ -2956,8 +2977,15 @@ void CL_Init( void ) {
 	CL_AnimManager_Init ();
 	CL_Presets_Init ();
 	CL_SpecialMoves_Init ();
+	CL_BurstFire_Init ();
 	CL_EffectSwap_Init ();
 	CL_ChatLog_Init ();
+	CL_Inventory_Init();
+	CL_Inspect_Init();
+	CL_Holster_Init();
+	CL_Dismember_Init();
+	CL_WorldItems_Init();
+	CL_Characters_Init();
 	CL_Datapad_Init ();
 	CL_EscMenu_Init ();
 	CL_AssetManager_Init ();
@@ -3202,6 +3230,7 @@ void CL_Shutdown( void ) {
 	CL_Update_Shutdown();
 	CL_Feedback_Shutdown();
 	CL_Presence_Shutdown();
+	CL_Dismember_Shutdown();
 	CL_RenderMenu_Shutdown();
 	CL_Discord_Shutdown();
 	Cmd_RemoveCommand( "+radial" );

@@ -1044,7 +1044,7 @@ const void	*RB_DrawSurfs( const void *data ) {
 			RB_RenderDrawSurfList( cmd->drawSurfs, cmd->numDrawSurfs );
 		} else {
 			RB_RenderDrawSurfList( cmd->drawSurfs, split );
-			vk_rpmod_after_opaque();
+			vk_rpmod_after_opaque( cmd->drawSurfs, split );
 			RB_RenderDrawSurfList( cmd->drawSurfs + split, cmd->numDrawSurfs - split );
 		}
 	}
@@ -1094,7 +1094,8 @@ const void	*RB_DrawSurfs( const void *data ) {
 	}
 
 	// checked in previous RB_RenderDrawSurfList() if there is at least one glowing surface
-	if ( vk.dglowActive && !( backEnd.refdef.rdflags & RDF_NOWORLDMODEL ) && backEnd.hasGlowSurfaces )
+	// OpenJK-rpmod: and in a preview that asks for it (a lit blade, RDF_UIGLOW)
+	if ( vk.dglowActive && ( !( backEnd.refdef.rdflags & RDF_NOWORLDMODEL ) || ( backEnd.refdef.rdflags & RDF_UIGLOW ) ) && backEnd.hasGlowSurfaces )
 	{
 		vk_end_render_pass();
 

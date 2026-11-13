@@ -1774,6 +1774,8 @@ const void	*RB_DrawSurfs( const void *data ) {
 	*/
 
 	// Render dynamic glowing/flaring objects.
+	// OpenJK-rpmod: not in a preview (RDF_UIGLOW) here: its pass over the whole screen, between 2D
+	// drawing, broke the screen up on some setups (Inspect at 1920x1080 windowed); Vulkan keeps it
 	if ( !(backEnd.refdef.rdflags & RDF_NOWORLDMODEL) && g_bDynamicGlowSupported && r_DynamicGlow->integer )
 	{
 		// Copy the normal scene to texture.
@@ -2443,6 +2445,10 @@ static inline void RB_DrawGlowOverlay()
 		qglBlendFunc( GL_ONE, GL_ONE );
 	}
 	qglEnable( GL_BLEND );
+
+	// A preview's glow stays in its box: the screen around it isn't the scene's
+	if ( backEnd.refdef.rdflags & RDF_UIGLOW )
+		qglScissor( backEnd.viewParms.viewportX, backEnd.viewParms.viewportY, backEnd.viewParms.viewportWidth, backEnd.viewParms.viewportHeight );
 
 	// Now additively render the glow texture.
 	qglBindTexture( GL_TEXTURE_RECTANGLE_ARB, tr.blurImage );

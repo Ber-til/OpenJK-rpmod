@@ -663,6 +663,7 @@ void CL_ModelManager_f( void );
 qboolean CL_ModelManager_Active( void );
 void CL_ModelManager_Close( void );
 void CL_ModelManager_OpenForStory( void );
+qboolean CL_ModelManager_Pick( void ( *done )( const char *path, void *ctx ), void *ctx );	// the browser alone: a model chosen for another tool
 void CL_ModelManager_KeyEvent( int key, qboolean down );
 void CL_ModelManager_CharEvent( int ch );
 void CL_ModelManager_MouseEvent( int dx, int dy );
@@ -695,7 +696,12 @@ void CL_ModelManager_Draw( void );
 #define KEYCATCH_CHATLOG		0x100000	// engine only, the chat log window owns keyboard and mouse
 #define KEYCATCH_DATAPAD		0x200000	// engine only, the datapad, open, owns keyboard and mouse
 #define KEYCATCH_ESCMENU		0x400000	// engine only, the Esc menu (Modern or KOTOR) owns keyboard and mouse
-#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELMANAGER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER | KEYCATCH_MAPEDITOR | KEYCATCH_STORYTELLER | KEYCATCH_CINEDITOR | KEYCATCH_SOUNDMANAGER | KEYCATCH_RADIALMENU | KEYCATCH_LANGUAGES | KEYCATCH_CONSETTINGS | KEYCATCH_ANIMMANAGER | KEYCATCH_PRESETS | KEYCATCH_FEEDBACK | KEYCATCH_ASSETMANAGER | KEYCATCH_SPECIALMOVES | KEYCATCH_CHATLOG | KEYCATCH_DATAPAD | KEYCATCH_ESCMENU )	// mods never see or clear these
+#define KEYCATCH_INVENTORY		0x800000	// engine only, the inventory window owns keyboard and mouse
+#define KEYCATCH_INSPECT		0x1000000	// engine only, the inspect window owns keyboard and mouse
+#define KEYCATCH_HOLSTER		0x2000000	// engine only, the holster editor owns keyboard and mouse
+#define KEYCATCH_CHARACTERS		0x4000000	// engine only, the characters window owns keyboard and mouse
+#define KEYCATCH_WORLD			0x8000000	// engine only, the world's reader or editor owns keyboard and mouse
+#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELMANAGER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER | KEYCATCH_MAPEDITOR | KEYCATCH_STORYTELLER | KEYCATCH_CINEDITOR | KEYCATCH_SOUNDMANAGER | KEYCATCH_RADIALMENU | KEYCATCH_LANGUAGES | KEYCATCH_CONSETTINGS | KEYCATCH_ANIMMANAGER | KEYCATCH_PRESETS | KEYCATCH_FEEDBACK | KEYCATCH_ASSETMANAGER | KEYCATCH_SPECIALMOVES | KEYCATCH_CHATLOG | KEYCATCH_DATAPAD | KEYCATCH_ESCMENU | KEYCATCH_INVENTORY | KEYCATCH_INSPECT | KEYCATCH_HOLSTER | KEYCATCH_CHARACTERS | KEYCATCH_WORLD )	// mods never see or clear these
 
 void CL_NpcManager_Init( void );
 void CL_NpcManager_Shutdown( void );
@@ -777,6 +783,15 @@ qboolean CL_Extras_Origin( int num, vec3_t out );
 qboolean CL_Extras_Yaw( int num, float *yaw );
 int CL_Extras_Bodies( int *nums, vec3_t *orgs, int max );
 void CL_Extras_AddToScene( const refdef_t *fd );
+// a body only this client draws, posed and held on a pose's last frame (the world's bodies)
+typedef struct {
+	void		*g2;					// its ghoul2 model, NULL none
+	char		key[MAX_QPATH];			// the model it was made for
+	char		anim[48];				// the pose set
+	int			cfg;					// its animation.cfg, -1 none
+} clPosedBody_t;
+qboolean CL_Extras_PoseBody( clPosedBody_t *b, const char *model, const char *anim );
+void CL_Extras_FreeBody( clPosedBody_t *b );
 void CL_Cinematic_AddToScene( const refdef_t *fd );
 int CL_Cinematic_LightStyle( int style, int color );
 qboolean CL_Cinematic_SkyTint( vec3_t tint );
@@ -786,6 +801,7 @@ int CL_NpcWalk_Tilts( vec3_t *pos, vec3_t *angles, int max );
 int CL_EmotePreview_Count( void );
 const char *CL_EmotePreview_Name( int index );
 const char *CL_EmotePreview_Anim( const char *emote );
+const char *CL_EmotePreview_Legs( const char *emote );
 qboolean CL_Cinematic_RecordKey( int key );
 qboolean CL_NpcManager_Active( void );
 void CL_NpcManager_Frame( void );
@@ -923,7 +939,6 @@ qboolean CL_Storyteller_ServerPrint( const char *text );
 void CL_Storyteller_Hook( char **argv, int argc, const char *message );
 void CL_Storyteller_TriggerUsed( const char *name );
 int CL_Storyteller_UseLock( const char *name, const char **text );
-const char *CL_MapEditor_AimedUseTrigger( void );
 void CL_MapEditor_PickForStory( int kind );
 void CL_Storyteller_TriggerPicked( const char *value );
 void CL_RpCinematic_AnimHook( char **argv, int argc );
@@ -935,6 +950,15 @@ void CL_MapEditor_CharEvent( int ch );
 void CL_MapEditor_MouseEvent( int dx, int dy );
 void CL_MapEditor_Escape( void );
 void CL_MapEditor_Frame( void );
+void CL_Dismember_Init( void );
+void CL_Dismember_Shutdown( void );
+void CL_Dismember_Clear( void );						// every body whole, the limbs gone
+void CL_Dismember_RendererRestarted( void );
+void CL_Dismember_Entity( const refEntity_t *ent );		// a model on its way to the renderer: cut as it's cut
+void CL_Dismember_AddToScene( const refdef_t *fd );		// the limbs lying about
+void CL_Dismember_Hook( char **argv, int argc );		// cmd:dismember/...
+void CL_MapEditor_MapWeather( const char *command );	// a weather command of the cgame's (the map's own)
+void CL_MapEditor_WeatherRestarted( void );				// the renderer started again: our weather given again
 void CL_MapEditor_Draw( void );
 void CL_MapEditor_Sounds( const vec3_t ear );
 void CL_MapEditor_AddToScene( const refdef_t *fd );
@@ -1077,6 +1101,13 @@ void CL_SpecialMoves_Escape( void );
 void CL_SpecialMoves_Draw( void );
 void CL_SpecialMoves_FilterCmd( usercmd_t *cmd );
 
+// cl_burstfire.cpp: the E-11's alt fire in bursts (cl_burstFire)
+void CL_BurstFire_Init( void );
+void CL_BurstFire_FilterCmd( usercmd_t *cmd );
+void CL_BurstFire_Draw( void );
+void CL_BurstFire_Entity( const refEntity_t *ent );		// the gun as it's drawn, for the charge's glow
+void CL_BurstFire_AddToScene( const refdef_t *fd );
+
 // cl_chatlog.cpp
 // cl_datapad.cpp: the datapad, folded in the corner or open on the right
 void CL_Datapad_Init( void );
@@ -1086,6 +1117,124 @@ void CL_Datapad_KeyEvent( int key, qboolean down );
 void CL_Datapad_MouseEvent( int dx, int dy );
 void CL_Datapad_CharEvent( int ch );
 void CL_Pazaak_Frame( void );		// cl_pazaak.cpp
+void CL_Datapad_OpenItem( int item, const char *name, int world );	// a datapad item's (or a placed one's) Notes
+void CL_Notes_Frame( void );		// cl_notes.cpp
+void CL_RealShadows_Frame( void );	// cl_rendermenu.cpp: Vulkan's real shadows in place of the blob
+void CL_Chat_Init( void );			// cl_chat.cpp: the datapad's Chat
+void CL_Chat_Frame( void );
+void CL_Chat_Disconnect( void );
+void CL_Chat_Hook( char **argv, int argc, const char *message );	// cmd:chat/...
+qboolean CL_Chat_CaptureSound( const char *cmd );	// the sound manager's Send, while Chat picks a sound
+int CL_Chat_Unread( void );
+void CL_SoundManager_OpenForChat( void );
+void CL_Notes_Disconnect( void );
+void CL_Notes_PickedUp( int item );	// the placed datapad shown is yours now: this item
+void CL_Notes_Message( const char *text, qboolean bad );
+// cl_worlditems.cpp: datapads placed in the world, kept by C1B3R per map
+void CL_WorldItems_Frame( void );
+void CL_WorldItems_Draw( void );
+void CL_WorldItems_AddToScene( const refdef_t *fd );
+void CL_WorldItems_Disconnect( void );
+void CL_WorldItems_Hook( char **argv, int argc );	// cmd:world/<version>
+void CL_WorldItems_Command( const char *what, const char *args );	// datapad place|remove|drop: the old names
+void CL_WorldItems_Drop( int item, const char *name );	// an item of yours put down where you aim
+void CL_WorldItems_PickUp( int world );
+void CL_RpHooks_NewLoad( void );		// a new load of the map: the objectives go
+void CL_MapEditor_NewLoad( void );		// a new load of the map: the shared edits go
+void CL_WorldItems_DumpCommand( void );		// rpdump save|load|delete on its way: the world things go with it
+qboolean CL_WorldItems_Admin( void );
+const char *CL_WorldItems_AimedStory( qboolean walk );	// the story name of the thing looked at (walk: the walk-in zone stood in): "" none, NULL nothing there
+qboolean CL_WorldItems_ZoneBox( const char *story, vec3_t mins, vec3_t maxs );	// a walk-in zone, by its story name
+int CL_WorldItems_Stories( char names[][48], int max, qboolean walkOnly );	// the map's story names, each once
+void CL_WorldItems_Init( void );
+void CL_WorldItems_Shutdown( void );
+void CL_WorldItems_RendererRestarted( void );
+qboolean CL_WorldItems_RenderScene( const refdef_t *fd );	// the editor: the view kept for the gizmo, or the free camera's
+void CL_WorldItems_KeyEvent( int key, qboolean down );
+void CL_WorldItems_CharEvent( int ch );
+void CL_WorldItems_MouseEvent( int dx, int dy );
+void CL_WorldItems_Escape( void );
+// cl_inventory.cpp: /inventory, its window
+void CL_Inventory_Init( void );
+void CL_Inventory_Shutdown( void );
+void CL_Inventory_Frame( void );
+void CL_Inventory_Draw( void );
+void CL_Inventory_Close( void );
+void CL_Inventory_Escape( void );
+void CL_Inventory_KeyEvent( int key, qboolean down );
+void CL_Inventory_CharEvent( int ch );
+void CL_Inventory_MouseEvent( int dx, int dy );
+void CL_Inventory_Disconnect( void );
+int CL_Inventory_Picked( char *name, int size );	// the item picked in the window: its id, 0 none
+void CL_Inventory_RendererRestarted( void );
+void CL_Inventory_CharHook( char **argv, int argc );
+
+// cl_inspect.cpp: /inspect, a player's character
+void CL_Inspect_Init( void );
+void CL_Inspect_Shutdown( void );
+void CL_Inspect_Frame( void );
+void CL_Inspect_Draw( void );
+void CL_Inspect_DrawHint( void );
+void CL_Inspect_Close( void );
+void CL_Inspect_Escape( void );
+void CL_Inspect_KeyEvent( int key, qboolean down );
+void CL_Inspect_CharEvent( int ch );
+void CL_Inspect_MouseEvent( int dx, int dy );
+void CL_Inspect_Disconnect( void );
+void CL_Inspect_CharHook( char **argv, int argc );
+
+// cl_characters.cpp: /characters, the characters of your RPMod account
+void CL_Characters_Init( void );
+void CL_Characters_Shutdown( void );
+void CL_Characters_Frame( void );
+void CL_Characters_Draw( void );
+void CL_Characters_Close( void );
+void CL_Characters_Escape( void );
+void CL_Characters_KeyEvent( int key, qboolean down );
+void CL_Characters_CharEvent( int ch );
+void CL_Characters_MouseEvent( int dx, int dy );
+void CL_Characters_Disconnect( void );
+void CL_Characters_CharHook( char **argv, int argc );
+void CL_Characters_OfferHook( char **argv, int argc );	// cmd:charoffer/<client>/<offer>
+int CL_Characters_ActiveId( void );		// the character played (C1B3R's id), 0 none known
+qboolean CL_Characters_NeedSetup( const char *tool );	// linked with no character yet: said, and the setup opened
+const char *CL_Characters_ActiveName( void );	// its name, "" none known
+int CL_Presets_Keys( const char ***keys );
+int CL_Presets_Count( void );
+const char *CL_Presets_Get( int i, int key, const char **date, qboolean *favorite, int *character );
+void CL_Presets_Import( int character, const char *date, const char **values, qboolean favorite, const char *id, const char *label );
+const char *CL_Presets_Label( int i );					// a preset's own name, given by its player, "" none
+const char *CL_Presets_Title( int i );					// what tells it apart: its own name, else the name it gives
+const char *CL_Presets_Id( int i );					// a preset's own id (8 hex), "" none
+const char *CL_Presets_WornId( int character );		// the character's preset the look is now, "" none
+void CL_Presets_AddCurrent( int character );			// what you wear now, a preset of the character
+void CL_Presets_SetAppearance( const char **values );
+void CL_EffectSwap_Replace( const char **from, const char **to, int num );
+int CL_ShaderManager_MineCount( void );
+qboolean CL_ShaderManager_MineGet( int i, const char **from, const char **to );
+void CL_ShaderManager_MineReplace( const char **from, const char **to, int num );
+const char *CL_Languages_Character( void );
+
+// cl_holster.cpp: /holster, models worn on characters
+void CL_Holster_Init( void );
+void CL_Holster_Shutdown( void );
+void CL_Holster_Frame( void );		// before the cgame draws: bodies paired with players
+void CL_Holster_PollFrame( void );
+void CL_Holster_Draw( void );
+void CL_Holster_Close( void );
+void CL_Holster_Escape( void );
+void CL_Holster_KeyEvent( int key, qboolean down );
+void CL_Holster_CharEvent( int ch );
+void CL_Holster_MouseEvent( int dx, int dy );
+void CL_Holster_Disconnect( void );
+void CL_Holster_RendererRestarted( void );
+void CL_Holster_CharHook( char **argv, int argc );
+void CL_Holster_Entity( const refEntity_t *ent, void *bodyGhoul2 );
+void CL_Holster_DrawOn( void *ctx, void *ghoul2, const refEntity_t *body );
+const char *CL_Holster_Missing( int client );
+qboolean CL_Holster_RenderScene( const refdef_t *fd );	// live: the view kept for the gizmo, or the free camera's
+const char *CL_Holster_DatapadModel( void );		// a datapad model this game has, "" none
+qboolean CL_Holster_ModelEntity( const char *path, refEntity_t *ent );	// its model set on ent, loaded once
 void CL_DatapadWeb_Frame( void );	// cl_holonet.cpp: the HoloNet, the Comport and their pictures
 void CL_Datapad_Escape( void );
 void CL_Datapad_Draw( void );
@@ -1239,6 +1388,26 @@ void CL_EmotePreview_Command( const char *cmd );
 void CL_EmotePreview_Frame( void );
 void CL_EmotePreview_Draw( void );
 const char *CL_GlmBounds( const char *path, vec3_t mins, vec3_t maxs );
+int CL_GlmTags( const char *path, char tags[][MAX_QPATH], int max );	// cl_npcmanager.cpp: its *tags
+
+// cl_aim.cpp: what the crosshair is on
+void CL_Aim_View( const refdef_t *fd );
+void CL_Aim_Disconnect( void );
+float CL_Aim_RayBox( const vec3_t org, const vec3_t dir, const vec3_t mins, const vec3_t maxs, float range );
+int CL_Aim_Pick( qboolean ( *want )( const entityState_t *es, vec3_t org ), float range );
+int CL_AimedPlayer( float range );			// another player's client number, -1 none
+const char *CL_PlayerSlotName( int client );
+const char *CL_PlayerInfo( int client, const char *key );	// "" for an empty slot
+
+// cl_sabers.cpp: a saber's .sab block
+typedef struct {
+	char	id[MAX_QPATH];		// as the game names it (saber1)
+	char	name[64];			// as shown
+	char	model[MAX_QPATH];	// its hilt
+	char	type[32];			// SABER_SINGLE, SABER_STAFF...
+	float	length;				// its blades', 0 when it doesn't say (the game's 40)
+} clSaber_t;
+qboolean CL_Saber_Find( const char *saber, clSaber_t *out );
 
 // cl_rpadmin.cpp
 void CL_RpAdmin_Init( void );
@@ -1280,7 +1449,16 @@ void CL_EscMenu_MouseEvent( int dx, int dy );
 void CL_EscMenu_Escape( void );
 int CL_QuickConnect_Count( void );			// cl_quickconnect.cpp: JEDI's servers
 const char *CL_QuickConnect_Name( int i );
+void CL_Holster_DrawForPreset( void *ctx, void *ghoul2, const refEntity_t *body );	// a preset card's: ctx its id
+int CL_Holster_CountForPreset( const char *id );		// what the holster wears with this preset of the character played
 void CL_Presets_DrawPortrait( float x, float y, float w, float h, float yaw );	// cl_presets.cpp: you, as you are
+typedef void ( *clBodyExtra_t )( void *ctx, void *ghoul2, const refEntity_t *body );	// more drawn on a body (holster)
+void CL_Presets_DrawCharacter( const char *model, const char *saber1, const char *saber2, const char *torso, const char *legs,
+	const float *blade, float x, float y, float w, float h, float yaw, clBodyExtra_t extra, void *ctx );
+const char *CL_Presets_CharacterError( void );
+void CL_Presets_FreeCharacter( void );
+void CL_Presets_Frame( void );
+void CL_Presets_RendererRestarted( void );
 void CL_RenderMenu_Shutdown( void );
 void CL_Update_Frame( void );
 void CL_Update_Draw( void );

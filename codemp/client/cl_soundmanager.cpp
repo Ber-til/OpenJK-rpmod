@@ -606,6 +606,8 @@ static void SM_Queue( const char *cmd ) {
 		return;
 	if ( CL_Storyteller_Capture( cmd ) )
 		return;
+	if ( CL_Chat_CaptureSound( cmd ) )
+		return;
 	if ( sm.numQueue >= SM_MAX_QUEUE ) {
 		Com_Printf( S_COLOR_YELLOW "Sound manager: too many commands waiting, dropped %s\n", cmd );
 		return;
@@ -944,6 +946,10 @@ static qboolean SM_Open( smOpen_t which ) {
 	CL_Presets_Close();
 	CL_SpecialMoves_Close();
 	CL_ChatLog_Close();
+	CL_Inventory_Close();
+	CL_Inspect_Close();
+	CL_Holster_Close();
+	CL_Characters_Close();
 
 	sm.font = re->RegisterFont( "arialnb" );
 	if ( !sm.font )
@@ -979,6 +985,15 @@ void CL_SoundManager_OpenForStory( void ) {
 		sm.forStory = qtrue;
 		sm.tab = SM_TAB_SOUNDS;
 		SM_Message( S_COLOR_GREEN "For the story: what you send here goes in it as steps, not to the server" );
+	}
+}
+
+// opened from the datapad's Chat, for its sounds: Send picks one
+void CL_SoundManager_OpenForChat( void ) {
+	if ( SM_Open( SM_SOUND ) ) {
+		sm.forStory = qtrue;
+		sm.tab = SM_TAB_SOUNDS;
+		SM_Message( S_COLOR_GREEN "For the datapad's Chat: pick a sound and send it; it's yours, not the server's" );
 	}
 }
 

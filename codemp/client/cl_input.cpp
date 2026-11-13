@@ -1120,6 +1120,16 @@ void CL_MouseEvent( int dx, int dy, int time ) {
 		CL_SpecialMoves_MouseEvent( dx, dy );
 	} else if ( Key_GetCatcher( ) & KEYCATCH_CHATLOG ) {
 		CL_ChatLog_MouseEvent( dx, dy );
+	} else if ( Key_GetCatcher( ) & KEYCATCH_INVENTORY ) {
+		CL_Inventory_MouseEvent( dx, dy );
+	} else if ( Key_GetCatcher( ) & KEYCATCH_INSPECT ) {
+		CL_Inspect_MouseEvent( dx, dy );
+	} else if ( Key_GetCatcher( ) & KEYCATCH_HOLSTER ) {
+		CL_Holster_MouseEvent( dx, dy );
+	} else if ( Key_GetCatcher( ) & KEYCATCH_WORLD ) {
+		CL_WorldItems_MouseEvent( dx, dy );
+	} else if ( Key_GetCatcher( ) & KEYCATCH_CHARACTERS ) {
+		CL_Characters_MouseEvent( dx, dy );
 	} else if ( Key_GetCatcher( ) & KEYCATCH_DATAPAD ) {
 		CL_Datapad_MouseEvent( dx, dy );
 	} else if ( Key_GetCatcher( ) & KEYCATCH_ASSETMANAGER ) {
@@ -1550,6 +1560,7 @@ usercmd_t CL_CreateCmd( void ) {
 
 	// a special move playing: its keys in place of the player's
 	CL_SpecialMoves_FilterCmd( &cmd );
+	CL_BurstFire_FilterCmd( &cmd );
 
 	// fighters share jump between takeoff and boost
 	CL_FighterAssist_FilterCmd( &cmd, in_vehboost.active );

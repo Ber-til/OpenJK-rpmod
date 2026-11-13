@@ -1420,6 +1420,8 @@ static void vk_set_light_params( vkUniform_t *uniform, const dlight_t *dl ) {
 
 	// fragment data
 	uniform->lightColor[3] = 1.0f / Square(radius);
+	// OpenJK-rpmod: surface relief's depth and shine, in the w the vertex shader doesn't use
+	vk_rpmod_light_params( &uniform->lightPos[3], &uniform->eyePos[3] );
 
 	if (dl->linear)
 	{

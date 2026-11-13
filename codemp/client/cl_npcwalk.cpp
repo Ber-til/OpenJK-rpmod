@@ -72,7 +72,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define NW_QUIET_MS			4000		// its teleports' cloak and flash are kept off this long after a walk
 #define NW_QUIET_NEAR		64.0f		// a teleport flash or cloak sound this near a spot is the walk's
 #define NW_MAX_GROUP		NW_MAX_WALKS
-#define NW_MAX_HOOK			900			// what rpnotify is trusted to carry
+#define NW_MAX_HOOK			900			// what a hook is trusted to carry
 #define NW_LOST_MS			10000		// the sender's NPC out of sight this long, the list is read to see it's there
 #define NW_LIST_EVERY		15000		// but not more often than this
 
@@ -1530,7 +1530,7 @@ void CL_NpcWalk_Command( void ) {
 			}
 			return;
 		}
-		Com_sprintf( hook, sizeof( hook ), "rpnotify -1 1 cmd:npc/walk/%i", num );
+		Com_sprintf( hook, sizeof( hook ), "c1b3rhook all cmd:npc/walk/%i", num );
 		for ( int i = 1; i < count; i++ )
 			Q_strcat( hook, sizeof( hook ), va( ",%i", nums[i] ) );
 		Q_strcat( hook, sizeof( hook ), "/stop" );
@@ -1571,7 +1571,7 @@ void CL_NpcWalk_Command( void ) {
 			NW_StartGroup( nums, starts, known, pts + 1, numPts, speed, loop, qfalse, route );
 			return;
 		}
-		Com_sprintf( hook, sizeof( hook ), "rpnotify -1 1 cmd:npc/group/%g%s", speed, loop ? "/loop" : "" );
+		Com_sprintf( hook, sizeof( hook ), "c1b3rhook all cmd:npc/group/%g%s", speed, loop ? "/loop" : "" );
 		for ( int i = 0; i < known; i++ )
 			Q_strcat( hook, sizeof( hook ), va( "/%i %i %i %i", nums[i], (int)floorf( starts[i][0] + 0.5f ), (int)floorf( starts[i][1] + 0.5f ), (int)floorf( starts[i][2] + 0.5f ) ) );
 		for ( int i = 1; i <= numPts; i++ )
@@ -1595,7 +1595,7 @@ void CL_NpcWalk_Command( void ) {
 		NW_Start( num, speed, loop, pts, numPts + 1, qfalse, route );
 		return;
 	}
-	Com_sprintf( hook, sizeof( hook ), "rpnotify -1 1 cmd:npc/walk/%i/%g%s", num, speed, loop ? "/loop" : "" );
+	Com_sprintf( hook, sizeof( hook ), "c1b3rhook all cmd:npc/walk/%i/%g%s", num, speed, loop ? "/loop" : "" );
 	for ( int i = 0; i <= numPts; i++ )
 		Q_strcat( hook, sizeof( hook ), va( "/%i %i %i", (int)floorf( pts[i][0] + 0.5f ), (int)floorf( pts[i][1] + 0.5f ), (int)floorf( pts[i][2] + 0.5f ) ) );
 	NW_HookRoute( hook, sizeof( hook ), route );

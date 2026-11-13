@@ -48,7 +48,6 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define ES_SHARE_WORD		32			// longer words go in pieces
 #define ES_SHARE_GAP_MS		400			// between hooks, for the server's flood protection
 #define ES_SHARE_START_MS	6000		// shared this long into a map
-#define ES_SHARE_JOIN_MS	4000		// and this long after someone joins
 
 typedef struct {
 	std::vector<std::string>	from, to;
@@ -495,6 +494,24 @@ void CL_EffectSwap_Clear( void ) {
 	ES_Changed();
 }
 
+// for Characters (cl_characters.cpp): a whole set in place of yours, saved and shared once
+void CL_EffectSwap_Replace( const char **from, const char **to, int num ) {
+	char f[MAX_QPATH], t[MAX_QPATH];
+
+	CL_EffectSwap_Count();		// loaded first, so the file's aren't read over these
+	es.mine.from.clear();
+	es.mine.to.clear();
+	for ( int i = 0; i < num && (int)es.mine.from.size() < ES_MAX; i++ ) {
+		ES_Key( from[i], f, sizeof( f ) );
+		ES_Key( to[i], t, sizeof( t ) );
+		if ( strcmp( f, t ) && ES_SafeName( f ) && ES_SafeName( t ) && CL_EffectSwap_Find( f ) < 0 ) {
+			es.mine.from.push_back( f );
+			es.mine.to.push_back( t );
+		}
+	}
+	ES_Changed();
+}
+
 int CL_EffectSwap_NumRecent( void ) {
 	return es.numRecent;
 }
@@ -542,7 +559,7 @@ static void ES_AppendSplit( std::string &out, const char *word ) {
 }
 
 static void ES_Queue( const char *text ) {
-	es.shareQueue.push_back( va( "rpnotify -1 1 %s", text ) );
+	es.shareQueue.push_back( va( "c1b3rhook all %s", text ) );
 }
 
 // this player's swaps, in as few hooks as fit; none when sharing is off
@@ -608,8 +625,7 @@ void CL_EffectSwap_Frame( void ) {
 			ES_Forget();
 		}
 	}
-	if ( players > es.sharePlayers && es.sharePlayers && !es.mine.from.empty() && CL_EffectSwap_Shared() )
-		es.shareAt = cls.realtime + ES_SHARE_JOIN_MS;
+	// someone joining later gets them from C1B3R, which keeps the server's state (serverstate.py)
 	es.sharePlayers = players;
 
 	if ( es.shareAt && cls.realtime >= es.shareAt ) {

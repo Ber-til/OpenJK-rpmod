@@ -20,7 +20,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 
 // cl_feedback.cpp -- /feedback: bug reports and ideas for the OpenJK-RPMod project, and the answers
 //
-// A window to write a report in, a bug or an idea, sent to the feedback bot (cl_feedbackUrl). The
+// A window to write a report in, a bug or an idea, sent to the feedback bot (C1B3R, cl_c1b3rUrl). The
 // bot posts it in the project's Discord, where it's answered, marked planned or fixed, or closed.
 // What's written there comes back here, under My reports, where the player can answer too. The
 // bot is asked for news every few minutes while there are reports, and a line in the console
@@ -40,6 +40,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #include "client.h"
 #include "cl_widgets.h"
 #include "cl_http.h"
+#include "cl_presence.h"
 #include "qcommon/game_version.h"
 #include <time.h>
 #include <map>
@@ -47,7 +48,6 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #include <vector>
 
 #define FB_CMD				"feedback"
-#define FB_DEFAULT_URL		"https://c1b3r.keztor.tech"
 #define FB_KEY_FILE			"feedback.key"
 #define FB_FIRST_POLL_MS	15000				// after the game starts, the first time it asks
 #define FB_POLL_MS			( 5 * 60 * 1000 )	// then this often, while there are reports
@@ -312,7 +312,7 @@ static qboolean FB_Ask( fbRequest_t what, const char *path, const std::string &b
 	char error[128];
 
 	if ( !cl_feedbackUrl->string[0] ) {
-		FB_Message( qtrue, "No feedback address: cl_feedbackUrl is empty" );
+		FB_Message( qtrue, "No feedback address: cl_c1b3rUrl is empty" );
 		return qfalse;
 	}
 	if ( FB_Busy() )
@@ -882,8 +882,7 @@ void CL_Feedback_Init( void ) {
 	fb.font = 0;
 	fb.focus = FB_NONE;
 	fb.request = asking;
-	cl_feedbackUrl = Cvar_Get( "cl_feedbackUrl", FB_DEFAULT_URL, CVAR_ARCHIVE_ND | CVAR_PROTECTED,
-		"Where /feedback sends bug reports and ideas, and asks for their answers" );
+	cl_feedbackUrl = CL_C1b3rUrl();		// C1B3R, where reports go and their answers come from
 	Cmd_AddCommand( FB_CMD, FB_Cmd_f, "Send a bug report or an idea for the OpenJK-RPMod project, and read the answers" );
 	FB_LoadFile();
 	fb.nextPoll = cls.realtime + FB_FIRST_POLL_MS;

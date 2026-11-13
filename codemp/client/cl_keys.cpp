@@ -1683,6 +1683,26 @@ void CL_KeyDownEvent( int key, unsigned time )
 			CL_ChatLog_Escape();
 			return;
 		}
+		if ( ( Key_GetCatcher() & KEYCATCH_INVENTORY ) && !( Key_GetCatcher() & KEYCATCH_UI ) ) {
+			CL_Inventory_Escape();
+			return;
+		}
+		if ( ( Key_GetCatcher() & KEYCATCH_INSPECT ) && !( Key_GetCatcher() & KEYCATCH_UI ) ) {
+			CL_Inspect_Escape();
+			return;
+		}
+		if ( ( Key_GetCatcher() & KEYCATCH_HOLSTER ) && !( Key_GetCatcher() & KEYCATCH_UI ) ) {
+			CL_Holster_Escape();
+			return;
+		}
+		if ( ( Key_GetCatcher() & KEYCATCH_WORLD ) && !( Key_GetCatcher() & KEYCATCH_UI ) ) {
+			CL_WorldItems_Escape();
+			return;
+		}
+		if ( ( Key_GetCatcher() & KEYCATCH_CHARACTERS ) && !( Key_GetCatcher() & KEYCATCH_UI ) ) {
+			CL_Characters_Escape();
+			return;
+		}
 		if ( ( Key_GetCatcher() & KEYCATCH_DATAPAD ) && !( Key_GetCatcher() & KEYCATCH_UI ) ) {
 			CL_Datapad_Escape();
 			return;
@@ -1812,6 +1832,26 @@ void CL_KeyDownEvent( int key, unsigned time )
 	else if ( Key_GetCatcher() & KEYCATCH_CHATLOG ) {
 		CL_ChatLog_KeyEvent( key, qtrue );
 	}
+	// inventory
+	else if ( Key_GetCatcher() & KEYCATCH_INVENTORY ) {
+		CL_Inventory_KeyEvent( key, qtrue );
+	}
+	// inspect
+	else if ( Key_GetCatcher() & KEYCATCH_INSPECT ) {
+		CL_Inspect_KeyEvent( key, qtrue );
+	}
+	// holster
+	else if ( Key_GetCatcher() & KEYCATCH_HOLSTER ) {
+		CL_Holster_KeyEvent( key, qtrue );
+	}
+	// the world's reader or editor
+	else if ( Key_GetCatcher() & KEYCATCH_WORLD ) {
+		CL_WorldItems_KeyEvent( key, qtrue );
+	}
+	// characters
+	else if ( Key_GetCatcher() & KEYCATCH_CHARACTERS ) {
+		CL_Characters_KeyEvent( key, qtrue );
+	}
 	// datapad, open
 	else if ( Key_GetCatcher() & KEYCATCH_DATAPAD ) {
 		CL_Datapad_KeyEvent( key, qtrue );
@@ -1890,6 +1930,8 @@ void CL_KeyUpEvent( int key, unsigned time )
 	CL_RpCinematic_EditorKeyEvent( key, qfalse );
 	CL_RadialMenu_KeyEvent( key, qfalse );
 	CL_Languages_KeyEvent( key, qfalse );
+	CL_Holster_KeyEvent( key, qfalse );
+	CL_WorldItems_KeyEvent( key, qfalse );
 
 	if ( Key_GetCatcher( ) & KEYCATCH_UI && cls.uiStarted )
 		UIVM_KeyEvent( key, qfalse );
@@ -1942,6 +1984,11 @@ void CL_CharEvent( int key ) {
 	else if ( Key_GetCatcher() & KEYCATCH_CINEDITOR )	CL_RpCinematic_EditorCharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_RADIALMENU )	CL_RadialMenu_CharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_DATAPAD )		CL_Datapad_CharEvent( key );
+	else if ( Key_GetCatcher() & KEYCATCH_INVENTORY )	CL_Inventory_CharEvent( key );
+	else if ( Key_GetCatcher() & KEYCATCH_INSPECT )		CL_Inspect_CharEvent( key );
+	else if ( Key_GetCatcher() & KEYCATCH_HOLSTER )		CL_Holster_CharEvent( key );
+	else if ( Key_GetCatcher() & KEYCATCH_WORLD )		CL_WorldItems_CharEvent( key );
+	else if ( Key_GetCatcher() & KEYCATCH_CHARACTERS )	CL_Characters_CharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_LANGUAGES )	CL_Languages_CharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_CGAME )		CGVM_KeyEvent( key|K_CHAR_FLAG, qtrue );
 	else if ( Key_GetCatcher() & KEYCATCH_MESSAGE )		Field_CharEvent( &chatField, key );

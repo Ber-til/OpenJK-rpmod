@@ -277,6 +277,15 @@ static const char *LG_Spoken( void ) {
 	return i >= 0 && c->langs[i].speak ? c->langs[i].name : "";
 }
 
+// the character playing, "" none (cl_characters.cpp keeps it with a character)
+const char *CL_Languages_Character( void ) {
+	const lgChar_t *c;
+
+	LG_Load();
+	c = LG_Active();
+	return c ? c->name : "";
+}
+
 // what the character playing understands; with none made, everything
 static qboolean LG_Understands( const char *name ) {
 	const lgChar_t *c;
@@ -970,6 +979,10 @@ static void LG_Open( void ) {
 	CL_Presets_Close();
 	CL_SpecialMoves_Close();
 	CL_ChatLog_Close();
+	CL_Inventory_Close();
+	CL_Inspect_Close();
+	CL_Holster_Close();
+	CL_Characters_Close();
 	CL_RadialMenu_CloseSettings();
 	LG_Load();
 

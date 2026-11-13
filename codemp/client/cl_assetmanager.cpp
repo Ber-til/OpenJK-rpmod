@@ -856,6 +856,10 @@ static void AS_Open( void ) {
 	CL_Presets_Close();
 	CL_SpecialMoves_Close();
 	CL_ChatLog_Close();
+	CL_Inventory_Close();
+	CL_Inspect_Close();
+	CL_Holster_Close();
+	CL_Characters_Close();
 
 	as.font = re->RegisterFont( "arialnb" );
 	if ( !as.font )

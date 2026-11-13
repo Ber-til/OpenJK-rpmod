@@ -57,6 +57,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define PR_GRID_X			( ( SCREEN_WIDTH - ( PR_COLS * PR_CARD_W + ( PR_COLS - 1 ) * PR_CARD_GAP ) ) * 0.5f )
 #define PR_GRID_Y			60.0f
 #define PR_VIEW_H			110.0f
+#define PR_CARD_VIEW_H		96.0f		// a preset card's: its own name's field under it
 
 // what a preset keeps: the userinfo that makes a character
 static const char *prKeys[] = {
@@ -70,6 +71,9 @@ typedef struct {
 	char		values[PR_NUM_KEYS][PR_VALUE_LEN];
 	char		date[32];
 	qboolean	favorite;
+	int			character;		// the C1B3R character it belongs to (cl_characters.cpp), 0 none
+	char		id[9];			// its own: 8 hex, kept through renames (a holster item's presets name it)
+	char		label[48];		// its player's own name for it, to tell it apart ("" none: the name it gives shows)
 } prPreset_t;
 
 enum { PR_MODE_PRESETS, PR_MODE_SKINS };
@@ -82,6 +86,7 @@ typedef struct {
 	qboolean		measured;		// from its head and its feet, posed
 	float			bottom, top;
 	const char		*error;
+	char			pose[MAX_QPATH * 2];	// the animations it plays, torso|legs ("" the stance)
 } prView_t;
 
 static prPreset_t	prPresets[PR_MAX];
@@ -89,6 +94,7 @@ static int			prNumPresets;
 static prView_t		prViews[PR_MAX];
 static prView_t		prSlotViews[8];		// a model's or a skin's card, by its place on the page
 static prView_t		prPortrait;			// you, for the Esc menu's KOTOR Character tab
+static prView_t		prOther;			// another player, for Inspect
 
 static char			prSkins[PR_MAX_SKINS][MAX_QPATH];	// a model's: model_<this>.skin
 static int			prNumSkins;
@@ -109,7 +115,9 @@ static struct {
 	int			mode;
 	char		search[48];
 	qboolean	typing;
+	int			labelEdit;		// the card whose own name is being typed, -1 none
 	qboolean	favOnly;
+	qboolean	allChars;		// every character's presets, not only the one played's
 	int			shown[PR_MAX_SKINS + PR_MAX + 1];	// what the pages show, filtered: presets, or skins (-1 the parts card)
 	int			numShown;
 	char		skinModel[MAX_QPATH];	// the model whose skins are shown
@@ -183,9 +191,62 @@ static void PR_Save( void ) {
 		}
 		if ( prPresets[i].favorite )
 			FS_Write( "\tfavorite \"1\"\n", (int)strlen( "\tfavorite \"1\"\n" ), f );
+		if ( prPresets[i].character ) {
+			const char *line = va( "\tcharacter \"%i\"\n", prPresets[i].character );
+
+			FS_Write( line, strlen( line ), f );
+		}
+		if ( prPresets[i].id[0] ) {
+			const char *line = va( "\tid \"%s\"\n", prPresets[i].id );
+
+			FS_Write( line, strlen( line ), f );
+		}
+		if ( prPresets[i].label[0] ) {
+			char label[sizeof( prPresets[i].label )];
+
+			Q_strncpyz( label, prPresets[i].label, sizeof( label ) );
+			for ( char *c = label; *c; c++ ) {
+				if ( *c == '"' )
+					*c = '\'';
+			}
+			const char *line = va( "\tlabel \"%s\"\n", label );
+
+			FS_Write( line, strlen( line ), f );
+		}
 		FS_Write( "}\n", 2, f );
 	}
 	FS_FCloseFile( f );
+}
+
+static void PR_Save( void );
+
+// 8 hex, a preset's id
+static qboolean PR_IsId( const char *s ) {
+	if ( !s || strlen( s ) != 8 )
+		return qfalse;
+	for ( int i = 0; i < 8; i++ ) {
+		if ( !( ( s[i] >= '0' && s[i] <= '9' ) || ( s[i] >= 'a' && s[i] <= 'f' ) ) )
+			return qfalse;
+	}
+	return qtrue;
+}
+
+// a new id, none of the others'
+static void PR_NewId( char *out ) {
+	static unsigned int seed;
+
+	if ( !seed )
+		seed = (unsigned int)Sys_Milliseconds() * 2654435761u ^ (unsigned int)rand();
+	for ( ;; ) {
+		qboolean taken = qfalse;
+
+		seed = seed * 1664525u + 1013904223u;
+		Com_sprintf( out, 9, "%08x", seed ^ ( (unsigned int)rand() << 16 ) );
+		for ( int i = 0; i < prNumPresets && !taken; i++ )
+			taken = (qboolean)( prPresets[i].id != out && !strcmp( prPresets[i].id, out ) );
+		if ( !taken )
+			return;
+	}
 }
 
 static void PR_Load( void ) {
@@ -221,6 +282,12 @@ static void PR_Load( void ) {
 			token = COM_ParseExt( &p, qfalse );
 			if ( !Q_stricmp( key, "favorite" ) )
 				ps->favorite = (qboolean)( atoi( token ) != 0 );
+			if ( !Q_stricmp( key, "character" ) )
+				ps->character = atoi( token );
+			if ( !Q_stricmp( key, "id" ) && PR_IsId( token ) )
+				Q_strncpyz( ps->id, token, sizeof( ps->id ) );
+			if ( !Q_stricmp( key, "label" ) )
+				Q_strncpyz( ps->label, token, sizeof( ps->label ) );
 			for ( int k = 0; k < PR_NUM_KEYS; k++ ) {
 				if ( !Q_stricmp( key, prKeys[k] ) )
 					Q_strncpyz( ps->values[k], token, PR_VALUE_LEN );
@@ -230,6 +297,19 @@ static void PR_Load( void ) {
 			prNumPresets++;
 	}
 	FS_FreeFile( buf );
+	// one from before ids: given one, kept from now on
+	{
+		qboolean given = qfalse;
+
+		for ( int i = 0; i < prNumPresets; i++ ) {
+			if ( !prPresets[i].id[0] ) {
+				PR_NewId( prPresets[i].id );
+				given = qtrue;
+			}
+		}
+		if ( given )
+			PR_Save();
+	}
 }
 
 /*
@@ -249,6 +329,8 @@ static void PR_FromCurrent( prPreset_t *ps ) {
 		Q_strncpyz( ps->values[k], Cvar_VariableString( prKeys[k] ), PR_VALUE_LEN );
 	Com_RealTime( &t );
 	Com_sprintf( ps->date, sizeof( ps->date ), "%04i-%02i-%02i %02i:%02i", t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour, t.tm_min );
+	ps->character = CL_Characters_ActiveId();
+	PR_NewId( ps->id );
 }
 
 static void PR_SaveCurrent( void ) {
@@ -274,10 +356,164 @@ static void PR_Apply( int i ) {
 }
 
 static void PR_Delete( int i ) {
+	pr.labelEdit = -1;		// the cards move: no name half typed lands on another
 	PR_FreeViews();
 	memmove( &prPresets[i], &prPresets[i + 1], ( prNumPresets - i - 1 ) * sizeof( prPresets[0] ) );
 	prNumPresets--;
 	PR_Save();
+}
+
+// for Characters (cl_characters.cpp): the keys a preset keeps, the presets, and one brought in
+int CL_Presets_Keys( const char ***keys ) {
+	*keys = prKeys;
+	return PR_NUM_KEYS;
+}
+
+int CL_Presets_Count( void ) {
+	if ( !pr.open )
+		PR_Load();
+	return prNumPresets;
+}
+
+// a preset's value for a key, its date, whether it's a favorite and whose it is
+// a preset's own name, "" none
+const char *CL_Presets_Label( int i ) {
+	return i >= 0 && i < prNumPresets ? prPresets[i].label : "";
+}
+
+// what tells a preset apart: its own name, else the name it gives
+const char *CL_Presets_Title( int i ) {
+	if ( i < 0 || i >= prNumPresets )
+		return "";
+	return prPresets[i].label[0] ? prPresets[i].label : prPresets[i].values[PR_K_NAME];
+}
+
+const char *CL_Presets_Get( int i, int key, const char **date, qboolean *favorite, int *character ) {
+	if ( i < 0 || i >= prNumPresets || key < 0 || key >= PR_NUM_KEYS )
+		return "";
+	*date = prPresets[i].date;
+	*favorite = prPresets[i].favorite;
+	*character = prPresets[i].character;
+	return prPresets[i].values[key];
+}
+
+// a character's preset from C1B3R, kept here unless it is already (the same date and character)
+void CL_Presets_Import( int character, const char *date, const char **values, qboolean favorite, const char *id, const char *label ) {
+	prPreset_t *ps;
+
+	CL_Presets_Count();
+	for ( int i = 0; i < prNumPresets; i++ ) {
+		if ( prPresets[i].character != character )
+			continue;
+		// known by its id; or the same date, which takes C1B3R's id when it has one. Its own name
+		// as C1B3R has it (renamed on the web), unless it's being typed here
+		if ( PR_IsId( id ) && !Q_stricmp( prPresets[i].id, id ) ) {
+			if ( label && strcmp( prPresets[i].label, label ) && pr.labelEdit != i ) {
+				Q_strncpyz( prPresets[i].label, label, sizeof( prPresets[i].label ) );
+				PR_Save();
+			}
+			return;
+		}
+		if ( !Q_stricmp( prPresets[i].date, date ) ) {
+			if ( PR_IsId( id ) && Q_stricmp( prPresets[i].id, id ) ) {
+				Q_strncpyz( prPresets[i].id, id, sizeof( prPresets[i].id ) );
+				PR_Save();
+			}
+			return;
+		}
+	}
+	if ( prNumPresets >= PR_MAX || !values[PR_K_MODEL][0] )
+		return;
+	ps = &prPresets[prNumPresets++];
+	memset( ps, 0, sizeof( *ps ) );
+	for ( int k = 0; k < PR_NUM_KEYS; k++ )
+		Q_strncpyz( ps->values[k], values[k], PR_VALUE_LEN );
+	Q_strncpyz( ps->date, date, sizeof( ps->date ) );
+	Q_strncpyz( ps->label, label ? label : "", sizeof( ps->label ) );
+	ps->favorite = favorite;
+	ps->character = character;
+	if ( PR_IsId( id ) )
+		Q_strncpyz( ps->id, id, sizeof( ps->id ) );
+	else
+		PR_NewId( ps->id );
+	PR_FreeViews();
+	PR_Save();
+}
+
+// what you wear now, kept as a preset of the character (a character's first, set up); not when
+// one of its presets is that already
+void CL_Presets_AddCurrent( int character ) {
+	prPreset_t now;
+
+	CL_Presets_Count();
+	PR_FromCurrent( &now );
+	for ( int i = 0; i < prNumPresets; i++ ) {
+		if ( prPresets[i].character == character && !memcmp( prPresets[i].values, now.values, sizeof( now.values ) ) )
+			return;
+	}
+	if ( prNumPresets >= PR_MAX ) {
+		Com_Printf( S_COLOR_YELLOW "Presets: as many as there can be, what you wear isn't kept as one\n" );
+		return;
+	}
+	now.character = character;
+	prPresets[prNumPresets++] = now;
+	PR_Save();
+}
+
+// a preset's id, "" none
+const char *CL_Presets_Id( int i ) {
+	return i >= 0 && i < prNumPresets ? prPresets[i].id : "";
+}
+
+// the id of the character's preset the look is now (every key as it is), "" none: a holster item
+// is worn with it (cl_holster.cpp). Worked out once a frame
+const char *CL_Presets_WornId( int character ) {
+	static int frame = -1, forChar = -1;
+	static char worn[9];
+
+	if ( frame == cls.framecount && forChar == character )
+		return worn;
+	frame = cls.framecount;
+	forChar = character;
+	worn[0] = '\0';
+	if ( !character )
+		return worn;
+	CL_Presets_Count();
+	// every key the preset sets as it is now (one it leaves empty, as applying it does, is any);
+	// then, when none is, the look without the name, if only one preset has it: a name changed
+	// by hand, or by the server, is still that preset
+	for ( int pass = 0; pass < 2 && !worn[0]; pass++ ) {
+		int found = -1, count = 0;
+
+		for ( int i = 0; i < prNumPresets; i++ ) {
+			int k;
+
+			if ( prPresets[i].character != character || !prPresets[i].id[0] )
+				continue;
+			for ( k = 0; k < PR_NUM_KEYS; k++ ) {
+				if ( pass == 1 && !Q_stricmp( prKeys[k], "name" ) )
+					continue;
+				if ( prPresets[i].values[k][0] && strcmp( Cvar_VariableString( prKeys[k] ), prPresets[i].values[k] ) )
+					break;
+			}
+			if ( k == PR_NUM_KEYS ) {
+				if ( found < 0 )
+					found = i;
+				count++;
+			}
+		}
+		if ( found >= 0 && ( pass == 0 || count == 1 ) )
+			Q_strncpyz( worn, prPresets[found].id, sizeof( worn ) );
+	}
+	return worn;
+}
+
+// your appearance as a preset has it (the keys in CL_Presets_Keys' order)
+void CL_Presets_SetAppearance( const char **values ) {
+	for ( int k = 0; k < PR_NUM_KEYS; k++ ) {
+		if ( values[k][0] && strcmp( Cvar_VariableString( prKeys[k] ), values[k] ) )
+			Cvar_Set( prKeys[k], values[k] );
+	}
 }
 
 /*
@@ -288,56 +524,13 @@ THE CHARACTER ON A CARD
 ===============================================================================
 */
 
-// a saber's hilt model, from the .sab file that has it
+// a saber's hilt model, from the .sab file that has it (cl_sabers.cpp)
 static qboolean PR_SaberModel( const char *saber, char *model, int size ) {
-	char **list;
-	int n;
-	qboolean found = qfalse;
+	clSaber_t info;
 
 	model[0] = '\0';
-	if ( !saber[0] || !Q_stricmp( saber, "none" ) )
-		return qfalse;
-	list = FS_ListFiles( "ext_data/sabers", ".sab", &n );
-	for ( int i = 0; i < n && !found; i++ ) {
-		char *buf;
-		const char *p;
-
-		if ( FS_ReadFile( va( "ext_data/sabers/%s", list[i] ), (void **)&buf ) <= 0 || !buf )
-			continue;
-		p = buf;
-		COM_BeginParseSession( list[i] );
-		while ( !found ) {
-			const char *token = COM_ParseExt( &p, qtrue );
-
-			if ( !token[0] )
-				break;
-			if ( Q_stricmp( token, saber ) ) {
-				if ( !strcmp( token, "{" ) )
-					SkipBracedSection( &p, 1 );
-				continue;
-			}
-			token = COM_ParseExt( &p, qtrue );
-			if ( strcmp( token, "{" ) )
-				continue;
-			// this one's block: its saberModel
-			while ( 1 ) {
-				token = COM_ParseExt( &p, qtrue );
-				if ( !token[0] || !strcmp( token, "}" ) )
-					break;
-				if ( !strcmp( token, "{" ) ) {
-					SkipBracedSection( &p, 1 );
-					continue;
-				}
-				if ( !Q_stricmp( token, "saberModel" ) ) {
-					Q_strncpyz( model, COM_ParseExt( &p, qfalse ), size );
-					break;
-				}
-			}
-			found = qtrue;
-		}
-		FS_FreeFile( buf );
-	}
-	FS_FreeFileList( list );
+	if ( CL_Saber_Find( saber, &info ) )
+		Q_strncpyz( model, info.model, size );
 	return (qboolean)( model[0] != '\0' );
 }
 
@@ -375,6 +568,57 @@ static void PR_Pose( CGhoul2Info_v &g2, const char *anim ) {
 		break;
 	}
 	FS_FreeFile( buf );
+}
+
+// an animation's first frame, its frames and their speed, from the animation.cfg beside the model's
+// skeleton: qfalse if it hasn't it
+static qboolean PR_AnimInfo( CGhoul2Info_v &g2, const char *anim, int *first, int *frames, float *fps ) {
+	char path[MAX_QPATH], *buf, *slash;
+	const char *gla = re->G2API_GetGLAName( g2, 0 ), *p;
+	qboolean found = qfalse;
+
+	if ( !gla || !gla[0] || !anim || !anim[0] )
+		return qfalse;
+	Q_strncpyz( path, gla, sizeof( path ) );
+	if ( !( slash = strrchr( path, '/' ) ) )
+		return qfalse;
+	slash[1] = '\0';
+	Q_strcat( path, sizeof( path ), "animation.cfg" );
+	if ( FS_ReadFile( path, (void **)&buf ) <= 0 || !buf )
+		return qfalse;
+	p = buf;
+	COM_BeginParseSession( path );
+	while ( !found ) {
+		const char *token = COM_ParseExt( &p, qtrue );
+
+		if ( !token[0] )
+			break;
+		if ( Q_stricmp( token, anim ) ) {
+			SkipRestOfLine( &p );
+			continue;
+		}
+		*first = atoi( COM_ParseExt( &p, qfalse ) );
+		*frames = atoi( COM_ParseExt( &p, qfalse ) );
+		COM_ParseExt( &p, qfalse );		// its loop frames
+		*fps = (float)fabs( atof( COM_ParseExt( &p, qfalse ) ) );
+		found = qtrue;
+	}
+	FS_FreeFile( buf );
+	return (qboolean)( found && *frames > 0 );
+}
+
+// one animation playing round and round on a bone and what's below it
+static qboolean PR_Loop( CGhoul2Info_v &g2, const char *bone, const char *anim ) {
+	int first, frames;
+	float fps;
+
+	if ( !PR_AnimInfo( g2, anim, &first, &frames, &fps ) )
+		return qfalse;
+	if ( fps <= 0.0f )
+		fps = 20.0f;
+	re->G2API_SetBoneAnim( g2, 0, bone, first, first + frames, BONE_ANIM_OVERRIDE_LOOP, fps / 20.0f,
+		re->G2API_GetTime( cl.serverTime ), (float)first, 0 );
+	return qtrue;
 }
 
 // a card's model, (re)built when its character changed: a model and skin as the model cvar has
@@ -433,7 +677,7 @@ static void PR_BuildView( prView_t *v, const char *model, const char *saber1, co
 		if ( index > 0 )
 			re->G2API_SetBoltInfo( *v->g2, index, bolts[s] );
 	}
-	PR_Pose( *v->g2, saber1[0] && Q_stricmp( saber1, "none" ) ? "BOTH_STAND2" : "BOTH_STAND1" );
+	PR_Pose( *v->g2, "BOTH_STAND1" );		// standing, the saber or not
 }
 
 // how tall it stands: its head's top to its feet, as posed; the model's bounds when it hasn't the tags
@@ -463,8 +707,11 @@ static void PR_Measure( prView_t *v ) {
 	}
 }
 
+static void PR_AddBlades( CGhoul2Info_v &g2, int index, const vec3_t angles, float length, const float *rgb );
+
 // the character drawn in the card, tinted as given (a skin that takes a tint)
-static void PR_RenderView( prView_t *v, const char *red, const char *green, const char *blue, float x, float y, float w, float h, float yaw ) {
+static void PR_RenderView( prView_t *v, const char *red, const char *green, const char *blue, float x, float y, float w, float h, float yaw,
+	const float *blade = NULL, const char *saber1 = NULL, const char *saber2 = NULL, clBodyExtra_t extra = NULL, void *ctx = NULL ) {
 	const float xScale = cls.glconfig.vidWidth / (float)SCREEN_WIDTH, yScale = cls.glconfig.vidHeight / (float)SCREEN_HEIGHT;
 	refdef_t refdef;
 	refEntity_t ent;
@@ -494,6 +741,8 @@ static void PR_RenderView( prView_t *v, const char *red, const char *green, cons
 	AngleVectors( angles, forward, NULL, NULL );
 	VectorMA( center, -dist, forward, refdef.vieworg );
 	AnglesToAxis( angles, refdef.viewaxis );
+	// no dynamic glow in a preview (RDF_UIGLOW): drawn between the menus' 2D, its pass over the whole
+	// screen broke the screen up in both renderers on some setups; the blade's own glow sprite stays
 	refdef.rdflags = RDF_NOWORLDMODEL;
 	refdef.time = cl.serverTime;
 
@@ -509,6 +758,19 @@ static void PR_RenderView( prView_t *v, const char *red, const char *green, cons
 
 	re->ClearScene();
 	re->AddRefEntityToScene( &ent );
+	if ( extra )
+		extra( ctx, v->g2, &ent );
+	// the hilts' blades, lit: models 1 and 2 are the hilts (PR_BuildView)
+	if ( blade ) {
+		for ( int s = 0; s < 2; s++ ) {
+			const char *saber = s ? saber2 : saber1;
+			clSaber_t info;
+
+			if ( !saber || !saber[0] || !Q_stricmp( saber, "none" ) || !re->G2API_HasGhoul2ModelOnIndex( &v->g2, s + 1 ) )
+				continue;
+			PR_AddBlades( *v->g2, s + 1, ent.angles, CL_Saber_Find( saber, &info ) ? info.length : 0.0f, blade );
+		}
+	}
 	re->RenderScene( &refdef );
 }
 
@@ -521,6 +783,146 @@ void CL_Presets_DrawPortrait( float x, float y, float w, float h, float yaw ) {
 	if ( prPortrait.g2 )
 		PR_RenderView( &prPortrait, Cvar_VariableString( "char_color_red" ), Cvar_VariableString( "char_color_green" ),
 			Cvar_VariableString( "char_color_blue" ), x, y, w, h, yaw );
+}
+
+// a hilt's blades, lit in rgb (0..1): every *bladeN tag of model index on it
+static void PR_AddBlades( CGhoul2Info_v &g2, int index, const vec3_t angles, float length, const float *rgb ) {
+	static qhandle_t rgbGlow, rgbCore, glows[6], cores[6];
+	static qboolean registered;
+	static const char *names[6] = { "red", "orange", "yellow", "green", "blue", "purple" };
+	static const float hues[6][3] = { { 1, 0.2f, 0.2f }, { 1, 0.5f, 0.1f }, { 1, 1, 0.2f }, { 0.2f, 1, 0.2f }, { 0.2f, 0.4f, 1 }, { 0.8f, 0.2f, 1 } };
+	qhandle_t glow, core;
+	byte color[4];
+
+	if ( !registered ) {
+		registered = qtrue;
+		rgbGlow = re->RegisterShader( "gfx/effects/sabers/rgb_glow" );
+		rgbCore = re->RegisterShader( "gfx/effects/sabers/rgb_core" );
+		for ( int i = 0; i < 6; i++ ) {
+			glows[i] = re->RegisterShader( va( "gfx/effects/sabers/%s_glow", names[i] ) );
+			cores[i] = re->RegisterShader( va( "gfx/effects/sabers/%s_line", names[i] ) );
+		}
+	}
+	// RPMod's blades of any colour; without them, the base game's nearest
+	if ( rgbGlow && rgbCore ) {
+		glow = rgbGlow;
+		core = rgbCore;
+		for ( int k = 0; k < 3; k++ )
+			color[k] = (byte)Com_Clampi( 0, 255, (int)( rgb[k] * 255.0f + 0.5f ) );
+	} else {
+		int best = 0;
+		float bestD = 99.0f;
+
+		for ( int i = 0; i < 6; i++ ) {
+			const float d = Square( hues[i][0] - rgb[0] ) + Square( hues[i][1] - rgb[1] ) + Square( hues[i][2] - rgb[2] );
+
+			if ( d < bestD ) {
+				bestD = d;
+				best = i;
+			}
+		}
+		glow = glows[best];
+		core = cores[best];
+		color[0] = color[1] = color[2] = 255;
+	}
+	color[3] = 255;
+	if ( length <= 0.0f )
+		length = 40.0f;		// the game's
+
+	for ( int n = 1; n <= 8; n++ ) {
+		const int bolt = re->G2API_AddBolt( g2, index, va( "*blade%i", n ) );
+		vec3_t zero = { 0, 0, 0 }, org, dir;
+		mdxaBone_t m;
+		refEntity_t blade;
+
+		if ( bolt < 0 || !re->G2API_GetBoltMatrix( g2, index, bolt, &m, angles, zero, cl.serverTime, NULL, zero ) )
+			break;
+		VectorSet( org, m.matrix[0][3], m.matrix[1][3], m.matrix[2][3] );
+		VectorSet( dir, -m.matrix[0][1], -m.matrix[1][1], -m.matrix[2][1] );	// the blade comes out along -Y
+		VectorNormalize( dir );
+
+		// its glow, then its hot core, as the game draws them
+		memset( &blade, 0, sizeof( blade ) );
+		blade.reType = RT_SABER_GLOW;
+		blade.customShader = glow;
+		VectorCopy( org, blade.origin );
+		VectorCopy( dir, blade.axis[0] );
+		blade.saberLength = length;
+		blade.radius = 3.0f;
+		memcpy( blade.shaderRGBA, color, 4 );
+		blade.renderfx = RF_NOSHADOW;
+		re->AddRefEntityToScene( &blade );
+
+		blade.reType = RT_LINE;
+		blade.customShader = core;
+		VectorMA( org, length, dir, blade.origin );
+		VectorMA( org, -1.0f, dir, blade.oldorigin );
+		blade.radius = 1.0f;
+		re->AddRefEntityToScene( &blade );
+	}
+}
+
+// a player as their info string has them (model, sabers), turned yaw, in the box: Inspect. torso and
+// legs, when given, play round and round; blade (0..1), when given, lights the hilts. Their colours
+// aren't sent by the game, so the model is drawn as it is
+void CL_Presets_DrawCharacter( const char *model, const char *saber1, const char *saber2, const char *torso, const char *legs,
+	const float *blade, float x, float y, float w, float h, float yaw, clBodyExtra_t extra, void *ctx ) {
+	char pose[sizeof( prOther.pose )];
+
+	if ( cls.state != CA_ACTIVE )
+		return;
+	// another pose: the model made again, in its stance, and played from the pose's start
+	Com_sprintf( pose, sizeof( pose ), "%s|%s", torso ? torso : "", legs ? legs : "" );
+	if ( strcmp( pose, prOther.pose ) )
+		prOther.key[0] = '\0';
+	PR_BuildView( &prOther, model, saber1, saber2 );
+	if ( !prOther.g2 )
+		return;
+	if ( strcmp( pose, prOther.pose ) ) {
+		Q_strncpyz( prOther.pose, pose, sizeof( prOther.pose ) );
+		if ( torso && torso[0] ) {
+			const char *lower = legs && legs[0] ? legs : torso;
+
+			PR_Loop( *prOther.g2, "model_root", lower );
+			if ( Q_stricmp( lower, torso ) )
+				PR_Loop( *prOther.g2, "lower_lumbar", torso );
+		}
+		prOther.measured = qfalse;
+	}
+	PR_RenderView( &prOther, "", "", "", x, y, w, h, yaw, blade, saber1, saber2, extra, ctx );
+}
+
+// why it couldn't be drawn, NULL if it was
+const char *CL_Presets_CharacterError( void ) {
+	return prOther.g2 ? NULL : prOther.error ? prOther.error : "No model";
+}
+
+// a model let go of while the frame is drawn: the renderer still draws it at the frame's end (its
+// bones read then), so it's freed on the next frame, not now (a window closed by its own button)
+static CGhoul2Info_v *prDoomed[4];
+static int prNumDoomed;
+
+void CL_Presets_FreeCharacter( void ) {
+	if ( prOther.g2 ) {
+		if ( prNumDoomed < (int)ARRAY_LEN( prDoomed ) )
+			prDoomed[prNumDoomed++] = prOther.g2;
+		else
+			re->G2API_CleanGhoul2Models( &prOther.g2 );
+	}
+	memset( &prOther, 0, sizeof( prOther ) );
+}
+
+// before anything's drawn: the models let go of last frame freed
+void CL_Presets_Frame( void ) {
+	while ( prNumDoomed > 0 )
+		re->G2API_CleanGhoul2Models( &prDoomed[--prNumDoomed] );
+}
+
+// the renderer's models are gone with it: dropped, not freed
+void CL_Presets_RendererRestarted( void ) {
+	memset( &prPortrait, 0, sizeof( prPortrait ) );
+	memset( &prOther, 0, sizeof( prOther ) );
+	prNumDoomed = 0;
 }
 
 /*
@@ -647,9 +1049,12 @@ OPENING AND INPUT
 ===============================================================================
 */
 
+static void PR_LabelDone( void );
+
 static void PR_Close( void ) {
 	if ( !pr.open )
 		return;
+	PR_LabelDone();
 	pr.open = qfalse;
 	pr.typing = qfalse;
 	WG_PopupClose();
@@ -677,6 +1082,10 @@ static qboolean PR_Open( int mode ) {
 		CL_AnimManager_Close();
 		CL_SpecialMoves_Close();
 		CL_ChatLog_Close();
+		CL_Inventory_Close();
+		CL_Inspect_Close();
+		CL_Holster_Close();
+		CL_Characters_Close();
 
 		pr.font = re->RegisterFont( "arialnb" );
 		if ( !pr.font )
@@ -757,6 +1166,7 @@ static void PR_SkinSelect_f( void ) {
 void CL_Presets_Init( void ) {
 	memset( &pr, 0, sizeof( pr ) );
 	pr.confirm = -1;
+	pr.labelEdit = -1;
 	Cmd_AddCommand( PR_CMD, PR_Cmd_f, "Characters saved, and swapped to in one click" );
 	Cmd_AddCommand( PR_SKIN_CMD, PR_SkinSelect_f, "Every skin of your model (or the one named), to wear in one click" );
 }
@@ -793,6 +1203,16 @@ void CL_Presets_KeyEvent( int key, qboolean down ) {
 	}
 	if ( WG_PopupKey( key ) )
 		return;
+	// a preset's own name typed
+	if ( pr.labelEdit >= 0 && pr.labelEdit < prNumPresets ) {
+		if ( key == A_ENTER || key == A_KP_ENTER || key == A_TAB ) {
+			PR_LabelDone();
+			return;
+		}
+		WG_EditKey( prPresets[pr.labelEdit].label, sizeof( prPresets[0].label ), key, NULL );
+		if ( key != A_MWHEELUP && key != A_MWHEELDOWN && key != A_PAGE_UP && key != A_PAGE_DOWN )
+			return;
+	}
 	// typed in the search
 	if ( pr.typing ) {
 		if ( key == A_ENTER || key == A_KP_ENTER ) {
@@ -833,6 +1253,11 @@ void CL_Presets_KeyEvent( int key, qboolean down ) {
 void CL_Presets_CharEvent( int ch ) {
 	if ( WG_PopupChar( ch ) )
 		return;
+	if ( pr.open && pr.labelEdit >= 0 && pr.labelEdit < prNumPresets ) {
+		if ( ch != '"' )
+			WG_EditChar( prPresets[pr.labelEdit].label, sizeof( prPresets[0].label ), ch, NULL );
+		return;
+	}
 	if ( pr.open && pr.typing && WG_EditChar( pr.search, sizeof( pr.search ), ch, NULL ) )
 		pr.page = 0;
 }
@@ -846,6 +1271,10 @@ void CL_Presets_MouseEvent( int dx, int dy ) {
 void CL_Presets_Escape( void ) {
 	if ( WG_PopupOpen() ) {
 		WG_PopupClose();
+		return;
+	}
+	if ( pr.labelEdit >= 0 ) {
+		PR_LabelDone();
 		return;
 	}
 	if ( pr.typing ) {
@@ -983,12 +1412,38 @@ static qboolean PR_Matches( const prPreset_t *ps ) {
 
 	if ( pr.favOnly && !ps->favorite )
 		return qfalse;
+	if ( !pr.allChars && CL_Characters_ActiveId() && ps->character != CL_Characters_ActiveId() )
+		return qfalse;
 	if ( !pr.search[0] )
 		return qtrue;
 	Q_strncpyz( name, ps->values[PR_K_NAME], sizeof( name ) );
 	Q_StripColor( name );
-	return (qboolean)( Q_stristr( name, pr.search ) || Q_stristr( ps->values[PR_K_MODEL], pr.search )
+	return (qboolean)( Q_stristr( name, pr.search ) || Q_stristr( ps->label, pr.search ) || Q_stristr( ps->values[PR_K_MODEL], pr.search )
 		|| Q_stristr( ps->values[PR_K_SABER1], pr.search ) || Q_stristr( ps->values[PR_K_SABER2], pr.search ) );
+}
+
+static void PR_FieldStyle( wgStyle_t *style ) {
+	style->font = pr.font;
+	style->scale = 0.65f;
+	style->lineH = 12.0f;
+	style->padX = 3.0f;
+	style->padY = 1.0f;
+	style->fill = prCardHover;
+	style->border = prBorder;
+	style->text = prWhite;
+	style->dim = prDim;
+}
+
+// the name being typed kept
+static void PR_LabelDone( void ) {
+	if ( pr.labelEdit < 0 )
+		return;
+	if ( pr.labelEdit < prNumPresets ) {
+		PR_Save();
+		if ( prPresets[pr.labelEdit].label[0] )
+			PR_Message( va( "Named it %s", prPresets[pr.labelEdit].label ) );
+	}
+	pr.labelEdit = -1;
 }
 
 static void PR_DrawCard( int i, float x, float y ) {
@@ -1006,30 +1461,67 @@ static void PR_DrawCard( int i, float x, float y ) {
 		PR_Message( prPresets[i].favorite ? va( "%s" S_COLOR_WHITE " is a favorite", ps->values[PR_K_NAME] ) : va( "%s" S_COLOR_WHITE " isn't a favorite now", ps->values[PR_K_NAME] ) );
 	}
 	PR_Text( x + PR_CARD_W - 16, y + 2, 14, "*", ps->favorite ? prAccent : PR_InRect( x + PR_CARD_W - 18, y + 2, 16, 16 ) ? prWhite : prBorder, 1.1f, qtrue );
-	// the name over the character, in its colours
-	PR_ColorText( x + 16, y + 4, PR_CARD_W - 32, ps->values[PR_K_NAME], 0.9f, qtrue );
+	// its own name over the character, else the name it gives, in its colours
+	if ( ps->label[0] )
+		PR_Text( x + 16, y + 4, PR_CARD_W - 32, ps->label, prAccent, 0.9f, qtrue );
+	else
+		PR_ColorText( x + 16, y + 4, PR_CARD_W - 32, ps->values[PR_K_NAME], 0.9f, qtrue );
 
 	PR_BuildView( &prViews[i], ps->values[PR_K_MODEL], ps->values[PR_K_SABER1], ps->values[PR_K_SABER2] );
-	if ( prViews[i].g2 )
-		PR_RenderView( &prViews[i], ps->values[PR_K_RED], ps->values[PR_K_GREEN], ps->values[PR_K_BLUE], x + 2, y + 20, PR_CARD_W - 4, PR_VIEW_H,
-			hover ? sinf( cls.realtime * 0.002f ) * 35.0f : 20.0f );
-	else
-		PR_Text( x + 4, y + 20 + PR_VIEW_H * 0.5f - 6, PR_CARD_W - 8, prViews[i].error ? prViews[i].error : "", prDim, PR_TEXT_SCALE, qtrue );
+	// the character played's: what its holster wears with this preset, on it
+	{
+		const qboolean played = (qboolean)( ps->character && ps->character == CL_Characters_ActiveId() && ps->id[0] );
 
-	// the skin, the sabers and the date under it
+		if ( prViews[i].g2 )
+			PR_RenderView( &prViews[i], ps->values[PR_K_RED], ps->values[PR_K_GREEN], ps->values[PR_K_BLUE], x + 2, y + 20, PR_CARD_W - 4, PR_CARD_VIEW_H,
+				hover ? sinf( cls.realtime * 0.002f ) * 35.0f : 20.0f, NULL, NULL, NULL, played ? CL_Holster_DrawForPreset : NULL, (void *)ps->id );
+		if ( played && CL_Holster_CountForPreset( ps->id ) )
+			PR_Text( x + 4, y + 20, PR_CARD_W - 8, va( "holster: %i", CL_Holster_CountForPreset( ps->id ) ), prDim, 0.6f, qfalse );
+	}
+	if ( !prViews[i].g2 )
+		PR_Text( x + 4, y + 20 + PR_CARD_VIEW_H * 0.5f - 6, PR_CARD_W - 8, prViews[i].error ? prViews[i].error : "", prDim, PR_TEXT_SCALE, qtrue );
+
+	// the skin and the sabers under it, its own name typed under them
 	Q_strncpyz( model, ps->values[PR_K_MODEL], sizeof( model ) );
 	if ( slash )
 		model[slash - ps->values[PR_K_MODEL]] = '\0';
-	PR_Text( x + 4, y + 22 + PR_VIEW_H, PR_CARD_W - 8, va( "%s, skin %s", model, slash && slash[1] ? slash + 1 : "default" ), prWhite, 0.7f, qtrue );
-	PR_Text( x + 4, y + 33 + PR_VIEW_H, PR_CARD_W - 8, PR_SaberText( ps ), prDim, 0.7f, qtrue );
-	PR_Text( x + 4, y + 44 + PR_VIEW_H, PR_CARD_W - 8, ps->date, prDim, 0.65f, qtrue );
+	if ( ps->label[0] )
+		PR_ColorText( x + 4, y + 21 + PR_CARD_VIEW_H, PR_CARD_W - 8, ps->values[PR_K_NAME], 0.65f, qtrue );
+	PR_Text( x + 4, y + ( ps->label[0] ? 31 : 23 ) + PR_CARD_VIEW_H, PR_CARD_W - 8, va( "%s, skin %s", model, slash && slash[1] ? slash + 1 : "default" ),
+		prWhite, 0.65f, qtrue );
+	PR_Text( x + 4, y + ( ps->label[0] ? 41 : 34 ) + PR_CARD_VIEW_H, PR_CARD_W - 8, PR_SaberText( ps ), prDim, 0.65f, qtrue );
+	// its own name, typed in place: a click on it, Enter or a click elsewhere keeps it
+	{
+		const float fh = 13.0f, fy = bottom - PR_CTRL_H - 3 - 4 - fh;	// over the buttons, a gap between
+		const qboolean editing = (qboolean)( pr.labelEdit == i );
+		wgStyle_t style;
+
+		PR_FieldStyle( &style );
+		PR_Box( x + 4, fy, PR_CARD_W - 8, fh, editing ? prCardHover : prPanelLight );
+		WG_Field( &style, x + 4, fy, PR_CARD_W - 8, fh, prPresets[i].label, editing, "name it, to tell it apart", pr.cursorX, pr.cursorY );
+		if ( PR_Clicked( x + 4, fy, PR_CARD_W - 8, fh ) ) {
+			if ( !editing ) {
+				PR_LabelDone();
+				WG_EditReset();
+				pr.labelEdit = i;
+				pr.typing = qfalse;
+			}
+			WG_FieldClick( prPresets[i].label, pr.clickX, pr.clickY );
+		}
+	}
 
 	// keeping it up to date, or out
 	if ( PR_Button( x + 4, bottom - PR_CTRL_H - 3, 66, "Update", prPanelLight ) ) {
 		const qboolean favorite = prPresets[i].favorite;
+		const int character = prPresets[i].character;
+		char id[sizeof( prPresets[i].id )];
 
+		Q_strncpyz( id, prPresets[i].id, sizeof( id ) );
 		PR_FromCurrent( &prPresets[i] );
 		prPresets[i].favorite = favorite;
+		prPresets[i].character = character;
+		if ( id[0] )
+			Q_strncpyz( prPresets[i].id, id, sizeof( prPresets[i].id ) );	// the same preset, its holster stays
 		PR_Save();
 		PR_Message( va( "Updated %s" S_COLOR_WHITE " to who you are now", prPresets[i].values[PR_K_NAME] ) );
 		return;
@@ -1214,6 +1706,7 @@ void CL_Presets_Draw( void ) {
 	if ( PR_Clicked( 16, 34, 200, WG_FieldHeight( &style, 200, PR_CTRL_H, pr.search, pr.typing ) ) ) {
 		if ( !pr.typing )
 			WG_EditReset();
+		PR_LabelDone();
 		pr.typing = qtrue;
 		WG_FieldClick( pr.search, pr.clickX, pr.clickY );
 	}
@@ -1230,7 +1723,14 @@ void CL_Presets_Draw( void ) {
 			pr.favOnly = (qboolean)!pr.favOnly;
 			pr.page = 0;
 		}
-		PR_Text( 352, 36, SCREEN_WIDTH - 368, "Click a character to become it; * makes it a favorite", prDim, PR_TEXT_SCALE, qfalse );
+		// a character played (/characters): its own presets, or everyone's
+		if ( CL_Characters_ActiveId() ) {
+			if ( PR_Button( 348, 34, 110, pr.allChars ? "All characters" : "This character", pr.allChars ? prPanelLight : prAccentFill ) ) {
+				pr.allChars = (qboolean)!pr.allChars;
+				pr.page = 0;
+			}
+		}
+		PR_Text( CL_Characters_ActiveId() ? 466 : 352, 36, SCREEN_WIDTH - ( CL_Characters_ActiveId() ? 482 : 368 ), "Click a character to become it; * makes it a favorite", prDim, PR_TEXT_SCALE, qfalse );
 	} else if ( pr.mode == PR_MODE_SKINS ) {
 		PR_Text( 244, 36, SCREEN_WIDTH - 260, PR_HasParts() ? va( "%i skins and parts to put together: click one to wear it", prNumSkins )
 			: va( "%i skins: click one to wear it", prNumSkins ), prDim, PR_TEXT_SCALE, qfalse );
@@ -1240,7 +1740,9 @@ void CL_Presets_Draw( void ) {
 	pages = PR_Pages();
 	pr.page = Com_Clampi( 0, pages - 1, pr.page );
 	if ( !pr.numShown ) {
-		const char *none = pr.search[0] || pr.favOnly ? "None match" : pr.mode == PR_MODE_PRESETS
+		const char *none = pr.search[0] || pr.favOnly ? "None match"
+			: pr.mode == PR_MODE_PRESETS && !pr.allChars && CL_Characters_ActiveId() && prNumPresets
+			? "None for this character yet: Save who I am now, or All characters" : pr.mode == PR_MODE_PRESETS
 			? "No presets yet: Save who I am now keeps your name, model, skin and sabers as one" : "This model has no skins here";
 
 		PR_Text( 16, 200, SCREEN_WIDTH - 32, none, prDim, 1.0f, qtrue );
@@ -1273,9 +1775,11 @@ void CL_Presets_Draw( void ) {
 	}
 	if ( pr.message[0] && cls.realtime - pr.messageTime < PR_MESSAGE_MS )
 		PR_ColorText( 16, 458, SCREEN_WIDTH - 32, pr.message, PR_TEXT_SCALE, qfalse );
-	// a click anywhere else leaves the search
-	if ( pr.click )
+	// a click anywhere else leaves the search, and the name typed
+	if ( pr.click ) {
 		pr.typing = qfalse;
+		PR_LabelDone();
+	}
 	pr.click = qfalse;
 	pr.wheel = 0;
 	WG_DrawOverlay();

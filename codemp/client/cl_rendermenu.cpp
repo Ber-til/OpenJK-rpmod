@@ -32,10 +32,11 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 // a name box, < and > going through the saved ones and loading each, Save and Delete.
 //
 // Setup's Game Options get a Camera Settings row (ui_cameraSettings), and the in-game menu, the bar
-// Esc opens: no Vote, Call Vote or Add Bot, a PRESETS button between Profile and Controls (see
-// cl_presets.cpp), and with Camera Settings on a panel of the third person camera's settings, the
+// Esc opens: no Vote, Call Vote or Add Bot, a CHARACTERS button between Profile and Controls (see
+// cl_characters.cpp), and with Camera Settings on a panel of the third person camera's settings, the
 // game's own cg_thirdPerson* and cg_fov. QUICK CONNECT and TOOLS open panels under the bar: the
-// servers, and every tool this client adds (Feedback with them), five a page.
+// servers, and every tool this client adds (Feedback with them), five a page. Under the bar at the
+// left, C1B3R: its web pages signed in for a linked game, linking it otherwise.
 //
 // The page's rows are ui_rd_* copies of the settings: most of them only take with a vid_restart, and
 // a latched cvar reads as it was until then. "renderersettings sync" fills the copies as the page
@@ -44,6 +45,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #include "client.h"
 #include "cl_uiapi.h"
 #include "cl_escmenu.h"
+#include "cl_presence.h"
 #include <string>
 #include <vector>
 
@@ -109,6 +111,9 @@ static const rmRow_t rmRows[] = {
 	{ "ui_rd_vbomodels", "r_vbo_models", "0", "Model Caching:",
 		"Keeps models on the graphics card: more frames per second",
 		"cvarFloatList { \"Off\" 0 \"On\" 1 }", RM_SHOW_VULKAN, 0 },
+	{ "ui_rd_relief", "r_relief", "0", "Surface Relief:",
+		"Dynamic lights and lit sabers pick out the relief of stone, metal and cloth",
+		"cvarFloatList { \"Off\" 0 \"On\" 1 }", RM_SHOW_VULKAN, 0 },
 	{ "ui_rd_fbo", "r_fbo", "0", "Post Effects:",
 		"Draws to a picture first: on, it shows bloom, HDR, glow and the rest of the effects here",
 		"cvarFloatList { \"Off\" 0 \"On\" 1 }", RM_SHOW_VULKAN, 0 },
@@ -129,7 +134,7 @@ static const rmRow_t rmRows[] = {
 		"How dark ambient occlusion makes corners and creases; lower it if the picture looks too dark",
 		"cvarFloatList { \"Low\" 0.3 \"Medium\" 0.6 \"Strong\" 1 }", RM_SHOW_POSTFX, 0 },
 	{ NULL, NULL, NULL, "More Settings >",
-		"Supersampling, soft particles, FXAA, sharpening, sun shafts, tone mapping, motion blur",
+		"Supersampling, soft particles, FXAA, sharpening, sun shafts, volumetric light, reflections, real shadows, tone mapping, motion blur",
 		NULL, RM_SHOW_POSTFX, 0 },
 	// the second page: Vulkan's own additions (rd-vulkan's vk_rpmod_post.cpp)
 	{ "ui_rd_ssaa", "r_ext_supersample", "0", "Supersampling:",
@@ -150,6 +155,24 @@ static const rmRow_t rmRows[] = {
 	{ "ui_rd_shaftsstrength", "r_sunShaftsIntensity", "1", "Sun Shaft Strength:",
 		"How bright the sun shafts are",
 		"cvarFloatList { \"Low\" 0.5 \"Medium\" 1 \"High\" 2 \"Very High\" 3 }", RM_SHOW_POSTFX, 1 },
+	{ "ui_rd_volum", "r_volumetric", "0", "Volumetric Light:",
+		"Sabers, blaster bolts and other lights glow in the air around them, more in fog",
+		"cvarFloatList { \"Off\" 0 \"On\" 1 }", RM_SHOW_POSTFX, 1 },
+	{ "ui_rd_volumstrength", "r_volumetricIntensity", "0.5", "Volumetric Strength:",
+		"How much the lights glow in the air",
+		"cvarFloatList { \"Low\" 0.25 \"Medium\" 0.5 \"High\" 1 }", RM_SHOW_POSTFX, 1 },
+	{ "ui_rd_ssr", "r_ssr", "0", "Reflections:",
+		"Marble, tiled, metal and glass floors mirror what's on screen",
+		"cvarFloatList { \"Off\" 0 \"On\" 1 }", RM_SHOW_POSTFX, 1 },
+	{ "ui_rd_ssrstrength", "r_ssrStrength", "0.8", "Reflection Strength:",
+		"How strongly the floors mirror",
+		"cvarFloatList { \"Low\" 0.4 \"Medium\" 0.8 \"High\" 1.5 }", RM_SHOW_POSTFX, 1 },
+	{ "ui_rd_shadows", "r_shadowMaps", "0", "Real Shadows:",
+		"Players, NPCs and models cast soft shadows on the map and each other, in place of the blob",
+		"cvarFloatList { \"Off\" 0 \"On\" 1 }", RM_SHOW_POSTFX, 1 },
+	{ "ui_rd_shadowsun", "r_shadowSun", "0", "Shadow Direction:",
+		"Nearly straight down suits indoors; From the Sun follows the map's sun",
+		"cvarFloatList { \"Down\" 0 \"From the Sun\" 1 }", RM_SHOW_POSTFX, 1 },
 	{ "ui_rd_tonemap", "r_tonemap", "0", "Tone Mapping:",
 		"Bright light rolls off instead of clipping to white; Film (ACES) darkens the shadows too",
 		"cvarFloatList { \"Off\" 0 \"Soft\" 1 \"Film\" 2 }", RM_SHOW_POSTFX, 1 },
@@ -1070,7 +1093,28 @@ static std::string IM_QuickConnectPanel( void ) {
 	return out;
 }
 
-// the in-game menu: no votes, PRESETS, the camera panel
+// C1B3R, under the bar at the left: its web pages, signed in, for a linked game (ui_c1b3rLinked 1), or
+// linking it
+#define IM_C1B3R_CVAR	"ui_c1b3rLinked"
+
+static std::string IM_C1b3rButtons( void ) {
+	static const struct { const char *name, *text, *test, *desc, *cmd; } buttons[] = {
+		{ "c1b3r_web", "C1B3R", "showCvar", "Open C1B3R's web pages in your browser, signed in", "c1b3r web" },
+		{ "c1b3r_link", "Link to C1B3R", "hideCvar", "Link this game to your Discord, through C1B3R", "c1b3r link" },
+	};
+	std::string out;
+
+	for ( size_t i = 0; i < ARRAY_LEN( buttons ); i++ ) {
+		out += va( "itemDef {\nname %s\nstyle WINDOW_STYLE_FILLED\ntype ITEM_TYPE_BUTTON\ntext \"%s\"\n"
+			"rect 4 36 110 14\nfont 4\ntextscale .85\ntextalign ITEM_ALIGN_CENTER\ntextalignx 55\nbackcolor .15 .15 .25 .8\n"
+			"forecolor 1 .682 0 1\nborder 1\nbordercolor .5 .5 .7 1\nvisible 1\ncvarTest \"" IM_C1B3R_CVAR "\" %s { \"1\" }\n"
+			"descText \"%s\"\naction { play \"sound/interface/button1.wav\" ; uiScript closeingame ; exec \"%s\" }\n}\n",
+			buttons[i].name, buttons[i].text, buttons[i].test, buttons[i].desc, buttons[i].cmd );
+	}
+	return out;
+}
+
+// the in-game menu: no votes, CHARACTERS, the camera panel
 static const char *IM_Patch( const char *filename, const char *text, int *length ) {
 	static const char *drop[] = { "vote", "voteButton", "callvote", "callvoteButton", "addBot", "addBotButton" };
 	std::string s( text, *length );
@@ -1079,7 +1123,7 @@ static const char *IM_Patch( const char *filename, const char *text, int *length
 	std::string add;
 	size_t menu, menuOpen, menuEnd;
 
-	if ( RM_FindWord( s, "presetsButton", 0 ) != RM_NONE )
+	if ( RM_FindWord( s, "charactersButton", 0 ) != RM_NONE )
 		return NULL;	// done already
 	RM_Items( s, items );
 	controls = RM_Item( items, "controls" );
@@ -1089,21 +1133,21 @@ static const char *IM_Patch( const char *filename, const char *text, int *length
 		return NULL;
 	}
 
-	// PRESETS: Controls' button and its frame, in the gap after Profile
+	// CHARACTERS: Controls' button and its frame, in the gap after Profile (Presets was there before)
 	{
 		std::string button = s.substr( controls->start, controls->end - controls->start );
 		std::string frame = s.substr( controlsButton->start, controlsButton->end - controlsButton->start );
 		const size_t rect = RM_FindWord( button, "rect", 0 );
 		size_t start, end;
 
-		RM_ReplaceWord( button, "controlsButton", "presetsButton" );
-		RM_SetValue( button, "name", "presets" );
-		RM_SetValue( button, "text", RM_Quote( "Presets" ) );
+		RM_ReplaceWord( button, "controlsButton", "charactersButton" );
+		RM_SetValue( button, "name", "characters" );
+		RM_SetValue( button, "text", RM_Quote( "Characters" ) );
 		RM_RemoveValue( button, "cvarTest" );
 		RM_ReplaceBlock( button, "hideCvar", "" );
 		RM_ReplaceBlock( button, "showCvar", "" );
-		RM_ReplaceBlock( button, "action", "action { play \"sound/interface/button1.wav\" ; uiScript closeingame ; exec \"presets\" }" );
-		RM_SetValue( frame, "name", "presetsButton" );
+		RM_ReplaceBlock( button, "action", "action { play \"sound/interface/button1.wav\" ; uiScript closeingame ; exec \"characters\" }" );
+		RM_SetValue( frame, "name", "charactersButton" );
 		// x 215: where Voice Chat and Add Bot were
 		for ( std::string *item : { &button, &frame } ) {
 			const size_t r = RM_FindWord( *item, "rect", 0 );
@@ -1160,6 +1204,7 @@ static const char *IM_Patch( const char *filename, const char *text, int *length
 		add += "\n" + frame + "\n" + button + "\n";
 	}
 	add += IM_ToolsPanel();
+	add += IM_C1b3rButtons();
 
 	// the router's hidden items: the first only takes the focus off the others, so each is focused anew
 	add += "itemDef {\nname escroute_reset\ntype ITEM_TYPE_BUTTON\nrect 0 0 0 0\nvisible 0\n}\n";
@@ -1325,6 +1370,10 @@ void CL_RenderMenu_Frame( void ) {
 	on = (qboolean)( !Q_stricmp( rmRenderer->string, RM_VULKAN ) && rmFbo->integer );
 	if ( rmPostfx->integer != on )
 		Cvar_Set( RM_POSTFX, on ? "1" : "0" );
+	// the in-game menu's C1B3R button: the web pages or linking
+	on = CL_Presence_GameLinked();
+	if ( Cvar_VariableIntegerValue( IM_C1B3R_CVAR ) != on )
+		Cvar_Set( IM_C1B3R_CVAR, on ? "1" : "0" );
 }
 
 // one of JKA's own pages opened through the in-game menu (see imRoutes): controls, setup or renderer.
@@ -1370,6 +1419,7 @@ void CL_RenderMenu_Init( void ) {
 	Cvar_Get( QC_OPEN_CVAR, "0", 0, "The in-game menu's quick connect panel is out: Esc closes it first" );
 	Cvar_Get( IM_LEAVE_CVAR, "0", 0, "The in-game menu's Exit menu is open: the camera panel steps out of its way" );
 	Cvar_Get( IM_CAM_CVAR, "0", 0, "The in-game menu's camera panel shows: ui_cameraSettings on, and Exit's menu not open" );
+	Cvar_Get( IM_C1B3R_CVAR, "0", 0, "This game is linked to C1B3R: the in-game menu's C1B3R button opens its web pages, else links" );
 	Cvar_Get( CP_NAME_CVAR, "", CVAR_ARCHIVE_ND, "The camera panel's preset name" );
 	Cmd_AddCommand( "campreset", CP_Cmd_f, "Camera settings saved and loaded by name" );
 	LoadScriptFile_Patch = MP_Patch;
@@ -1378,4 +1428,27 @@ void CL_RenderMenu_Init( void ) {
 void CL_RenderMenu_Shutdown( void ) {
 	LoadScriptFile_Patch = NULL;
 	Cmd_RemoveCommand( "renderersettings" );
+}
+
+/*
+================================================================================
+real shadows (Vulkan's r_shadowMaps) in place of the blob under each player (cg_shadows 1): the blob
+off while they're on, and back when they're off again. Stencil or flat shadows (2, 3) are left alone
+================================================================================
+*/
+void CL_RealShadows_Frame( void ) {
+	static cvar_t *were;
+	const qboolean on = (qboolean)( !Q_stricmp( Cvar_VariableString( "cl_renderer" ), RM_VULKAN )
+		&& Cvar_VariableIntegerValue( "r_shadowMaps" ) && Cvar_VariableIntegerValue( "r_fbo" ) );
+	const int blob = Cvar_VariableIntegerValue( "cg_shadows" );
+
+	if ( !were )
+		were = Cvar_Get( "cl_shadowsBlobWere", "0", CVAR_ARCHIVE_ND | CVAR_INTERNAL, "The blob shadow was on before real shadows took its place" );
+	if ( on && blob == 1 ) {
+		Cvar_Set( "cl_shadowsBlobWere", "1" );
+		Cvar_Set( "cg_shadows", "0" );
+	} else if ( !on && blob == 0 && were->integer ) {
+		Cvar_Set( "cg_shadows", "1" );
+		Cvar_Set( "cl_shadowsBlobWere", "0" );
+	}
 }

@@ -249,6 +249,8 @@ void CM_Draw( void );
 void CM_DrawPlayingTexts( void );
 const refEntity_t *CM_LookEntity( const refEntity_t *ent, refEntity_t *copy );
 qboolean RC_EntityOrigin( int num, vec3_t out );
+void CL_RpCinematic_HoldAnim( int num, const char *anim, qboolean past );	// played once, held on its last frame (cl_dismember.cpp)
+void CL_RpCinematic_ReleaseAnim( int num );								// the ones on an entity let go
 void CM_Init( void );
 void CM_Shutdown( void );
 void CM_Reset( void );
