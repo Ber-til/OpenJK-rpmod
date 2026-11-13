@@ -25,6 +25,11 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 // other's game at once on whatever server it's on (cmd:chat/<client>/<id>: <account>|<name>|<text>):
 // with the conversation open it's there with its sound; otherwise a notice as whispers have
 // (RPMod's info banner) and a ringtone. Both sounds are picked in the sound manager, in Settings.
+//
+// Live, as a phone's messenger: yours are marked sent, delivered (their game has it) and seen (they
+// opened the conversation), as C1B3R tells (cmd:chatstate/<client>: <account>|<delivered up to
+// id>|<seen up to id>|<seen time>); typing tells the other's game every few seconds while it goes on
+// (/v2/chat/typing), shown as "<name> is typing..." (cmd:chattyping/<client>: <account>).
 
 #include "client.h"
 #include "cl_datapad.h"
@@ -38,6 +43,8 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define CH_REFRESH_MS	20000		// the contacts asked again this often while they're shown
 #define CH_DEFAULT_RING	"sound/effects/info"			// RPMod's info sound, as whispers have
 #define CH_DEFAULT_SOUND	"sound/interface/sub_select"
+#define CH_TYPING_EVERY	3000		// typing told again this often while it goes on
+#define CH_TYPING_SHOWN	6000		// their typing shown this long after the last word of it
 
 typedef enum { CH_LIST, CH_TALK, CH_SETTINGS } chView_t;
 
@@ -53,6 +60,8 @@ typedef struct {
 	qboolean	mine;
 	int			time;
 	std::string	text;
+	int			state;			// yours: 0 sent, 1 delivered, 2 seen; -1 not known (C1B3R from before)
+	int			seenAt;
 } chMessage_t;
 
 static struct {
@@ -70,6 +79,9 @@ static struct {
 	float			talkScroll;		// from the bottom: 0 the latest
 	char			text[CH_TEXT_LEN];
 	qboolean		typing;
+	qboolean		historyAgain;	// asked while the last ask was still going
+	int				typingSentAt;	// yours told
+	int				theyTypeUntil;	// theirs shown until
 
 	int				picking;		// a sound being picked in the sound manager: 1 the message sound, 2 the ringtone
 	qboolean		picked;
@@ -78,7 +90,7 @@ static struct {
 	int				messageTime;
 } ch;
 
-static httpRequest_t chContactsHttp, chHistoryHttp, chSendHttp;
+static httpRequest_t chContactsHttp, chHistoryHttp, chSendHttp, chTypingHttp;
 static cvar_t *cl_chatNotify, *cl_chatRingtone, *cl_chatSound;
 
 static void CH_Message( const char *text ) {
@@ -119,7 +131,18 @@ static void CH_AskHistory( void ) {
 	std::string f = ",\"with\":";
 
 	CL_Presence_Json( f, ch.with.c_str() );
-	CH_Post( &chHistoryHttp, "/v2/chat/history", f );
+	ch.historyAgain = (qboolean)( !CH_Post( &chHistoryHttp, "/v2/chat/history", f ) && chHistoryHttp.state == HTTP_BUSY );
+}
+
+// typing in the conversation: the other's game told, again every few seconds while it goes on
+static void CH_Typed( void ) {
+	std::string f = ",\"to\":";
+
+	if ( !ch.text[0] || ch.with.empty() || ( ch.typingSentAt && cls.realtime - ch.typingSentAt < CH_TYPING_EVERY ) )
+		return;
+	CL_Presence_Json( f, ch.with.c_str() );
+	if ( CH_Post( &chTypingHttp, "/v2/chat/typing", f ) )
+		ch.typingSentAt = cls.realtime;
 }
 
 static void CH_Open( const chContact_t &c ) {
@@ -130,8 +153,29 @@ static void CH_Open( const chContact_t &c ) {
 	ch.loading = qtrue;
 	ch.talkScroll = 0;
 	ch.typing = qtrue;
+	ch.theyTypeUntil = 0;
+	ch.typingSentAt = 0;
 	WG_EditReset();
 	CH_AskHistory();
+}
+
+// datapad chat <account>: straight to that conversation
+void CL_Chat_OpenWith( const char *account ) {
+	chContact_t c;
+
+	if ( !account || !account[0] )
+		return;
+	c.account = account;
+	c.name = account;			// until C1B3R says whose it is
+	for ( size_t i = 0; i < ch.contacts.size(); i++ ) {
+		if ( !Q_stricmp( ch.contacts[i].account.c_str(), account ) ) {
+			c = ch.contacts[i];
+			break;
+		}
+	}
+	for ( size_t i = 0; i < c.account.size(); i++ )
+		c.account[i] = (char)tolower( (unsigned char)c.account[i] );
+	CH_Open( c );
 }
 
 static void CH_Send( void ) {
@@ -154,9 +198,12 @@ static void CH_Send( void ) {
 		m.mine = qtrue;
 		m.time = 0;
 		m.text = ch.text;
+		m.state = -1;
+		m.seenAt = 0;
 		ch.messages.push_back( m );
 	}
 	ch.text[0] = '\0';
+	ch.typingSentAt = 0;		// the next words typed are told at once
 	ch.talkScroll = 0;
 	WG_EditReset();
 	CH_Play( cl_chatSound->string );
@@ -212,6 +259,8 @@ static void CH_ReadMessage( const std::vector<std::string> &f ) {
 		m.mine = (qboolean)( f[2] == "1" );
 		m.time = atoi( f[3].c_str() );
 		m.text = f[4];
+		m.state = f.size() >= 6 && m.mine ? atoi( f[5].c_str() ) : -1;
+		m.seenAt = f.size() >= 7 ? atoi( f[6].c_str() ) : 0;
 		ch.messages.push_back( m );
 	}
 }
@@ -241,6 +290,7 @@ void CL_Chat_Hook( char **argv, int argc, const char *message ) {
 	}
 	// the conversation open on the datapad: there, with its sound
 	if ( ch.shown && ch.view == CH_TALK && !Q_stricmp( ch.with.c_str(), account ) ) {
+		ch.theyTypeUntil = 0;
 		CH_AskHistory();
 		CH_Play( cl_chatSound->string );
 		return;
@@ -254,6 +304,58 @@ void CL_Chat_Hook( char **argv, int argc, const char *message ) {
 	CL_QueueCgameCommand( "info 5000 2 0 8 \":: You have a new message on your datapad ::\"" );
 	Com_Printf( ":: You have a new message on your datapad ::\n" );
 	CH_Play( cl_chatRingtone->string );
+}
+
+// the account at the start of a hook's message, up to the first bar
+static void CH_HookAccount( const char *message, char *account, int size, const char **rest ) {
+	const char *p = message ? message : "", *bar = strchr( p, '|' );
+
+	while ( *p == ' ' )
+		p++;
+	Q_strncpyz( account, p, bar ? Q_min( size, (int)( bar - p ) + 1 ) : size );
+	*rest = bar ? bar + 1 : "";
+}
+
+// cmd:chatstate/<client>: <account>|<delivered up to id>|<seen up to id>|<seen time>
+void CL_Chat_StateHook( char **argv, int argc, const char *message ) {
+	char account[64];
+	const char *rest;
+	int delivered, seen, seenAt;
+
+	if ( argc < 1 || atoi( argv[0] ) != clc.clientNum )
+		return;
+	CH_HookAccount( message, account, sizeof( account ), &rest );
+	if ( Q_stricmp( ch.with.c_str(), account ) )
+		return;
+	delivered = atoi( rest );
+	rest = strchr( rest, '|' ) ? strchr( rest, '|' ) + 1 : "";
+	seen = atoi( rest );
+	rest = strchr( rest, '|' ) ? strchr( rest, '|' ) + 1 : "";
+	seenAt = atoi( rest );
+	for ( size_t i = 0; i < ch.messages.size(); i++ ) {
+		chMessage_t &m = ch.messages[i];
+
+		if ( !m.mine || m.id <= 0 )
+			continue;
+		if ( m.id <= seen ) {
+			m.state = 2;
+			m.seenAt = seenAt;
+		} else if ( m.id <= delivered && m.state < 1 ) {
+			m.state = 1;
+		}
+	}
+}
+
+// cmd:chattyping/<client>: <account>
+void CL_Chat_TypingHook( char **argv, int argc, const char *message ) {
+	char account[64];
+	const char *rest;
+
+	if ( argc < 1 || atoi( argv[0] ) != clc.clientNum )
+		return;
+	CH_HookAccount( message, account, sizeof( account ), &rest );
+	if ( ch.view == CH_TALK && !Q_stricmp( ch.with.c_str(), account ) )
+		ch.theyTypeUntil = cls.realtime + CH_TYPING_SHOWN;
 }
 
 /*
@@ -339,9 +441,38 @@ void CL_Chat_Frame( void ) {
 		} else if ( chHistoryHttp.answer[0] ) {
 			CH_Message( chHistoryHttp.answer );
 		}
+		// a message came while that was going: asked again, so it's there
+		if ( ch.historyAgain && ch.view == CH_TALK && !ch.with.empty() ) {
+			ch.historyAgain = qfalse;
+			CH_AskHistory();
+		}
 	}
+	HTTP_Poll( &chTypingHttp );
 	if ( HTTP_Poll( &chSendHttp ) ) {
-		if ( chSendHttp.status != 200 ) {
+		if ( chSendHttp.status == 200 && !strncmp( chSendHttp.answer, "ok\t", 3 ) ) {
+			// ok <id> <time> [<state>]: the one shown as sending is sent
+			char buf[64], *f[4];
+			int n = 0;
+
+			Q_strncpyz( buf, chSendHttp.answer, sizeof( buf ) );
+			for ( char *p = buf; n < 4; ) {
+				f[n++] = p;
+				p = strpbrk( p, "\t\r\n" );
+				if ( !p )
+					break;
+				*p++ = '\0';
+			}
+			for ( size_t i = 0; n >= 3 && i < ch.messages.size(); i++ ) {
+				chMessage_t &m = ch.messages[i];
+
+				if ( m.mine && m.id == 0 ) {
+					m.id = atoi( f[1] );
+					m.time = atoi( f[2] );
+					m.state = n >= 4 ? atoi( f[3] ) : -1;
+					break;
+				}
+			}
+		} else if ( chSendHttp.status != 200 ) {
 			CH_Message( chSendHttp.answer[0] ? chSendHttp.answer : "Not sent: C1B3R didn't answer" );
 			if ( ch.view == CH_TALK )
 				CH_AskHistory();		// what was kept, without the one that wasn't
@@ -354,6 +485,7 @@ void CL_Chat_Frame( void ) {
 
 void CL_Chat_Shown( qboolean shown ) {
 	ch.shown = shown;
+	ch.theyTypeUntil = 0;
 	if ( shown ) {
 		if ( ch.view == CH_TALK && !ch.with.empty() )
 			CH_AskHistory();
@@ -425,6 +557,24 @@ static void CH_DrawList( float x, float y, float w, float bottom ) {
 	}
 }
 
+// a message's line above its text: when, and for yours how far it got (seen at what time)
+static const char *CH_Stamp( const chMessage_t &m ) {
+	static char line[96];
+	char when[48], seen[48] = "";
+	const char *at;
+
+	if ( m.time <= 0 )
+		return "sending...";
+	Q_strncpyz( when, DP_JediStamp( m.time ), sizeof( when ) );
+	if ( !m.mine || m.state < 0 )
+		return va( "%s", when );
+	if ( m.state == 2 && m.seenAt > 0 && ( at = strchr( DP_JediStamp( m.seenAt ), '@' ) ) != NULL )
+		Q_strncpyz( seen, at, sizeof( seen ) );
+	Com_sprintf( line, sizeof( line ), "%s  -  %s%s%s", when, m.state == 2 ? "seen" : m.state == 1 ? "delivered" : "sent",
+		seen[0] ? " " : "", seen );
+	return line;
+}
+
 static void CH_DrawTalk( float x, float y, float w, float bottom ) {
 	wgStyle_t style;
 	const float inputY = bottom - DP_CTRL_H, top = y;
@@ -439,7 +589,9 @@ static void CH_DrawTalk( float x, float y, float w, float bottom ) {
 	} else if ( ch.messages.empty() ) {
 		DP_Text( x, y + 30, w, "No messages yet: say hello", dpDim, DP_Font(), 0.62f, qtrue );
 	} else {
-		my = inputY - 6 + ch.talkScroll;
+		const qboolean theyType = (qboolean)( ch.theyTypeUntil > cls.realtime );
+
+		my = inputY - ( theyType ? 18 : 6 ) + ch.talkScroll;
 		for ( int i = (int)ch.messages.size() - 1; i >= 0 && my > top; i-- ) {
 			const chMessage_t &m = ch.messages[i];
 			const float bw = w * 0.78f, bx = m.mine ? x + w - bw : x;
@@ -452,7 +604,7 @@ static void CH_DrawTalk( float x, float y, float w, float bottom ) {
 			if ( my >= top ) {
 				DP_Fill( bx, my, bw, bh, m.mine ? dpButtonHover : dpButton );
 				DP_Frame( bx, my, bw, bh, m.mine ? dpWhite : dpGlow );
-				DP_Text( bx + 4, my + 1, bw - 8, m.time > 0 ? DP_JediStamp( m.time ) : "sending...", dpDim, DP_Font(), 0.48f, qfalse );
+				DP_Text( bx + 4, my + 1, bw - 8, CH_Stamp( m ), m.mine && m.state == 2 ? dpGlow : dpDim, DP_Font(), 0.48f, qfalse );
 				// the text, wrapped on spaces at about the box's width
 				{
 					std::string rest = m.text;
@@ -473,6 +625,8 @@ static void CH_DrawTalk( float x, float y, float w, float bottom ) {
 			}
 		}
 	}
+	if ( ch.theyTypeUntil > cls.realtime )
+		DP_Text( x + 2, inputY - 14, w, va( "%s is typing...", ch.withName.c_str() ), dpDim, DP_Font(), 0.5f, qfalse );
 	// what you type, Enter sends it
 	DP_Fill( x, inputY, w - DP_Wide( 50 ), DP_CTRL_H, dpScreen );
 	DP_Frame( x, inputY, w - DP_Wide( 50 ), DP_CTRL_H, ch.typing ? dpWhite : dpGlow );
@@ -580,13 +734,16 @@ qboolean CL_Chat_Key( int key ) {
 		return qtrue;
 	}
 	WG_EditKey( ch.text, sizeof( ch.text ), key, NULL );
+	CH_Typed();
 	// typing: none of the keys go on to the datapad's binds
 	return qtrue;
 }
 
 void CL_Chat_Char( int ch_ ) {
-	if ( ch.view == CH_TALK && ch.typing )
+	if ( ch.view == CH_TALK && ch.typing ) {
 		WG_EditChar( ch.text, sizeof( ch.text ), ch_, NULL );
+		CH_Typed();
+	}
 }
 
 void CL_Chat_Disconnect( void ) {

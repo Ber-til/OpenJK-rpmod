@@ -1124,6 +1124,9 @@ void CL_Chat_Init( void );			// cl_chat.cpp: the datapad's Chat
 void CL_Chat_Frame( void );
 void CL_Chat_Disconnect( void );
 void CL_Chat_Hook( char **argv, int argc, const char *message );	// cmd:chat/...
+void CL_Chat_OpenWith( const char *account );	// the conversation with an account's main character
+void CL_Chat_StateHook( char **argv, int argc, const char *message );	// cmd:chatstate/...
+void CL_Chat_TypingHook( char **argv, int argc, const char *message );	// cmd:chattyping/...
 qboolean CL_Chat_CaptureSound( const char *cmd );	// the sound manager's Send, while Chat picks a sound
 int CL_Chat_Unread( void );
 void CL_SoundManager_OpenForChat( void );
