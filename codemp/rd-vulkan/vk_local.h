@@ -1146,7 +1146,7 @@ void		vk_end_render_pass( void );
 
 // OpenJK-rpmod: vk_rpmod_post.cpp, the cinematic camera's depth of field and filter, ambient
 // occlusion, soft particles and the passes over the view
-#define VK_RPMOD_SETS 8	// its image sets, in the descriptor pool
+#define VK_RPMOD_SETS 9	// its image sets, in the descriptor pool
 void		vk_rpmod_register_cvars( void );
 void		vk_rpmod_light_modules( void );						// OpenJK-rpmod: surface relief (r_relief)
 void		vk_rpmod_light_params( float *depth, float *shine );
@@ -1166,7 +1166,7 @@ void		vk_rpmod_destroy_framebuffers( void );
 void		vk_rpmod_create_pipelines( void );
 void		vk_rpmod_destroy_pipelines( void );
 VkRenderPass	vk_rpmod_shadow_pass( void );			// OpenJK-rpmod: r_shadowMaps' render pass
-uint32_t	vk_rpmod_shadow_size( void );
+qboolean	vk_rpmod_shadow_viewport( VkRect2D *r );
 void		vk_rpmod_post( void );
 qboolean	vk_rpmod_soft_active( void );
 VkDescriptorSet vk_rpmod_soft_set( void );

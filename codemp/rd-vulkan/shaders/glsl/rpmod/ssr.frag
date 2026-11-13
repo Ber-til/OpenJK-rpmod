@@ -5,17 +5,18 @@
 // pixel a ray goes out along the view reflected by the floor and steps through the distances until it
 // passes behind something drawn; what's there is the reflection, sharpened by a few halvings.
 //
-// Which floors: those facing up (from the distances), the more so the smoother they look, where the
-// view's colour around the pixel hardly changes, so a polished floor mirrors and grass or rock hardly;
-// more at a glancing look (Fresnel). It fades where the ray leaves the screen or finds nothing.
+// Which floors: those facing up (from the distances) whose surface is shiny by its material (marble,
+// tiles, metal, glass...: the shiny surfaces' own depth, drawn alone, is what the pixel shows); more
+// at a glancing look (Fresnel). It fades where the ray leaves the screen or finds nothing.
 
 #include "view.glsl"
 
 layout(set = 0, binding = 0) uniform sampler2D sourceTexture;	// the view so far
 layout(set = 1, binding = 0) uniform sampler2D distanceTexture;
+layout(set = 2, binding = 0) uniform sampler2D shinyDepth;		// the shiny surfaces' depth, 1 where none
 
 // rect: the view's pixels; a: tan half fov across and down, strength, far plane
-// up: the world's up in the camera's space, unused
+// up: the world's up in the camera's space, the near plane
 layout(push_constant) uniform Params {
 	vec4 rect;
 	vec4 a;
@@ -74,16 +75,15 @@ void main()
 	if ( floorW <= 0.0 )
 		return;
 
-	// smooth: the colour around hardly changes (four neighbours two pixels off)
-	const float l0 = Luma( here );
-	float vary = 0.0;
-	vary += abs( Luma( Source( p + vec2( 2.0, 0.0 ) ) ) - l0 );
-	vary += abs( Luma( Source( p - vec2( 2.0, 0.0 ) ) ) - l0 );
-	vary += abs( Luma( Source( p + vec2( 0.0, 2.0 ) ) ) - l0 );
-	vary += abs( Luma( Source( p - vec2( 0.0, 2.0 ) ) ) - l0 );
-	const float smoothW = 1.0 - smoothstep( 0.04, 0.25, vary / max( l0 + 0.05, 0.1 ) );
-	if ( smoothW <= 0.0 )
+	// shiny: a shiny surface is what this pixel shows (its depth there is the view's)
+	const float sd = texelFetch( shinyDepth, ivec2( p ), 0 ).r;
+	if ( sd >= 0.99999 )
 		return;
+	const float zNear = pc.up.w, zFar = pc.a.w;
+	const float sz = zNear * zFar / ( zFar - sd * ( zFar - zNear ) );
+	if ( abs( sz - z ) > max( 2.0, z * 0.01 ) )
+		return;
+	const float smoothW = 1.0;
 
 	const vec3 V = normalize( P );
 	const vec3 R = reflect( V, N );

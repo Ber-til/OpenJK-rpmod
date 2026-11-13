@@ -162,7 +162,7 @@ static const rmRow_t rmRows[] = {
 		"How much the lights glow in the air",
 		"cvarFloatList { \"Low\" 0.25 \"Medium\" 0.5 \"High\" 1 }", RM_SHOW_POSTFX, 1 },
 	{ "ui_rd_ssr", "r_ssr", "0", "Reflections:",
-		"Smooth floors mirror what's on screen, polished ones most",
+		"Marble, tiled, metal and glass floors mirror what's on screen",
 		"cvarFloatList { \"Off\" 0 \"On\" 1 }", RM_SHOW_POSTFX, 1 },
 	{ "ui_rd_ssrstrength", "r_ssrStrength", "0.8", "Reflection Strength:",
 		"How strongly the floors mirror",

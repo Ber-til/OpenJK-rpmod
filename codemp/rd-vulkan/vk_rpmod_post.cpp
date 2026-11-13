@@ -92,6 +92,16 @@ static struct {
 	VkRenderPass		shadowPass;
 	VkFramebuffer		shadowFb;
 	VkDescriptorSet		shadowSet;
+	qboolean			shadowSized;	// the shadow pass draws the shadow map now, not the shiny surfaces
+
+	// reflections: the depth of the shiny surfaces alone, from the camera, the window's size (drawn
+	// with the shadow map's render pass), to know which pixels show one
+	VkImage				maskImage, maskColor;
+	VkImageView			maskView, maskColorView;
+	VkDeviceMemory		maskMemory, maskColorMemory;
+	VkFramebuffer		maskFb;
+	VkDescriptorSet		maskSet;
+	qboolean			haveMask;		// this view's shiny surfaces are in it
 
 	VkDescriptorSet		sceneSet, postSet[2], distSet, depthSet, aoSet[2];
 	qboolean			setsAllocated;
@@ -113,7 +123,7 @@ static struct {
 	VkRect2D			prevRect;
 } rp;
 
-#define RP_NUM_SETS 8	// sceneSet, postSet[2], distSet, depthSet, aoSet[2], shadowSet
+#define RP_NUM_SETS 9	// sceneSet, postSet[2], distSet, depthSet, aoSet[2], shadowSet, maskSet
 #if RP_NUM_SETS > VK_RPMOD_SETS
 #error the descriptor pool has to have room for these sets
 #endif
@@ -157,7 +167,7 @@ void vk_rpmod_register_cvars( void ) {
 	ri.Cvar_CheckRange( r_volumetricIntensity, 0, 4, qfalse );
 	r_volumetricFog = ri.Cvar_Get( "r_volumetricFog", "2", CVAR_ARCHIVE_ND, "Volumetric light: how many times more the lights glow on a map with fog all over" );
 	ri.Cvar_CheckRange( r_volumetricFog, 1, 8, qfalse );
-	r_ssr = ri.Cvar_Get( "r_ssr", "0", CVAR_ARCHIVE_ND, va( "Reflections: smooth floors mirror what's on screen, polished ones most%s", fbo ) );
+	r_ssr = ri.Cvar_Get( "r_ssr", "0", CVAR_ARCHIVE_ND, va( "Reflections: shiny floors (marble, tiles, metal, glass, ice, water, by the map's materials) mirror what's on screen%s", fbo ) );
 	ri.Cvar_CheckRange( r_ssr, 0, 1, qtrue );
 	r_ssrStrength = ri.Cvar_Get( "r_ssrStrength", "0.8", CVAR_ARCHIVE_ND, "Reflections: how strongly floors mirror, 0 to 2" );
 	ri.Cvar_CheckRange( r_ssrStrength, 0, 2, qfalse );
@@ -294,7 +304,7 @@ once: the shaders and the pipeline layout
 ===============
 */
 void vk_rpmod_init( void ) {
-	VkDescriptorSetLayout setLayouts[2] = { vk.set_layout_sampler, vk.set_layout_sampler };
+	VkDescriptorSetLayout setLayouts[3] = { vk.set_layout_sampler, vk.set_layout_sampler, vk.set_layout_sampler };
 	VkPipelineLayoutCreateInfo desc;
 	VkPushConstantRange push;
 
@@ -452,7 +462,7 @@ the renderer points its own (vk_update_attachment_descriptors: new window size, 
 */
 void vk_rpmod_init_descriptors( void ) {
 	VkDescriptorSetAllocateInfo alloc;
-	VkDescriptorSet *sets[RP_NUM_SETS] = { &rp.sceneSet, &rp.postSet[0], &rp.postSet[1], &rp.distSet, &rp.depthSet, &rp.aoSet[0], &rp.aoSet[1], &rp.shadowSet };
+	VkDescriptorSet *sets[RP_NUM_SETS] = { &rp.sceneSet, &rp.postSet[0], &rp.postSet[1], &rp.distSet, &rp.depthSet, &rp.aoSet[0], &rp.aoSet[1], &rp.shadowSet, &rp.maskSet };
 
 	Com_Memset( &alloc, 0, sizeof( alloc ) );
 	alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -468,7 +478,7 @@ void vk_rpmod_init_descriptors( void ) {
 // the descriptor pool emptied: the sets are gone with it
 void vk_rpmod_forget_descriptors( void ) {
 	rp.setsAllocated = qfalse;
-	rp.sceneSet = rp.postSet[0] = rp.postSet[1] = rp.distSet = rp.depthSet = rp.aoSet[0] = rp.aoSet[1] = rp.shadowSet = VK_NULL_HANDLE;
+	rp.sceneSet = rp.postSet[0] = rp.postSet[1] = rp.distSet = rp.depthSet = rp.aoSet[0] = rp.aoSet[1] = rp.shadowSet = rp.maskSet = VK_NULL_HANDLE;
 	rp.haveDistance = rp.softOn = qfalse;
 }
 
@@ -485,6 +495,8 @@ void vk_rpmod_update_descriptors( void ) {
 		RP_SetImage( rp.depthSet, rp.depthView, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, GL_NEAREST );
 	if ( rp.shadowView != VK_NULL_HANDLE )
 		RP_SetImage( rp.shadowSet, rp.shadowView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, GL_NEAREST );
+	if ( rp.maskView != VK_NULL_HANDLE )
+		RP_SetImage( rp.maskSet, rp.maskView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, GL_NEAREST );
 }
 
 /*
@@ -507,7 +519,8 @@ static VkFormat RP_ShadowFormat( void ) {
 	return VK_FORMAT_UNDEFINED;
 }
 
-static void RP_CreateShadowImage( VkFormat format, VkImageUsageFlags usage, VkImageAspectFlags aspect, VkImage *image, VkImageView *view, VkDeviceMemory *memory, const char *name ) {
+static void RP_CreateShadowImage( VkFormat format, VkImageUsageFlags usage, VkImageAspectFlags aspect, VkImage *image, VkImageView *view, VkDeviceMemory *memory, const char *name,
+	uint32_t width = RP_SHADOW_SIZE, uint32_t height = RP_SHADOW_SIZE ) {
 	VkImageCreateInfo desc;
 	VkMemoryRequirements req;
 	VkMemoryAllocateInfo alloc;
@@ -517,7 +530,8 @@ static void RP_CreateShadowImage( VkFormat format, VkImageUsageFlags usage, VkIm
 	desc.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
 	desc.imageType = VK_IMAGE_TYPE_2D;
 	desc.format = format;
-	desc.extent.width = desc.extent.height = RP_SHADOW_SIZE;
+	desc.extent.width = width;
+	desc.extent.height = height;
 	desc.extent.depth = 1;
 	desc.mipLevels = 1;
 	desc.arrayLayers = 1;
@@ -555,8 +569,13 @@ VkRenderPass vk_rpmod_shadow_pass( void ) {
 	return rp.shadowPass;
 }
 
-uint32_t vk_rpmod_shadow_size( void ) {
-	return RP_SHADOW_SIZE;
+// the shadow pass's viewport: all of the shadow map; qfalse while it draws the shiny surfaces, the view's own
+qboolean vk_rpmod_shadow_viewport( VkRect2D *r ) {
+	if ( !rp.shadowSized )
+		return qfalse;
+	r->offset.x = r->offset.y = 0;
+	r->extent.width = r->extent.height = RP_SHADOW_SIZE;
+	return qtrue;
 }
 
 void vk_rpmod_create_attachments( void ) {
@@ -581,6 +600,10 @@ void vk_rpmod_create_attachments( void ) {
 			&rp.shadowImage, &rp.shadowView, &rp.shadowMemory, "rpmod shadow map" );
 		RP_CreateShadowImage( VK_FORMAT_R8_UNORM, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
 			&rp.shadowColor, &rp.shadowColorView, &rp.shadowColorMemory, "rpmod shadow map colour" );
+		RP_CreateShadowImage( rp.shadowFormat, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_DEPTH_BIT,
+			&rp.maskImage, &rp.maskView, &rp.maskMemory, "rpmod shiny surfaces", glConfig.vidWidth, glConfig.vidHeight );
+		RP_CreateShadowImage( VK_FORMAT_R8_UNORM, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
+			&rp.maskColor, &rp.maskColorView, &rp.maskColorMemory, "rpmod shiny surfaces colour", glConfig.vidWidth, glConfig.vidHeight );
 	}
 
 	// as the render passes have them before and after
@@ -589,6 +612,8 @@ void vk_rpmod_create_attachments( void ) {
 		vk_record_image_layout_transition( cmd, *images[i], VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 0 );
 	if ( rp.shadowImage != VK_NULL_HANDLE )
 		vk_record_image_layout_transition( cmd, rp.shadowImage, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 0 );
+	if ( rp.maskImage != VK_NULL_HANDLE )
+		vk_record_image_layout_transition( cmd, rp.maskImage, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 0 );
 	vk_end_command_buffer( cmd, __func__ );
 
 	// the depth buffer's depth, without its stencil
@@ -620,6 +645,8 @@ void vk_rpmod_destroy_attachments( void ) {
 	RP_DestroyImage( &rp.aoImage[1], &rp.aoView[1], &rp.aoMemory[1] );
 	RP_DestroyImage( &rp.shadowImage, &rp.shadowView, &rp.shadowMemory );
 	RP_DestroyImage( &rp.shadowColor, &rp.shadowColorView, &rp.shadowColorMemory );
+	RP_DestroyImage( &rp.maskImage, &rp.maskView, &rp.maskMemory );
+	RP_DestroyImage( &rp.maskColor, &rp.maskColorView, &rp.maskColorMemory );
 }
 
 /*
@@ -793,11 +820,19 @@ void vk_rpmod_create_framebuffers( void ) {
 		desc.layers = 1;
 		VK_CHECK( qvkCreateFramebuffer( vk.device, &desc, NULL, &rp.shadowFb ) );
 		VK_SET_OBJECT_NAME( rp.shadowFb, "framebuffer - rpmod shadow map", VK_DEBUG_REPORT_OBJECT_TYPE_FRAMEBUFFER_EXT );
+		if ( rp.maskImage != VK_NULL_HANDLE ) {
+			views[0] = rp.maskColorView;
+			views[1] = rp.maskView;
+			desc.width = glConfig.vidWidth;
+			desc.height = glConfig.vidHeight;
+			VK_CHECK( qvkCreateFramebuffer( vk.device, &desc, NULL, &rp.maskFb ) );
+			VK_SET_OBJECT_NAME( rp.maskFb, "framebuffer - rpmod shiny surfaces", VK_DEBUG_REPORT_OBJECT_TYPE_FRAMEBUFFER_EXT );
+		}
 	}
 }
 
 void vk_rpmod_destroy_framebuffers( void ) {
-	VkFramebuffer *fbs[] = { &rp.postFb[0], &rp.postFb[1], &rp.distFb, &rp.aoFb[0], &rp.aoFb[1], &rp.shadowFb };
+	VkFramebuffer *fbs[] = { &rp.postFb[0], &rp.postFb[1], &rp.distFb, &rp.aoFb[0], &rp.aoFb[1], &rp.shadowFb, &rp.maskFb };
 
 	rp.ready = qfalse;
 	for ( size_t i = 0; i < ARRAY_LEN( fbs ); i++ ) {
@@ -1014,11 +1049,11 @@ static void RP_SetViewport( const VkRect2D *r ) {
 	qvkCmdSetScissor( vk.cmd->command_buffer, 0, 1, r );
 }
 
-static void RP_Quad( VkPipeline pipe, VkDescriptorSet set0, VkDescriptorSet set1, const void *push, uint32_t pushSize, const VkRect2D *r ) {
-	VkDescriptorSet sets[2] = { set0, set1 };
+static void RP_Quad3( VkPipeline pipe, VkDescriptorSet set0, VkDescriptorSet set1, VkDescriptorSet set2, const void *push, uint32_t pushSize, const VkRect2D *r ) {
+	VkDescriptorSet sets[3] = { set0, set1, set2 };
 
 	qvkCmdBindPipeline( vk.cmd->command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe );
-	qvkCmdBindDescriptorSets( vk.cmd->command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, rp.layout, 0, set1 != VK_NULL_HANDLE ? 2 : 1, sets, 0, NULL );
+	qvkCmdBindDescriptorSets( vk.cmd->command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, rp.layout, 0, set2 != VK_NULL_HANDLE ? 3 : set1 != VK_NULL_HANDLE ? 2 : 1, sets, 0, NULL );
 	if ( push )
 		qvkCmdPushConstants( vk.cmd->command_buffer, rp.layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, pushSize, push );
 	RP_SetViewport( r );
@@ -1026,6 +1061,10 @@ static void RP_Quad( VkPipeline pipe, VkDescriptorSet set0, VkDescriptorSet set1
 }
 
 // one pass into an image of our own
+static void RP_Quad( VkPipeline pipe, VkDescriptorSet set0, VkDescriptorSet set1, const void *push, uint32_t pushSize, const VkRect2D *r ) {
+	RP_Quad3( pipe, set0, set1, VK_NULL_HANDLE, push, pushSize, r );
+}
+
 static void RP_Pass( VkRenderPass pass, VkFramebuffer fb, VkPipeline pipe, VkDescriptorSet set0, VkDescriptorSet set1, const void *push, uint32_t pushSize, const VkRect2D *r ) {
 	vk_begin_render_pass( pass, fb, qfalse, glConfig.vidWidth, glConfig.vidHeight );
 	RP_Quad( pipe, set0, set1, push, pushSize, r );
@@ -1375,6 +1414,7 @@ static qboolean RP_ShadowMap( drawSurf_t *drawSurfs, int numDrawSurfs, float *to
 	savedOri = backEnd.ori;
 	backEnd.viewParms = light;
 	vk.renderPassIndex = RENDER_PASS_SHADOW;
+	rp.shadowSized = qtrue;
 	vk.cmd->last_pipeline = VK_NULL_HANDLE;
 	vk_begin_render_pass( rp.shadowPass, rp.shadowFb, qtrue, RP_SHADOW_SIZE, RP_SHADOW_SIZE );
 	Com_Memset( &vk.cmd->scissor_rect, 0, sizeof( vk.cmd->scissor_rect ) );
@@ -1383,6 +1423,72 @@ static qboolean RP_ShadowMap( drawSurf_t *drawSurfs, int numDrawSurfs, float *to
 
 	backEnd.viewParms = saved;
 	backEnd.ori = savedOri;
+	rp.shadowSized = qfalse;
+	vk.renderPassIndex = RENDER_PASS_MAIN;
+	vk.cmd->last_pipeline = VK_NULL_HANDLE;
+	vk.cmd->depth_range = DEPTH_RANGE_COUNT;
+	Com_Memset( &vk.cmd->scissor_rect, 0, sizeof( vk.cmd->scissor_rect ) );
+	Com_Memcpy( vk_world.modelview_transform, backEnd.viewParms.world.modelViewMatrix, 64 );
+	return qtrue;
+}
+
+/*
+===============
+reflections: which surfaces are shiny, by the material the map's shader gives them (marble, tiles,
+metal, glass, ice, plastic, water) or an environment map on it; grass, dirt, rock, carpet, sand and
+the rest, and what has no material, never reflect
+===============
+*/
+static qboolean RP_Shiny( const shader_t *shader ) {
+	switch ( shader->surfaceFlags & MATERIAL_MASK ) {
+	case MATERIAL_MARBLE:
+	case MATERIAL_TILES:
+	case MATERIAL_SOLIDMETAL:
+	case MATERIAL_HOLLOWMETAL:
+	case MATERIAL_GLASS:
+	case MATERIAL_BPGLASS:
+	case MATERIAL_SHATTERGLASS:
+	case MATERIAL_ICE:
+	case MATERIAL_PLASTIC:
+	case MATERIAL_WATER:
+		return qtrue;
+	default:
+		break;
+	}
+	for ( int i = 0; i < MAX_SHADER_STAGES && shader->stages[i]; i++ ) {
+		if ( shader->stages[i]->active && shader->stages[i]->bundle[0].tcGen == TCGEN_ENVIRONMENT_MAPPED )
+			return qtrue;
+	}
+	return qfalse;
+}
+
+// the shiny solid surfaces drawn again, their depth alone, from the camera
+static qboolean RP_ShinyMask( drawSurf_t *drawSurfs, int numDrawSurfs ) {
+	static drawSurf_t shiny[RP_MAX_CASTERS * 2];
+	int n = 0;
+
+	for ( int i = 0; i < numDrawSurfs && n < (int)ARRAY_LEN( shiny ); i++ ) {
+		int entityNum, fogNum, dlighted;
+		shader_t *shader;
+
+		R_DecomposeSort( drawSurfs[i].sort, &entityNum, &shader, &fogNum, &dlighted );
+		if ( shader->sort > SS_OPAQUE || shader->isSky || shader->useDistortion || !RP_Shiny( shader ) )
+			continue;
+		if ( entityNum != REFENTITYNUM_WORLD
+			&& ( backEnd.refdef.entities[entityNum].e.renderfx & ( RF_FIRST_PERSON | RF_DEPTHHACK | RF_DISTORTION ) ) )
+			continue;
+		shiny[n++] = drawSurfs[i];
+	}
+	if ( !n )
+		return qfalse;
+
+	vk.renderPassIndex = RENDER_PASS_SHADOW;	// the shadow map's pipelines: one sample, depth kept
+	vk.cmd->last_pipeline = VK_NULL_HANDLE;
+	vk_begin_render_pass( rp.shadowPass, rp.maskFb, qtrue, glConfig.vidWidth, glConfig.vidHeight );
+	Com_Memset( &vk.cmd->scissor_rect, 0, sizeof( vk.cmd->scissor_rect ) );
+	RB_RenderDrawSurfList( shiny, n );
+	vk_end_render_pass();
+
 	vk.renderPassIndex = RENDER_PASS_MAIN;
 	vk.cmd->last_pipeline = VK_NULL_HANDLE;
 	vk.cmd->depth_range = DEPTH_RANGE_COUNT;
@@ -1409,6 +1515,9 @@ void vk_rpmod_after_opaque( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 	vk_end_render_pass();
 	if ( r_shadowMaps->integer && r_shadowStrength->value > 0.0f && rp.shadowPipe != VK_NULL_HANDLE && rp.shadowFb != VK_NULL_HANDLE )
 		shadows = RP_ShadowMap( drawSurfs, numDrawSurfs, toLight, &shadowBias );
+	rp.haveMask = qfalse;
+	if ( r_ssr->integer && r_ssrStrength->value > 0.0f && rp.ssrPipe != VK_NULL_HANDLE && rp.maskFb != VK_NULL_HANDLE )
+		rp.haveMask = RP_ShinyMask( drawSurfs, numDrawSurfs );
 	RP_DepthBarrier( qtrue );
 	RP_Pass( rp.distPass, rp.distFb, rp.depthPipe, rp.depthSet, VK_NULL_HANDLE, push, sizeof( push ), &r );
 	RP_DepthBarrier( qfalse );
@@ -1714,7 +1823,7 @@ void vk_rpmod_post( void ) {
 	const qboolean filter = (qboolean)( backEnd.refdef.filterOn && backEnd.refdef.filter.strength > 0.0f );
 	const qboolean fxaa = (qboolean)( r_fxaa->integer != 0 );
 	const qboolean sharpen = (qboolean)( r_sharpen->value > 0.0f );
-	const qboolean ssr = (qboolean)( dist && r_ssr->integer && r_ssrStrength->value > 0.0f && rp.ssrPipe != VK_NULL_HANDLE );
+	const qboolean ssr = (qboolean)( dist && rp.haveMask && r_ssr->integer && r_ssrStrength->value > 0.0f && rp.ssrPipe != VK_NULL_HANDLE );
 	float sunPos[2], sunColor[4], mblur[16], mblurScale = 0.0f, grade[4], tint[4];
 	qboolean shafts, motion, graded;
 	VkDescriptorSet src = rp.sceneSet;
@@ -1780,8 +1889,12 @@ void vk_rpmod_post( void ) {
 		p.up[0] = -axis1[2];
 		p.up[1] = -axis2[2];
 		p.up[2] = axis0[2];
-		p.up[3] = 0.0f;
-		RP_NEXT( rp.ssrPipe, rp.distSet, p );
+		p.up[3] = backEnd.viewParms.zNear;
+		vk_begin_render_pass( rp.postPass, rp.postFb[next], qfalse, glConfig.vidWidth, glConfig.vidHeight );
+		RP_Quad3( rp.ssrPipe, src, rp.distSet, rp.maskSet, &p, sizeof( p ), &r );
+		vk_end_render_pass();
+		src = rp.postSet[next];
+		next ^= 1;
 	}
 
 	if ( motion ) {
