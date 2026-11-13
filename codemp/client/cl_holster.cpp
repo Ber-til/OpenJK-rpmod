@@ -36,6 +36,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #include "client.h"
 #include "qcommon/cm_public.h"
 #include "cl_presence.h"
+#include "cl_rpcinematic.h"
 #include "cl_widgets.h"
 #include "cl_gizmo.h"
 
@@ -446,9 +447,13 @@ On everyone's body, as the game draws it
 static qboolean HE_Live( void );
 static void HE_AddLive( void *ghoul2, const refEntity_t *body, int saber );
 
-// where a player is now, and how their saber is: 0 put away, 1 in hand, 2 lit
+// where a player is now, and how their saber is: 0 put away, 1 in hand, 2 lit. The player state is
+// whoever the view is of (you, or the one you follow); someone not drawn (you while following, a
+// spectator, nodraw) has nowhere to wear anything
 static qboolean HS_PlayerState( int client, vec3_t origin, int *saber ) {
-	if ( client == clc.clientNum ) {
+	if ( !CL_EntityDrawn( client ) )
+		return qfalse;
+	if ( client == cl.snap.ps.clientNum ) {
 		const playerState_t *ps = &cl.snap.ps;
 
 		VectorCopy( ps->origin, origin );
@@ -472,7 +477,7 @@ static int HS_Emote( int client ) {
 	int torso = -1;
 	const char *name;
 
-	if ( client == clc.clientNum ) {
+	if ( client == cl.snap.ps.clientNum ) {
 		torso = cl.snap.ps.torsoAnim;
 	} else {
 		for ( int i = 0; i < cl.snap.numEntities; i++ ) {
@@ -522,6 +527,7 @@ static qboolean HS_HandItem( hsItem_t *it ) {
 // bodies, the nearest pairs first
 void CL_Holster_Frame( void ) {
 	qboolean bodyTaken[HS_MAX_BODIES] = { qfalse }, done[MAX_CLIENTS] = { qfalse };
+	int owner[HS_MAX_BODIES];
 	vec3_t org[MAX_CLIENTS];
 	qboolean known[MAX_CLIENTS];
 	int saber;
@@ -548,6 +554,8 @@ void CL_Holster_Frame( void ) {
 				hsClients[c].state, hsClients[c].num, (int)CL_Presence_Linked( c ),
 				HS_PlayerState( c, org[c], &saber ) ? HS_Vec( org[c] ) : "not in the snapshot" );
 	}
+	for ( int b = 0; b < hsNumBodies; b++ )
+		owner[b] = CL_BodyOwner( hsBodies[b].origin, HS_NEAR );
 	for ( ;; ) {
 		float best = HS_NEAR;
 		int bc = -1, bb = -1;
@@ -558,7 +566,8 @@ void CL_Holster_Frame( void ) {
 			for ( int b = 0; b < hsNumBodies; b++ ) {
 				const float d = Distance( org[c], hsBodies[b].origin );
 
-				if ( !bodyTaken[b] && d < best ) {
+				// only their own body: one nearer someone else (an NPC, another player) is that one's
+				if ( !bodyTaken[b] && d < best && owner[b] == c ) {
 					best = d;
 					bc = c;
 					bb = b;

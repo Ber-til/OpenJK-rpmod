@@ -1124,6 +1124,12 @@ void CL_Chat_Init( void );			// cl_chat.cpp: the datapad's Chat
 void CL_Chat_Frame( void );
 void CL_Chat_Disconnect( void );
 void CL_Chat_Hook( char **argv, int argc, const char *message );	// cmd:chat/...
+void CL_Chat_OpenWith( const char *account );	// the conversation with an account's main character
+void CL_Chat_StateHook( char **argv, int argc, const char *message );	// cmd:chatstate/...
+void CL_Chat_OpenGroup( int group );			// datapad chat group <id>
+void CL_Chat_GroupHook( char **argv, int argc, const char *message );	// cmd:chatgroup/...
+void CL_Chat_GroupStateHook( char **argv, int argc, const char *message );	// cmd:chatgroupstate/...
+void CL_Chat_TypingHook( char **argv, int argc, const char *message );	// cmd:chattyping/...
 qboolean CL_Chat_CaptureSound( const char *cmd );	// the sound manager's Send, while Chat picks a sound
 int CL_Chat_Unread( void );
 void CL_SoundManager_OpenForChat( void );
@@ -1194,6 +1200,7 @@ void CL_Characters_KeyEvent( int key, qboolean down );
 void CL_Characters_CharEvent( int ch );
 void CL_Characters_MouseEvent( int dx, int dy );
 void CL_Characters_Disconnect( void );
+int CL_Characters_Held( void );		// the character this game plays on its account now, 0 none
 void CL_Characters_CharHook( char **argv, int argc );
 void CL_Characters_OfferHook( char **argv, int argc );	// cmd:charoffer/<client>/<offer>
 int CL_Characters_ActiveId( void );		// the character played (C1B3R's id), 0 none known

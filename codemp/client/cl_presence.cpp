@@ -388,6 +388,9 @@ static void PS_Hello( void ) {
 	// the saber carried: the inventory's hilt is it (C1B3R's characters.py)
 	body += ",\"saber\":";
 	PS_Json( body, Cvar_VariableString( "saber1" ) );
+	// the character this game plays: its own, whatever another game of the account picks
+	if ( CL_Characters_Held() > 0 )
+		body += va( ",\"char\":%i", CL_Characters_Held() );
 	PS_MapFields( body, cl.serverId );
 	body += "}";
 	if ( !PS_Send( &psHelloHttp, "/v2/hello", body ) ) {
