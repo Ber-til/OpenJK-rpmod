@@ -1200,6 +1200,7 @@ void CL_Characters_KeyEvent( int key, qboolean down );
 void CL_Characters_CharEvent( int ch );
 void CL_Characters_MouseEvent( int dx, int dy );
 void CL_Characters_Disconnect( void );
+int CL_Characters_Held( void );		// the character this game plays on its account now, 0 none
 void CL_Characters_CharHook( char **argv, int argc );
 void CL_Characters_OfferHook( char **argv, int argc );	// cmd:charoffer/<client>/<offer>
 int CL_Characters_ActiveId( void );		// the character played (C1B3R's id), 0 none known

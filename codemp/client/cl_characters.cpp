@@ -220,6 +220,19 @@ static qboolean CH_Held( int id ) {
 		&& !Q_stricmp( cl_characterHeld->string, va( "%s/%i", CH_Account(), id ) ) );
 }
 
+// the character this game holds (plays) on the account it's logged in to now: 0 none. Sent with
+// hello, so C1B3R keeps it this game's own when it comes back (another game of the account may play
+// another)
+int CL_Characters_Held( void ) {
+	const char *account = CH_Account(), *slash;
+
+	if ( !cl_characterHeld || !account[0] || !( slash = strrchr( cl_characterHeld->string, '/' ) ) )
+		return 0;
+	if ( (int)strlen( account ) != (int)( slash - cl_characterHeld->string ) || Q_stricmpn( cl_characterHeld->string, account, (int)strlen( account ) ) )
+		return 0;
+	return Q_max( 0, atoi( slash + 1 ) );
+}
+
 static void CH_Hold( int id ) {
 	Cvar_Set( "cl_characterHeld", id ? va( "%s/%i", CH_Account(), id ) : "" );
 	ch.lastSent.clear();
