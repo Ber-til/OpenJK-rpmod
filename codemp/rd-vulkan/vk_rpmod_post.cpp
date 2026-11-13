@@ -46,6 +46,7 @@ static cvar_t	*r_fxaa;
 static cvar_t	*r_sharpen;
 static cvar_t	*r_relief, *r_reliefStrength, *r_reliefSpecular;
 static cvar_t	*r_volumetric, *r_volumetricIntensity, *r_volumetricFog;
+static cvar_t	*r_ssr, *r_ssrStrength;
 static cvar_t	*r_tonemap;
 static cvar_t	*r_exposure;
 static cvar_t	*r_saturation;
@@ -62,7 +63,7 @@ static struct {
 	qboolean			ready;			// everything is there for this window
 
 	VkShaderModule		depthFs, depthMsFs, dofFs, filterFs, copyFs;
-	VkShaderModule		ssaoFs, aoBlurFs, aoApplyFs, shaftsFs[3], mblurFs, gradeFs, fxaaFs, casFs, volumFs;
+	VkShaderModule		ssaoFs, aoBlurFs, aoApplyFs, shaftsFs[3], mblurFs, gradeFs, fxaaFs, casFs, volumFs, ssrFs;
 	VkShaderModule		softFs[6];		// in pairs, unfogged then fogged: vk_create_pipeline takes the next one for fog
 	VkPipelineLayout	layout;			// two image sets, 128 bytes of push constants
 
@@ -85,7 +86,7 @@ static struct {
 	VkFramebuffer		postFb[2], distFb, aoFb[2];
 
 	VkPipeline			depthPipe, dofPipe, filterPipe, copyPipe;
-	VkPipeline			ssaoPipe, aoBlurPipe, aoApplyPipe, shaftsPipe[3], mblurPipe, gradePipe, fxaaPipe, casPipe, volumPipe;
+	VkPipeline			ssaoPipe, aoBlurPipe, aoApplyPipe, shaftsPipe[3], mblurPipe, gradePipe, fxaaPipe, casPipe, volumPipe, ssrPipe;
 
 	qboolean			haveDistance;	// this view's distances are in distImage
 	qboolean			softOn;			// and effects drawn now are faded by them
@@ -142,6 +143,10 @@ void vk_rpmod_register_cvars( void ) {
 	ri.Cvar_CheckRange( r_volumetricIntensity, 0, 4, qfalse );
 	r_volumetricFog = ri.Cvar_Get( "r_volumetricFog", "2", CVAR_ARCHIVE_ND, "Volumetric light: how many times more the lights glow on a map with fog all over" );
 	ri.Cvar_CheckRange( r_volumetricFog, 1, 8, qfalse );
+	r_ssr = ri.Cvar_Get( "r_ssr", "0", CVAR_ARCHIVE_ND, va( "Reflections: smooth floors mirror what's on screen, polished ones most%s", fbo ) );
+	ri.Cvar_CheckRange( r_ssr, 0, 1, qtrue );
+	r_ssrStrength = ri.Cvar_Get( "r_ssrStrength", "0.8", CVAR_ARCHIVE_ND, "Reflections: how strongly floors mirror, 0 to 2" );
+	ri.Cvar_CheckRange( r_ssrStrength, 0, 2, qfalse );
 	r_sharpen = ri.Cvar_Get( "r_sharpen", "0", CVAR_ARCHIVE_ND, va( "Sharpening, from 0 (off) to 1%s", fbo ) );
 	ri.Cvar_CheckRange( r_sharpen, 0, 1, qfalse );
 	r_tonemap = ri.Cvar_Get( "r_tonemap", "0", CVAR_ARCHIVE_ND, va( "Tone mapping: bright light rolled off instead of clipping to white. 1 soft: the rest of the picture as it is; 2 film (ACES): darker shadows too%s", fbo ) );
@@ -293,6 +298,7 @@ void vk_rpmod_init( void ) {
 	RP_MODULE( rp.fxaaFs, rpmod_fxaa_frag_spv, "rpmod fxaa" );
 	RP_MODULE( rp.casFs, rpmod_cas_frag_spv, "rpmod sharpen" );
 	RP_MODULE( rp.volumFs, rpmod_volum_frag_spv, "rpmod volumetric light" );
+	RP_MODULE( rp.ssrFs, rpmod_ssr_frag_spv, "rpmod reflections" );
 
 	push.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 	push.offset = 0;
@@ -310,7 +316,7 @@ void vk_rpmod_init( void ) {
 void vk_rpmod_shutdown( void ) {
 	VkShaderModule *modules[] = { &rp.depthFs, &rp.depthMsFs, &rp.dofFs, &rp.filterFs, &rp.copyFs,
 		&rp.ssaoFs, &rp.aoBlurFs, &rp.aoApplyFs, &rp.softFs[0], &rp.softFs[1], &rp.softFs[2], &rp.softFs[3], &rp.softFs[4], &rp.softFs[5],
-		&rp.shaftsFs[0], &rp.shaftsFs[1], &rp.shaftsFs[2], &rp.mblurFs, &rp.gradeFs, &rp.fxaaFs, &rp.casFs, &rp.volumFs };
+		&rp.shaftsFs[0], &rp.shaftsFs[1], &rp.shaftsFs[2], &rp.mblurFs, &rp.gradeFs, &rp.fxaaFs, &rp.casFs, &rp.volumFs, &rp.ssrFs };
 
 	for ( size_t i = 0; i < ARRAY_LEN( modules ); i++ ) {
 		if ( *modules[i] != VK_NULL_HANDLE )
@@ -726,7 +732,7 @@ static VkPipeline RP_CreatePipeline( VkShaderModule fs, VkRenderPass pass, VkSam
 void vk_rpmod_destroy_pipelines( void ) {
 	VkPipeline *pipes[] = { &rp.depthPipe, &rp.dofPipe, &rp.filterPipe, &rp.copyPipe, &rp.ssaoPipe, &rp.aoBlurPipe,
 		&rp.aoApplyPipe, &rp.shaftsPipe[0], &rp.shaftsPipe[1], &rp.shaftsPipe[2], &rp.mblurPipe, &rp.gradePipe,
-		&rp.fxaaPipe, &rp.casPipe, &rp.volumPipe };
+		&rp.fxaaPipe, &rp.casPipe, &rp.volumPipe, &rp.ssrPipe };
 
 	rp.ready = qfalse;
 	for ( size_t i = 0; i < ARRAY_LEN( pipes ); i++ ) {
@@ -759,6 +765,7 @@ void vk_rpmod_create_pipelines( void ) {
 	rp.gradePipe = RP_CreatePipeline( rp.gradeFs, rp.postPass, one, qfalse, "rpmod colour grading" );
 	rp.fxaaPipe = RP_CreatePipeline( rp.fxaaFs, rp.postPass, one, qfalse, "rpmod fxaa" );
 	rp.casPipe = RP_CreatePipeline( rp.casFs, rp.postPass, one, qfalse, "rpmod sharpen" );
+	rp.ssrPipe = RP_CreatePipeline( rp.ssrFs, rp.postPass, one, qfalse, "rpmod reflections" );
 	// back into the view
 	rp.copyPipe = RP_CreatePipeline( rp.copyFs, vk.render_pass.main.handle, (VkSampleCountFlagBits)vkSamples, qfalse, "rpmod copy" );
 	rp.ready = qtrue;
@@ -996,7 +1003,8 @@ static qboolean RP_NeedDistance( const VkRect2D *r ) {
 		return qfalse;
 	return (qboolean)( backEnd.refdef.dofBlur > 0.0f || r_ssao->integer || r_softParticles->integer
 		|| r_motionBlur->value > 0.0f || RP_Sun( r, pos, color )
-		|| ( r_volumetric->integer && backEnd.refdef.num_dlights > 0 && rp.volumPipe != VK_NULL_HANDLE ) );
+		|| ( r_volumetric->integer && backEnd.refdef.num_dlights > 0 && rp.volumPipe != VK_NULL_HANDLE )
+		|| ( r_ssr->integer && r_ssrStrength->value > 0.0f ) );
 }
 
 /*
@@ -1334,6 +1342,7 @@ void vk_rpmod_post( void ) {
 	const qboolean filter = (qboolean)( backEnd.refdef.filterOn && backEnd.refdef.filter.strength > 0.0f );
 	const qboolean fxaa = (qboolean)( r_fxaa->integer != 0 );
 	const qboolean sharpen = (qboolean)( r_sharpen->value > 0.0f );
+	const qboolean ssr = (qboolean)( dist && r_ssr->integer && r_ssrStrength->value > 0.0f && rp.ssrPipe != VK_NULL_HANDLE );
 	float sunPos[2], sunColor[4], mblur[16], mblurScale = 0.0f, grade[4], tint[4];
 	qboolean shafts, motion, graded;
 	VkDescriptorSet src = rp.sceneSet;
@@ -1348,7 +1357,7 @@ void vk_rpmod_post( void ) {
 	motion = (qboolean)( dist && RP_MotionBlur( &r, mblur, &mblurScale ) );
 	graded = RP_Grade( grade, tint );
 	RP_KeepCamera( &r );
-	if ( !shafts && !motion && !dof && !graded && !filter && !fxaa && !sharpen )
+	if ( !shafts && !ssr && !motion && !dof && !graded && !filter && !fxaa && !sharpen )
 		return;
 
 	vk_end_render_pass();
@@ -1380,6 +1389,27 @@ void vk_rpmod_post( void ) {
 		RP_Pass( rp.postPass, rp.postFb[1], rp.shaftsPipe[2], rp.sceneSet, rp.postSet[0], &p, sizeof( p ), &r );
 		src = rp.postSet[1];
 		next = 0;
+	}
+
+	if ( ssr ) {
+		// floors mirror the view, before anything blurs or grades it
+		const float *axis0 = backEnd.viewParms.ori.axis[0], *axis1 = backEnd.viewParms.ori.axis[1], *axis2 = backEnd.viewParms.ori.axis[2];
+		struct {
+			float rect[4];
+			float a[4];
+			float up[4];
+		} p;
+
+		RP_RectVec( &r, p.rect );
+		RP_TanHalf( p.a );
+		p.a[2] = r_ssrStrength->value;
+		p.a[3] = backEnd.viewParms.zFar;
+		// the world's up in the camera's space: x right, y down, z forward
+		p.up[0] = -axis1[2];
+		p.up[1] = -axis2[2];
+		p.up[2] = axis0[2];
+		p.up[3] = 0.0f;
+		RP_NEXT( rp.ssrPipe, rp.distSet, p );
 	}
 
 	if ( motion ) {

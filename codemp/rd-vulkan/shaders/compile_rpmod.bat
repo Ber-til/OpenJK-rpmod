@@ -43,6 +43,7 @@ call :frag rpmod_grade_frag_spv glsl\rpmod\grade.frag || exit /b 1
 call :frag rpmod_fxaa_frag_spv glsl\rpmod\fxaa.frag || exit /b 1
 call :frag rpmod_cas_frag_spv glsl\rpmod\cas.frag || exit /b 1
 call :frag rpmod_volum_frag_spv glsl\rpmod\volum.frag || exit /b 1
+call :frag rpmod_ssr_frag_spv glsl\rpmod\ssr.frag || exit /b 1
 call :frag rpmod_light_relief_frag_spv glsl\light_frag.tmpl -DUSE_RELIEF || exit /b 1
 call :frag rpmod_light_relief_fog_frag_spv glsl\light_frag.tmpl -DUSE_RELIEF -DUSE_FOG || exit /b 1
 call :frag rpmod_light_relief_line_frag_spv glsl\light_frag.tmpl -DUSE_RELIEF -DUSE_LINE || exit /b 1
