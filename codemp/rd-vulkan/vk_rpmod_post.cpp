@@ -45,6 +45,7 @@ static cvar_t	*r_softParticlesDepth;
 static cvar_t	*r_fxaa;
 static cvar_t	*r_sharpen;
 static cvar_t	*r_relief, *r_reliefStrength, *r_reliefSpecular;
+static cvar_t	*r_volumetric, *r_volumetricIntensity, *r_volumetricFog;
 static cvar_t	*r_tonemap;
 static cvar_t	*r_exposure;
 static cvar_t	*r_saturation;
@@ -61,7 +62,7 @@ static struct {
 	qboolean			ready;			// everything is there for this window
 
 	VkShaderModule		depthFs, depthMsFs, dofFs, filterFs, copyFs;
-	VkShaderModule		ssaoFs, aoBlurFs, aoApplyFs, shaftsFs[3], mblurFs, gradeFs, fxaaFs, casFs;
+	VkShaderModule		ssaoFs, aoBlurFs, aoApplyFs, shaftsFs[3], mblurFs, gradeFs, fxaaFs, casFs, volumFs;
 	VkShaderModule		softFs[6];		// in pairs, unfogged then fogged: vk_create_pipeline takes the next one for fog
 	VkPipelineLayout	layout;			// two image sets, 128 bytes of push constants
 
@@ -84,7 +85,7 @@ static struct {
 	VkFramebuffer		postFb[2], distFb, aoFb[2];
 
 	VkPipeline			depthPipe, dofPipe, filterPipe, copyPipe;
-	VkPipeline			ssaoPipe, aoBlurPipe, aoApplyPipe, shaftsPipe[3], mblurPipe, gradePipe, fxaaPipe, casPipe;
+	VkPipeline			ssaoPipe, aoBlurPipe, aoApplyPipe, shaftsPipe[3], mblurPipe, gradePipe, fxaaPipe, casPipe, volumPipe;
 
 	qboolean			haveDistance;	// this view's distances are in distImage
 	qboolean			softOn;			// and effects drawn now are faded by them
@@ -135,6 +136,12 @@ void vk_rpmod_register_cvars( void ) {
 	ri.Cvar_CheckRange( r_reliefStrength, 0, 64, qfalse );
 	r_reliefSpecular = ri.Cvar_Get( "r_reliefSpecular", "0.35", CVAR_ARCHIVE_ND, "Surface relief: how much the lit surfaces shine, 0 none" );
 	ri.Cvar_CheckRange( r_reliefSpecular, 0, 2, qfalse );
+	r_volumetric = ri.Cvar_Get( "r_volumetric", "0", CVAR_ARCHIVE_ND, va( "Volumetric light: sabers, blaster bolts, torches and other dynamic lights glow in the air around them, more in a map's fog%s", fbo ) );
+	ri.Cvar_CheckRange( r_volumetric, 0, 1, qtrue );
+	r_volumetricIntensity = ri.Cvar_Get( "r_volumetricIntensity", "0.5", CVAR_ARCHIVE_ND, "Volumetric light: how thick the air is, how much the lights glow in it" );
+	ri.Cvar_CheckRange( r_volumetricIntensity, 0, 4, qfalse );
+	r_volumetricFog = ri.Cvar_Get( "r_volumetricFog", "2", CVAR_ARCHIVE_ND, "Volumetric light: how many times more the lights glow on a map with fog all over" );
+	ri.Cvar_CheckRange( r_volumetricFog, 1, 8, qfalse );
 	r_sharpen = ri.Cvar_Get( "r_sharpen", "0", CVAR_ARCHIVE_ND, va( "Sharpening, from 0 (off) to 1%s", fbo ) );
 	ri.Cvar_CheckRange( r_sharpen, 0, 1, qfalse );
 	r_tonemap = ri.Cvar_Get( "r_tonemap", "0", CVAR_ARCHIVE_ND, va( "Tone mapping: bright light rolled off instead of clipping to white. 1 soft: the rest of the picture as it is; 2 film (ACES): darker shadows too%s", fbo ) );
@@ -285,6 +292,7 @@ void vk_rpmod_init( void ) {
 	RP_MODULE( rp.gradeFs, rpmod_grade_frag_spv, "rpmod colour grading" );
 	RP_MODULE( rp.fxaaFs, rpmod_fxaa_frag_spv, "rpmod fxaa" );
 	RP_MODULE( rp.casFs, rpmod_cas_frag_spv, "rpmod sharpen" );
+	RP_MODULE( rp.volumFs, rpmod_volum_frag_spv, "rpmod volumetric light" );
 
 	push.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 	push.offset = 0;
@@ -302,7 +310,7 @@ void vk_rpmod_init( void ) {
 void vk_rpmod_shutdown( void ) {
 	VkShaderModule *modules[] = { &rp.depthFs, &rp.depthMsFs, &rp.dofFs, &rp.filterFs, &rp.copyFs,
 		&rp.ssaoFs, &rp.aoBlurFs, &rp.aoApplyFs, &rp.softFs[0], &rp.softFs[1], &rp.softFs[2], &rp.softFs[3], &rp.softFs[4], &rp.softFs[5],
-		&rp.shaftsFs[0], &rp.shaftsFs[1], &rp.shaftsFs[2], &rp.mblurFs, &rp.gradeFs, &rp.fxaaFs, &rp.casFs };
+		&rp.shaftsFs[0], &rp.shaftsFs[1], &rp.shaftsFs[2], &rp.mblurFs, &rp.gradeFs, &rp.fxaaFs, &rp.casFs, &rp.volumFs };
 
 	for ( size_t i = 0; i < ARRAY_LEN( modules ); i++ ) {
 		if ( *modules[i] != VK_NULL_HANDLE )
@@ -607,7 +615,9 @@ void vk_rpmod_destroy_framebuffers( void ) {
 the pipelines: a quad over the viewport, which is set as each pass draws
 ===============
 */
-static VkPipeline RP_CreatePipeline( VkShaderModule fs, VkRenderPass pass, VkSampleCountFlagBits samples, qboolean multiply, const char *name ) {
+#define RP_BLEND_ADD	2	// RP_CreatePipeline's multiply: 1 multiplies, this adds
+
+static VkPipeline RP_CreatePipeline( VkShaderModule fs, VkRenderPass pass, VkSampleCountFlagBits samples, int multiply, const char *name ) {
 	VkPipelineShaderStageCreateInfo stages[2];
 	VkPipelineVertexInputStateCreateInfo vertexInput;
 	VkPipelineInputAssemblyStateCreateInfo inputAssembly;
@@ -658,7 +668,16 @@ static VkPipeline RP_CreatePipeline( VkShaderModule fs, VkRenderPass pass, VkSam
 
 	Com_Memset( &blendAttachment, 0, sizeof( blendAttachment ) );
 	blendAttachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
-	if ( multiply ) {
+	if ( multiply == RP_BLEND_ADD ) {
+		// what's there plus what's drawn, its alpha left alone
+		blendAttachment.blendEnable = VK_TRUE;
+		blendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+		blendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+		blendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+		blendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+		blendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+		blendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+	} else if ( multiply ) {
 		// what's there times what's drawn
 		blendAttachment.blendEnable = VK_TRUE;
 		blendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_DST_COLOR;
@@ -707,7 +726,7 @@ static VkPipeline RP_CreatePipeline( VkShaderModule fs, VkRenderPass pass, VkSam
 void vk_rpmod_destroy_pipelines( void ) {
 	VkPipeline *pipes[] = { &rp.depthPipe, &rp.dofPipe, &rp.filterPipe, &rp.copyPipe, &rp.ssaoPipe, &rp.aoBlurPipe,
 		&rp.aoApplyPipe, &rp.shaftsPipe[0], &rp.shaftsPipe[1], &rp.shaftsPipe[2], &rp.mblurPipe, &rp.gradePipe,
-		&rp.fxaaPipe, &rp.casPipe };
+		&rp.fxaaPipe, &rp.casPipe, &rp.volumPipe };
 
 	rp.ready = qfalse;
 	for ( size_t i = 0; i < ARRAY_LEN( pipes ); i++ ) {
@@ -730,6 +749,7 @@ void vk_rpmod_create_pipelines( void ) {
 		rp.aoBlurPipe = RP_CreatePipeline( rp.aoBlurFs, rp.aoPass, one, qfalse, "rpmod ambient occlusion blur" );
 		// into the view: drawn in the main render pass, as many samples as it has
 		rp.aoApplyPipe = RP_CreatePipeline( rp.aoApplyFs, vk.render_pass.main.handle, (VkSampleCountFlagBits)vkSamples, qtrue, "rpmod ambient occlusion apply" );
+		rp.volumPipe = RP_CreatePipeline( rp.volumFs, vk.render_pass.main.handle, (VkSampleCountFlagBits)vkSamples, RP_BLEND_ADD, "rpmod volumetric light" );
 	}
 	rp.dofPipe = RP_CreatePipeline( rp.dofFs, rp.postPass, one, qfalse, "rpmod depth of field" );
 	rp.filterPipe = RP_CreatePipeline( rp.filterFs, rp.postPass, one, qfalse, "rpmod screen filter" );
@@ -908,6 +928,66 @@ static qboolean RP_Sun( const VkRect2D *r, float *pos, float *color ) {
 	return qtrue;
 }
 
+/*
+===============
+volumetric light: the dynamic lights that glow most in this view, nearest and biggest first, in the
+camera's space as the shaders have it (x right, y down, z forward); how many
+===============
+*/
+#define RP_VOLUM_MAX	12		// three a pass
+
+static int RP_VolumLights( vec4_t *pos, vec4_t *color ) {
+	const float *org = backEnd.viewParms.ori.origin;
+	const float *axis0 = backEnd.viewParms.ori.axis[0], *axis1 = backEnd.viewParms.ori.axis[1], *axis2 = backEnd.viewParms.ori.axis[2];
+	float score[RP_VOLUM_MAX];
+	int n = 0;
+
+	if ( !r_volumetric->integer || r_volumetricIntensity->value <= 0.0f || rp.volumPipe == VK_NULL_HANDLE || !backEnd.refdef.dlights )
+		return 0;
+	for ( int i = 0; i < backEnd.refdef.num_dlights; i++ ) {
+		const dlight_t *dl = &backEnd.refdef.dlights[i];
+		vec3_t at, d;
+		float s, bright;
+		int k;
+
+		if ( dl->radius < 8.0f )
+			continue;
+		bright = MAX( dl->color[0], MAX( dl->color[1], dl->color[2] ) );
+		if ( bright <= 0.0f )
+			continue;
+		// a light along a line (a blaster bolt's trail): its middle
+		if ( dl->linear )
+			VectorAdd( dl->origin, dl->origin2, at ), VectorScale( at, 0.5f, at );
+		else
+			VectorCopy( dl->origin, at );
+		VectorSubtract( at, org, d );
+		// all of it behind the camera
+		if ( DotProduct( d, axis0 ) < -dl->radius )
+			continue;
+		s = bright * dl->radius / ( VectorLength( d ) + dl->radius );
+		// in order, the weakest dropped once there are enough
+		for ( k = n; k > 0 && score[k - 1] < s; k-- ) {
+			if ( k < RP_VOLUM_MAX ) {
+				score[k] = score[k - 1];
+				Com_Memcpy( pos[k], pos[k - 1], sizeof( vec4_t ) );
+				Com_Memcpy( color[k], color[k - 1], sizeof( vec4_t ) );
+			}
+		}
+		if ( k >= RP_VOLUM_MAX )
+			continue;
+		score[k] = s;
+		pos[k][0] = -DotProduct( d, axis1 );
+		pos[k][1] = -DotProduct( d, axis2 );
+		pos[k][2] = DotProduct( d, axis0 );
+		pos[k][3] = dl->radius;
+		VectorCopy( dl->color, color[k] );
+		color[k][3] = 0.0f;
+		if ( n < RP_VOLUM_MAX )
+			n++;
+	}
+	return n;
+}
+
 // what needs the view's distances
 static qboolean RP_NeedDistance( const VkRect2D *r ) {
 	float pos[2], color[4];
@@ -915,7 +995,8 @@ static qboolean RP_NeedDistance( const VkRect2D *r ) {
 	if ( !rp.usable || rp.depthPipe == VK_NULL_HANDLE )
 		return qfalse;
 	return (qboolean)( backEnd.refdef.dofBlur > 0.0f || r_ssao->integer || r_softParticles->integer
-		|| r_motionBlur->value > 0.0f || RP_Sun( r, pos, color ) );
+		|| r_motionBlur->value > 0.0f || RP_Sun( r, pos, color )
+		|| ( r_volumetric->integer && backEnd.refdef.num_dlights > 0 && rp.volumPipe != VK_NULL_HANDLE ) );
 }
 
 /*
@@ -1007,6 +1088,36 @@ void vk_rpmod_after_opaque( void ) {
 	vk.renderPassIndex = RENDER_PASS_MAIN;	// the see-through surfaces' pipelines as ever
 	if ( ssao )
 		RP_Quad( rp.aoApplyPipe, rp.aoSet[0], VK_NULL_HANDLE, NULL, 0, &r );
+	// the lights' glow in the air, added, three lights a quad
+	{
+		vec4_t lpos[RP_VOLUM_MAX], lcolor[RP_VOLUM_MAX];
+		const int n = RP_VolumLights( lpos, lcolor );
+		float strength = r_volumetricIntensity->value;
+		struct {
+			float rect[4];
+			float a[4];
+			float light[3][4];
+			float color[3][4];
+		} p;
+
+		// thicker air on a map with fog all over
+		if ( tr.world && tr.world->globalFog != -1 )
+			strength *= r_volumetricFog->value;
+		for ( int first = 0; first < n; first += 3 ) {
+			const int count = MIN( 3, n - first );
+
+			Com_Memset( &p, 0, sizeof( p ) );
+			RP_RectVec( &r, p.rect );
+			RP_TanHalf( p.a );
+			p.a[2] = strength;
+			p.a[3] = (float)count;
+			for ( int k = 0; k < count; k++ ) {
+				Com_Memcpy( p.light[k], lpos[first + k], sizeof( vec4_t ) );
+				Com_Memcpy( p.color[k], lcolor[first + k], sizeof( vec4_t ) );
+			}
+			RP_Quad( rp.volumPipe, rp.distSet, VK_NULL_HANDLE, &p, sizeof( p ), &r );
+		}
+	}
 	RP_Restore();
 
 	rp.haveDistance = qtrue;
