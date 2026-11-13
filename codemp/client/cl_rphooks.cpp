@@ -495,6 +495,14 @@ static rhResult_t RH_Run( const char *text ) {
 		CL_Chat_Hook( argv + 1, argc - 1, message );
 		return RH_DROP;
 	}
+	if ( !Q_stricmp( argv[0], "chatgroup" ) ) {
+		CL_Chat_GroupHook( argv + 1, argc - 1, message );
+		return RH_DROP;
+	}
+	if ( !Q_stricmp( argv[0], "chatgroupstate" ) ) {
+		CL_Chat_GroupStateHook( argv + 1, argc - 1, message );
+		return RH_DROP;
+	}
 	if ( !Q_stricmp( argv[0], "chatstate" ) ) {
 		CL_Chat_StateHook( argv + 1, argc - 1, message );
 		return RH_DROP;

@@ -1150,6 +1150,8 @@ static void DP_Datapad_f( void ) {
 				CL_HoloNet_Open( atoi( Cmd_Argv( 2 ) ) );
 			else if ( !Q_stricmp( arg, "comport" ) )
 				CL_Comport_Open( Cmd_Argv( 2 ) );
+			else if ( !Q_stricmp( arg, "chat" ) && !Q_stricmp( Cmd_Argv( 2 ), "group" ) )
+				CL_Chat_OpenGroup( atoi( Cmd_Argv( 3 ) ) );
 			else if ( !Q_stricmp( arg, "chat" ) )
 				CL_Chat_OpenWith( Cmd_Argv( 2 ) );
 		}
@@ -1174,6 +1176,7 @@ static void DP_Datapad_f( void ) {
 		Com_Printf( "       " DP_CMD " settings       open on its Settings\n" );
 		Com_Printf( "       " DP_CMD " pazaak|holonet|comport|notes|chat   open on that app\n" );
 		Com_Printf( "       " DP_CMD " chat <account>   the conversation with that account's main character\n" );
+		Com_Printf( "       " DP_CMD " chat group <id>   that group chat\n" );
 		Com_Printf( "       (things in the world, datapads too: /world)\n" );
 		Com_Printf( "       " DP_CMD " pos <x> <y>    where it opens, on the 640x480 screen (its top left)\n" );
 		Com_Printf( "       " DP_CMD " pos            back in the bottom right corner, above the HUD\n" );
