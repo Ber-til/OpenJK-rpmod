@@ -1105,6 +1105,8 @@ void CL_SpecialMoves_FilterCmd( usercmd_t *cmd );
 void CL_BurstFire_Init( void );
 void CL_BurstFire_FilterCmd( usercmd_t *cmd );
 void CL_BurstFire_Draw( void );
+void CL_BurstFire_Entity( const refEntity_t *ent );		// the gun as it's drawn, for the charge's glow
+void CL_BurstFire_AddToScene( const refdef_t *fd );
 
 // cl_chatlog.cpp
 // cl_datapad.cpp: the datapad, folded in the corner or open on the right

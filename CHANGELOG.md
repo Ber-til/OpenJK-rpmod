@@ -6,7 +6,7 @@ OpenJK-rpmod is built on [OpenJK](https://github.com/JACoders/OpenJK); for the c
 
 ## 0.10.0 - in progress
 
-- [Added] `Burst fire for the E-11`. With `cl_burstFire 1` (`/burstfire`, or the Esc menu's Tools), holding the E-11's alt fire charges for a moment, fires a burst of 4 shots, then cools down before the next, with a bar under the crosshair. Only your own fire is shaped: the server fires at its own rate, and nothing changes for others. An idea from a player's report.
+- [Added] `Burst fire for the E-11`. On by default (`cl_burstFire 0` or `/burstfire off` turns it off; also in the Esc menu's Tools): holding the E-11's alt fire charges for a moment, its muzzle glowing and the charge sounding as the Bryar pistol's alt fire, fires a burst of 4 shots, then cools down before the next, with a bar under the crosshair. Only your own fire is shaped: the server fires at its own rate, and nothing changes for others. An idea from a player's report.
 - [Added] `Characters: tags`. Your first character is your **Main**: the only one given a lightsaber hilt, never shared or deleted. Others are **Secondary** (yours alone) or **Extra** (for missions; the only ones that can be shared, with their items, notes and look). Pick it when you make one and switch it in the window; a copy someone gives you is Extra.
 - [Added] `Inspect: on or off for each character`. "Others can Inspect this character" in Characters, or `/inspect off|on`: when off, others see "This character can't be inspected" and your crosshair hint is gone; worn holster items still show.
 - [Added] `Notes on the datapad`. A **Notes** app keeps as many notes as you like for each character, on C1B3R: a list, a title and a page of text, saved as you type.

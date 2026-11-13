@@ -349,6 +349,8 @@ static void CL_R_AddRefEntityToScene( const refEntity_t *ent ) {
 	CL_SaberLight_Entity( ent );
 	// a body cut for the story (/dismember)
 	CL_Dismember_Entity( ent );
+	// the E-11's burst charging: where its muzzle is
+	CL_BurstFire_Entity( ent );
 	re->AddRefEntityToScene( ent );
 	// what they wear (/holster), on the body as it's drawn
 	CL_Holster_Entity( ent, bodyGhoul2 );
@@ -415,6 +417,8 @@ static void CL_R_RenderScene( const refdef_t *fd ) {
 	CL_WorldItems_AddToScene( fd );
 	// limbs cut for the story, lying about
 	CL_Dismember_AddToScene( fd );
+	// the E-11's burst charging: a glow at the muzzle
+	CL_BurstFire_AddToScene( fd );
 	// where the crosshair looks, for an NPC's name under it
 	CL_NpcNames_View( fd );
 	CL_Aim_View( fd );
