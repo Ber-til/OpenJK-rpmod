@@ -75,6 +75,14 @@ static void vk_set_render_scale( void )
 
 void get_viewport_rect( VkRect2D *r )
 {
+	// OpenJK-rpmod: the shadow map, all of it
+	if (vk.renderPassIndex == RENDER_PASS_SHADOW && !backEnd.projection2D)
+	{
+		r->offset.x = 0;
+		r->offset.y = 0;
+		r->extent.width = r->extent.height = vk_rpmod_shadow_size();
+		return;
+	}
 	if (backEnd.projection2D)
 	{
 		r->offset.x = 0;
@@ -153,6 +161,8 @@ void get_scissor_rect( VkRect2D *r ) {
 	else
 	{
 		get_viewport_rect(r);
+		if (vk.renderPassIndex == RENDER_PASS_SHADOW)
+			return; // OpenJK-rpmod: the shadow map's own size, not the window's
 
 		if (r->offset.x < 0)
 			r->offset.x = 0;

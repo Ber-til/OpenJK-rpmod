@@ -1044,7 +1044,7 @@ const void	*RB_DrawSurfs( const void *data ) {
 			RB_RenderDrawSurfList( cmd->drawSurfs, cmd->numDrawSurfs );
 		} else {
 			RB_RenderDrawSurfList( cmd->drawSurfs, split );
-			vk_rpmod_after_opaque();
+			vk_rpmod_after_opaque( cmd->drawSurfs, split );
 			RB_RenderDrawSurfList( cmd->drawSurfs + split, cmd->numDrawSurfs - split );
 		}
 	}

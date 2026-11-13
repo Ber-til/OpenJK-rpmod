@@ -1262,6 +1262,11 @@ VkPipeline vk_create_pipeline( const Vk_Pipeline_Def *def, renderPass_t renderPa
     multisample_state.pNext = NULL;
     multisample_state.flags = 0;
     multisample_state.rasterizationSamples = (renderPassIndex == RENDER_PASS_SCREENMAP) ? (VkSampleCountFlagBits)vk.screenMapSamples : (VkSampleCountFlagBits)vkSamples;
+    if ( renderPassIndex == RENDER_PASS_SHADOW ) { // OpenJK-rpmod: the shadow map has one sample
+        multisample_state.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        alphaToCoverage = VK_FALSE;
+        frag_spec_data.alpha_to_coverage = 0; // alpha-tested holes discarded, not covered
+    }
     multisample_state.sampleShadingEnable = VK_FALSE;
     multisample_state.minSampleShading = 1.0f;
     multisample_state.pSampleMask = NULL;
@@ -1394,7 +1399,9 @@ VkPipeline vk_create_pipeline( const Vk_Pipeline_Def *def, renderPass_t renderPa
 	else
 		create_info.layout = vk.pipeline_layout;
 
-    if ( renderPassIndex == RENDER_PASS_SCREENMAP )
+    if ( renderPassIndex == RENDER_PASS_SHADOW )
+        create_info.renderPass = vk_rpmod_shadow_pass(); // OpenJK-rpmod
+    else if ( renderPassIndex == RENDER_PASS_SCREENMAP )
         create_info.renderPass = vk.render_pass.screenmap.handle;
     else if ( renderPassIndex == RENDER_PASS_REFRACTION )
         create_info.renderPass = vk.render_pass.refraction.extract.handle;

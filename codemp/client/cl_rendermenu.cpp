@@ -134,7 +134,7 @@ static const rmRow_t rmRows[] = {
 		"How dark ambient occlusion makes corners and creases; lower it if the picture looks too dark",
 		"cvarFloatList { \"Low\" 0.3 \"Medium\" 0.6 \"Strong\" 1 }", RM_SHOW_POSTFX, 0 },
 	{ NULL, NULL, NULL, "More Settings >",
-		"Supersampling, soft particles, FXAA, sharpening, sun shafts, volumetric light, reflections, tone mapping, motion blur",
+		"Supersampling, soft particles, FXAA, sharpening, sun shafts, volumetric light, reflections, real shadows, tone mapping, motion blur",
 		NULL, RM_SHOW_POSTFX, 0 },
 	// the second page: Vulkan's own additions (rd-vulkan's vk_rpmod_post.cpp)
 	{ "ui_rd_ssaa", "r_ext_supersample", "0", "Supersampling:",
@@ -167,6 +167,12 @@ static const rmRow_t rmRows[] = {
 	{ "ui_rd_ssrstrength", "r_ssrStrength", "0.8", "Reflection Strength:",
 		"How strongly the floors mirror",
 		"cvarFloatList { \"Low\" 0.4 \"Medium\" 0.8 \"High\" 1.5 }", RM_SHOW_POSTFX, 1 },
+	{ "ui_rd_shadows", "r_shadowMaps", "0", "Real Shadows:",
+		"Players, NPCs and models cast soft shadows on the map and each other, in place of the blob",
+		"cvarFloatList { \"Off\" 0 \"On\" 1 }", RM_SHOW_POSTFX, 1 },
+	{ "ui_rd_shadowsun", "r_shadowSun", "0", "Shadow Direction:",
+		"Nearly straight down suits indoors; From the Sun follows the map's sun",
+		"cvarFloatList { \"Down\" 0 \"From the Sun\" 1 }", RM_SHOW_POSTFX, 1 },
 	{ "ui_rd_tonemap", "r_tonemap", "0", "Tone Mapping:",
 		"Bright light rolls off instead of clipping to white; Film (ACES) darkens the shadows too",
 		"cvarFloatList { \"Off\" 0 \"Soft\" 1 \"Film\" 2 }", RM_SHOW_POSTFX, 1 },
@@ -1422,4 +1428,27 @@ void CL_RenderMenu_Init( void ) {
 void CL_RenderMenu_Shutdown( void ) {
 	LoadScriptFile_Patch = NULL;
 	Cmd_RemoveCommand( "renderersettings" );
+}
+
+/*
+================================================================================
+real shadows (Vulkan's r_shadowMaps) in place of the blob under each player (cg_shadows 1): the blob
+off while they're on, and back when they're off again. Stencil or flat shadows (2, 3) are left alone
+================================================================================
+*/
+void CL_RealShadows_Frame( void ) {
+	static cvar_t *were;
+	const qboolean on = (qboolean)( !Q_stricmp( Cvar_VariableString( "cl_renderer" ), RM_VULKAN )
+		&& Cvar_VariableIntegerValue( "r_shadowMaps" ) && Cvar_VariableIntegerValue( "r_fbo" ) );
+	const int blob = Cvar_VariableIntegerValue( "cg_shadows" );
+
+	if ( !were )
+		were = Cvar_Get( "cl_shadowsBlobWere", "0", CVAR_ARCHIVE_ND | CVAR_INTERNAL, "The blob shadow was on before real shadows took its place" );
+	if ( on && blob == 1 ) {
+		Cvar_Set( "cl_shadowsBlobWere", "1" );
+		Cvar_Set( "cg_shadows", "0" );
+	} else if ( !on && blob == 0 && were->integer ) {
+		Cvar_Set( "cg_shadows", "1" );
+		Cvar_Set( "cl_shadowsBlobWere", "0" );
+	}
 }
