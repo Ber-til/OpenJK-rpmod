@@ -178,6 +178,7 @@ static struct {
 	int					cloudTime;
 	int					flashUntil, nextFlash;
 	qboolean			setsAllocated;
+	VkDescriptorSet		skyResult;			// the post image the sky passes left the view in
 
 	VkRenderPass		postPass, distPass, aoPass, smaaPass;
 	VkFramebuffer		postFb[2], distFb, aoFb[2], smaaFb[2];
@@ -1988,11 +1989,105 @@ static void RP_FindHaze( drawSurf_t *drawSurfs, int numDrawSurfs, const VkRect2D
 	}
 }
 
+static void RP_SkyScene( void );
+static void RP_SkyWeather( void );
+static float RP_CloudCover( void );
+static void RP_SunMapStep( void );
+static qboolean RP_SunMapReady( void );
+
+/*
+===============
+the sky (the composer's, its clouds and objects, the skybox sharpened) and what's under it (aerial
+haze, cloud shadows), drawn after the solid surfaces and before what's see-through: a saber's blade,
+effects and glass against the sky stay in front of it. Into the post images from the view, then
+copied back into the view (vk_rpmod_after_opaque)
+===============
+*/
+static qboolean RP_SkyPasses( const VkRect2D *rr ) {
+	const VkRect2D r = *rr;
+	VkDescriptorSet src = rp.sceneSet;
+	int next = 0;
+	float cover = 0.0f;
+	qboolean skyPass, aerialPass;
+
+	if ( rp.skyPipe == VK_NULL_HANDLE || rp.aerialPipe == VK_NULL_HANDLE || !RP_MainView() )
+		return qfalse;
+	RP_SkyScene();
+	RP_SkyWeather();
+	cover = RP_CloudCover();
+	skyPass = (qboolean)( rp.skyComposed || r_skySharpen->value > 0.0f || cover > 0.0f || rp.numSkyObjects > 0 );
+	aerialPass = (qboolean)( r_aerialHaze->value > 0.0f || ( cover > 0.0f && r_cloudShadows->value > 0.0f ) );
+	if ( !skyPass && !aerialPass )
+		return qfalse;
+
+	if ( skyPass || aerialPass ) {
+		// the sky, then what's under it: before reflections and water, which mirror it
+		const float *axis0 = backEnd.viewParms.ori.axis[0], *axis1 = backEnd.viewParms.ori.axis[1], *axis2 = backEnd.viewParms.ori.axis[2];
+		const float *o = backEnd.viewParms.ori.origin;
+		struct {
+			float rect[4];
+			float a[4];
+			float cam[3][4];
+			float sun[4];
+			float b[4];
+			float c[4];
+		} p;
+		vec3_t sun;
+
+		RP_SkySun( sun );
+		RP_RectVec( &r, p.rect );
+		RP_TanHalf( p.a );
+		p.a[2] = backEnd.viewParms.zFar;
+		p.a[3] = backEnd.refdef.time * 0.001f;
+		for ( int i = 0; i < 3; i++ ) {
+			p.cam[0][i] = -axis1[i];
+			p.cam[1][i] = -axis2[i];
+			p.cam[2][i] = axis0[i];
+			p.cam[i][3] = o[i];
+		}
+		VectorCopy( sun, p.sun );
+		p.b[0] = cover;
+		p.b[1] = rp.cloudDrift[0];
+		p.b[2] = rp.cloudDrift[1];
+
+		if ( skyPass ) {
+			p.sun[3] = rp.skyComposed ? 1.0f : 0.0f;		// the admin's choice, the same for everyone
+			p.b[3] = (float)rp.numSkyObjects;
+			p.c[0] = r_skySharpen->value;
+			p.c[1] = R_IsRaining() ? 1.0f : 0.0f;
+			p.c[2] = backEnd.refdef.time < rp.flashUntil ? 1.0f : 0.0f;
+			p.c[3] = 1.0f;
+			vk_begin_render_pass( rp.postPass, rp.postFb[next], qfalse, glConfig.vidWidth, glConfig.vidHeight );
+			RP_Quad3( rp.skyPipe, src, rp.distSet, rp.skySet, &p, sizeof( p ), &r );
+			vk_end_render_pass();
+			src = rp.postSet[next];
+			next ^= 1;
+		}
+		if ( aerialPass ) {
+			if ( cover > 0.0f && r_cloudShadows->value > 0.0f )
+				RP_SunMapStep();
+			p.sun[3] = r_aerialHaze->value;
+			p.b[3] = RP_SunMapReady() ? r_cloudShadows->value : 0.0f;	// none until it's known where the sun reaches
+			p.c[0] = R_IsRaining() ? 1.0f : 0.0f;
+			p.c[1] = r_aerialHazeStart->value;
+			p.c[2] = p.c[3] = 0.0f;
+			vk_begin_render_pass( rp.postPass, rp.postFb[next], qfalse, glConfig.vidWidth, glConfig.vidHeight );
+			RP_Quad3( rp.aerialPipe, src, rp.distSet, rp.sunSet, &p, sizeof( p ), &r );
+			vk_end_render_pass();
+			src = rp.postSet[next];
+			next ^= 1;
+		}
+	}
+
+	rp.skyResult = src;
+	return qtrue;
+}
+
 void vk_rpmod_after_opaque( drawSurf_t *drawSurfs, int numDrawSurfs, int numAll ) {
 	const float zNear = backEnd.viewParms.zNear, zFar = backEnd.viewParms.zFar;
 	const qboolean ssao = (qboolean)( r_ssao->integer && r_ssaoIntensity->value > 0.0f && rp.ssaoPipe != VK_NULL_HANDLE );
 	float push[4], toLight[16], shadowBias = 0.0f;
-	qboolean shadows = qfalse;
+	qboolean shadows = qfalse, sky = qfalse;
 	VkRect2D r;
 
 	if ( zFar <= zNear || !RP_ViewRect( &r ) )
@@ -2019,6 +2114,8 @@ void vk_rpmod_after_opaque( drawSurf_t *drawSurfs, int numDrawSurfs, int numAll 
 	RP_DepthBarrier( qtrue );
 	RP_Pass( rp.distPass, rp.distFb, rp.depthPipe, rp.depthSet, VK_NULL_HANDLE, push, sizeof( push ), &r );
 	RP_DepthBarrier( qfalse );
+	rp.haveDistance = qtrue;		// for the sky passes; again below for the rest of the frame
+	sky = RP_SkyPasses( &r );
 
 	if ( ssao ) {
 		const float radius = r_ssaoRadius->value;
@@ -2053,6 +2150,8 @@ void vk_rpmod_after_opaque( drawSurf_t *drawSurfs, int numDrawSurfs, int numAll 
 
 	RP_Resume();
 	vk.renderPassIndex = RENDER_PASS_MAIN;	// the see-through surfaces' pipelines as ever
+	if ( sky )
+		RP_Quad( rp.copyPipe, rp.skyResult, VK_NULL_HANDLE, NULL, 0, &r );	// the view with its sky
 	if ( ssao )
 		RP_Quad( rp.aoApplyPipe, rp.aoSet[0], VK_NULL_HANDLE, NULL, 0, &r );
 	// what the shadow map hides from the light, darkened
@@ -2536,6 +2635,10 @@ static struct {
 	float		data[RP_SUNMAP_N * ( RP_SUNMAP_N + 1 )];
 } rpSun;
 
+static qboolean RP_SunMapReady( void ) {
+	return rpSun.ready;
+}
+
 static void RP_SunMapForget( void ) {
 	rpSun.world = NULL;
 	rpSun.building = rpSun.ready = qfalse;
@@ -2700,8 +2803,6 @@ void vk_rpmod_post( void ) {
 	float wetness[RP_MAX_WET];
 	const int numWet = ( dist && r_wetSurfaces->integer && r_wetStrength->value > 0.0f && rp.wetPipe != VK_NULL_HANDLE )
 		? R_WetZones( wetMins, wetMaxs, wetness, RP_MAX_WET ) : 0;
-	float cover = 0.0f;
-	qboolean skyPass = qfalse, aerialPass = qfalse;
 	float sunPos[2], sunColor[4], mblur[16], mblurScale = 0.0f, grade[4], tint[4];
 	qboolean shafts, motion, graded;
 	VkDescriptorSet src = rp.sceneSet;
@@ -2713,17 +2814,10 @@ void vk_rpmod_post( void ) {
 		return;
 
 	shafts = (qboolean)( dist && RP_Sun( &r, sunPos, sunColor ) );
-	if ( dist && rp.skyPipe != VK_NULL_HANDLE ) {
-		RP_SkyScene();
-		RP_SkyWeather();
-		cover = RP_CloudCover();
-		skyPass = (qboolean)( rp.skyComposed || r_skySharpen->value > 0.0f || cover > 0.0f || rp.numSkyObjects > 0 );
-		aerialPass = (qboolean)( r_aerialHaze->value > 0.0f || ( cover > 0.0f && r_cloudShadows->value > 0.0f ) );
-	}
 	motion = (qboolean)( dist && RP_MotionBlur( &r, mblur, &mblurScale ) );
 	graded = RP_Grade( grade, tint );
 	RP_KeepCamera( &r );
-	if ( !shafts && !skyPass && !aerialPass && !ssr && !water && !numWet && !haze && !motion && !dof && !graded && !filter && !smaa && !fxaa && !sharpen )
+	if ( !shafts && !ssr && !water && !numWet && !haze && !motion && !dof && !graded && !filter && !smaa && !fxaa && !sharpen )
 		return;
 
 	vk_end_render_pass();
@@ -2755,65 +2849,6 @@ void vk_rpmod_post( void ) {
 		RP_Pass( rp.postPass, rp.postFb[1], rp.shaftsPipe[2], rp.sceneSet, rp.postSet[0], &p, sizeof( p ), &r );
 		src = rp.postSet[1];
 		next = 0;
-	}
-
-	if ( skyPass || aerialPass ) {
-		// the sky, then what's under it: before reflections and water, which mirror it
-		const float *axis0 = backEnd.viewParms.ori.axis[0], *axis1 = backEnd.viewParms.ori.axis[1], *axis2 = backEnd.viewParms.ori.axis[2];
-		const float *o = backEnd.viewParms.ori.origin;
-		struct {
-			float rect[4];
-			float a[4];
-			float cam[3][4];
-			float sun[4];
-			float b[4];
-			float c[4];
-		} p;
-		vec3_t sun;
-
-		RP_SkySun( sun );
-		RP_RectVec( &r, p.rect );
-		RP_TanHalf( p.a );
-		p.a[2] = backEnd.viewParms.zFar;
-		p.a[3] = backEnd.refdef.time * 0.001f;
-		for ( int i = 0; i < 3; i++ ) {
-			p.cam[0][i] = -axis1[i];
-			p.cam[1][i] = -axis2[i];
-			p.cam[2][i] = axis0[i];
-			p.cam[i][3] = o[i];
-		}
-		VectorCopy( sun, p.sun );
-		p.b[0] = cover;
-		p.b[1] = rp.cloudDrift[0];
-		p.b[2] = rp.cloudDrift[1];
-
-		if ( skyPass ) {
-			p.sun[3] = rp.skyComposed ? 1.0f : 0.0f;		// the admin's choice, the same for everyone
-			p.b[3] = (float)rp.numSkyObjects;
-			p.c[0] = r_skySharpen->value;
-			p.c[1] = R_IsRaining() ? 1.0f : 0.0f;
-			p.c[2] = backEnd.refdef.time < rp.flashUntil ? 1.0f : 0.0f;
-			p.c[3] = 1.0f;
-			vk_begin_render_pass( rp.postPass, rp.postFb[next], qfalse, glConfig.vidWidth, glConfig.vidHeight );
-			RP_Quad3( rp.skyPipe, src, rp.distSet, rp.skySet, &p, sizeof( p ), &r );
-			vk_end_render_pass();
-			src = rp.postSet[next];
-			next ^= 1;
-		}
-		if ( aerialPass ) {
-			if ( cover > 0.0f && r_cloudShadows->value > 0.0f )
-				RP_SunMapStep();
-			p.sun[3] = r_aerialHaze->value;
-			p.b[3] = rpSun.ready ? r_cloudShadows->value : 0.0f;	// none until it's known where the sun reaches
-			p.c[0] = R_IsRaining() ? 1.0f : 0.0f;
-			p.c[1] = r_aerialHazeStart->value;
-			p.c[2] = p.c[3] = 0.0f;
-			vk_begin_render_pass( rp.postPass, rp.postFb[next], qfalse, glConfig.vidWidth, glConfig.vidHeight );
-			RP_Quad3( rp.aerialPipe, src, rp.distSet, rp.sunSet, &p, sizeof( p ), &r );
-			vk_end_render_pass();
-			src = rp.postSet[next];
-			next ^= 1;
-		}
 	}
 
 	if ( ssr ) {

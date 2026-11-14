@@ -7,6 +7,8 @@
 //   refraction   what's under the water bent by the ripples, more where it's deep
 //   depth        deep water darker and tinted, the floor fading out under it
 //   reflections  the view mirrored along the rippled surface, more at a glancing look (Fresnel)
+// Water that slopes or falls (a slide, a waterfall) flows instead: what's seen through it wavers,
+// running downhill, and streaks of light run down it.
 
 #include "view.glsl"
 
@@ -81,6 +83,43 @@ float Height( vec2 w, float t )
 	return h;
 }
 
+float FlowHash( vec2 c )
+{
+	return fract( sin( dot( c, vec2( 127.1, 311.7 ) ) ) * 43758.5453 );
+}
+
+float FlowNoise( vec2 w )
+{
+	const vec2 i = floor( w ), f = fract( w );
+	const vec2 u = f * f * ( 3.0 - 2.0 * f );
+
+	return mix( mix( FlowHash( i ), FlowHash( i + vec2( 1.0, 0.0 ) ), u.x ), mix( FlowHash( i + vec2( 0.0, 1.0 ) ), FlowHash( i + vec2( 1.0, 1.0 ) ), u.x ), u.y );
+}
+
+// sloping or falling water at p, at the world point W
+vec3 Flowing( vec2 p, vec3 here, vec3 W, float wz )
+{
+	const float t = pc.b.x;
+	const float strength = clamp( pc.a.z, 0.0, 2.0 );
+	// the world's own lines, not the surface's (a waterfall is made of many facets, each facing a
+	// little differently): across along the ground, down by height
+	const float u = ( W.x + W.y ) * 0.7071, v = -W.z;
+	// the flow: noise stretched along it, running down
+	const vec2 q1 = vec2( u / 20.0, v / 60.0 - t * 2.2 );
+	const vec2 q2 = vec2( u / 11.0 + 3.7, v / 35.0 - t * 3.1 );
+	const vec2 wobble = vec2( FlowNoise( q1 ) - 0.5, FlowNoise( q2 ) - 0.5 );
+	const float px = ( pc.rect.w - pc.rect.y ) * 0.004 * strength;
+	const vec2 q = p + wobble * px;
+	vec3 c = here;
+
+	if ( WaterDist( q ) > 0.0 && Dist( q ) > wz - 4.0 )
+		c = mix( here, Source( q ), clamp( strength, 0.0, 1.0 ) );
+	// streaks of light running down it
+	const float streak = smoothstep( 0.62, 0.95, FlowNoise( vec2( u / 6.0, v / 90.0 - t * 2.8 ) ) );
+	c += vec3( 0.10, 0.11, 0.12 ) * streak * strength;
+	return c;
+}
+
 // its facing in the world, from the waves' slopes
 vec3 Normal( vec2 w, float t )
 {
@@ -110,16 +149,25 @@ void main()
 	const vec3 W = ToWorld( P );
 	const vec3 V = normalize( P );
 
-	// flat water only: a waterfall keeps its own look
+	// flat water ripples and mirrors; water that slopes or falls flows
 	const vec3 upCam = ToCamera( vec3( 0.0, 0.0, 1.0 ) );
 	{
-		const vec3 P1 = ViewPoint( p + vec2( 1.0, 0.0 ), WaterDist( p + vec2( 1.0, 0.0 ) ), pc.rect, pc.a.xy );
-		const vec3 P2 = ViewPoint( p + vec2( 0.0, 1.0 ), WaterDist( p + vec2( 0.0, 1.0 ) ), pc.rect, pc.a.xy );
-		vec3 Nf = normalize( cross( P2 - P, P1 - P ) );
+		// each way, the neighbour on the same surface (the nearer in depth, and water), a few pixels
+		// off: a triangle's edge, the water's own edge or two layers of it fighting don't bend the facing
+		const float o = 4.0;
+		const float zr = WaterDist( p + vec2( o, 0.0 ) ), zl = WaterDist( p - vec2( o, 0.0 ) );
+		const float zd = WaterDist( p + vec2( 0.0, o ) ), zu = WaterDist( p - vec2( 0.0, o ) );
+		const bool useR = zl <= 0.0 || ( zr > 0.0 && abs( zr - wz ) <= abs( zl - wz ) );
+		const bool useD = zu <= 0.0 || ( zd > 0.0 && abs( zd - wz ) <= abs( zu - wz ) );
+		const vec3 dx = useR ? ViewPoint( p + vec2( o, 0.0 ), zr, pc.rect, pc.a.xy ) - P : P - ViewPoint( p - vec2( o, 0.0 ), zl, pc.rect, pc.a.xy );
+		const vec3 dy = useD ? ViewPoint( p + vec2( 0.0, o ), zd, pc.rect, pc.a.xy ) - P : P - ViewPoint( p - vec2( 0.0, o ), zu, pc.rect, pc.a.xy );
+		vec3 Nf = normalize( cross( dy, dx ) );
 		if ( dot( Nf, P ) > 0.0 )
 			Nf = -Nf;
-		if ( dot( Nf, upCam ) < 0.7 )
+		if ( dot( Nf, upCam ) < 0.7 ) {
+			out_color = vec4( Flowing( p, here, W, wz ), 1.0 );
 			return;
+		}
 	}
 
 	const float t = pc.b.x;
