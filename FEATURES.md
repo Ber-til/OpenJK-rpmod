@@ -405,6 +405,8 @@ Edit the map on your own screen: move or hide any part of it, place models, ligh
 - **Brushes**: any brush of the map, not only its props, moved with the X, Y and Z arrows, or hidden on your screen
 - **Models**: place models, carry them to the crosshair, turn and scale them. The map's own props can be lifted out too, to move or remove them; or swapped for another model: pick it in the list and **Swap for ...** hides the prop and stands the model where it was, as big as fits in its place, ready to turn and scale. It takes the light around it rather than the light baked into the map
   - Other maps too, whole: type *map* in the list, pick one and Add puts it at the crosshair, its middle there and its lowest point on what you're looking at; move, turn and scale it like a model to fuse the two maps; it turns and scales around that spot, and its sky and fog are left out. It's drawn only: no one can walk on it, as the server only knows its own map. Others see it shared if they have that map too
+- **Brushes**: shapes of your own, built like the map's: a **Box**, a **Wedge**, a **Cylinder** (its sides) or **Stairs** (its steps), put at the crosshair with the texture it's on. Drag the yellow handles on its sides to size it, the arrows to move it, on a grid of 8, 16 or 32 units (Shift: by a unit); turn it with Yaw, Pitch and Roll. On the **Faces** page, click its faces (Shift adds more) and pick a texture for them, with its scale, shift and turn. A brush of the map's, clicked, can be **Made editable**: the map's is hidden and yours takes its place, its faces moved one by one with their handles and given other textures; Delete puts the map's back. They're lit by the map's light where they stand (its baked shadows aren't on them). *Needs the release's renderer, OpenGL or Vulkan.*
+  - They're only drawn: no one bumps into them or stands on them, as the server knows nothing of them
 - **Lights**: dynamic lights with a color and reach, that can follow a light style
 - **Sounds**: speakers that play any music or sound, heard near them or everywhere, looping
 - **Styles**: give the map's switchable lights a new pattern (flicker, pulse, strobe...) and color, change its existing light styles, or the lighting of the whole map
@@ -422,8 +424,8 @@ Edit the map on your own screen: move or hide any part of it, place models, ligh
 - `Clear` takes away the edits shown
 - **Share** *(experimental)* sends your edits to everyone on the map who uses this client; **Unshare** takes them back
 - Shared edits show in place of the receiver's own without touching their files, until they're unshared or the map changes; `rpc_mapShare 0` opts out
-- Only the look of the map changes: hidden walls still block and moved props have no collision, since the server knows nothing of it. Triggers are the world editor's now (`/world`: zones used or walked into, kept by C1B3R)
-- Players who join later need it shared again
+- Only the look of the map changes for the server: hidden walls still block and moved props have no collision, since it knows nothing of them. Triggers are the world editor's now (`/world`: zones used or walked into, kept by C1B3R)
+- Players who join later get what's shared too (C1B3R keeps it until the map changes)
 
 ## Sound and Music Managers
 

@@ -178,6 +178,9 @@ The console commands, keys and settings this client adds. What each feature does
 - `/mapedit clear` takes away the edits shown
 - `/mapedit share` sends your edits to everyone on the map with this client; `/mapedit unshare` takes them back (experimental)
 - `/mapedit on | off` shows the edits outside the editor too, or not
+- `/mapedit brush add <box|wedge|cylinder|stairs>` puts a brush of your own at the crosshair, with the texture it's on
+- `/mapedit brush edit` makes the map's brush at the crosshair one of yours, to reshape and retexture
+- `/mapedit grid <8|16|32|off>` what brushes move and size by
 
 ## Map Editor keys
 

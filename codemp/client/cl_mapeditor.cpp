@@ -64,6 +64,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 
 #include "client.h"
 #include "qcommon/cm_public.h"
+#include "qcommon/cm_polylib.h"
 #include "cl_widgets.h"
 #include <string>
 #include <vector>
@@ -117,12 +118,21 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define ME_MAX_TEXEDITS		512			// shared edits of textures
 #define ME_TEX_ROWS			8
 #define ME_TEX_NAME_LEN		200			// a texture given: a shader, or a ground with sprites growing on it
+#define ME_MAX_BFACES		48			// a brush of ours: its faces, all its parts
+#define ME_MAX_BPARTS		16
+#define ME_MAX_BSHADERS		128			// the textures on them
+#define ME_MAX_SIDES		24			// a cylinder's
+#define ME_MAX_STEPS		8			// stairs'
+#define ME_TEX_SCALE		0.5f		// a face's texture: a texel this many units, as maps mostly have it
+#define ME_BRUSH_REBUILD_MS	50			// a brush changing (dragged) is made again at most this often
+#define ME_MAX_SHAREFACES	2048		// brushes' faces in one share
 #define ME_GROW_PREFIX		"~grow/"	// ~grow/<ground>@<sprite>@<width>@<height>@<spacing>; no ground: each surface's own
 #define ME_MAX_GROW_CACHE	32
 
 typedef enum {
 	ME_TAB_MAP,
 	ME_TAB_MODELS,
+	ME_TAB_BRUSHES,
 	ME_TAB_LIGHTS,
 	ME_TAB_SOUNDS,
 	ME_TAB_STYLES,
@@ -133,7 +143,7 @@ typedef enum {
 	ME_NUM_TABS
 } meTab_t;
 
-static const char *meTabNames[ME_NUM_TABS] = { "Map", "Models", "Lights", "Sounds", "Styles", "Locks", "Fog", "Weather", "Textures" };
+static const char *meTabNames[ME_NUM_TABS] = { "Map", "Models", "Brushes", "Lights", "Sounds", "Styles", "Locks", "Fog", "Weather", "Textures" };
 #define ME_TABS_PER_ROW		5
 
 // the renderer's weathers, each as it falls by itself (tr_WorldEffects.cpp): its particles, pull
@@ -201,8 +211,29 @@ typedef enum {
 	ME_ITEM_PROP,		// a prop of the map's, lifted out
 	ME_ITEM_SPEAKER,	// a sound playing round and round
 	ME_ITEM_FOG,		// a fog volume of ours: a box, its colour, how thick
-	ME_ITEM_WEATHER		// weather of ours: rain, snow, sand... falling in a box
+	ME_ITEM_WEATHER,	// weather of ours: rain, snow, sand... falling in a box
+	ME_ITEM_BRUSH		// a brush of ours: faces of planes, drawn as a model of its own
 } meItemKind_t;
+
+// a brush's shapes; one from the map's is only its planes
+typedef enum {
+	ME_SHAPE_BOX,
+	ME_SHAPE_WEDGE,
+	ME_SHAPE_CYLINDER,
+	ME_SHAPE_STAIRS,
+	ME_SHAPE_CUSTOM,
+	ME_NUM_SHAPES
+} meShape_t;
+
+// a face of a brush of ours: its plane in the brush's own space (inside is behind it), the convex
+// part it bounds, its texture (one of me.bShaders) and how that's laid on it: scale X and Y (units a
+// texel), shift X and Y (texels), turned (degrees)
+typedef struct {
+	float		plane[4];
+	byte		part;
+	byte		shader;
+	float		tex[5];
+} meFace_t;
 
 typedef struct {
 	int			kind;
@@ -248,6 +279,18 @@ typedef struct {
 	int			numSeeds;
 	vec3_t		pivot;
 	qboolean	removed;
+
+	// a brush: its shape, made from size (its whole width, depth and height, org at its bottom
+	// middle) and bSides (a cylinder's sides, stairs' steps); the map's brush it
+	// was made from (-1 none: that one's hidden by a prop of its own); its faces; the key, time and
+	// box in its own space of the model made of them
+	int			bShape, bSides;
+	int			bFrom;
+	int			numFaces;
+	meFace_t	faces[ME_MAX_BFACES];
+	unsigned	bKey;
+	int			bTime;
+	vec3_t		bMins, bMaxs;
 } meItem_t;
 
 // a triangle of the world: its surface, which of the surface's it is, and its corners
@@ -336,6 +379,7 @@ typedef enum {
 	ME_FIELD_SOUND,			// a speaker's sound
 	ME_FIELD_LOCKNAME,		// a lock's name
 	ME_FIELD_TEXTURE,		// a texture to give the picked surfaces
+	ME_FIELD_BTEXTURE,		// a texture to give a brush's faces
 	ME_FIELD_GROW			// a sprite image to grow on them
 } meField_t;
 
@@ -477,6 +521,23 @@ typedef struct {
 	vec3_t		*brushMins, *brushMaxs;
 	int			numBrushes;
 	int			candBrush;			// the brush under the last click, -1 none
+	int			*brushSideShader;	// each plane's texture, one of bspShaders
+
+	// brushes of ours: the textures on their faces, by number; the shape Add makes; the grid moves
+	// and sizes snap to (0 none); the panel's page (0 the shape, 1 its faces); the faces picked and
+	// whose; the texture search and the last given; the handle dragged (-1 none), from where, which
+	// way, and the brush as it was then
+	char		bShaders[ME_MAX_BSHADERS][MAX_QPATH];
+	int			numBShaders;
+	int			bAddShape, grid, bPage;
+	unsigned long long bFaces;
+	int			bFacesOf;
+	char		bTexSearch[MAX_QPATH], bLastTex[MAX_QPATH];
+	int			bTexScroll;
+	int			bDrag;
+	vec3_t		bDragFrom, bDragDir;
+	float		bDragT0;
+	meItem_t	bDragItem;
 
 	// the arrows on what's chosen: the one pointed at, the one dragged and from where
 	int			gizmoAxis, dragAxis;
@@ -872,12 +933,12 @@ void CL_MapEditor_OpenForStory( void ) {
 
 
 static int ME_ItemTab( int kind ) {
-	return kind == ME_ITEM_MODEL || kind == ME_ITEM_PROP ? ME_TAB_MODELS : kind == ME_ITEM_LIGHT ? ME_TAB_LIGHTS
+	return kind == ME_ITEM_MODEL || kind == ME_ITEM_PROP ? ME_TAB_MODELS : kind == ME_ITEM_BRUSH ? ME_TAB_BRUSHES : kind == ME_ITEM_LIGHT ? ME_TAB_LIGHTS
 		: kind == ME_ITEM_SPEAKER ? ME_TAB_SOUNDS : kind == ME_ITEM_WEATHER ? ME_TAB_WEATHER : ME_TAB_FOG;
 }
 
 static int ME_TabItemKind( int tab ) {
-	return tab == ME_TAB_MODELS ? ME_ITEM_MODEL : tab == ME_TAB_LIGHTS ? ME_ITEM_LIGHT : tab == ME_TAB_SOUNDS ? ME_ITEM_SPEAKER
+	return tab == ME_TAB_MODELS ? ME_ITEM_MODEL : tab == ME_TAB_BRUSHES ? ME_ITEM_BRUSH : tab == ME_TAB_LIGHTS ? ME_ITEM_LIGHT : tab == ME_TAB_SOUNDS ? ME_ITEM_SPEAKER
 		: tab == ME_TAB_WEATHER ? ME_ITEM_WEATHER : ME_ITEM_FOG;
 }
 
@@ -1044,7 +1105,7 @@ static void ME_FreeTris( void ) {
 		(void **)&me.triStamp, (void **)&me.triTaken, (void **)&me.compTris, (void **)&me.brushPlanes, (void **)&me.brushFirst,
 		(void **)&me.brushNum, (void **)&me.brushMins, (void **)&me.brushMaxs, (void **)&me.surfShader, (void **)&me.bspShaders,
 		(void **)&me.texVerts, (void **)&me.surfFirstVert, (void **)&me.surfNumVert, (void **)&me.surfGrid, (void **)&me.surfKeys,
-		(void **)&me.patchTris, (void **)&me.surfTex, (void **)&me.texPicked, (void **)&me.texHoverSet };
+		(void **)&me.patchTris, (void **)&me.surfTex, (void **)&me.texPicked, (void **)&me.texHoverSet, (void **)&me.brushSideShader };
 
 	for ( int i = 0; i < (int)ARRAY_LEN( mem ); i++ ) {
 		if ( *mem[i] )
@@ -1199,6 +1260,7 @@ static void ME_BuildTris( const byte *buf, int len ) {
 			me.brushNum = (int *)Z_Malloc( nb * sizeof( int ), TAG_GENERAL, qtrue );
 			me.brushMins = (vec3_t *)Z_Malloc( nb * sizeof( vec3_t ), TAG_GENERAL, qfalse );
 			me.brushMaxs = (vec3_t *)Z_Malloc( nb * sizeof( vec3_t ), TAG_GENERAL, qfalse );
+			me.brushSideShader = (int *)Z_Malloc( total * sizeof( int ), TAG_GENERAL, qfalse );
 			for ( int i = 0; i < nb; i++ ) {
 				const dbrush_t *db = &brushes[fb + i];
 				const int shader = LittleLong( db->shaderNum ), first = LittleLong( db->firstSide ), n = LittleLong( db->numSides );
@@ -1215,6 +1277,7 @@ static void ME_BuildTris( const byte *buf, int len ) {
 
 					if ( pn < 0 || pn >= numPlanes )
 						continue;
+					me.brushSideShader[out] = LittleLong( sides[first + k].shaderNum );
 					pl = me.brushPlanes[out++];
 					pl[0] = LittleFloat( planes[pn].normal[0] );
 					pl[1] = LittleFloat( planes[pn].normal[1] );
@@ -2153,6 +2216,8 @@ Our things
 ===============================================================================
 */
 
+static void ME_FreeBrush( meItem_t *it );
+
 static void ME_RegisterItem( meItem_t *it ) {
 	if ( it->kind == ME_ITEM_PROP && !it->registered ) {
 		ME_BuildProp( it );
@@ -2166,6 +2231,7 @@ static void ME_RegisterItem( meItem_t *it ) {
 
 static void ME_ForgetHandles( void ) {
 	for ( int i = 0; i < me.numItems; i++ ) {
+		ME_FreeBrush( &me.items[i] );
 		me.items[i].registered = qfalse;
 		me.items[i].h = 0;
 		me.items[i].sfxRegistered = qfalse;
@@ -2179,7 +2245,12 @@ static void ME_ForgetHandles( void ) {
 }
 
 static void ME_Clear( void ) {
+	for ( int i = 0; i < me.numItems; i++ )
+		ME_FreeBrush( &me.items[i] );
 	me.numItems = 0;
+	me.numBShaders = 0;
+	me.bFaces = 0;
+	me.bDrag = -1;
 	if ( me.surfTex )
 		memset( me.surfTex, 0, me.numTexSurfs * sizeof( me.surfTex[0] ) );
 	me.numTexNames = 0;
@@ -2237,8 +2308,471 @@ static meItem_t *ME_NewItem( int kind ) {
 	it->radius = 200.0f;
 	VectorSet( it->color, 1.0f, 0.8f, 0.55f );
 	VectorSet( it->size, 32, 32, 32 );
+	it->bFrom = -1;
+	it->bSides = 12;
 	return it;
 }
+
+static void ME_DeleteSelected( void );
+static void ME_LiftProp( qboolean removed, qboolean grab );
+static int ME_TriHit( const vec3_t org, const vec3_t dir, float *dist );
+/*
+===============================================================================
+
+Brushes of ours: shapes made of planes, drawn as models of their own (re.ext.BrushModel)
+
+A brush is convex parts, each made of the faces of that part, in its own space: its bottom middle
+at org, turned by ang. A box, a wedge, a cylinder or stairs is made again from its size (and its
+sides or steps) when that changes, its faces keeping their textures; a brush made from one of the
+map's is its planes only, each face moved by its handle. A face's texture is laid on it from the
+brush's own axes (as Radiant does), so it moves and turns with the brush.
+
+===============================================================================
+*/
+
+static const char *meShapeNames[ME_NUM_SHAPES] = { "Box", "Wedge", "Cylinder", "Stairs", "Map brush" };
+static const char *meShapeWords[ME_NUM_SHAPES] = { "box", "wedge", "cylinder", "stairs", "custom" };
+
+static int ME_ShapeByWord( const char *word ) {
+	for ( int i = 0; i < ME_NUM_SHAPES; i++ ) {
+		if ( !Q_stricmp( meShapeWords[i], word ) || !Q_stricmp( meShapeNames[i], word ) )
+			return i;
+	}
+	return -1;
+}
+
+// a texture of the brushes' faces, by its number
+static int ME_BrushShaderIndex( const char *name ) {
+	for ( int i = 0; i < me.numBShaders; i++ ) {
+		if ( !Q_stricmp( me.bShaders[i], name ) )
+			return i;
+	}
+	if ( me.numBShaders >= ME_MAX_BSHADERS )
+		return 0;
+	Q_strncpyz( me.bShaders[me.numBShaders], name, MAX_QPATH );
+	return me.numBShaders++;
+}
+
+static const char *ME_BrushShaderName( int i ) {
+	return i >= 0 && i < me.numBShaders ? me.bShaders[i] : "";
+}
+
+static meFace_t *ME_AddFace( meItem_t *it, float nx, float ny, float nz, float d, int part, int shader ) {
+	meFace_t *f;
+	vec3_t n;
+
+	if ( it->numFaces >= ME_MAX_BFACES )
+		return NULL;
+	VectorSet( n, nx, ny, nz );
+	VectorNormalize( n );
+	f = &it->faces[it->numFaces++];
+	memset( f, 0, sizeof( *f ) );
+	VectorCopy( n, f->plane );
+	f->plane[3] = d;
+	f->part = (byte)part;
+	f->shader = (byte)shader;
+	f->tex[0] = f->tex[1] = ME_TEX_SCALE;
+	return f;
+}
+
+// a shape's faces made again from its size, sides or steps; as many faces as before keep their textures
+static void ME_MakeShape( meItem_t *it ) {
+	static meFace_t old[ME_MAX_BFACES];
+	const int numOld = it->numFaces;
+	const float sx = it->size[0] * 0.5f, sy = it->size[1] * 0.5f, sz = it->size[2];
+	const int shader = numOld ? it->faces[0].shader : 0;
+
+	if ( it->bShape == ME_SHAPE_CUSTOM )
+		return;
+	memcpy( old, it->faces, sizeof( old ) );
+	it->numFaces = 0;
+	switch ( it->bShape ) {
+	case ME_SHAPE_WEDGE: {
+		// rising toward its +X, tall at the back
+		vec3_t n;
+
+		ME_AddFace( it, 1, 0, 0, sx, 0, shader );
+		ME_AddFace( it, 0, 1, 0, sy, 0, shader );
+		ME_AddFace( it, 0, -1, 0, sy, 0, shader );
+		ME_AddFace( it, 0, 0, -1, 0, 0, shader );
+		// the slope, through the bottom front edge and the top back one
+		VectorSet( n, -sz, 0, 2.0f * sx );
+		VectorNormalize( n );
+		ME_AddFace( it, n[0], n[1], n[2], -n[0] * sx, 0, shader );
+		break;
+	}
+	case ME_SHAPE_CYLINDER: {
+		const int sides = Com_Clampi( 3, ME_MAX_SIDES, it->bSides );
+
+		for ( int k = 0; k < sides; k++ ) {
+			const float a0 = 2.0f * M_PI * k / sides, a1 = 2.0f * M_PI * ( k + 1 ) / sides;
+			const float x0 = sx * cosf( a0 ), y0 = sy * sinf( a0 ), x1 = sx * cosf( a1 ), y1 = sy * sinf( a1 );
+			vec3_t n;
+
+			// outward from the edge between two corners
+			VectorSet( n, y1 - y0, x0 - x1, 0 );
+			VectorNormalize( n );
+			ME_AddFace( it, n[0], n[1], 0, n[0] * x0 + n[1] * y0, 0, shader );
+		}
+		ME_AddFace( it, 0, 0, 1, sz, 0, shader );
+		ME_AddFace( it, 0, 0, -1, 0, 0, shader );
+		break;
+	}
+	case ME_SHAPE_STAIRS: {
+		// steps rising toward its +X, each a slab running to the back
+		const int steps = Com_Clampi( 2, ME_MAX_STEPS, it->bSides );
+		const float w = it->size[0] / steps, h = sz / steps;
+
+		for ( int i = 0; i < steps; i++ ) {
+			ME_AddFace( it, 1, 0, 0, sx, i, shader );
+			ME_AddFace( it, -1, 0, 0, sx - i * w, i, shader );
+			ME_AddFace( it, 0, 1, 0, sy, i, shader );
+			ME_AddFace( it, 0, -1, 0, sy, i, shader );
+			ME_AddFace( it, 0, 0, 1, ( i + 1 ) * h, i, shader );
+			ME_AddFace( it, 0, 0, -1, -i * h, i, shader );
+		}
+		break;
+	}
+	default:
+		ME_AddFace( it, 1, 0, 0, sx, 0, shader );
+		ME_AddFace( it, -1, 0, 0, sx, 0, shader );
+		ME_AddFace( it, 0, 1, 0, sy, 0, shader );
+		ME_AddFace( it, 0, -1, 0, sy, 0, shader );
+		ME_AddFace( it, 0, 0, 1, sz, 0, shader );
+		ME_AddFace( it, 0, 0, -1, 0, 0, shader );
+		break;
+	}
+	if ( numOld == it->numFaces ) {
+		for ( int i = 0; i < it->numFaces; i++ ) {
+			it->faces[i].shader = old[i].shader;
+			memcpy( it->faces[i].tex, old[i].tex, sizeof( it->faces[i].tex ) );
+		}
+	}
+}
+
+// a face's polygon in the brush's own space: its plane cut by the others of its part; NULL if it has none
+static winding_t *ME_FacePoly( const meItem_t *it, int f ) {
+	const meFace_t *face = &it->faces[f];
+	vec3_t n;
+	winding_t *w;
+
+	VectorCopy( face->plane, n );
+	w = BaseWindingForPlane( n, face->plane[3] );
+	for ( int g = 0; g < it->numFaces && w; g++ ) {
+		if ( g == f || it->faces[g].part != face->part )
+			continue;
+		VectorNegate( it->faces[g].plane, n );
+		ChopWindingInPlace( &w, n, -it->faces[g].plane[3], 0.1f );
+	}
+	if ( w && w->numpoints < 3 ) {
+		FreeWinding( w );
+		w = NULL;
+	}
+	return w;
+}
+
+// a point of the brush's own space in the world
+static void ME_BrushPoint( const meItem_t *it, const matrix3_t axis, const vec3_t local, vec3_t out ) {
+	VectorCopy( it->org, out );
+	for ( int k = 0; k < 3; k++ )
+		VectorMA( out, local[k], axis[k], out );
+}
+
+// a face's texture coordinates at a point, in world units: laid along the brush's axis nearest its
+// facing, turned, scaled and shifted as the face has it
+static void ME_FaceST( const meFace_t *f, const vec3_t p, float *st ) {
+	const float ax = fabsf( f->plane[0] ), ay = fabsf( f->plane[1] ), az = fabsf( f->plane[2] );
+	const float r = DEG2RAD( f->tex[4] ), c = cosf( r ), sn = sinf( r );
+	float s, t;
+
+	if ( az >= ax && az >= ay ) {
+		s = p[0];
+		t = -p[1];
+	} else if ( ax >= ay ) {
+		s = p[1];
+		t = -p[2];
+	} else {
+		s = p[0];
+		t = -p[2];
+	}
+	st[0] = ( s * c - t * sn ) / Q_max( 0.01f, f->tex[0] ) + f->tex[2];
+	st[1] = ( s * sn + t * c ) / Q_max( 0.01f, f->tex[1] ) + f->tex[3];
+}
+
+// what the brush is drawn from: when it changes, its model is made again
+static unsigned ME_BrushKey( const meItem_t *it ) {
+	unsigned h = 2166136261u;
+	const byte *p;
+	int len;
+
+#define ME_HASH( ptr, size ) for ( p = (const byte *)( ptr ), len = ( size ); len > 0; len--, p++ ) h = ( h ^ *p ) * 16777619u
+	ME_HASH( it->org, sizeof( it->org ) );
+	ME_HASH( it->ang, sizeof( it->ang ) );
+	ME_HASH( &it->numFaces, sizeof( it->numFaces ) );
+	ME_HASH( it->faces, it->numFaces * sizeof( it->faces[0] ) );
+#undef ME_HASH
+	return h ? h : 1u;
+}
+
+// the brush's model made again: its faces' polygons, their textures, its box in its own space
+static void ME_BuildBrush( meItem_t *it ) {
+	static brushFace_t out[ME_MAX_BFACES];
+	matrix3_t axis;
+	int n = 0;
+
+	it->bKey = ME_BrushKey( it );
+	it->bTime = cls.realtime;
+	ClearBounds( it->bMins, it->bMaxs );
+	AnglesToAxis( it->ang, axis );
+	for ( int f = 0; f < it->numFaces; f++ ) {
+		winding_t *w = ME_FacePoly( it, f );
+		brushFace_t *bf = &out[n];
+
+		if ( !w )
+			continue;
+		Q_strncpyz( bf->shader, ME_BrushShaderName( it->faces[f].shader ), sizeof( bf->shader ) );
+		bf->numPoints = Q_min( w->numpoints, BRUSHFACE_MAX_POINTS );
+		VectorCopy( it->faces[f].plane, bf->normal );
+		for ( int v = 0; v < bf->numPoints; v++ ) {
+			VectorCopy( w->p[v], bf->xyz[v] );
+			ME_FaceST( &it->faces[f], w->p[v], bf->st[v] );
+			AddPointToBounds( w->p[v], it->bMins, it->bMaxs );
+		}
+		FreeWinding( w );
+		n++;
+	}
+	if ( !re->ext.BrushModel ) {
+		it->h = 0;
+		return;
+	}
+	if ( !n ) {
+		if ( it->h && re->ext.FreeBrushModel )
+			re->ext.FreeBrushModel( it->h );
+		it->h = 0;
+		return;
+	}
+	it->h = re->ext.BrushModel( it->h, out, n, it->org, axis );
+}
+
+// made again when it changed, not more than every ME_BRUSH_REBUILD_MS while it's dragged
+static void ME_BrushUpToDate( meItem_t *it ) {
+	if ( it->kind != ME_ITEM_BRUSH )
+		return;
+	if ( ME_BrushKey( it ) != it->bKey && ( !it->bKey || cls.realtime - it->bTime >= ME_BRUSH_REBUILD_MS || cls.realtime < it->bTime ) )
+		ME_BuildBrush( it );
+}
+
+static void ME_FreeBrush( meItem_t *it ) {
+	if ( it->kind == ME_ITEM_BRUSH && it->h && re && re->ext.FreeBrushModel )
+		re->ext.FreeBrushModel( it->h );
+	it->h = 0;
+	it->bKey = 0;
+}
+
+// where the ray meets the brush, -1 not; *face: the face it comes in by
+static float ME_BrushRay( const meItem_t *it, const vec3_t org, const vec3_t dir, int *face ) {
+	matrix3_t axis;
+	vec3_t d, lo, ld;
+	float best = -1.0f;
+	int bestFace = -1;
+
+	AnglesToAxis( it->ang, axis );
+	VectorSubtract( org, it->org, d );
+	for ( int i = 0; i < 3; i++ ) {
+		lo[i] = DotProduct( d, axis[i] );
+		ld[i] = DotProduct( dir, axis[i] );
+	}
+	for ( int part = 0; part < ME_MAX_BPARTS; part++ ) {
+		float tmin = 0.0f, tmax = ME_TRACE_DIST * 2.0f;
+		int enter = -1;
+		qboolean any = qfalse, miss = qfalse;
+
+		for ( int f = 0; f < it->numFaces && !miss; f++ ) {
+			const meFace_t *fc = &it->faces[f];
+			float denom, dist, t;
+
+			if ( fc->part != part )
+				continue;
+			any = qtrue;
+			denom = DotProduct( fc->plane, ld );
+			dist = fc->plane[3] - DotProduct( fc->plane, lo );
+			if ( fabsf( denom ) < 1e-6f ) {
+				if ( dist < 0.0f )
+					miss = qtrue;
+				continue;
+			}
+			t = dist / denom;
+			if ( denom < 0.0f ) {
+				if ( t > tmin || enter < 0 ) {
+					if ( t > tmin )
+						tmin = t;
+					enter = f;
+				}
+			} else if ( t < tmax ) {
+				tmax = t;
+			}
+		}
+		if ( !any || miss || tmin > tmax || enter < 0 || tmax <= 0.0f )
+			continue;
+		if ( best < 0.0f || tmin < best ) {
+			best = tmin;
+			bestFace = enter;
+		}
+	}
+	if ( face )
+		*face = bestFace;
+	return best;
+}
+
+// the handles that push a brush's faces: on a shape, the middles of its box's sides (id 0..5:
+// +X -X +Y -Y top bottom); on a map brush, each face's middle (id: the face). Where they are and
+// which way they push, in the world; how many
+static int ME_BrushHandles( const meItem_t *it, vec3_t *at, vec3_t *dirs, int *ids ) {
+	matrix3_t axis;
+	int n = 0;
+
+	AnglesToAxis( it->ang, axis );
+	if ( it->bShape != ME_SHAPE_CUSTOM ) {
+		for ( int id = 0; id < 6; id++ ) {
+			const int a = id / 2;
+			const float sign = ( id & 1 ) ? -1.0f : 1.0f;
+			vec3_t local = { 0.0f, 0.0f, it->size[2] * 0.5f }, ln = { 0, 0, 0 };
+
+			ln[a] = sign;
+			if ( a < 2 )
+				local[a] = sign * it->size[a] * 0.5f;
+			else
+				local[2] = sign > 0.0f ? it->size[2] : 0.0f;
+			ME_BrushPoint( it, axis, local, at[n] );
+			for ( int k = 0; k < 3; k++ )
+				dirs[n][k] = ln[0] * axis[0][k] + ln[1] * axis[1][k] + ln[2] * axis[2][k];
+			ids[n++] = id;
+		}
+		return n;
+	}
+	for ( int f = 0; f < it->numFaces; f++ ) {
+		winding_t *w = ME_FacePoly( it, f );
+		vec3_t c = { 0, 0, 0 };
+
+		if ( !w )
+			continue;
+		for ( int v = 0; v < w->numpoints; v++ )
+			VectorAdd( c, w->p[v], c );
+		VectorScale( c, 1.0f / w->numpoints, c );
+		FreeWinding( w );
+		ME_BrushPoint( it, axis, c, at[n] );
+		for ( int k = 0; k < 3; k++ )
+			dirs[n][k] = it->faces[f].plane[0] * axis[0][k] + it->faces[f].plane[1] * axis[1][k] + it->faces[f].plane[2] * axis[2][k];
+		ids[n++] = f;
+	}
+	return n;
+}
+
+// every face still there: a face pushed through another takes it away
+static qboolean ME_BrushWhole( const meItem_t *it ) {
+	for ( int f = 0; f < it->numFaces; f++ ) {
+		winding_t *w = ME_FacePoly( it, f );
+
+		if ( !w )
+			return qfalse;
+		FreeWinding( w );
+	}
+	return (qboolean)( it->numFaces >= 4 );
+}
+
+// a handle pushed t units out (in, below 0) from how the brush was when the drag began
+static void ME_BrushPush( meItem_t *it, const meItem_t *from, int id, float t ) {
+	const qhandle_t h = it->h;
+	const unsigned key = it->bKey;
+	const int time = it->bTime;
+
+	*it = *from;
+	it->h = h;
+	it->bKey = key;
+	it->bTime = time;
+	if ( it->bShape != ME_SHAPE_CUSTOM ) {
+		const int a = id / 2;
+		const float sign = ( id & 1 ) ? -1.0f : 1.0f;
+		matrix3_t axis;
+		float grown;
+
+		AnglesToAxis( from->ang, axis );
+		it->size[a] = Q_max( 1.0f, from->size[a] + t );
+		grown = it->size[a] - from->size[a];
+		if ( a < 2 )
+			VectorMA( from->org, sign * grown * 0.5f, axis[a], it->org );
+		else if ( sign < 0.0f )
+			VectorMA( from->org, -grown, axis[2], it->org );
+		ME_MakeShape( it );
+		return;
+	}
+	if ( id < 0 || id >= it->numFaces )
+		return;
+	it->faces[id].plane[3] = from->faces[id].plane[3] + t;
+	if ( !ME_BrushWhole( it ) )
+		it->faces[id].plane[3] = from->faces[id].plane[3];
+}
+
+// a map brush made into one of ours: its planes, around its bottom middle, each face its texture;
+// the faces that are only the bsp's bevels (no polygon) left out
+static qboolean ME_BrushFromMap( meItem_t *it, int b ) {
+	if ( b < 0 || b >= me.numBrushes || !me.brushNum[b] )
+		return qfalse;
+	it->bShape = ME_SHAPE_CUSTOM;
+	it->bFrom = b;
+	it->org[0] = ( me.brushMins[b][0] + me.brushMaxs[b][0] ) * 0.5f;
+	it->org[1] = ( me.brushMins[b][1] + me.brushMaxs[b][1] ) * 0.5f;
+	it->org[2] = me.brushMins[b][2];
+	VectorSubtract( me.brushMaxs[b], me.brushMins[b], it->size );
+	VectorClear( it->ang );
+	it->numFaces = 0;
+	for ( int k = 0; k < me.brushNum[b]; k++ ) {
+		const int pi = me.brushFirst[b] + k;
+		const float *pl = me.brushPlanes[pi];
+		const int sh = me.brushSideShader ? me.brushSideShader[pi] : -1;
+		const char *name = sh >= 0 && sh < me.numBspShaders ? me.bspShaders[sh] : "";
+
+		ME_AddFace( it, pl[0], pl[1], pl[2], pl[3] - DotProduct( pl, it->org ), 0, ME_BrushShaderIndex( name ) );
+	}
+	// the bevels: planes with no face of their own
+	for ( int f = it->numFaces - 1; f >= 0; f-- ) {
+		winding_t *w = ME_FacePoly( it, f );
+
+		if ( w ) {
+			FreeWinding( w );
+			continue;
+		}
+		memmove( &it->faces[f], &it->faces[f + 1], ( it->numFaces - f - 1 ) * sizeof( it->faces[0] ) );
+		it->numFaces--;
+	}
+	return (qboolean)( it->numFaces >= 4 );
+}
+
+// the texture of what's at the middle of the screen, for a new brush; "" none
+static const char *ME_AimShader( void ) {
+	vec3_t forward;
+	float dist;
+	int tri, surf;
+
+	AngleVectors( me.camAng, forward, NULL, NULL );
+	tri = ME_TriHit( me.camOrg, forward, &dist );
+	if ( tri < 0 || tri >= me.numTris || !me.surfShader )
+		return "";
+	surf = me.tris[tri].surf;
+	if ( surf < 0 || surf >= me.numTexSurfs || me.surfShader[surf] < 0 || me.surfShader[surf] >= me.numBspShaders )
+		return "";
+	return me.bspShaders[me.surfShader[surf]];
+}
+
+static qboolean ME_BrushClick( const vec3_t dir );
+static float ME_Snap( float v );
+static qboolean ME_ItemIsBrush( const meItem_t *it );
+static void ME_EditorBrushLines( void );
+static qboolean ME_BrushHandlePress( void );
+static void ME_BrushHandleFrame( void );
+static void ME_MakeEditable( void );
+static void ME_DrawBrushesTab( float x, float y, float w );
+
 
 // where a new thing goes: on what the crosshair is on, or in front of the camera
 static const char *ME_ShownName( const char *name );
@@ -2288,6 +2822,22 @@ static void ME_PlaceAt( meItem_t *it, const vec3_t at, const vec3_t normal ) {
 	case ME_ITEM_SPEAKER:
 		VectorMA( at, 16.0f, normal, it->org );
 		break;
+	case ME_ITEM_BRUSH:
+		// on a floor, under a ceiling, out from a wall; on the grid
+		if ( normal[2] > 0.7f ) {
+			VectorCopy( at, it->org );
+		} else if ( normal[2] < -0.7f ) {
+			VectorCopy( at, it->org );
+			it->org[2] -= it->size[2];
+		} else {
+			VectorMA( at, Q_max( it->size[0], it->size[1] ) * 0.5f, normal, it->org );
+			it->org[2] -= it->size[2] * 0.5f;
+		}
+		if ( me.grid > 0 ) {
+			it->org[0] = floorf( it->org[0] / me.grid + 0.5f ) * me.grid;
+			it->org[1] = floorf( it->org[1] / me.grid + 0.5f ) * me.grid;
+		}
+		break;
 	default:
 		// a box sits on a floor, stands out from a wall
 		if ( normal[2] > 0.7f ) {
@@ -2319,6 +2869,19 @@ static void ME_AddItem( int kind ) {
 	if ( kind == ME_ITEM_WEATHER ) {
 		VectorSet( it->size, 512, 512, 256 );
 		ME_WeatherDefaults( it, 1 );
+	}
+	if ( kind == ME_ITEM_BRUSH ) {
+		static const float sizes[ME_SHAPE_CUSTOM][3] = { { 64, 64, 64 }, { 128, 64, 64 }, { 64, 64, 128 }, { 128, 64, 64 } };
+		const char *aim = ME_AimShader();
+		const int shader = ME_BrushShaderIndex( aim[0] ? aim : me.bLastTex );
+
+		it->bShape = Com_Clampi( 0, ME_SHAPE_CUSTOM - 1, me.bAddShape );
+		VectorCopy( sizes[it->bShape], it->size );
+		it->bSides = it->bShape == ME_SHAPE_STAIRS ? 4 : 12;
+		ME_MakeShape( it );
+		for ( int f = 0; f < it->numFaces; f++ )
+			it->faces[f].shader = (byte)shader;
+		it->ang[YAW] = AngleNormalize360( ME_Round( ( me.camAng[YAW] + 180.0f ) / 90.0f ) * 90.0f );
 	}
 	if ( kind == ME_ITEM_MODEL ) {
 		Q_strncpyz( it->model, me.pickModel, sizeof( it->model ) );
@@ -2361,20 +2924,42 @@ static void ME_CopySelected( void ) {
 	*it = *src;
 	it->org[0] += 16.0f;
 	it->org[1] += 16.0f;
+	// a brush gets a model of its own
+	if ( it->kind == ME_ITEM_BRUSH ) {
+		it->h = 0;
+		it->bKey = 0;
+		it->bFrom = -1;
+	}
 	me.numItems++;
 	ME_Select( ME_SEL_ITEM, me.numItems - 1 );
 	ME_Changed();
 }
 
 static void ME_DeleteSelected( void ) {
-	const meItem_t *it = ME_SelectedItem();
+	meItem_t *it = ME_SelectedItem();
+	int from = -1;
 
 	if ( !it )
 		return;
 	if ( it->kind == ME_ITEM_PROP )
 		me.propsDirty = qtrue;
+	if ( it->kind == ME_ITEM_BRUSH ) {
+		from = it->bFrom;
+		ME_FreeBrush( it );
+	}
 	memmove( &me.items[me.sel], &me.items[me.sel + 1], ( me.numItems - me.sel - 1 ) * sizeof( me.items[0] ) );
 	me.numItems--;
+	// a brush made from the map's: the map's comes back
+	for ( int i = 0; from >= 0 && i < me.numItems; i++ ) {
+		if ( ME_ItemIsBrush( &me.items[i] ) && me.items[i].numSeeds == 1 && me.items[i].seeds[0][1] == from ) {
+			memmove( &me.items[i], &me.items[i + 1], ( me.numItems - i - 1 ) * sizeof( me.items[0] ) );
+			me.numItems--;
+			me.propsDirty = qtrue;
+			break;
+		}
+	}
+	me.bFaces = 0;
+	me.bDrag = -1;
 	me.selKind = ME_SEL_NONE;
 	me.sel = -1;
 	me.grabbing = qfalse;
@@ -2696,6 +3281,29 @@ static const char *ME_Vec( const vec3_t v ) {
 	return va( "%g %g %g", ME_Round( v[0] * 10.0f ) / 10.0f, ME_Round( v[1] * 10.0f ) / 10.0f, ME_Round( v[2] * 10.0f ) / 10.0f );
 }
 
+// a brush's face as words: its plane, its part, its texture's scale, shift and turn, the texture
+static const char *ME_FaceText( const meFace_t *fc ) {
+	return va( "%g %g %g %g %i %g %g %g %g %g %s", fc->plane[0], fc->plane[1], fc->plane[2], ME_Round( fc->plane[3] * 100.0f ) / 100.0f, fc->part,
+		fc->tex[0], fc->tex[1], fc->tex[2], fc->tex[3], fc->tex[4], ME_BrushShaderName( fc->shader )[0] ? ME_BrushShaderName( fc->shader ) : "-" );
+}
+
+// a face back from its words; qfalse if they aren't one
+static qboolean ME_ParseFace( const char *text, meFace_t *fc ) {
+	char shader[MAX_QPATH];
+	int part;
+
+	memset( fc, 0, sizeof( *fc ) );
+	if ( sscanf( text, "%f %f %f %f %i %f %f %f %f %f %63s", &fc->plane[0], &fc->plane[1], &fc->plane[2], &fc->plane[3], &part,
+		&fc->tex[0], &fc->tex[1], &fc->tex[2], &fc->tex[3], &fc->tex[4], shader ) < 11 )
+		return qfalse;
+	VectorNormalize( fc->plane );
+	fc->part = (byte)Com_Clampi( 0, ME_MAX_BPARTS - 1, part );
+	fc->shader = (byte)ME_BrushShaderIndex( strcmp( shader, "-" ) ? shader : "" );
+	fc->tex[0] = Com_Clamp( 0.01f, 16.0f, fc->tex[0] );
+	fc->tex[1] = Com_Clamp( 0.01f, 16.0f, fc->tex[1] );
+	return qtrue;
+}
+
 // the edits written to the file; how many, -1 if it couldn't be
 static int ME_SaveTo( const char *path ) {
 	fileHandle_t f;
@@ -2757,6 +3365,18 @@ static int ME_SaveTo( const char *path ) {
 			ME_Print( f, "falling", va( "%i %g %g %g %g %i %i", it->wCount, it->wGravity, it->wWidth, it->wHeight, it->wFade, it->wBlend,
 				it->wOutside ? 1 : 0 ) );
 			ME_Print( f, "wind", ME_Vec( it->wWind ) );
+		} else if ( it->kind == ME_ITEM_BRUSH ) {
+			// its shape, then every face: plane, part, texture's scale, shift and turn, texture
+			ME_Print( f, "classname", "rpm_brush" );
+			ME_Print( f, "origin", ME_Vec( it->org ) );
+			ME_Print( f, "angles", ME_Vec( it->ang ) );
+			ME_Print( f, "shape", meShapeWords[Com_Clampi( 0, ME_NUM_SHAPES - 1, it->bShape )] );
+			ME_Print( f, "size", ME_Vec( it->size ) );
+			ME_Print( f, "sides", va( "%i", it->bSides ) );
+			if ( it->bFrom >= 0 )
+				ME_Print( f, "from", va( "%i", it->bFrom ) );
+			for ( int k = 0; k < it->numFaces; k++ )
+				ME_Print( f, va( "face%i", k ), ME_FaceText( &it->faces[k] ) );
 		} else if ( it->kind == ME_ITEM_LIGHT ) {
 			ME_Print( f, "classname", "rpm_light" );
 			ME_Print( f, "origin", ME_Vec( it->org ) );
@@ -2908,6 +3528,31 @@ static void ME_LoadEntity( const meKv_t *kv, int num ) {
 		it->radius = Com_Clamp( 8.0f, 2000.0f, atof( ME_Value( kv, num, "radius", "200" ) ) );
 		it->style = Com_Clampi( -1, MAX_LIGHT_STYLES - 1, atoi( ME_Value( kv, num, "style", "-1" ) ) );
 		me.numItems++;
+	} else if ( !Q_stricmp( classname, "rpm_brush" ) ) {
+		if ( !( it = ME_NewItem( ME_ITEM_BRUSH ) ) )
+			return;
+		ME_ParseVector( ME_Value( kv, num, "origin", "0 0 0" ), it->org );
+		ME_ParseVector( ME_Value( kv, num, "angles", "0 0 0" ), it->ang );
+		ME_ParseVector( ME_Value( kv, num, "size", "64 64 64" ), it->size );
+		for ( int i = 0; i < 3; i++ )
+			it->size[i] = Com_Clamp( 1.0f, 8192.0f, it->size[i] );
+		it->bShape = ME_ShapeByWord( ME_Value( kv, num, "shape", "box" ) );
+		if ( it->bShape < 0 )
+			it->bShape = ME_SHAPE_CUSTOM;
+		it->bSides = Com_Clampi( 2, ME_MAX_SIDES, atoi( ME_Value( kv, num, "sides", "12" ) ) );
+		it->bFrom = atoi( ME_Value( kv, num, "from", "-1" ) );
+		for ( int k = 0; k < ME_MAX_BFACES; k++ ) {
+			const char *text = ME_Value( kv, num, va( "face%i", k ), "" );
+
+			if ( !text[0] || !ME_ParseFace( text, &it->faces[it->numFaces] ) )
+				break;
+			it->numFaces++;
+		}
+		// a shape saved without its faces is made from its size
+		if ( !it->numFaces )
+			ME_MakeShape( it );
+		if ( it->numFaces >= 4 )
+			me.numItems++;
 	} else if ( !Q_stricmp( classname, "rpm_trigger" ) ) {
 		return;		// the old triggers: the world editor has them now (zones)
 	} else if ( !Q_stricmp( classname, "rpm_lightstyle" ) ) {
@@ -2984,7 +3629,7 @@ static void ME_LoadEntity( const meKv_t *kv, int num ) {
 
 // the edits in the file in place of the ones shown; qfalse if there's no file
 static qboolean ME_LoadFrom( const char *path ) {
-	static meKv_t kv[32];
+	static meKv_t kv[ME_MAX_KV];
 	const char *p;
 	char *buf, *token;
 	int num;
@@ -3206,14 +3851,32 @@ static const char *ME_ShareItem( const meItem_t *it ) {
 	} else if ( it->kind == ME_ITEM_SPEAKER && it->noise[0] ) {
 		Q_strcat( out, sizeof( out ), va( "a %s %i ", ME_Vec( it->org ), ( it->off ? 2 : 1 ) | ( it->global ? 4 : 0 ) ) );
 		ME_AppendSplit( out, sizeof( out ), it->noise );
+	} else if ( it->kind == ME_ITEM_BRUSH && it->numFaces ) {
+		// b <org> <angles> <shape> <size> <sides> <from>; its faces follow, a B each
+		Q_strcat( out, sizeof( out ), va( "b %s", ME_Vec( it->org ) ) );
+		Q_strcat( out, sizeof( out ), va( " %s %i", ME_Vec( it->ang ), it->bShape ) );
+		Q_strcat( out, sizeof( out ), va( " %s %i %i", ME_Vec( it->size ), it->bSides, it->bFrom ) );
 	}
+	return out;
+}
+
+// a brush's face for a hook: B, its words, the texture last with spaces put in
+static const char *ME_ShareFace( const meFace_t *fc ) {
+	static char out[160];
+	const char *shader = ME_BrushShaderName( fc->shader );
+
+	Com_sprintf( out, sizeof( out ), "B %g %g %g %g %i %g %g %g %g %g ", fc->plane[0], fc->plane[1], fc->plane[2], ME_Round( fc->plane[3] * 100.0f ) / 100.0f,
+		fc->part, fc->tex[0], fc->tex[1], fc->tex[2], fc->tex[3], fc->tex[4] );
+	ME_AppendSplit( out, sizeof( out ), shader[0] ? shader : "-" );
 	return out;
 }
 
 // everything shown, to everyone: begin, the edits a hook at a time, end
 static void ME_Share( void ) {
 	char part[ME_SHARE_LEN + 1] = "";
-	const char *edits[ME_MAX_ITEMS + MAX_LIGHT_STYLES + ME_MAX_HIDDEN + ME_MAX_FOGS + ME_MAX_TEXEDITS];
+	static const char *edits[ME_MAX_ITEMS + MAX_LIGHT_STYLES + ME_MAX_HIDDEN + ME_MAX_FOGS + ME_MAX_TEXEDITS + ME_MAX_SHAREFACES];
+	static char faceText[ME_MAX_SHAREFACES][160];
+	int numFaces = 0;
 	static char texText[ME_MAX_TEXEDITS][ME_TEX_CHUNK + ME_TEX_NAME_LEN * 2 + 16];
 	int numTex = 0;
 	static char styleText[MAX_LIGHT_STYLES][MAX_QPATH * 2 + 32];
@@ -3240,6 +3903,13 @@ static void ME_Share( void ) {
 		if ( edit[0] ) {
 			Q_strncpyz( itemText[i], edit, sizeof( itemText[i] ) );
 			edits[numEdits++] = itemText[i];
+			// a brush's faces, after it
+			if ( me.items[i].kind == ME_ITEM_BRUSH ) {
+				for ( int k = 0; k < me.items[i].numFaces && numFaces < ME_MAX_SHAREFACES; k++ ) {
+					Q_strncpyz( faceText[numFaces], ME_ShareFace( &me.items[i].faces[k] ), sizeof( faceText[0] ) );
+					edits[numEdits++] = faceText[numFaces++];
+				}
+			}
 		}
 	}
 	for ( int i = 0; i < MAX_LIGHT_STYLES; i++ ) {
@@ -3432,6 +4102,40 @@ static void ME_ApplyShared( const char *edit ) {
 		ME_KV( "_color", va( "%g %g %g", f[1], f[2], f[3] ) );
 		ME_KV( "depth", va( "%g", f[4] ) );
 		break;
+	case 'b': {
+		// a brush: made here; its faces come after it (B)
+		float g[12];
+		meItem_t *it;
+
+		if ( sscanf( edit + 1, "%f %f %f %f %f %f %f %f %f %f %f %f", &g[0], &g[1], &g[2], &g[3], &g[4], &g[5], &g[6], &g[7], &g[8],
+			&g[9], &g[10], &g[11] ) < 12 || !( it = ME_NewItem( ME_ITEM_BRUSH ) ) )
+			return;
+		VectorSet( it->org, g[0], g[1], g[2] );
+		VectorSet( it->ang, g[3], g[4], g[5] );
+		it->bShape = Com_Clampi( 0, ME_NUM_SHAPES - 1, (int)g[6] );
+		VectorSet( it->size, Com_Clamp( 1.0f, 8192.0f, g[7] ), Com_Clamp( 1.0f, 8192.0f, g[8] ), Com_Clamp( 1.0f, 8192.0f, g[9] ) );
+		it->bSides = Com_Clampi( 2, ME_MAX_SIDES, (int)g[10] );
+		it->bFrom = (int)g[11];
+		me.numItems++;
+		return;
+	}
+	case 'B': {
+		// a face of the brush before it
+		meItem_t *it = me.numItems ? &me.items[me.numItems - 1] : NULL;
+		char words[ME_TEX_NAME_LEN];
+		float g[10];
+		int part;
+
+		if ( !it || it->kind != ME_ITEM_BRUSH || it->numFaces >= ME_MAX_BFACES )
+			return;
+		if ( sscanf( edit + 1, "%f %f %f %f %i %f %f %f %f %f %n", &g[0], &g[1], &g[2], &g[3], &part, &g[5], &g[6], &g[7], &g[8], &g[9], &used ) < 10 || !used )
+			return;
+		ME_Unsplit( edit + 1 + used, rest, sizeof( rest ) );
+		Com_sprintf( words, sizeof( words ), "%g %g %g %g %i %g %g %g %g %g %s", g[0], g[1], g[2], g[3], part, g[5], g[6], g[7], g[8], g[9], rest[0] ? rest : "-" );
+		if ( ME_ParseFace( words, &it->faces[it->numFaces] ) )
+			it->numFaces++;
+		return;
+	}
 	case 'h':
 		if ( sscanf( edit + 1, "%f", &f[0] ) < 1 )
 			return;
@@ -3790,6 +4494,23 @@ static float ME_RayPoint( const vec3_t org, const vec3_t dir, const vec3_t p, fl
 }
 
 static void ME_ItemBounds( meItem_t *it, vec3_t mins, vec3_t maxs ) {
+	if ( it->kind == ME_ITEM_BRUSH ) {
+		matrix3_t axis;
+
+		if ( !it->bKey )
+			ME_BuildBrush( it );
+		AnglesToAxis( it->ang, axis );
+		ClearBounds( mins, maxs );
+		for ( int i = 0; i < 8 && it->bMins[0] <= it->bMaxs[0]; i++ ) {
+			vec3_t local, p;
+
+			VectorSet( local, ( i & 1 ) ? it->bMaxs[0] : it->bMins[0], ( i & 2 ) ? it->bMaxs[1] : it->bMins[1], ( i & 4 ) ? it->bMaxs[2] : it->bMins[2] );
+			ME_BrushPoint( it, axis, local, p );
+			AddPointToBounds( p, mins, maxs );
+		}
+		if ( mins[0] <= maxs[0] )
+			return;
+	}
 	if ( it->kind == ME_ITEM_FOG || it->kind == ME_ITEM_WEATHER ) {
 		VectorSubtract( it->org, it->size, mins );
 		VectorAdd( it->org, it->size, maxs );
@@ -3824,6 +4545,9 @@ static void ME_ItemBounds( meItem_t *it, vec3_t mins, vec3_t maxs ) {
 // where the ray meets one of ours; a model by its own box, turned as it is
 static float ME_ItemRay( meItem_t *it, const vec3_t org, const vec3_t dir ) {
 	vec3_t mins, maxs;
+
+	if ( it->kind == ME_ITEM_BRUSH )
+		return ME_BrushRay( it, org, dir, NULL );
 
 	ME_RegisterItem( it );
 	if ( ( it->kind == ME_ITEM_MODEL || it->kind == ME_ITEM_PROP ) && it->h ) {
@@ -3959,6 +4683,9 @@ static void ME_ClickWorld( float x, float y ) {
 		ME_TexClick( dir );
 		return;
 	}
+	// the Brushes tab picks a brush of ours, and its faces
+	if ( me.tab == ME_TAB_BRUSHES && !me.showLayouts && ME_BrushClick( dir ) )
+		return;
 	// the Locks tab picks a door or a trigger, never a prop
 	if ( ME_LocksTab() ) {
 		if ( ME_Pick( me.camOrg, dir, &kind, &index ) && kind == ME_SEL_ENT )
@@ -4045,20 +4772,24 @@ static int ME_GizmoHover( void ) {
 
 // how far along the arrow's line from from the cursor's ray passes nearest; qfalse when the
 // camera looks along it
-static qboolean ME_AxisParam( const vec3_t from, int axis, float *t ) {
+static qboolean ME_LineParam( const vec3_t from, const vec3_t line, float *t ) {
 	vec3_t dir, w;
 	float b, d, e, denom;
 
 	ME_CursorRay( me.cursorX, me.cursorY, dir );
 	VectorSubtract( from, me.camOrg, w );
-	b = DotProduct( meAxes[axis], dir );
-	d = DotProduct( meAxes[axis], w );
+	b = DotProduct( line, dir );
+	d = DotProduct( line, w );
 	e = DotProduct( dir, w );
 	denom = 1.0f - b * b;
 	if ( denom < 0.001f )
 		return qfalse;
 	*t = ( b * e - d ) / denom;
 	return qtrue;
+}
+
+static qboolean ME_AxisParam( const vec3_t from, int axis, float *t ) {
+	return ME_LineParam( from, meAxes[axis], t );
 }
 
 // the camera in front of a spot, looking at it
@@ -4129,6 +4860,9 @@ static char *ME_FieldBuffer( int *size ) {
 	case ME_FIELD_GROW:
 		*size = sizeof( me.texGrow );
 		return me.texGrow;
+	case ME_FIELD_BTEXTURE:
+		*size = sizeof( me.bTexSearch );
+		return me.bTexSearch;
 	default:
 		return NULL;
 	}
@@ -4141,6 +4875,8 @@ static void ME_FieldEdited( void ) {
 		me.searchScroll = 0;
 	else if ( me.field == ME_FIELD_TEXTURE || me.field == ME_FIELD_GROW )
 		me.texScroll = 0;
+	else if ( me.field == ME_FIELD_BTEXTURE )
+		me.bTexScroll = 0;
 	else if ( me.field != ME_FIELD_LAYOUT && me.field != ME_FIELD_LOCKNAME )
 		ME_Changed();
 	if ( me.field == ME_FIELD_PATTERN && me.selKind == ME_SEL_STYLE && me.sel >= 0 && me.sel < MAX_LIGHT_STYLES )
@@ -4167,6 +4903,10 @@ void CL_MapEditor_KeyEvent( int key, qboolean down ) {
 			me.dragAxis = -1;
 			ME_Changed();
 		}
+		if ( key == A_MOUSE1 && me.bDrag >= 0 ) {
+			me.bDrag = -1;
+			ME_Changed();
+		}
 		return;
 	}
 	if ( ME_IsToggleKey( key ) ) {
@@ -4188,6 +4928,9 @@ void CL_MapEditor_KeyEvent( int key, qboolean down ) {
 
 	switch ( key ) {
 	case A_MOUSE1:
+		// a brush's face handle pointed at: dragged
+		if ( me.gizmoAxis < 0 && ME_BrushHandlePress() )
+			return;
 		// an arrow pointed at: dragged
 		if ( me.gizmoAxis >= 0 && ME_GizmoItem() && ME_AxisParam( ME_GizmoItem()->org, me.gizmoAxis, &me.dragT0 ) ) {
 			me.dragAxis = me.gizmoAxis;
@@ -4417,15 +5160,20 @@ static void ME_EditorFrame( void ) {
 			const float move = floorf( ( t - me.dragT0 ) / snap + 0.5f ) * snap;
 
 			VectorCopy( me.dragFrom, it->org );
-			it->org[me.dragAxis] += move;
+			// a brush on the grid (Shift: by a unit)
+			if ( it->kind == ME_ITEM_BRUSH )
+				it->org[me.dragAxis] = ME_Snap( me.dragFrom[me.dragAxis] + t - me.dragT0 );
+			else
+				it->org[me.dragAxis] += move;
 		}
 		me.gizmoAxis = me.dragAxis;
 	} else {
-		me.gizmoAxis = ME_GizmoHover();
+		me.gizmoAxis = me.bDrag >= 0 ? -1 : ME_GizmoHover();
 	}
+	ME_BrushHandleFrame();
 	if ( !me.flying && me.cursorX < ME_PANEL_X && me.storyPick >= 0 )
 		ME_StoryPickAt( me.camOrg, dir, &me.hoverKind, &me.hover );
-	else if ( !me.flying && me.cursorX < ME_PANEL_X && !me.grabbing && me.gizmoAxis < 0 )
+	else if ( !me.flying && me.cursorX < ME_PANEL_X && !me.grabbing && me.gizmoAxis < 0 && me.bDrag < 0 )
 		ME_Pick( me.camOrg, dir, &me.hoverKind, &me.hover );
 	else
 		me.hoverKind = ME_SEL_NONE;
@@ -4541,6 +5289,7 @@ void CL_MapEditor_WeatherRestarted( void ) {
 	me.weatherSum = 0;
 	me.weatherApplied = qfalse;
 }
+
 
 void CL_MapEditor_Frame( void ) {
 	if ( cls.state != CA_ACTIVE || !cls.cgameStarted )
@@ -4716,6 +5465,19 @@ static void ME_AddItems( void ) {
 			VectorCopy( it->org, ent.lightingOrigin );
 			ME_ItemAxis( it, ent.axis );
 			ent.nonNormalizedAxes = (qboolean)( it->scale != 1.0f );
+			re->AddRefEntityToScene( &ent );
+		} else if ( it->kind == ME_ITEM_BRUSH ) {
+			refEntity_t ent;
+
+			ME_BrushUpToDate( it );
+			if ( !it->h )
+				continue;
+			memset( &ent, 0, sizeof( ent ) );
+			ent.hModel = it->h;
+			VectorCopy( it->org, ent.origin );
+			VectorCopy( it->org, ent.oldorigin );
+			VectorCopy( it->org, ent.lightingOrigin );
+			AnglesToAxis( it->ang, ent.axis );
 			re->AddRefEntityToScene( &ent );
 		} else if ( it->kind == ME_ITEM_LIGHT ) {
 			vec3_t color;
@@ -4914,6 +5676,8 @@ static void ME_AddEditorLines( void ) {
 
 			ME_ItemBounds( it, mins, maxs );
 			ME_BoxLines( mins, maxs, sel || hover ? meSelColor : color );
+		} else if ( it->kind == ME_ITEM_BRUSH ) {
+			continue;		// their edges, below
 		} else if ( it->kind == ME_ITEM_SPEAKER ) {
 			ME_Cross( it->org, sel || hover ? 10.0f : 6.0f, sel || hover ? meSelColor : it->off ? meHiddenColor : meSpeakerColor );
 			if ( sel && !it->global )
@@ -4949,6 +5713,8 @@ static void ME_AddEditorLines( void ) {
 			}
 		}
 	}
+
+	ME_EditorBrushLines();
 
 	// a prop of the map's, chosen
 	if ( me.selKind == ME_SEL_PROP )
@@ -5575,6 +6341,10 @@ static meItem_t *ME_DrawItemList( float *py, float x, float w, int kind, const c
 			text = va( "%i  %s", r + me.itemScroll[tab] + 1, COM_SkipPath( (char *)row->model ) );
 		else if ( kind == ME_ITEM_LIGHT )
 			text = va( "%i  reach %i%s", r + me.itemScroll[tab] + 1, ME_Round( row->radius ), row->style >= 0 ? va( ", style %i", row->style ) : "" );
+		else if ( kind == ME_ITEM_BRUSH )
+			text = row->bShape == ME_SHAPE_CUSTOM ? va( "%i  map brush" S_COLOR_GREY "  %i faces", r + me.itemScroll[tab] + 1, row->numFaces )
+				: va( "%i  %s" S_COLOR_GREY "  %i x %i x %i", r + me.itemScroll[tab] + 1, meShapeNames[Com_Clampi( 0, ME_NUM_SHAPES - 1, row->bShape )],
+				ME_Round( row->size[0] ), ME_Round( row->size[1] ), ME_Round( row->size[2] ) );
 		else if ( kind == ME_ITEM_FOG )
 			text = va( "%i  fog volume" S_COLOR_GREY "  %i x %i x %i, opaque at %i", r + me.itemScroll[tab] + 1, ME_Round( row->size[0] * 2 ),
 				ME_Round( row->size[1] * 2 ), ME_Round( row->size[2] * 2 ), ME_Round( row->fogDepth ) );
@@ -5660,6 +6430,12 @@ static void ME_DrawPropChoice( float *py, float x, float w ) {
 	if ( !ME_CandIsBrush() && me.candBrush >= 0 ) {
 		if ( ME_Button( x, y, w, "Just the brush clicked", qfalse, qtrue ) )
 			ME_ChooseBrush( me.candBrush );
+		y += ME_CTRL_H + ME_GAP;
+	}
+	// one brush: made into one of ours, to reshape and retexture
+	if ( ME_CandIsBrush() ) {
+		if ( ME_Button( x, y, w, "Make editable (a brush of ours)", qfalse, (qboolean)( re->ext.BrushModel != NULL ) ) )
+			ME_MakeEditable();
 		y += ME_CTRL_H + ME_GAP;
 	}
 	ME_Text( x, y, ME_CandIsBrush() ? S_COLOR_GREY "One brush of the map's: the faces on it" : S_COLOR_GREY "Take more adds loose pieces inside it", meWhite );
@@ -6056,6 +6832,422 @@ static void ME_DrawAddedFogs( float x, float y, float w ) {
 			ME_Num( x, y, w, names[a], va( "%i", ME_Round( it->size[a] * 2 ) ), &it->size[a], 16.0f, 4.0f, 16384.0f, 2.0f );
 			y += ME_CTRL_H + ME_GAP;
 		}
+	}
+}
+
+/*
+===============================================================================
+
+Brushes: the tab, the handles on their faces, the faces picked
+
+===============================================================================
+*/
+
+static const byte meFacePickColor[4]	= { 255, 90, 200, 255 };
+static const byte meHandleColor[4]		= { 255, 210, 60, 255 };
+
+static float ME_Snap( float v ) {
+	const float g = ME_ShiftDown() || me.grid <= 0 ? 1.0f : (float)me.grid;
+
+	return floorf( v / g + 0.5f ) * g;
+}
+
+static meItem_t *ME_SelectedBrush( void ) {
+	meItem_t *it = ME_SelectedItem();
+
+	return it && it->kind == ME_ITEM_BRUSH ? it : NULL;
+}
+
+// the faces picked are the chosen brush's
+static void ME_CheckFacePick( void ) {
+	if ( me.selKind != ME_SEL_ITEM || me.sel != me.bFacesOf ) {
+		me.bFaces = 0;
+		me.bFacesOf = me.selKind == ME_SEL_ITEM ? me.sel : -1;
+	}
+}
+
+static int ME_NumFacesPicked( const meItem_t *it ) {
+	int n = 0;
+
+	for ( int f = 0; f < it->numFaces; f++ ) {
+		if ( me.bFaces & ( 1ull << f ) )
+			n++;
+	}
+	return n;
+}
+
+// a face the panel's changes go to: picked, or every one when none is
+static qboolean ME_FaceEdited( const meItem_t *it, int f ) {
+	return (qboolean)( !me.bFaces || ( me.bFaces & ( 1ull << f ) ) );
+}
+
+// the handle under the cursor, -1 none; *index: which of the brush's handles
+static int ME_BrushHandleHover( int *index ) {
+	vec3_t at[ME_MAX_BFACES], dirs[ME_MAX_BFACES];
+	int ids[ME_MAX_BFACES], n, found = -1;
+	float best = ME_GIZMO_PX + 2.0f;
+	const meItem_t *it = ME_SelectedBrush();
+
+	if ( !it || me.tab != ME_TAB_BRUSHES || me.showLayouts || me.bPage != 0 || me.flying || me.grabbing || me.cursorX >= ME_PANEL_X )
+		return -1;
+	n = ME_BrushHandles( it, at, dirs, ids );
+	for ( int i = 0; i < n; i++ ) {
+		float sx, sy, d;
+
+		if ( !ME_ProjectAny( at[i], &sx, &sy ) )
+			continue;
+		d = sqrtf( Square( sx - me.cursorX ) + Square( sy - me.cursorY ) );
+		if ( d < best ) {
+			best = d;
+			found = ids[i];
+			if ( index )
+				*index = i;
+		}
+	}
+	return found;
+}
+
+// a press on a handle: dragged until let go
+static qboolean ME_BrushHandlePress( void ) {
+	vec3_t at[ME_MAX_BFACES], dirs[ME_MAX_BFACES];
+	int ids[ME_MAX_BFACES], index = -1;
+	meItem_t *it = ME_SelectedBrush();
+	const int id = ME_BrushHandleHover( &index );
+
+	if ( !it || id < 0 || index < 0 )
+		return qfalse;
+	ME_BrushHandles( it, at, dirs, ids );
+	VectorCopy( at[index], me.bDragFrom );
+	VectorCopy( dirs[index], me.bDragDir );
+	if ( !ME_LineParam( me.bDragFrom, me.bDragDir, &me.bDragT0 ) )
+		return qfalse;
+	me.bDragItem = *it;
+	me.bDrag = id;
+	me.field = ME_FIELD_NONE;
+	return qtrue;
+}
+
+// every frame a handle's dragged: the face pushed out or in, by the grid
+static void ME_BrushHandleFrame( void ) {
+	meItem_t *it = ME_SelectedBrush();
+	float t;
+
+	if ( me.bDrag < 0 )
+		return;
+	if ( !it || !me.held[A_MOUSE1] ) {
+		me.bDrag = -1;
+		ME_Changed();
+		return;
+	}
+	if ( ME_LineParam( me.bDragFrom, me.bDragDir, &t ) )
+		ME_BrushPush( it, &me.bDragItem, me.bDrag, ME_Snap( t - me.bDragT0 ) );
+}
+
+// a click on the world in the Brushes tab: the brush clicked chosen, on the Faces page its face
+// picked (Shift adds or takes off); qfalse if it met none of them
+static qboolean ME_BrushClick( const vec3_t dir ) {
+	float best;
+	int found = -1, foundFace = -1;
+	trace_t tr;
+	vec3_t end;
+
+	VectorMA( me.camOrg, ME_TRACE_DIST, dir, end );
+	CM_BoxTrace( &tr, me.camOrg, end, vec3_origin, vec3_origin, 0, CONTENTS_SOLID | CONTENTS_TERRAIN, qfalse );
+	best = tr.fraction * ME_TRACE_DIST + 8.0f;
+	for ( int i = 0; i < me.numItems; i++ ) {
+		int face;
+		float t;
+
+		if ( me.items[i].kind != ME_ITEM_BRUSH )
+			continue;
+		t = ME_BrushRay( &me.items[i], me.camOrg, dir, &face );
+		if ( t >= 0.0f && t < best ) {
+			best = t;
+			found = i;
+			foundFace = face;
+		}
+	}
+	if ( found < 0 )
+		return qfalse;
+	if ( !ME_IsSel( ME_SEL_ITEM, found ) )
+		ME_Select( ME_SEL_ITEM, found );
+	ME_CheckFacePick();
+	if ( me.bPage == 1 && foundFace >= 0 ) {
+		const unsigned long long bit = 1ull << foundFace;
+
+		if ( ME_ShiftDown() )
+			me.bFaces ^= bit;
+		else
+			me.bFaces = bit;
+	}
+	return qtrue;
+}
+
+// a brush's edges, and its picked faces' in their colour
+static void ME_BrushLines( const meItem_t *it, const byte *color, qboolean picked ) {
+	matrix3_t axis;
+
+	AnglesToAxis( it->ang, axis );
+	for ( int f = 0; f < it->numFaces; f++ ) {
+		winding_t *w = ME_FacePoly( it, f );
+		const qboolean isPicked = (qboolean)( picked && ( me.bFaces & ( 1ull << f ) ) );
+
+		if ( !w )
+			continue;
+		for ( int v = 0; v < w->numpoints; v++ ) {
+			vec3_t a, b;
+
+			ME_BrushPoint( it, axis, w->p[v], a );
+			ME_BrushPoint( it, axis, w->p[( v + 1 ) % w->numpoints], b );
+			ME_LineFx( a, b, isPicked ? meFacePickColor : color, isPicked ? RF_DEPTHHACK : 0 );
+		}
+		FreeWinding( w );
+	}
+}
+
+static void ME_BrushHandleLines( const meItem_t *it ) {
+	vec3_t at[ME_MAX_BFACES], dirs[ME_MAX_BFACES];
+	int ids[ME_MAX_BFACES], n, hoverIndex = -1;
+	const int hover = me.bDrag >= 0 ? me.bDrag : ME_BrushHandleHover( &hoverIndex );
+
+	n = ME_BrushHandles( it, at, dirs, ids );
+	for ( int i = 0; i < n; i++ ) {
+		const float size = Com_Clamp( 1.5f, 24.0f, Distance( at[i], me.camOrg ) * 0.012f );
+		const byte *color = ids[i] == hover ? meSelColor : meHandleColor;
+		vec3_t mins, maxs, tip;
+
+		VectorSet( mins, at[i][0] - size, at[i][1] - size, at[i][2] - size );
+		VectorSet( maxs, at[i][0] + size, at[i][1] + size, at[i][2] + size );
+		for ( int k = 0; k < 4; k++ ) {
+			vec3_t a, b;
+
+			// a small box, drawn over what's in front of it
+			VectorSet( a, k & 1 ? maxs[0] : mins[0], k & 2 ? maxs[1] : mins[1], mins[2] );
+			VectorSet( b, a[0], a[1], maxs[2] );
+			ME_LineFx( a, b, color, RF_DEPTHHACK );
+		}
+		VectorMA( at[i], size * 4.0f, dirs[i], tip );
+		ME_LineFx( at[i], tip, color, RF_DEPTHHACK );
+	}
+}
+
+static void ME_EditorBrushLines( void ) {
+	const meItem_t *sel = ME_SelectedBrush();
+
+	ME_CheckFacePick();
+	for ( int i = 0; i < me.numItems; i++ ) {
+		const meItem_t *it = &me.items[i];
+
+		if ( it->kind != ME_ITEM_BRUSH )
+			continue;
+		if ( it == sel )
+			ME_BrushLines( it, meSelColor, (qboolean)( me.tab == ME_TAB_BRUSHES ) );
+		else if ( ME_IsHover( ME_SEL_ITEM, i ) )
+			ME_BrushLines( it, meItemColor, qfalse );
+	}
+	if ( sel && me.tab == ME_TAB_BRUSHES && !me.showLayouts && me.bPage == 0 )
+		ME_BrushHandleLines( sel );
+}
+
+// a map brush, chosen, made into one of ours: the map's hidden, ours in its place
+static void ME_MakeEditable( void ) {
+	const int b = me.candSeeds[0][1];
+	meItem_t *it;
+
+	if ( !ME_CandIsBrush() )
+		return;
+	if ( !re->ext.BrushModel ) {
+		ME_Message( S_COLOR_YELLOW "Brushes need the release's renderers, OpenGL or Vulkan" );
+		return;
+	}
+	if ( me.numItems + 2 > ME_MAX_ITEMS ) {
+		ME_Message( S_COLOR_YELLOW "That's as many as there can be" );
+		return;
+	}
+	ME_LiftProp( qtrue, qfalse );
+	if ( !ME_SelectedItem() || ME_SelectedItem()->kind != ME_ITEM_PROP )
+		return;
+	it = ME_NewItem( ME_ITEM_BRUSH );
+	if ( !it )
+		return;
+	if ( !ME_BrushFromMap( it, b ) ) {
+		ME_DeleteSelected();
+		ME_Message( S_COLOR_YELLOW "That brush couldn't be made into one of ours" );
+		return;
+	}
+	me.numItems++;
+	ME_Select( ME_SEL_ITEM, me.numItems - 1 );
+	me.tab = ME_TAB_BRUSHES;
+	me.bPage = 0;
+	ME_Changed();
+	ME_Message( "Editable: drag the handles on its faces; Delete puts the map's back" );
+}
+
+// the textures there are, to give the picked faces: typed, or picked from the ones that match
+static void ME_DrawFaceTextures( float x, float *py, float w, meItem_t *it ) {
+	static int matches[32768];
+	const int total = CL_ShaderManager_ShaderCount(), rows = 6;
+	int numMatches = 0, clicked;
+	qboolean found = qfalse;
+	float rowW, y = *py;
+
+	for ( int i = 0; i < total; i++ ) {
+		const char *name = CL_ShaderManager_ShaderName( i );
+
+		if ( me.bTexSearch[0] && !Q_stricmp( name, me.bTexSearch ) )
+			found = qtrue;
+		if ( numMatches < (int)ARRAY_LEN( matches ) && ( me.bTexSearch[0] ? Q_stristr( name, me.bTexSearch ) != NULL : !Q_stricmpn( name, "textures/", 9 ) ) )
+			matches[numMatches++] = i;
+	}
+	ME_TextBox( x, y, w, ME_FIELD_BTEXTURE, me.bTexSearch, "type to look for a texture, e.g. stone" );
+	if ( me.bTexSearch[0] && !found )
+		ME_Text( x + w - 4 - ME_TextWidth( "not found" ), y + 2, S_COLOR_RED "not found", meWhite );
+	y += ME_CTRL_H + ME_GAP;
+	clicked = ME_ListRows( x, y, w, rows, numMatches, &me.bTexScroll, &rowW );
+	for ( int r = 0; r < rows && me.bTexScroll + r < numMatches; r++ ) {
+		const char *name = CL_ShaderManager_ShaderName( matches[me.bTexScroll + r] );
+
+		if ( !Q_stricmp( name, me.bTexSearch ) )
+			ME_RowHighlight( x, y, rowW, r + me.bTexScroll, me.bTexScroll, rows );
+		ME_TextClipped( x + 4, y + 1 + r * ME_ROW_H, rowW - 8, name, meWhite );
+	}
+	if ( !numMatches )
+		ME_Text( x + 4, y + 2, S_COLOR_GREY "None match", meWhite );
+	if ( clicked >= 0 ) {
+		const char *name = CL_ShaderManager_ShaderName( matches[clicked] );
+		const int index = ME_BrushShaderIndex( name );
+
+		Q_strncpyz( me.bTexSearch, name, sizeof( me.bTexSearch ) );
+		Q_strncpyz( me.bLastTex, name, sizeof( me.bLastTex ) );
+		me.field = ME_FIELD_NONE;
+		for ( int f = 0; f < it->numFaces; f++ ) {
+			if ( ME_FaceEdited( it, f ) )
+				it->faces[f].shader = (byte)index;
+		}
+		ME_Changed();
+	}
+	y += rows * ME_ROW_H + 4;
+	*py = y;
+}
+
+// a face's texture setting, shown as the first edited face has it, given to all the edited ones
+static void ME_FaceTexNum( float x, float y, float w, meItem_t *it, int k, const char *label, float step, float min, float max ) {
+	int first = -1;
+	float v;
+
+	for ( int f = 0; f < it->numFaces && first < 0; f++ ) {
+		if ( ME_FaceEdited( it, f ) )
+			first = f;
+	}
+	if ( first < 0 )
+		return;
+	v = it->faces[first].tex[k];
+	if ( ME_NumAt( &it->faces[first].tex[k], x, y, w, label, k < 2 ? va( "%.3g", v ) : va( "%i", ME_Round( v ) ), &v, step, min, max, 1.0f ) ) {
+		for ( int f = 0; f < it->numFaces; f++ ) {
+			if ( ME_FaceEdited( it, f ) )
+				it->faces[f].tex[k] = v;
+		}
+		ME_Changed();
+	}
+}
+
+static void ME_DrawBrushesTab( float x, float y, float w ) {
+	const float quarter = ( w - 12 ) / 4.0f, half = ( w - 4 ) * 0.5f;
+	meItem_t *it;
+
+	if ( !re->ext.BrushModel ) {
+		ME_Text( x, y, S_COLOR_GREY "Brushes need the release's renderers,", meWhite );
+		ME_Text( x, y + ME_ROW_H, S_COLOR_GREY "OpenGL or Vulkan", meWhite );
+		return;
+	}
+	// the shape Add makes
+	for ( int i = 0; i < ME_SHAPE_CUSTOM; i++ ) {
+		if ( ME_Button( x + i * ( quarter + 4 ), y, quarter, meShapeNames[i], (qboolean)( me.bAddShape == i ), qtrue ) )
+			me.bAddShape = i;
+	}
+	y += ME_CTRL_H + ME_GAP;
+	it = ME_DrawItemList( &y, x, w, ME_ITEM_BRUSH, "Add" );
+	ME_CheckFacePick();
+	if ( !it ) {
+		ME_Text( x, y + 4, S_COLOR_GREY "Pick a shape, then Add puts it at the crosshair", meWhite );
+		ME_Text( x, y + 4 + ME_ROW_H, S_COLOR_GREY "with the texture it's on. A map brush clicked", meWhite );
+		ME_Text( x, y + 4 + ME_ROW_H * 2, S_COLOR_GREY "in Models can be made editable too", meWhite );
+		return;
+	}
+	if ( ME_Button( x, y, half, "Shape", (qboolean)( me.bPage == 0 ), qtrue ) )
+		me.bPage = 0;
+	if ( ME_Button( x + half + 4, y, half, me.bFaces ? va( "Faces (%i picked)", ME_NumFacesPicked( it ) ) : "Faces", (qboolean)( me.bPage == 1 ), qtrue ) )
+		me.bPage = 1;
+	y += ME_CTRL_H + ME_GAP + 2;
+
+	if ( me.bPage == 0 ) {
+		const float fifth = ( w - 34 - 16 ) / 4.0f;
+		static const int grids[4] = { 8, 16, 32, 0 };
+
+		if ( it->bShape == ME_SHAPE_CUSTOM ) {
+			ME_TextClipped( x, y, w, va( "%s" S_COLOR_GREY "  %i faces: drag the handles on them", it->bFrom >= 0 ? "From the map" : "Map brush",
+				it->numFaces ), meWhite );
+			y += ME_ROW_H + 4;
+		} else {
+			static const char *names[3] = { "Width", "Depth", "Tall" };
+			qboolean changed = qfalse;
+
+			for ( int a = 0; a < 3; a++ ) {
+				if ( ME_Num( x, y, w, names[a], va( "%i", ME_Round( it->size[a] ) ), &it->size[a], (float)Q_max( 1, me.grid ), 1.0f, 8192.0f, 1.0f ) )
+					changed = qtrue;
+				y += ME_CTRL_H + ME_GAP;
+			}
+			if ( it->bShape == ME_SHAPE_CYLINDER || it->bShape == ME_SHAPE_STAIRS ) {
+				const qboolean cyl = (qboolean)( it->bShape == ME_SHAPE_CYLINDER );
+
+				if ( ME_NumInt( x, y, w, cyl ? "Sides" : "Steps", va( "%i", it->bSides ), &it->bSides, 1, cyl ? 3 : 2, cyl ? ME_MAX_SIDES : ME_MAX_STEPS ) ) {
+					changed = qtrue;
+					ME_Changed();
+				}
+				y += ME_CTRL_H + ME_GAP;
+			}
+			if ( changed )
+				ME_MakeShape( it );
+		}
+		ME_NumAngle( x, y, w, "Yaw", &it->ang[YAW], qfalse );
+		y += ME_CTRL_H + ME_GAP;
+		ME_NumAngle( x, y, w, "Pitch", &it->ang[PITCH], qtrue );
+		y += ME_CTRL_H + ME_GAP;
+		ME_NumAngle( x, y, w, "Roll", &it->ang[ROLL], qtrue );
+		y += ME_CTRL_H + ME_GAP + 2;
+		// the grid moves and sizes snap to (Shift: a unit)
+		ME_Text( x, y + 2, "Grid", meDim );
+		for ( int i = 0; i < 4; i++ ) {
+			if ( ME_Button( x + 34 + i * ( fifth + 4 ), y, fifth, grids[i] ? va( "%i", grids[i] ) : "Off", (qboolean)( me.grid == grids[i] ), qtrue ) )
+				me.grid = grids[i];
+		}
+		y += ME_CTRL_H + ME_GAP;
+		ME_TextClipped( x, y, w, S_COLOR_GREY "Drag the yellow handles to size it; Shift: by a unit", meWhite );
+	} else {
+		const int picked = ME_NumFacesPicked( it );
+		int first = -1;
+
+		for ( int f = 0; f < it->numFaces && first < 0; f++ ) {
+			if ( ME_FaceEdited( it, f ) )
+				first = f;
+		}
+		ME_TextClipped( x, y, w, picked ? va( "%i of %i faces" S_COLOR_GREY "  %s", picked, it->numFaces, first >= 0 ? ME_BrushShaderName( it->faces[first].shader ) : "" )
+			: va( "All %i faces" S_COLOR_GREY "  click faces to pick; Shift adds", it->numFaces ), meWhite );
+		y += ME_ROW_H + 2;
+		if ( ME_Button( x, y, half, "Pick all", qfalse, qtrue ) )
+			me.bFaces = it->numFaces >= 64 ? ~0ull : ( ( 1ull << it->numFaces ) - 1 );
+		if ( ME_Button( x + half + 4, y, half, "Pick none", qfalse, (qboolean)( me.bFaces != 0 ) ) )
+			me.bFaces = 0;
+		y += ME_CTRL_H + ME_GAP + 2;
+		ME_DrawFaceTextures( x, &y, w, it );
+		ME_FaceTexNum( x, y, half, it, 0, "Scale X", 0.05f, 0.01f, 16.0f );
+		ME_FaceTexNum( x + half + 4, y, half, it, 1, "Scale Y", 0.05f, 0.01f, 16.0f );
+		y += ME_CTRL_H + ME_GAP;
+		ME_FaceTexNum( x, y, half, it, 2, "Shift X", 8.0f, -4096.0f, 4096.0f );
+		ME_FaceTexNum( x + half + 4, y, half, it, 3, "Shift Y", 8.0f, -4096.0f, 4096.0f );
+		y += ME_CTRL_H + ME_GAP;
+		ME_FaceTexNum( x, y, w, it, 4, "Rotate", 15.0f, -360.0f, 360.0f );
+		y += ME_CTRL_H + ME_GAP;
 	}
 }
 
@@ -6842,6 +8034,7 @@ static void ME_DrawEditor( void ) {
 	else switch ( me.tab ) {
 	case ME_TAB_MAP:		ME_DrawMapTab( x, y, w );		break;
 	case ME_TAB_MODELS:		ME_DrawModelsTab( x, y, w );	break;
+	case ME_TAB_BRUSHES:	ME_DrawBrushesTab( x, y, w );	break;
 	case ME_TAB_LIGHTS:		ME_DrawLightsTab( x, y, w );	break;
 	case ME_TAB_SOUNDS:		ME_DrawSoundsTab( x, y, w );	break;
 	case ME_TAB_LOCKS:		ME_DrawLocksTab( x, y, w );		break;
@@ -6931,6 +8124,44 @@ void CL_MapEditor_f( void ) {
 	} else if ( !Q_stricmp( arg, "unshare" ) ) {
 		ME_Unshare();
 		Com_Printf( "%s\n", me.message );
+	} else if ( !Q_stricmp( arg, "brush" ) && !Q_stricmp( Cmd_Argv( 2 ), "add" ) ) {
+		const int shape = ME_ShapeByWord( Cmd_Argv( 3 )[0] ? Cmd_Argv( 3 ) : "box" );
+
+		if ( shape < 0 || shape == ME_SHAPE_CUSTOM ) {
+			Com_Printf( "mapedit brush add <box|wedge|cylinder|stairs>\n" );
+			return;
+		}
+		// at the editor's crosshair: it's opened for it
+		if ( !me.open )
+			CL_MapEditor_Open();
+		if ( !me.open )
+			return;
+		me.bAddShape = shape;
+		ME_AddItem( ME_ITEM_BRUSH );
+	} else if ( !Q_stricmp( arg, "brush" ) && !Q_stricmp( Cmd_Argv( 2 ), "edit" ) ) {
+		// the map's brush at the crosshair, made into one of ours
+		vec3_t forward;
+		float dist;
+		int tri;
+
+		if ( !me.open )
+			CL_MapEditor_Open();
+		if ( !me.open )
+			return;
+		AngleVectors( me.camAng, forward, NULL, NULL );
+		tri = ME_TriHit( me.camOrg, forward, &dist );
+		if ( !ME_ChooseBrush( ME_BrushAt( tri, me.camOrg, forward, dist ) ) ) {
+			Com_Printf( "No brush of the map's at the crosshair\n" );
+			return;
+		}
+		ME_MakeEditable();
+		Com_Printf( "%s\n", me.message );
+	} else if ( !Q_stricmp( arg, "grid" ) ) {
+		const char *g = Cmd_Argv( 2 );
+
+		if ( g[0] )
+			me.grid = !Q_stricmp( g, "off" ) ? 0 : Com_Clampi( 0, 256, atoi( g ) );
+		Com_Printf( "Map editor grid: %s\n", me.grid ? va( "%i", me.grid ) : "off" );
 	} else {
 		Com_Printf( "mapedit : open or close the map editor\n"
 			"mapedit save [name] : keep the edits as a layout: the one loaded, or of that name\n"
@@ -6939,6 +8170,9 @@ void CL_MapEditor_f( void ) {
 			"mapedit clear : no edits; a map always starts without any\n"
 			"mapedit share : the edits to everyone on the map with this client (experimental)\n"
 			"mapedit unshare : everyone back to their own\n"
+			"mapedit brush add <box|wedge|cylinder|stairs> : a brush of ours at the crosshair\n"
+			"mapedit brush edit : the map's brush at the crosshair made into one of ours, to reshape and retexture\n"
+			"mapedit grid <8|16|32|off> : what brushes move and size by\n"
 			"mapedit on|off : show them outside the editor too, or not\n", ME_LayoutDir() );
 	}
 }
@@ -6962,6 +8196,9 @@ void CL_MapEditor_Init( void ) {
 	me.candBrush = -1;
 	me.gizmoAxis = me.dragAxis = -1;
 	me.storyPick = -1;
+	me.grid = 8;
+	me.bDrag = -1;
+	me.bFacesOf = -1;
 	memset( &ml, 0, sizeof( ml ) );
 	ml.showDoors = ml.showTriggers = qtrue;
 }
