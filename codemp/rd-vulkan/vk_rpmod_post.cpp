@@ -38,6 +38,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #include "shaders/spirv/shader_data_rpmod.c"
 #include "smaa/AreaTex.h"		// SMAA's tables (MIT licence: smaa/LICENSE.txt)
 #include "smaa/SearchTex.h"
+#include "tr_WorldEffects.h"
 
 static cvar_t	*r_ssao;
 static cvar_t	*r_ssaoRadius;
@@ -49,6 +50,7 @@ static cvar_t	*r_smaa;
 static cvar_t	*r_water, *r_waterStrength, *r_waterRipples;
 static cvar_t	*r_wetSurfaces, *r_wetStrength;
 static cvar_t	*r_heatHaze, *r_heatHazeStrength;
+static cvar_t	*r_skyAtmosphere, *r_skySharpen, *r_clouds, *r_cloudShadows, *r_aerialHaze, *r_aerialHazeStart, *r_skyScene[4];
 static cvar_t	*r_sharpen;
 static cvar_t	*r_relief, *r_reliefStrength, *r_reliefSpecular;
 static cvar_t	*r_volumetric, *r_volumetricIntensity, *r_volumetricFog;
@@ -71,6 +73,7 @@ static cvar_t	*r_dofBokeh;
 
 #define RP_MAX_HAZE			12		// heat haze's sources a view, six a pass
 #define RP_MAX_WET			4		// rain boxes a view whose ground is wet
+#define RP_MAX_SKYOBJ		16		// the sky composer's objects
 
 static struct {
 	qboolean			usable;			// the depth buffer can be read by a shader
@@ -80,7 +83,7 @@ static struct {
 	VkShaderModule		ssaoFs, aoBlurFs, aoApplyFs, shaftsFs[3], mblurFs, gradeFs, fxaaFs, casFs, volumFs, ssrFs, shadowFs;
 	VkShaderModule		smaaFs[3];		// edges, weights, blending
 	VkShaderModule		fsrFs[2];		// upscaling, sharpening
-	VkShaderModule		waterFs, wetFs, hazeFs;
+	VkShaderModule		waterFs, wetFs, hazeFs, skyFs, aerialFs;
 	VkShaderModule		softFs[6];		// in pairs, unfogged then fogged: vk_create_pipeline takes the next one for fog
 	VkPipelineLayout	layout;			// two image sets, 128 bytes of push constants
 
@@ -147,6 +150,21 @@ static struct {
 	// heat haze: what burns in this view, on the screen (x, y, radius in pixels, distance)
 	vec4_t				haze[RP_MAX_HAZE];
 	int					numHaze;
+
+	// the sky: the composer's objects in a table, four texels each (r_skyScene, set by the game)
+	VkImage				skyTable;
+	VkImageView			skyTableView;
+	VkDeviceMemory		skyTableMemory;
+	VkDescriptorSet		skySet;
+	VkPipeline			skyPipe, aerialPipe;
+	int					skySceneCount;		// r_skyScene's modificationCount the table has
+	int					numSkyObjects;
+	float				skyTime;			// the composer's hour, -1 none
+	float				skyClouds;			// its cloud cover, -1 none
+	qboolean			skyLightning;
+	vec2_t				cloudDrift;			// how far the clouds have drifted
+	int					cloudTime;
+	int					flashUntil, nextFlash;
 	qboolean			setsAllocated;
 
 	VkRenderPass		postPass, distPass, aoPass, smaaPass;
@@ -167,7 +185,7 @@ static struct {
 	VkRect2D			prevRect;
 } rp;
 
-#define RP_NUM_SETS 16	// sceneSet, postSet[2], distSet, depthSet, aoSet[2], shadowSet, maskSet, smaaSet[2], smaaTableSet[2], fsrSet[2], waterSet
+#define RP_NUM_SETS 17	// sceneSet, postSet[2], distSet, depthSet, aoSet[2], shadowSet, maskSet, smaaSet[2], smaaTableSet[2], fsrSet[2], waterSet, skySet
 #if RP_NUM_SETS > VK_RPMOD_SETS
 #error the descriptor pool has to have room for these sets
 #endif
@@ -215,6 +233,23 @@ void vk_rpmod_register_cvars( void ) {
 	ri.Cvar_CheckRange( r_heatHaze, 0, 1, qtrue );
 	r_heatHazeStrength = ri.Cvar_Get( "r_heatHazeStrength", "3", CVAR_ARCHIVE_ND, "Heat haze: how far it bends what's behind, in pixels on a 480 high screen" );
 	ri.Cvar_CheckRange( r_heatHazeStrength, 0, 12, qfalse );
+	r_skyAtmosphere = ri.Cvar_Get( "r_skyAtmosphere", "0", CVAR_ARCHIVE_ND, va( "Sky atmosphere: a sky of the sun's place over the map's, 0 none to 1 all of it: blue by day, red at dusk, stars at night%s", fbo ) );
+	ri.Cvar_CheckRange( r_skyAtmosphere, 0, 1, qfalse );
+	r_skySharpen = ri.Cvar_Get( "r_skySharpen", "0", CVAR_ARCHIVE_ND, va( "Sky sharpening: the map's skybox crisper, 0 to 1%s", fbo ) );
+	ri.Cvar_CheckRange( r_skySharpen, 0, 1, qfalse );
+	r_clouds = ri.Cvar_Get( "r_clouds", "0", CVAR_ARCHIVE_ND, va( "Clouds over the sky, drifting with the wind and lit by the sun: their cover, 0 none to 1 overcast (the sky composer's in place of it)%s", fbo ) );
+	ri.Cvar_CheckRange( r_clouds, 0, 1, qfalse );
+	r_cloudShadows = ri.Cvar_Get( "r_cloudShadows", "0.5", CVAR_ARCHIVE_ND, "Clouds' shadows on the ground: how dark, 0 none to 1" );
+	ri.Cvar_CheckRange( r_cloudShadows, 0, 1, qfalse );
+	r_aerialHaze = ri.Cvar_Get( "r_aerialHaze", "0", CVAR_ARCHIVE_ND, va( "Aerial haze: far things fade into the sky's colour, less high up; how thick, 0 none to 4%s", fbo ) );
+	ri.Cvar_CheckRange( r_aerialHaze, 0, 4, qfalse );
+	r_aerialHazeStart = ri.Cvar_Get( "r_aerialHazeStart", "768", CVAR_ARCHIVE_ND, "Aerial haze: how far from you it starts, in world units" );
+	ri.Cvar_CheckRange( r_aerialHazeStart, 0, 8192, qfalse );
+	// the sky composer's scene, set by the game (/skycomposer): "time <hour> clouds <cover> lightning 1",
+	// then objects: "<kind> <yaw> <pitch> <size> <r> <g> <b> [<seed> <tilt> <rings>]", ";" between
+	// in four parts, a setting holding 256 characters at most
+	for ( int i = 0; i < 4; i++ )
+		r_skyScene[i] = ri.Cvar_Get( i ? va( "r_skyScene%i", i + 1 ) : "r_skyScene", "", CVAR_ROM | CVAR_TEMP, "The sky composer's scene (set by /skycomposer)" );
 	r_relief = ri.Cvar_Get( "r_relief", "0", CVAR_ARCHIVE_ND | CVAR_LATCH, "Surface relief: dynamic lights and lit sabers pick out the relief of stone, metal and cloth, worked out from each texture (needs \\r_dlightMode 2; \\vid_restart to change)" );
 	ri.Cvar_CheckRange( r_relief, 0, 1, qtrue );
 	r_reliefStrength = ri.Cvar_Get( "r_reliefStrength", "8", CVAR_ARCHIVE_ND, "Surface relief: how deep it is, in world units" );
@@ -402,6 +437,10 @@ void vk_rpmod_init( void ) {
 	RP_MODULE( rp.waterFs, rpmod_water_frag_spv, "rpmod water" );
 	RP_MODULE( rp.wetFs, rpmod_wet_frag_spv, "rpmod wet surfaces" );
 	RP_MODULE( rp.hazeFs, rpmod_haze_frag_spv, "rpmod heat haze" );
+	RP_MODULE( rp.skyFs, rpmod_sky_frag_spv, "rpmod sky" );
+	RP_MODULE( rp.aerialFs, rpmod_aerial_frag_spv, "rpmod aerial haze" );
+	rp.skySceneCount = -1;
+	rp.skyTime = rp.skyClouds = -1.0f;
 
 	push.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 	push.offset = 0;
@@ -420,7 +459,7 @@ void vk_rpmod_shutdown( void ) {
 	VkShaderModule *modules[] = { &rp.depthFs, &rp.depthMsFs, &rp.dofFs, &rp.filterFs, &rp.copyFs,
 		&rp.ssaoFs, &rp.aoBlurFs, &rp.aoApplyFs, &rp.softFs[0], &rp.softFs[1], &rp.softFs[2], &rp.softFs[3], &rp.softFs[4], &rp.softFs[5],
 		&rp.shaftsFs[0], &rp.shaftsFs[1], &rp.shaftsFs[2], &rp.mblurFs, &rp.gradeFs, &rp.fxaaFs, &rp.casFs, &rp.volumFs, &rp.ssrFs, &rp.shadowFs,
-		&rp.smaaFs[0], &rp.smaaFs[1], &rp.smaaFs[2], &rp.fsrFs[0], &rp.fsrFs[1], &rp.waterFs, &rp.wetFs, &rp.hazeFs };
+		&rp.smaaFs[0], &rp.smaaFs[1], &rp.smaaFs[2], &rp.fsrFs[0], &rp.fsrFs[1], &rp.waterFs, &rp.wetFs, &rp.hazeFs, &rp.skyFs, &rp.aerialFs };
 
 	for ( size_t i = 0; i < ARRAY_LEN( modules ); i++ ) {
 		if ( *modules[i] != VK_NULL_HANDLE )
@@ -537,7 +576,7 @@ the renderer points its own (vk_update_attachment_descriptors: new window size, 
 void vk_rpmod_init_descriptors( void ) {
 	VkDescriptorSetAllocateInfo alloc;
 	VkDescriptorSet *sets[RP_NUM_SETS] = { &rp.sceneSet, &rp.postSet[0], &rp.postSet[1], &rp.distSet, &rp.depthSet, &rp.aoSet[0], &rp.aoSet[1], &rp.shadowSet, &rp.maskSet,
-		&rp.smaaSet[0], &rp.smaaSet[1], &rp.smaaTableSet[0], &rp.smaaTableSet[1], &rp.fsrSet[0], &rp.fsrSet[1], &rp.waterSet };
+		&rp.smaaSet[0], &rp.smaaSet[1], &rp.smaaTableSet[0], &rp.smaaTableSet[1], &rp.fsrSet[0], &rp.fsrSet[1], &rp.waterSet, &rp.skySet };
 
 	Com_Memset( &alloc, 0, sizeof( alloc ) );
 	alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -554,7 +593,7 @@ void vk_rpmod_init_descriptors( void ) {
 void vk_rpmod_forget_descriptors( void ) {
 	rp.setsAllocated = qfalse;
 	rp.sceneSet = rp.postSet[0] = rp.postSet[1] = rp.distSet = rp.depthSet = rp.aoSet[0] = rp.aoSet[1] = rp.shadowSet = rp.maskSet = VK_NULL_HANDLE;
-	rp.smaaSet[0] = rp.smaaSet[1] = rp.smaaTableSet[0] = rp.smaaTableSet[1] = rp.fsrSet[0] = rp.fsrSet[1] = rp.waterSet = VK_NULL_HANDLE;
+	rp.smaaSet[0] = rp.smaaSet[1] = rp.smaaTableSet[0] = rp.smaaTableSet[1] = rp.fsrSet[0] = rp.fsrSet[1] = rp.waterSet = rp.skySet = VK_NULL_HANDLE;
 	rp.haveDistance = rp.softOn = qfalse;
 }
 
@@ -584,6 +623,8 @@ void vk_rpmod_update_descriptors( void ) {
 	}
 	if ( rp.waterView != VK_NULL_HANDLE )
 		RP_SetImage( rp.waterSet, rp.waterView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, GL_NEAREST );
+	if ( rp.skyTableView != VK_NULL_HANDLE )
+		RP_SetImage( rp.skySet, rp.skyTableView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, GL_NEAREST );
 	// FSR's: read a pixel at a time, and shown one to one by the gamma pass
 	if ( rp.fsrView[0] != VK_NULL_HANDLE ) {
 		RP_SetImage( rp.fsrSet[0], rp.fsrView[0], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, GL_NEAREST );
@@ -778,6 +819,14 @@ void vk_rpmod_create_attachments( void ) {
 		&rp.smaaTable[0], &rp.smaaTableView[0], &rp.smaaTableMemory[0], "rpmod smaa area table" );
 	RP_CreateTable( VK_FORMAT_R8_UNORM, SEARCHTEX_WIDTH, SEARCHTEX_HEIGHT, searchTexBytes, sizeof( searchTexBytes ),
 		&rp.smaaTable[1], &rp.smaaTableView[1], &rp.smaaTableMemory[1], "rpmod smaa search table" );
+	// the sky composer's table, empty until there's a scene
+	{
+		static float none[RP_MAX_SKYOBJ * 4 * 4];
+
+		RP_CreateTable( VK_FORMAT_R32G32B32A32_SFLOAT, RP_MAX_SKYOBJ * 4, 1, (const unsigned char *)none, sizeof( none ),
+			&rp.skyTable, &rp.skyTableView, &rp.skyTableMemory, "rpmod sky objects" );
+		rp.skySceneCount = -1;
+	}
 	// FSR's, only when the picture is drawn smaller than the window for it
 	if ( r_fsr->integer && !r_renderScale->integer && ( glConfig.vidWidth != gls.windowWidth || glConfig.vidHeight != gls.windowHeight ) ) {
 		RP_CreateImageSized( vk.color_format, gls.windowWidth, gls.windowHeight, &rp.fsrImage[0], &rp.fsrView[0], &rp.fsrMemory[0], "rpmod fsr upscaled" );
@@ -850,6 +899,7 @@ void vk_rpmod_destroy_attachments( void ) {
 	RP_DestroyImage( &rp.maskImage, &rp.maskView, &rp.maskMemory );
 	RP_DestroyImage( &rp.maskColor, &rp.maskColorView, &rp.maskColorMemory );
 	RP_DestroyImage( &rp.waterImage, &rp.waterView, &rp.waterMemory );
+	RP_DestroyImage( &rp.skyTable, &rp.skyTableView, &rp.skyTableMemory );
 	RP_DestroyImage( &rp.waterColor, &rp.waterColorView, &rp.waterColorMemory );
 }
 
@@ -1182,7 +1232,7 @@ static VkPipeline RP_CreatePipeline( VkShaderModule fs, VkRenderPass pass, VkSam
 void vk_rpmod_destroy_pipelines( void ) {
 	VkPipeline *pipes[] = { &rp.depthPipe, &rp.dofPipe, &rp.filterPipe, &rp.copyPipe, &rp.ssaoPipe, &rp.aoBlurPipe,
 		&rp.aoApplyPipe, &rp.shaftsPipe[0], &rp.shaftsPipe[1], &rp.shaftsPipe[2], &rp.mblurPipe, &rp.gradePipe,
-		&rp.fxaaPipe, &rp.casPipe, &rp.volumPipe, &rp.ssrPipe, &rp.shadowPipe, &rp.smaaPipe[0], &rp.smaaPipe[1], &rp.smaaPipe[2], &rp.fsrPipe[0], &rp.fsrPipe[1], &rp.waterPipe, &rp.wetPipe, &rp.hazePipe };
+		&rp.fxaaPipe, &rp.casPipe, &rp.volumPipe, &rp.ssrPipe, &rp.shadowPipe, &rp.smaaPipe[0], &rp.smaaPipe[1], &rp.smaaPipe[2], &rp.fsrPipe[0], &rp.fsrPipe[1], &rp.waterPipe, &rp.wetPipe, &rp.hazePipe, &rp.skyPipe, &rp.aerialPipe };
 
 	rp.ready = qfalse;
 	for ( size_t i = 0; i < ARRAY_LEN( pipes ); i++ ) {
@@ -1226,6 +1276,8 @@ void vk_rpmod_create_pipelines( void ) {
 	rp.waterPipe = RP_CreatePipeline( rp.waterFs, rp.postPass, one, qfalse, "rpmod water" );
 	rp.wetPipe = RP_CreatePipeline( rp.wetFs, rp.postPass, one, qfalse, "rpmod wet surfaces" );
 	rp.hazePipe = RP_CreatePipeline( rp.hazeFs, rp.postPass, one, qfalse, "rpmod heat haze" );
+	rp.skyPipe = RP_CreatePipeline( rp.skyFs, rp.postPass, one, qfalse, "rpmod sky" );
+	rp.aerialPipe = RP_CreatePipeline( rp.aerialFs, rp.postPass, one, qfalse, "rpmod aerial haze" );
 	// back into the view
 	rp.copyPipe = RP_CreatePipeline( rp.copyFs, vk.render_pass.main.handle, (VkSampleCountFlagBits)vkSamples, qfalse, "rpmod copy" );
 	rp.ready = qtrue;
@@ -1471,6 +1523,8 @@ static qboolean RP_NeedDistance( const VkRect2D *r ) {
 		|| ( r_ssr->integer && r_ssrStrength->value > 0.0f )
 		|| ( r_water->integer && r_waterStrength->value > 0.0f ) || r_heatHaze->integer
 		|| ( r_wetSurfaces->integer && R_WetZones( NULL, NULL, NULL, 0 ) > 0 )
+		|| r_skyAtmosphere->value > 0.0f || r_skySharpen->value > 0.0f || r_clouds->value > 0.0f || r_aerialHaze->value > 0.0f
+		|| r_skyScene[0]->string[0]
 		|| ( r_shadowMaps->integer && r_shadowStrength->value > 0.0f && rp.shadowPipe != VK_NULL_HANDLE ) );
 }
 
@@ -2195,6 +2249,204 @@ static qboolean RP_Grade( float *a, float *tint ) {
 
 /*
 ===============
+the sky: the composer's scene (r_skyScene) read when it changes, its objects into their table; the
+sun's place, the clouds' drift and the lightning, for the sky's passes
+===============
+*/
+static const char *rpSkyKinds[] = { "planet", "gas", "moon", "sun", "station", "nebula", "fleet", "ringed" };
+
+static void RP_SkyScene( void ) {
+	static float table[RP_MAX_SKYOBJ * 4 * 4];
+	static char scene[4 * MAX_CVAR_VALUE_STRING];
+	const char *p;
+	VkBufferImageCopy region;
+	int changes = 0;
+
+	for ( int i = 0; i < 4; i++ )
+		changes += r_skyScene[i]->modificationCount;
+	if ( changes == rp.skySceneCount || rp.skyTable == VK_NULL_HANDLE )
+		return;
+	rp.skySceneCount = changes;
+	scene[0] = '\0';
+	for ( int i = 0; i < 4; i++ ) {
+		Q_strcat( scene, sizeof( scene ), r_skyScene[i]->string );
+		Q_strcat( scene, sizeof( scene ), " " );
+	}
+	rp.numSkyObjects = 0;
+	rp.skyTime = rp.skyClouds = -1.0f;
+	rp.skyLightning = qfalse;
+	Com_Memset( table, 0, sizeof( table ) );
+
+	p = scene;
+	while ( p ) {
+		const char *token = COM_ParseExt( &p, qfalse );
+		int kind = -1;
+
+		if ( !token[0] ) {
+			// the end (the parser leaves NULL there), or a line's end
+			if ( !p || !*p )
+				break;
+			p++;		// past a ';' or a line's end
+			continue;
+		}
+		if ( !Q_stricmp( token, ";" ) )
+			continue;
+		if ( !Q_stricmp( token, "time" ) ) {
+			rp.skyTime = Com_Clamp( 0.0f, 24.0f, atof( COM_ParseExt( &p, qfalse ) ) );
+			continue;
+		}
+		if ( !Q_stricmp( token, "clouds" ) ) {
+			rp.skyClouds = Com_Clamp( 0.0f, 1.0f, atof( COM_ParseExt( &p, qfalse ) ) );
+			continue;
+		}
+		if ( !Q_stricmp( token, "lightning" ) ) {
+			rp.skyLightning = (qboolean)( atoi( COM_ParseExt( &p, qfalse ) ) != 0 );
+			continue;
+		}
+		for ( int k = 0; k < (int)ARRAY_LEN( rpSkyKinds ); k++ ) {
+			if ( !Q_stricmp( token, rpSkyKinds[k] ) )
+				kind = k;
+		}
+		if ( kind < 0 || rp.numSkyObjects >= RP_MAX_SKYOBJ )
+			continue;
+		{
+			float v[9] = { 0, 20, 5, 1, 1, 1, 0, 20, 0 };	// yaw pitch size r g b seed tilt rings
+			float *t = table + rp.numSkyObjects * 16;
+			vec3_t angles, dir;
+
+			for ( int k = 0; k < 9; k++ ) {
+				const char *num = COM_ParseExt( &p, qfalse );
+
+				if ( !num[0] || !strchr( "-0123456789.", num[0] ) ) {
+					if ( num[0] && p )
+						p -= strlen( num );		// the next object's word
+					break;
+				}
+				v[k] = atof( num );
+			}
+			VectorSet( angles, -v[1], v[0], 0.0f );
+			AngleVectors( angles, dir, NULL, NULL );
+			VectorCopy( dir, t );
+			t[3] = DEG2RAD( Com_Clamp( 0.1f, 60.0f, v[2] ) );
+			t[4] = Com_Clamp( 0.0f, 4.0f, v[3] );
+			t[5] = Com_Clamp( 0.0f, 4.0f, v[4] );
+			t[6] = Com_Clamp( 0.0f, 4.0f, v[5] );
+			t[7] = (float)kind;
+			t[8] = v[6];
+			t[9] = DEG2RAD( v[7] );
+			t[10] = v[8];
+			t[11] = 1.0f;
+			rp.numSkyObjects++;
+		}
+	}
+
+	// the table refilled: the frames drawing with it done first, it changes rarely
+	{
+		VkBufferCreateInfo bdesc;
+		VkMemoryRequirements req;
+		VkMemoryAllocateInfo alloc;
+		VkBuffer staging;
+		VkDeviceMemory stagingMemory;
+		VkCommandBuffer cmd;
+		void *data;
+
+		qvkDeviceWaitIdle( vk.device );
+		Com_Memset( &bdesc, 0, sizeof( bdesc ) );
+		bdesc.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+		bdesc.size = sizeof( table );
+		bdesc.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+		bdesc.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+		VK_CHECK( qvkCreateBuffer( vk.device, &bdesc, NULL, &staging ) );
+		qvkGetBufferMemoryRequirements( vk.device, staging, &req );
+		Com_Memset( &alloc, 0, sizeof( alloc ) );
+		alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+		alloc.allocationSize = req.size;
+		alloc.memoryTypeIndex = vk_find_memory_type( req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT );
+		VK_CHECK( qvkAllocateMemory( vk.device, &alloc, NULL, &stagingMemory ) );
+		VK_CHECK( qvkBindBufferMemory( vk.device, staging, stagingMemory, 0 ) );
+		VK_CHECK( qvkMapMemory( vk.device, stagingMemory, 0, VK_WHOLE_SIZE, 0, &data ) );
+		Com_Memcpy( data, table, sizeof( table ) );
+		qvkUnmapMemory( vk.device, stagingMemory );
+
+		Com_Memset( &region, 0, sizeof( region ) );
+		region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+		region.imageSubresource.layerCount = 1;
+		region.imageExtent.width = RP_MAX_SKYOBJ * 4;
+		region.imageExtent.height = 1;
+		region.imageExtent.depth = 1;
+		cmd = vk_begin_command_buffer();
+		vk_record_image_layout_transition( cmd, rp.skyTable, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, 0 );
+		qvkCmdCopyBufferToImage( cmd, staging, rp.skyTable, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region );
+		vk_record_image_layout_transition( cmd, rp.skyTable, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 0 );
+		vk_end_command_buffer( cmd, __func__ );
+		qvkDestroyBuffer( vk.device, staging, NULL );
+		qvkFreeMemory( vk.device, stagingMemory, NULL );
+	}
+}
+
+// toward the sun in the world: by the composer's hour (rising in the east of the map's sun, high at
+// noon, set by 18), else the map's own sun, else one high in the south-east
+static void RP_SkySun( vec3_t out ) {
+	vec3_t flat;
+
+	if ( VectorLength( tr.sunDirection ) > 0.1f )
+		VectorCopy( tr.sunDirection, flat );
+	else
+		VectorSet( flat, 0.4f, -0.5f, 0.75f );
+	if ( rp.skyTime < 0.0f ) {
+		VectorNormalize2( flat, out );
+		return;
+	}
+	{
+		const float e = ( rp.skyTime - 6.0f ) / 12.0f * M_PI;		// 0 at six, pi/2 at noon
+		const float height = sinf( e ) * 0.92f;
+		float az[2] = { flat[0], flat[1] };
+		const float len = sqrtf( az[0] * az[0] + az[1] * az[1] );
+
+		if ( len < 0.01f ) {
+			az[0] = 1.0f;
+			az[1] = 0.0f;
+		} else {
+			az[0] /= len;
+			az[1] /= len;
+		}
+		// along the sun's own way: from one side at six to the other at eighteen
+		out[0] = az[0] * cosf( e );
+		out[1] = az[1] * cosf( e );
+		out[2] = height;
+		VectorNormalize( out );
+	}
+}
+
+// the clouds' cover now: the composer's, else the setting; more in rain
+static float RP_CloudCover( void ) {
+	float cover = rp.skyClouds >= 0.0f ? rp.skyClouds : r_clouds->value;
+
+	if ( cover > 0.0f && R_IsRaining() )
+		cover = MAX( cover, 0.8f );
+	return cover;
+}
+
+// the clouds' drift with the weather's wind (a little of their own without it), and the lightning
+static void RP_SkyWeather( void ) {
+	const int now = backEnd.refdef.time;
+	const float dt = ( rp.cloudTime && now > rp.cloudTime && now - rp.cloudTime < 1000 ) ? ( now - rp.cloudTime ) * 0.001f : 0.0f;
+	vec3_t wind;
+
+	rp.cloudTime = now;
+	if ( !R_GetWindVector( wind ) || VectorLength( wind ) < 1.0f )
+		VectorSet( wind, 30.0f, 12.0f, 0.0f );
+	rp.cloudDrift[0] -= wind[0] * dt * 2.0f;
+	rp.cloudDrift[1] -= wind[1] * dt * 2.0f;
+
+	if ( rp.skyLightning && now >= rp.nextFlash ) {
+		rp.flashUntil = now + 80 + ( rand() % 160 );
+		rp.nextFlash = now + 3000 + ( rand() % 9000 );
+	}
+}
+
+/*
+===============
 vk_rpmod_post
 
 After dynamic glow: the passes over the view, each from the last one's image into the other
@@ -2214,6 +2466,8 @@ void vk_rpmod_post( void ) {
 	float wetness[RP_MAX_WET];
 	const int numWet = ( dist && r_wetSurfaces->integer && r_wetStrength->value > 0.0f && rp.wetPipe != VK_NULL_HANDLE )
 		? R_WetZones( wetMins, wetMaxs, wetness, RP_MAX_WET ) : 0;
+	float cover = 0.0f;
+	qboolean skyPass = qfalse, aerialPass = qfalse;
 	float sunPos[2], sunColor[4], mblur[16], mblurScale = 0.0f, grade[4], tint[4];
 	qboolean shafts, motion, graded;
 	VkDescriptorSet src = rp.sceneSet;
@@ -2225,10 +2479,17 @@ void vk_rpmod_post( void ) {
 		return;
 
 	shafts = (qboolean)( dist && RP_Sun( &r, sunPos, sunColor ) );
+	if ( dist && rp.skyPipe != VK_NULL_HANDLE ) {
+		RP_SkyScene();
+		RP_SkyWeather();
+		cover = RP_CloudCover();
+		skyPass = (qboolean)( r_skyAtmosphere->value > 0.0f || r_skySharpen->value > 0.0f || cover > 0.0f || rp.numSkyObjects > 0 );
+		aerialPass = (qboolean)( r_aerialHaze->value > 0.0f || ( cover > 0.0f && r_cloudShadows->value > 0.0f ) );
+	}
 	motion = (qboolean)( dist && RP_MotionBlur( &r, mblur, &mblurScale ) );
 	graded = RP_Grade( grade, tint );
 	RP_KeepCamera( &r );
-	if ( !shafts && !ssr && !water && !numWet && !haze && !motion && !dof && !graded && !filter && !smaa && !fxaa && !sharpen )
+	if ( !shafts && !skyPass && !aerialPass && !ssr && !water && !numWet && !haze && !motion && !dof && !graded && !filter && !smaa && !fxaa && !sharpen )
 		return;
 
 	vk_end_render_pass();
@@ -2260,6 +2521,59 @@ void vk_rpmod_post( void ) {
 		RP_Pass( rp.postPass, rp.postFb[1], rp.shaftsPipe[2], rp.sceneSet, rp.postSet[0], &p, sizeof( p ), &r );
 		src = rp.postSet[1];
 		next = 0;
+	}
+
+	if ( skyPass || aerialPass ) {
+		// the sky, then what's under it: before reflections and water, which mirror it
+		const float *axis0 = backEnd.viewParms.ori.axis[0], *axis1 = backEnd.viewParms.ori.axis[1], *axis2 = backEnd.viewParms.ori.axis[2];
+		const float *o = backEnd.viewParms.ori.origin;
+		struct {
+			float rect[4];
+			float a[4];
+			float cam[3][4];
+			float sun[4];
+			float b[4];
+			float c[4];
+		} p;
+		vec3_t sun;
+
+		RP_SkySun( sun );
+		RP_RectVec( &r, p.rect );
+		RP_TanHalf( p.a );
+		p.a[2] = backEnd.viewParms.zFar;
+		p.a[3] = backEnd.refdef.time * 0.001f;
+		for ( int i = 0; i < 3; i++ ) {
+			p.cam[0][i] = -axis1[i];
+			p.cam[1][i] = -axis2[i];
+			p.cam[2][i] = axis0[i];
+			p.cam[i][3] = o[i];
+		}
+		VectorCopy( sun, p.sun );
+		p.b[0] = cover;
+		p.b[1] = rp.cloudDrift[0];
+		p.b[2] = rp.cloudDrift[1];
+
+		if ( skyPass ) {
+			p.sun[3] = r_skyAtmosphere->value;
+			p.b[3] = (float)rp.numSkyObjects;
+			p.c[0] = r_skySharpen->value;
+			p.c[1] = R_IsRaining() ? 1.0f : 0.0f;
+			p.c[2] = backEnd.refdef.time < rp.flashUntil ? 1.0f : 0.0f;
+			p.c[3] = 1.0f;
+			vk_begin_render_pass( rp.postPass, rp.postFb[next], qfalse, glConfig.vidWidth, glConfig.vidHeight );
+			RP_Quad3( rp.skyPipe, src, rp.distSet, rp.skySet, &p, sizeof( p ), &r );
+			vk_end_render_pass();
+			src = rp.postSet[next];
+			next ^= 1;
+		}
+		if ( aerialPass ) {
+			p.sun[3] = r_aerialHaze->value;
+			p.b[3] = r_cloudShadows->value;
+			p.c[0] = R_IsRaining() ? 1.0f : 0.0f;
+			p.c[1] = r_aerialHazeStart->value;
+			p.c[2] = p.c[3] = 0.0f;
+			RP_NEXT( rp.aerialPipe, rp.distSet, p );
+		}
 	}
 
 	if ( ssr ) {

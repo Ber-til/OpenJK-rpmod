@@ -1124,6 +1124,10 @@ void CL_Chat_Init( void );			// cl_chat.cpp: the datapad's Chat
 void CL_Chat_Frame( void );
 void CL_Chat_Disconnect( void );
 void CL_Chat_Hook( char **argv, int argc, const char *message );	// cmd:chat/...
+void CL_SkyComposer_Init( void );		// cl_skycomposer.cpp: the sky composer (Vulkan's sky)
+void CL_SkyComposer_Shutdown( void );
+void CL_SkyComposer_Disconnect( void );
+void CL_SkyComposer_Hook( char **argv, int argc, const char *message );	// cmd:skyc...
 void CL_Chat_OpenWith( const char *account );	// the conversation with an account's main character
 void CL_Chat_StateHook( char **argv, int argc, const char *message );	// cmd:chatstate/...
 void CL_Chat_OpenGroup( int group );			// datapad chat group <id>

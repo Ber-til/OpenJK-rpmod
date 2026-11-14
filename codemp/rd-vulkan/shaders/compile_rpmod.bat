@@ -53,6 +53,8 @@ call :frag rpmod_fsr_rcas_frag_spv glsl\rpmod\fsr.frag -DFSR_RCAS || exit /b 1
 call :frag rpmod_water_frag_spv glsl\rpmod\water.frag || exit /b 1
 call :frag rpmod_wet_frag_spv glsl\rpmod\wet.frag || exit /b 1
 call :frag rpmod_haze_frag_spv glsl\rpmod\haze.frag || exit /b 1
+call :frag rpmod_sky_frag_spv glsl\rpmod\sky.frag || exit /b 1
+call :frag rpmod_aerial_frag_spv glsl\rpmod\aerial.frag || exit /b 1
 call :frag rpmod_light_relief_frag_spv glsl\light_frag.tmpl -DUSE_RELIEF || exit /b 1
 call :frag rpmod_light_relief_fog_frag_spv glsl\light_frag.tmpl -DUSE_RELIEF -DUSE_FOG || exit /b 1
 call :frag rpmod_light_relief_line_frag_spv glsl\light_frag.tmpl -DUSE_RELIEF -DUSE_LINE || exit /b 1
