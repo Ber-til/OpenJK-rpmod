@@ -182,6 +182,9 @@ static struct {
 	qboolean			skyComposed;		// the composer's own sky in place of the map's skybox
 	qboolean			skyHasSun;			// a sun among its objects: the light's, for shafts and shadows
 	vec3_t				skySunDir, skySunColor;
+	qboolean			skyHasMoon;			// a moon among them: the light's once the sun's down
+	vec3_t				skyMoonDir, skyMoonColor;
+	qboolean			lightIsMoon;		// the light last found (RP_LightSun) is the moon's
 	vec2_t				cloudDrift;			// how far the clouds have drifted
 	int					cloudTime;
 	int					flashUntil, nextFlash;
@@ -1545,9 +1548,41 @@ static void RP_SkySun( vec3_t out );
 
 /*
 the sun that lights, for the sun shafts and real shadows: the sky composer's (its Sun object, else the
-sun of its hour), else the map's; qfalse when there's none up (the composer's night)
+sun of its hour), else the map's; at night the composer's Moon object, once the sun's light is
+less than the moon's: dim and cool, from where the moon is. qfalse when there's none up
 */
+#define RP_MOONLIGHT		0.3f	// the moon's light, of the sun's
+#define RP_MOON_SHAFTS		0.4f	// its shafts, of the sun's
+#define RP_MOON_SHADOWS		0.6f	// its shadows' darkness, of the sun's
+#define RP_MOON_CLOUDS		0.5f	// its clouds' shadows, of the sun's
+
+static qboolean RP_LightSunOnly( vec3_t dir, vec3_t color );
+
 static qboolean RP_LightSun( vec3_t dir, vec3_t color ) {
+	const qboolean sun = RP_LightSunOnly( dir, color );
+
+	rp.lightIsMoon = qfalse;
+	if ( rp.skyHasMoon && rp.skyMoonDir[2] > 0.0f ) {
+		const float up = Com_Clamp( 0.0f, 1.0f, rp.skyMoonDir[2] / 0.15f );
+		const float moon = RP_MOONLIGHT * up;
+		const float sunNow = sun && dir[2] > 0.0f ? MAX( color[0], MAX( color[1], color[2] ) ) * Com_Clamp( 0.0f, 1.0f, dir[2] / 0.1f ) : 0.0f;
+
+		if ( moon > 0.0f && sunNow < moon ) {
+			const float m = MAX( rp.skyMoonColor[0], MAX( rp.skyMoonColor[1], rp.skyMoonColor[2] ) );
+			static const vec3_t cool = { 0.75f, 0.85f, 1.0f };
+
+			VectorCopy( rp.skyMoonDir, dir );
+			VectorNormalize( dir );
+			for ( int i = 0; i < 3; i++ )
+				color[i] = ( m > 0.0f ? rp.skyMoonColor[i] / m : 1.0f ) * cool[i] * moon;
+			rp.lightIsMoon = qtrue;
+			return qtrue;
+		}
+	}
+	return sun;
+}
+
+static qboolean RP_LightSunOnly( vec3_t dir, vec3_t color ) {
 	if ( rp.skyHasSun ) {
 		VectorCopy( rp.skySunDir, dir );
 		VectorCopy( rp.skySunColor, color );
@@ -1601,6 +1636,8 @@ static qboolean RP_Sun( const VkRect2D *r, float *pos, float *color ) {
 
 	pos[0] = r->offset.x + ( nx * 0.5f + 0.5f ) * r->extent.width;
 	pos[1] = r->offset.y + ( ny * 0.5f + 0.5f ) * r->extent.height;
+	if ( rp.lightIsMoon )
+		fade *= RP_MOON_SHAFTS;
 	for ( int i = 0; i < 3; i++ )
 		color[i] = sunLight[i] / m * r_sunShaftsIntensity->value * fade;
 	color[3] = 0.0f;
@@ -1744,7 +1781,7 @@ static void RP_ShadowLight( viewParms_t *lp, float *toLight, float *bias ) {
 
 	// toward the light: the sky composer's sun when it has one (an admin's, outdoors), the map's
 	// with r_shadowSun, else nearly straight down; a sun too low casts down too
-	if ( !( ( rp.skyHasSun || rp.skyTime >= 0.0f || r_shadowSun->integer ) && RP_LightSun( L, sunColor ) && L[2] > 0.25f ) )
+	if ( !( ( rp.skyHasSun || rp.skyHasMoon || rp.skyTime >= 0.0f || r_shadowSun->integer ) && RP_LightSun( L, sunColor ) && L[2] > 0.25f ) )
 		VectorSet( L, 0.4f, 0.25f, 1.0f );
 	VectorNormalize( L );
 	VectorScale( L, -1.0f, f );
@@ -2162,6 +2199,8 @@ static qboolean RP_SkyPasses( const VkRect2D *rr ) {
 				RP_SunMapStep();
 			p.sun[3] = r_aerialHaze->value;
 			p.b[3] = RP_SunMapReady() ? r_cloudShadows->value : 0.0f;	// none until it's known where the sun reaches
+			if ( rp.lightIsMoon )
+				p.b[3] *= RP_MOON_CLOUDS;
 			p.c[0] = R_IsRaining() ? 1.0f : 0.0f;
 			p.c[1] = r_aerialHazeStart->value;
 			p.c[2] = p.c[3] = 0.0f;
@@ -2259,7 +2298,7 @@ void vk_rpmod_after_opaque( drawSurf_t *drawSurfs, int numDrawSurfs, int numAll 
 
 		RP_RectVec( &r, p.rect );
 		RP_TanHalf( p.a );
-		p.a[2] = r_shadowStrength->value;
+		p.a[2] = r_shadowStrength->value * ( rp.lightIsMoon ? RP_MOON_SHADOWS : 1.0f );
 		p.a[3] = zFar;
 		p.b[0] = 1.0f / RP_SHADOW_SIZE;
 		p.b[1] = r_shadowSoftness->value;
@@ -2529,7 +2568,7 @@ static void RP_SkyScene( void ) {
 	}
 	rp.numSkyObjects = 0;
 	rp.skyTime = rp.skyClouds = rp.skySunYaw = -1.0f;
-	rp.skyLightning = rp.skyComposed = rp.skyHasSun = qfalse;
+	rp.skyLightning = rp.skyComposed = rp.skyHasSun = rp.skyHasMoon = qfalse;
 	Com_Memset( table, 0, sizeof( table ) );
 
 	p = scene;
@@ -2603,6 +2642,11 @@ static void RP_SkyScene( void ) {
 				rp.skyHasSun = qtrue;
 				VectorCopy( dir, rp.skySunDir );
 				VectorCopy( t + 4, rp.skySunColor );
+			}
+			if ( !Q_stricmp( rpSkyKinds[kind], "moon" ) && !rp.skyHasMoon ) {
+				rp.skyHasMoon = qtrue;
+				VectorCopy( dir, rp.skyMoonDir );
+				VectorCopy( t + 4, rp.skyMoonColor );
 			}
 			rp.numSkyObjects++;
 		}
