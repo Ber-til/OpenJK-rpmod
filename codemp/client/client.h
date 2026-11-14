@@ -701,7 +701,8 @@ void CL_ModelManager_Draw( void );
 #define KEYCATCH_HOLSTER		0x2000000	// engine only, the holster editor owns keyboard and mouse
 #define KEYCATCH_CHARACTERS		0x4000000	// engine only, the characters window owns keyboard and mouse
 #define KEYCATCH_WORLD			0x8000000	// engine only, the world's reader or editor owns keyboard and mouse
-#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELMANAGER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER | KEYCATCH_MAPEDITOR | KEYCATCH_STORYTELLER | KEYCATCH_CINEDITOR | KEYCATCH_SOUNDMANAGER | KEYCATCH_RADIALMENU | KEYCATCH_LANGUAGES | KEYCATCH_CONSETTINGS | KEYCATCH_ANIMMANAGER | KEYCATCH_PRESETS | KEYCATCH_FEEDBACK | KEYCATCH_ASSETMANAGER | KEYCATCH_SPECIALMOVES | KEYCATCH_CHATLOG | KEYCATCH_DATAPAD | KEYCATCH_ESCMENU | KEYCATCH_INVENTORY | KEYCATCH_INSPECT | KEYCATCH_HOLSTER | KEYCATCH_CHARACTERS | KEYCATCH_WORLD )	// mods never see or clear these
+#define KEYCATCH_SKYCOMPOSER	0x20000000	// engine only, the sky composer owns keyboard and mouse
+#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELMANAGER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER | KEYCATCH_MAPEDITOR | KEYCATCH_STORYTELLER | KEYCATCH_CINEDITOR | KEYCATCH_SOUNDMANAGER | KEYCATCH_RADIALMENU | KEYCATCH_LANGUAGES | KEYCATCH_CONSETTINGS | KEYCATCH_ANIMMANAGER | KEYCATCH_PRESETS | KEYCATCH_FEEDBACK | KEYCATCH_ASSETMANAGER | KEYCATCH_SPECIALMOVES | KEYCATCH_CHATLOG | KEYCATCH_DATAPAD | KEYCATCH_ESCMENU | KEYCATCH_INVENTORY | KEYCATCH_INSPECT | KEYCATCH_HOLSTER | KEYCATCH_CHARACTERS | KEYCATCH_WORLD | KEYCATCH_SKYCOMPOSER )	// mods never see or clear these
 
 void CL_NpcManager_Init( void );
 void CL_NpcManager_Shutdown( void );
@@ -1127,6 +1128,11 @@ void CL_Chat_Hook( char **argv, int argc, const char *message );	// cmd:chat/...
 void CL_SkyComposer_Init( void );		// cl_skycomposer.cpp: the sky composer (Vulkan's sky)
 void CL_SkyComposer_Shutdown( void );
 void CL_SkyComposer_Disconnect( void );
+void CL_SkyComposer_Draw( void );
+void CL_SkyComposer_Close( void );
+void CL_SkyComposer_Escape( void );
+void CL_SkyComposer_KeyEvent( int key, qboolean down );
+void CL_SkyComposer_MouseEvent( int dx, int dy );
 void CL_SkyComposer_Hook( char **argv, int argc, const char *message );	// cmd:skyc...
 void CL_Chat_OpenWith( const char *account );	// the conversation with an account's main character
 void CL_Chat_StateHook( char **argv, int argc, const char *message );	// cmd:chatstate/...

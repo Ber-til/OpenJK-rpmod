@@ -50,7 +50,7 @@ static cvar_t	*r_smaa;
 static cvar_t	*r_water, *r_waterStrength, *r_waterRipples;
 static cvar_t	*r_wetSurfaces, *r_wetStrength;
 static cvar_t	*r_heatHaze, *r_heatHazeStrength;
-static cvar_t	*r_skyAtmosphere, *r_skySharpen, *r_clouds, *r_cloudShadows, *r_aerialHaze, *r_aerialHazeStart, *r_skyScene[4];
+static cvar_t	*r_skySharpen, *r_clouds, *r_cloudShadows, *r_aerialHaze, *r_aerialHazeStart, *r_skyScene[4];
 static cvar_t	*r_sharpen;
 static cvar_t	*r_relief, *r_reliefStrength, *r_reliefSpecular;
 static cvar_t	*r_volumetric, *r_volumetricIntensity, *r_volumetricFog;
@@ -162,6 +162,7 @@ static struct {
 	float				skyTime;			// the composer's hour, -1 none
 	float				skyClouds;			// its cloud cover, -1 none
 	qboolean			skyLightning;
+	qboolean			skyComposed;		// the composer's own sky in place of the map's skybox
 	vec2_t				cloudDrift;			// how far the clouds have drifted
 	int					cloudTime;
 	int					flashUntil, nextFlash;
@@ -233,8 +234,6 @@ void vk_rpmod_register_cvars( void ) {
 	ri.Cvar_CheckRange( r_heatHaze, 0, 1, qtrue );
 	r_heatHazeStrength = ri.Cvar_Get( "r_heatHazeStrength", "3", CVAR_ARCHIVE_ND, "Heat haze: how far it bends what's behind, in pixels on a 480 high screen" );
 	ri.Cvar_CheckRange( r_heatHazeStrength, 0, 12, qfalse );
-	r_skyAtmosphere = ri.Cvar_Get( "r_skyAtmosphere", "0", CVAR_ARCHIVE_ND, va( "Sky atmosphere: a sky of the sun's place over the map's, 0 none to 1 all of it: blue by day, red at dusk, stars at night%s", fbo ) );
-	ri.Cvar_CheckRange( r_skyAtmosphere, 0, 1, qfalse );
 	r_skySharpen = ri.Cvar_Get( "r_skySharpen", "0", CVAR_ARCHIVE_ND, va( "Sky sharpening: the map's skybox crisper, 0 to 1%s", fbo ) );
 	ri.Cvar_CheckRange( r_skySharpen, 0, 1, qfalse );
 	r_clouds = ri.Cvar_Get( "r_clouds", "0", CVAR_ARCHIVE_ND, va( "Clouds over the sky, drifting with the wind and lit by the sun: their cover, 0 none to 1 overcast (the sky composer's in place of it)%s", fbo ) );
@@ -245,7 +244,8 @@ void vk_rpmod_register_cvars( void ) {
 	ri.Cvar_CheckRange( r_aerialHaze, 0, 4, qfalse );
 	r_aerialHazeStart = ri.Cvar_Get( "r_aerialHazeStart", "768", CVAR_ARCHIVE_ND, "Aerial haze: how far from you it starts, in world units" );
 	ri.Cvar_CheckRange( r_aerialHazeStart, 0, 8192, qfalse );
-	// the sky composer's scene, set by the game (/skycomposer): "time <hour> clouds <cover> lightning 1",
+	// the sky composer's scene, set by the game (/skycomposer): "sky composed|classic time <hour>
+	// clouds <cover> lightning 1",
 	// then objects: "<kind> <yaw> <pitch> <size> <r> <g> <b> [<seed> <tilt> <rings>]", ";" between
 	// in four parts, a setting holding 256 characters at most
 	for ( int i = 0; i < 4; i++ )
@@ -1523,7 +1523,7 @@ static qboolean RP_NeedDistance( const VkRect2D *r ) {
 		|| ( r_ssr->integer && r_ssrStrength->value > 0.0f )
 		|| ( r_water->integer && r_waterStrength->value > 0.0f ) || r_heatHaze->integer
 		|| ( r_wetSurfaces->integer && R_WetZones( NULL, NULL, NULL, 0 ) > 0 )
-		|| r_skyAtmosphere->value > 0.0f || r_skySharpen->value > 0.0f || r_clouds->value > 0.0f || r_aerialHaze->value > 0.0f
+		|| r_skySharpen->value > 0.0f || r_clouds->value > 0.0f || r_aerialHaze->value > 0.0f
 		|| r_skyScene[0]->string[0]
 		|| ( r_shadowMaps->integer && r_shadowStrength->value > 0.0f && rp.shadowPipe != VK_NULL_HANDLE ) );
 }
@@ -2274,7 +2274,7 @@ static void RP_SkyScene( void ) {
 	}
 	rp.numSkyObjects = 0;
 	rp.skyTime = rp.skyClouds = -1.0f;
-	rp.skyLightning = qfalse;
+	rp.skyLightning = rp.skyComposed = qfalse;
 	Com_Memset( table, 0, sizeof( table ) );
 
 	p = scene;
@@ -2297,6 +2297,10 @@ static void RP_SkyScene( void ) {
 		}
 		if ( !Q_stricmp( token, "clouds" ) ) {
 			rp.skyClouds = Com_Clamp( 0.0f, 1.0f, atof( COM_ParseExt( &p, qfalse ) ) );
+			continue;
+		}
+		if ( !Q_stricmp( token, "sky" ) ) {
+			rp.skyComposed = (qboolean)( !Q_stricmp( COM_ParseExt( &p, qfalse ), "composed" ) );
 			continue;
 		}
 		if ( !Q_stricmp( token, "lightning" ) ) {
@@ -2384,8 +2388,8 @@ static void RP_SkyScene( void ) {
 	}
 }
 
-// toward the sun in the world: by the composer's hour (rising in the east of the map's sun, high at
-// noon, set by 18), else the map's own sun, else one high in the south-east
+// toward the sun in the world: by the composer's hour (rising on the map's sun's side, high at noon,
+// set by 18), else high on the map's sun's side (60 degrees up), else straight up
 static void RP_SkySun( vec3_t out ) {
 	vec3_t flat;
 
@@ -2394,7 +2398,14 @@ static void RP_SkySun( vec3_t out ) {
 	else
 		VectorSet( flat, 0.4f, -0.5f, 0.75f );
 	if ( rp.skyTime < 0.0f ) {
-		VectorNormalize2( flat, out );
+		// no hour: a plain day, the sun high on the map's own side (a map's sun often sits low, which
+		// read as dusk)
+		const float len = sqrtf( flat[0] * flat[0] + flat[1] * flat[1] );
+
+		if ( len < 0.01f )
+			VectorSet( out, 0.0f, 0.0f, 1.0f );
+		else
+			VectorSet( out, flat[0] / len * 0.5f, flat[1] / len * 0.5f, 0.866f );
 		return;
 	}
 	{
@@ -2483,7 +2494,7 @@ void vk_rpmod_post( void ) {
 		RP_SkyScene();
 		RP_SkyWeather();
 		cover = RP_CloudCover();
-		skyPass = (qboolean)( r_skyAtmosphere->value > 0.0f || r_skySharpen->value > 0.0f || cover > 0.0f || rp.numSkyObjects > 0 );
+		skyPass = (qboolean)( rp.skyComposed || r_skySharpen->value > 0.0f || cover > 0.0f || rp.numSkyObjects > 0 );
 		aerialPass = (qboolean)( r_aerialHaze->value > 0.0f || ( cover > 0.0f && r_cloudShadows->value > 0.0f ) );
 	}
 	motion = (qboolean)( dist && RP_MotionBlur( &r, mblur, &mblurScale ) );
@@ -2554,7 +2565,7 @@ void vk_rpmod_post( void ) {
 		p.b[2] = rp.cloudDrift[1];
 
 		if ( skyPass ) {
-			p.sun[3] = r_skyAtmosphere->value;
+			p.sun[3] = rp.skyComposed ? 1.0f : 0.0f;		// the admin's choice, the same for everyone
 			p.b[3] = (float)rp.numSkyObjects;
 			p.c[0] = r_skySharpen->value;
 			p.c[1] = R_IsRaining() ? 1.0f : 0.0f;

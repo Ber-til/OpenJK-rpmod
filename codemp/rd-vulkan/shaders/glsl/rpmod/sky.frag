@@ -3,7 +3,7 @@
 
 // OpenJK-rpmod: the sky, taken further (vk_rpmod_post.cpp), where the view shows sky:
 //   sharpening   the map's skybox, often a small picture blown up, crisper (r_skySharpen)
-//   atmosphere   a sky of the sun's place blended over the map's (r_skyAtmosphere): blue by day,
+//   atmosphere   a sky of the sun's place in place of the map's (the composer's "sky composed"): blue by day,
 //                red and orange at dusk, deep blue and stars at night; the time from the sky
 //                composer, else the map's sun
 //   objects      the sky composer's (/skycomposer): planets, gas giants, moons, suns, a battle

@@ -1118,6 +1118,8 @@ void CL_MouseEvent( int dx, int dy, int time ) {
 		CL_EscMenu_MouseEvent( dx, dy );
 	} else if ( Key_GetCatcher( ) & KEYCATCH_SPECIALMOVES ) {
 		CL_SpecialMoves_MouseEvent( dx, dy );
+	} else if ( Key_GetCatcher( ) & KEYCATCH_SKYCOMPOSER ) {
+		CL_SkyComposer_MouseEvent( dx, dy );
 	} else if ( Key_GetCatcher( ) & KEYCATCH_CHATLOG ) {
 		CL_ChatLog_MouseEvent( dx, dy );
 	} else if ( Key_GetCatcher( ) & KEYCATCH_INVENTORY ) {
