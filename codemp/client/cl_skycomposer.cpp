@@ -77,13 +77,14 @@ static std::vector<scShown_t> scShown;
 static struct {
 	qboolean	composed;		// the composer's own sky in place of the map's skybox
 	float		hour;			// -1 none
+	float		sunYaw;			// the compass side of the hour's sun (its glow), -1 auto
 	float		clouds;			// -1 none
 	qboolean	lightning;
 	std::vector<scObject_t>	objects;
 
 	qboolean	sharedIn;		// a scene from the server, shown in place of this one
 	std::string	shared;
-} sc = { qfalse, -1.0f, -1.0f };
+} sc = { qfalse, -1.0f, -1.0f, -1.0f };
 
 // the window
 static struct {
@@ -105,7 +106,7 @@ static struct {
 	char		path[MAX_QPATH];
 	int			pathPick;
 	qboolean	pathBad;		// the picked model's path has no model		// the object the path is of
-	float		hourV, cloudsV;	// the hour's and the clouds' sliders: each its own, a drag follows one
+	float		hourV, cloudsV, yawV;	// the hour's and the clouds' sliders: each its own, a drag follows one
 	char		message[MAX_STRING_CHARS];
 	int			messageTime;
 } sw;
@@ -127,6 +128,8 @@ static std::string SC_Scene( void ) {
 	out += sc.composed ? "sky composed " : "sky classic ";
 	if ( sc.hour >= 0.0f )
 		out += va( "time %g ", sc.hour );
+	if ( sc.sunYaw >= 0.0f )
+		out += va( "sunyaw %.0f ", sc.sunYaw );
 	if ( sc.clouds >= 0.0f )
 		out += va( "clouds %g ", sc.clouds );
 	if ( sc.lightning )
@@ -182,7 +185,7 @@ static void SC_Parse( const char *text ) {
 	const char *p = text;
 
 	sc.composed = sc.lightning = qfalse;
-	sc.hour = sc.clouds = -1.0f;
+	sc.hour = sc.clouds = sc.sunYaw = -1.0f;
 	sc.objects.clear();
 	while ( p ) {
 		const char *token = COM_ParseExt( &p, qtrue );
@@ -194,6 +197,8 @@ static void SC_Parse( const char *text ) {
 			sc.composed = (qboolean)( !Q_stricmp( COM_ParseExt( &p, qfalse ), "composed" ) );
 		else if ( !Q_stricmp( token, "time" ) )
 			sc.hour = Com_Clamp( 0.0f, 24.0f, atof( COM_ParseExt( &p, qfalse ) ) );
+		else if ( !Q_stricmp( token, "sunyaw" ) )
+			sc.sunYaw = AngleNormalize360( atof( COM_ParseExt( &p, qfalse ) ) );
 		else if ( !Q_stricmp( token, "clouds" ) )
 			sc.clouds = Com_Clamp( 0.0f, 1.0f, atof( COM_ParseExt( &p, qfalse ) ) );
 		else if ( !Q_stricmp( token, "lightning" ) )
@@ -233,7 +238,7 @@ static void SC_Parse( const char *text ) {
 // the models of the scene shown, registered for the scene (the rest of it is the renderer's)
 static void SC_ShowModels( const std::string &scene ) {
 	const qboolean composed = sc.composed, lightning = sc.lightning;
-	const float hour = sc.hour, clouds = sc.clouds;
+	const float hour = sc.hour, clouds = sc.clouds, sunYaw = sc.sunYaw;
 	std::vector<scObject_t> mine;
 
 	scShown.clear();
@@ -262,6 +267,7 @@ static void SC_ShowModels( const std::string &scene ) {
 	sc.lightning = lightning;
 	sc.hour = hour;
 	sc.clouds = clouds;
+	sc.sunYaw = sunYaw;
 }
 
 // the sky's models in the main view: far out where they are, the renderer places them (Vulkan)
@@ -361,8 +367,8 @@ static int SC_Index( const char *arg ) {
 }
 
 static void SC_List( void ) {
-	Com_Printf( "Sky: %s, time %s, clouds %s, lightning %s%s\n", sc.composed ? "composed" : "classic (the map's)",
-		sc.hour >= 0.0f ? va( "%g", sc.hour ) : "the map's", sc.clouds > 0.0f ? va( "%g", sc.clouds ) : "none",
+	Com_Printf( "Sky: %s, time %s, direction %s, clouds %s, lightning %s%s\n", sc.composed ? "composed" : "classic (the map's)",
+		sc.hour >= 0.0f ? va( "%g", sc.hour ) : "the map's", sc.sunYaw >= 0.0f ? va( "%.0f", sc.sunYaw ) : "auto", sc.clouds > 0.0f ? va( "%g", sc.clouds ) : "none",
 		sc.lightning ? "on" : "off", sc.sharedIn ? S_COLOR_YELLOW "  (the server's sky shows in place of this)" : "" );
 	for ( size_t i = 0; i < sc.objects.size(); i++ ) {
 		const scObject_t *o = &sc.objects[i];
@@ -383,6 +389,7 @@ static void SC_Usage( void ) {
 	Com_Printf( "       " SC_CMD " list                    what's in your sky\n" );
 	Com_Printf( "       " SC_CMD " sky classic|composed    the map's skybox, or a sky of the hour in its place\n" );
 	Com_Printf( "       " SC_CMD " time <0-24|off>         the hour: the sun's place, dusk, night and stars\n" );
+	Com_Printf( "       " SC_CMD " direction <0-360|auto>  the compass side of the hour's sun and its glow (auto: a Sun's, else the map's)\n" );
 	Com_Printf( "       " SC_CMD " clouds <0-1>            the clouds' cover, 0 none to 1 overcast\n" );
 	Com_Printf( "       " SC_CMD " lightning on|off        lightning in the clouds\n" );
 	Com_Printf( "       " SC_CMD " add <kind> [size [yaw pitch]]  an object where you look (or there); kinds:\n" );
@@ -436,6 +443,14 @@ static void SC_Cmd_f( void ) {
 			return;
 		}
 		*at = !Q_stricmp( v, "off" ) ? -1.0f : Com_Clamp( 0.0f, at == &sc.hour ? 24.0f : 1.0f, atof( v ) );
+	} else if ( !Q_stricmp( arg, "direction" ) ) {
+		const char *v = Cmd_Argv( 2 );
+
+		if ( !v[0] ) {
+			Com_Printf( "usage: " SC_CMD " direction <0-360|auto>\n" );
+			return;
+		}
+		sc.sunYaw = ( !Q_stricmp( v, "auto" ) || !Q_stricmp( v, "off" ) ) ? -1.0f : AngleNormalize360( atof( v ) );
 	} else if ( !Q_stricmp( arg, "lightning" ) ) {
 		sc.lightning = (qboolean)( !Q_stricmp( Cmd_Argv( 2 ), "on" ) || atoi( Cmd_Argv( 2 ) ) != 0 );
 	} else if ( !Q_stricmp( arg, "add" ) ) {
@@ -488,7 +503,7 @@ static void SC_Cmd_f( void ) {
 		}
 	} else if ( !Q_stricmp( arg, "clear" ) ) {
 		sc.composed = sc.lightning = qfalse;
-		sc.hour = sc.clouds = -1.0f;
+		sc.hour = sc.clouds = sc.sunYaw = -1.0f;
 		sc.objects.clear();
 		sw.pick = -1;
 	} else if ( !Q_stricmp( arg, "share" ) ) {
@@ -524,7 +539,7 @@ The window: the sky's settings at the top, the objects in the middle, the one pi
 #define SW_CTRL_H		14.0f
 #define SW_SCALE		0.7f
 #define SW_MESSAGE_MS	5000
-#define SW_LIST_ROWS	5
+#define SW_LIST_ROWS	4
 
 static void SW_Message( const char *text ) {
 	Q_strncpyz( sw.message, text, sizeof( sw.message ) );
@@ -688,6 +703,17 @@ static float SW_DrawSky( float y ) {
 	}
 	if ( SW_Button( SW_IN + SW_IW - 48, y, 48, "Map's", (qboolean)( sc.hour < 0.0f ), qtrue ) && sc.hour >= 0.0f ) {
 		sc.hour = -1.0f;
+		sw.dirty = qtrue;
+	}
+	y += SW_ROW;
+	// the side the hour's sun (and its glow) is on: auto, a Sun object's, else the map's
+	sw.yawV = sc.sunYaw < 0.0f ? 0.0f : sc.sunYaw;
+	if ( SW_Slider( SW_IN, y, SW_IW - 52, "Direction", &sw.yawV, 0.0f, 359.0f, 1.0f, sc.sunYaw < 0.0f ? "auto" : "%.0f", qtrue ) ) {
+		sc.sunYaw = sw.yawV;
+		sw.dirty = qtrue;
+	}
+	if ( SW_Button( SW_IN + SW_IW - 48, y, 48, "Auto", (qboolean)( sc.sunYaw < 0.0f ), qtrue ) && sc.sunYaw >= 0.0f ) {
+		sc.sunYaw = -1.0f;
 		sw.dirty = qtrue;
 	}
 	y += SW_ROW;
@@ -903,7 +929,7 @@ void CL_SkyComposer_Draw( void ) {
 			SW_Message( "The server's sky, to change and share again" );
 		} else {
 			sc.composed = sc.lightning = qfalse;
-			sc.hour = sc.clouds = -1.0f;
+			sc.hour = sc.clouds = sc.sunYaw = -1.0f;
 			sc.objects.clear();
 		}
 		sw.pick = -1;

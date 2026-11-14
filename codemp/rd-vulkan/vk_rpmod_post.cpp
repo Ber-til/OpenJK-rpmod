@@ -168,6 +168,7 @@ static struct {
 	int					skySceneCount;		// r_skyScene's modificationCount the table has
 	int					numSkyObjects;
 	float				skyTime;			// the composer's hour, -1 none
+	float				skySunYaw;			// the compass side its sun is on, -1 auto (a Sun object's, else the map's)
 	float				skyClouds;			// its cloud cover, -1 none
 	qboolean			skyLightning;
 	qboolean			skyComposed;		// the composer's own sky in place of the map's skybox
@@ -2334,7 +2335,7 @@ static void RP_SkyScene( void ) {
 		Q_strcat( scene, sizeof( scene ), " " );
 	}
 	rp.numSkyObjects = 0;
-	rp.skyTime = rp.skyClouds = -1.0f;
+	rp.skyTime = rp.skyClouds = rp.skySunYaw = -1.0f;
 	rp.skyLightning = rp.skyComposed = rp.skyHasSun = qfalse;
 	Com_Memset( table, 0, sizeof( table ) );
 
@@ -2354,6 +2355,10 @@ static void RP_SkyScene( void ) {
 			continue;
 		if ( !Q_stricmp( token, "time" ) ) {
 			rp.skyTime = Com_Clamp( 0.0f, 24.0f, atof( COM_ParseExt( &p, qfalse ) ) );
+			continue;
+		}
+		if ( !Q_stricmp( token, "sunyaw" ) ) {
+			rp.skySunYaw = AngleNormalize360( atof( COM_ParseExt( &p, qfalse ) ) );
 			continue;
 		}
 		if ( !Q_stricmp( token, "clouds" ) ) {
@@ -2463,11 +2468,19 @@ static void RP_UploadTable( VkImage image, const void *bytes, size_t size, uint3
 // set by 18), else high on the map's sun's side (60 degrees up), else straight up
 static void RP_SkySun( vec3_t out ) {
 	vec3_t flat;
+	qboolean side = qtrue;		// a side chosen: the hour only sets the sun's height there
 
-	if ( VectorLength( tr.sunDirection ) > 0.1f )
-		VectorCopy( tr.sunDirection, flat );
-	else
-		VectorSet( flat, 0.4f, -0.5f, 0.75f );
+	if ( rp.skySunYaw >= 0.0f )
+		VectorSet( flat, cosf( DEG2RAD( rp.skySunYaw ) ), sinf( DEG2RAD( rp.skySunYaw ) ), 0.0f );
+	else if ( rp.skyHasSun && fabsf( rp.skySunDir[0] ) + fabsf( rp.skySunDir[1] ) > 0.01f )
+		VectorCopy( rp.skySunDir, flat );
+	else {
+		side = qfalse;
+		if ( VectorLength( tr.sunDirection ) > 0.1f )
+			VectorCopy( tr.sunDirection, flat );
+		else
+			VectorSet( flat, 0.4f, -0.5f, 0.75f );
+	}
 	if ( rp.skyTime < 0.0f ) {
 		// no hour: a plain day, the sun high on the map's own side (a map's sun often sits low, which
 		// read as dusk)
@@ -2492,9 +2505,12 @@ static void RP_SkySun( vec3_t out ) {
 			az[0] /= len;
 			az[1] /= len;
 		}
-		// along the sun's own way: from one side at six to the other at eighteen
-		out[0] = az[0] * cosf( e );
-		out[1] = az[1] * cosf( e );
+		// along the sun's own way: from one side at six to the other at eighteen; on the side chosen,
+		// rising and setting there
+		const float across = side ? fabsf( cosf( e ) ) : cosf( e );
+
+		out[0] = az[0] * across;
+		out[1] = az[1] * across;
 		out[2] = height;
 		VectorNormalize( out );
 	}
