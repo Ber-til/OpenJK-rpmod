@@ -1464,6 +1464,36 @@ void R_SortDrawSurfs( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 R_AddEntitySurfaces
 =============
 */
+// OpenJK-rpmod: RF_SKYMODEL, far out along its direction, as big as its size across
+static void R_PlaceSkyModel( trRefEntity_t *ent ) {
+	vec3_t mins, maxs, centre, dir, local;
+	const float ang = Com_Clamp( 0.002f, 1.0f, ent->e.radius );
+	float radius, dist, scale;
+
+	R_ModelBounds( ent->e.hModel, mins, maxs );
+	radius = MAX( 1.0f, RadiusFromBounds( mins, maxs ) );
+	dist = tr.viewParms.zFar * 0.97f / ( 1.0f + sinf( ang ) );
+	scale = dist * sinf( ang ) / radius;
+	AngleVectors( ent->e.angles, dir, NULL, NULL );
+	VectorAdd( mins, maxs, local );
+	VectorScale( local, 0.5f, local );
+	for ( int i = 0; i < 3; i++ ) {
+		VectorNormalize( ent->e.axis[i] );
+		VectorScale( ent->e.axis[i], scale, ent->e.axis[i] );
+	}
+	// its bounds' centre at that point, not its origin
+	VectorClear( centre );
+	for ( int i = 0; i < 3; i++ )
+		VectorMA( centre, local[i], ent->e.axis[i], centre );
+	VectorMA( tr.viewParms.ori.origin, dist, dir, ent->e.origin );
+	VectorSubtract( ent->e.origin, centre, ent->e.origin );
+	VectorCopy( ent->e.origin, ent->e.oldorigin );
+	VectorCopy( tr.viewParms.ori.origin, ent->e.lightingOrigin );
+	ent->e.renderfx |= RF_LIGHTING_ORIGIN | RF_NOSHADOW;
+	ent->e.nonNormalizedAxes = qtrue;
+	ent->lightingCalculated = qfalse;
+}
+
 static void R_AddEntitySurfaces( void ) {
 	trRefEntity_t	*ent;
 	shader_t		*shader;
@@ -1513,6 +1543,12 @@ static void R_AddEntitySurfaces( void ) {
 			break;
 
 		case RT_MODEL:
+			if (ent->e.renderfx & RF_SKYMODEL) {
+				if (tr.viewParms.portalView != PV_NONE || (tr.refdef.rdflags & RDF_NOWORLDMODEL)) {
+					continue;
+				}
+				R_PlaceSkyModel(ent);
+			}
 			// we must set up parts of tr.ori for model culling
 			R_RotateForEntity(ent, &tr.viewParms, &tr.ori);
 

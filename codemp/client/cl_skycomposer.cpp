@@ -22,7 +22,8 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 // (rd-vulkan's vk_rpmod_post.cpp, r_skyScene): the sky itself (the map's classic skybox, or one
 // composed from the hour: the sun's place, dusk, night and its stars), the clouds, lightning in
 // them, and objects: planets, gas giants, moons, suns, a battle station, ringed worlds, nebulae, a
-// fleet. Each object goes where you look as you add it.
+// fleet, and a model of your choice (a ship, a construct: drawn far out that way, behind the map's own
+// things). Each object goes where you look as you add it.
 //
 // A window, like the other tools (/skycomposer), and its words for binds (/skycomposer <word>).
 // What you compose shows on your screen; Share sends it to everyone on the server with the client
@@ -43,7 +44,8 @@ typedef struct {
 	char	kind[16];
 	float	yaw, pitch, size;
 	float	color[3];
-	float	seed, tilt, rings;
+	float	seed, tilt, rings;		// a model's: unused, its heading, its turning in degrees a second
+	char	model[MAX_QPATH];		// a model's path
 } scObject_t;
 
 static const struct {
@@ -62,7 +64,15 @@ static const struct {
 	{ "station",	"Station",		5.0f,	{ 0.6f, 0.62f, 0.65f },	0.0f,	"a battle station: plates, a trench, a dish" },
 	{ "nebula",		"Nebula",		30.0f,	{ 0.5f, 0.2f, 0.6f },	0.0f,	"coloured gas across the stars" },
 	{ "fleet",		"Fleet",		6.0f,	{ 0.55f, 0.57f, 0.6f },	0.0f,	"a few ships, engines lit (rings: more ships)" },
+	{ "model",		"Model",		6.0f,	{ 1.0f, 1.0f, 1.0f },	0.0f,	"a model of your choice (.md3): a ship, a construct" },
 };
+
+// the models of the sky shown now (yours or the server's), for the scene
+typedef struct {
+	qhandle_t	handle;
+	float		yaw, pitch, size, heading, turn;
+} scShown_t;
+static std::vector<scShown_t> scShown;
 
 static struct {
 	qboolean	composed;		// the composer's own sky in place of the map's skybox
@@ -91,6 +101,10 @@ static struct {
 	int			scroll;
 	int			applyAt;		// a change made while dragging: shown again this often at most
 	qboolean	dirty;
+	qboolean	typing;			// in the model's path
+	char		path[MAX_QPATH];
+	int			pathPick;
+	qboolean	pathBad;		// the picked model's path has no model		// the object the path is of
 	float		hourV, cloudsV;	// the hour's and the clouds' sliders: each its own, a drag follows one
 	char		message[MAX_STRING_CHARS];
 	int			messageTime;
@@ -120,11 +134,18 @@ static std::string SC_Scene( void ) {
 	for ( size_t i = 0; i < sc.objects.size(); i++ ) {
 		const scObject_t *o = &sc.objects[i];
 
-		out += va( "; %s %.0f %.0f %g %.2g %.2g %.2g %.0f %.0f %.0f ", o->kind, o->yaw, o->pitch, o->size,
+		if ( !Q_stricmp( o->kind, "model" ) )
+			out += va( "; model \"%s\" ", o->model );
+		else
+			out += va( "; %s ", o->kind );
+		out += va( "%.0f %.0f %g %.2g %.2g %.2g %.0f %.0f %.0f ", o->yaw, o->pitch, o->size,
 			o->color[0], o->color[1], o->color[2], o->seed, o->tilt, o->rings );
 	}
 	return out;
 }
+
+static void SC_Parse( const char *text );
+static void SC_ShowModels( const std::string &scene );
 
 // what the renderer draws: the server's scene (but yours while the window's open), else yours, in
 // r_skyScene to r_skyScene4 (a setting holds 256 characters), cut between objects
@@ -143,6 +164,7 @@ static void SC_Apply( void ) {
 		Cvar_Set( i ? va( "r_skyScene%i", i + 1 ) : "r_skyScene", scene.substr( Q_min( at, scene.size() ), len ).c_str() );
 		at += len;
 	}
+	SC_ShowModels( scene );
 	sw.dirty = qfalse;
 	sw.applyAt = cls.realtime;
 }
@@ -177,6 +199,9 @@ static void SC_Parse( const char *text ) {
 		else if ( !Q_stricmp( token, "lightning" ) )
 			sc.lightning = (qboolean)( atoi( COM_ParseExt( &p, qfalse ) ) != 0 );
 		else if ( ( k = SC_Kind( token ) ) >= 0 && (int)sc.objects.size() < SC_MAX ) {
+			char path[MAX_QPATH] = "";
+			if ( !Q_stricmp( token, "model" ) )
+				Q_strncpyz( path, COM_ParseExt( &p, qfalse ), sizeof( path ) );
 			float v[9] = { 0, 20, scKinds[k].size, scKinds[k].color[0], scKinds[k].color[1], scKinds[k].color[2], 0, 20, scKinds[k].rings };
 			scObject_t o;
 
@@ -199,8 +224,69 @@ static void SC_Parse( const char *text ) {
 			o.seed = v[6];
 			o.tilt = v[7];
 			o.rings = v[8];
+			Q_strncpyz( o.model, path, sizeof( o.model ) );
 			sc.objects.push_back( o );
 		}
+	}
+}
+
+// the models of the scene shown, registered for the scene (the rest of it is the renderer's)
+static void SC_ShowModels( const std::string &scene ) {
+	const qboolean composed = sc.composed, lightning = sc.lightning;
+	const float hour = sc.hour, clouds = sc.clouds;
+	std::vector<scObject_t> mine;
+
+	scShown.clear();
+	if ( scene.find( "model" ) == std::string::npos || cls.state < CA_LOADING )
+		return;
+	mine.swap( sc.objects );
+	SC_Parse( scene.c_str() );
+	for ( size_t i = 0; i < sc.objects.size(); i++ ) {
+		const scObject_t *o = &sc.objects[i];
+		scShown_t m;
+
+		if ( Q_stricmp( o->kind, "model" ) || !o->model[0] )
+			continue;
+		m.handle = re->RegisterModel( o->model );
+		if ( !m.handle )
+			continue;
+		m.yaw = o->yaw;
+		m.pitch = o->pitch;
+		m.size = o->size;
+		m.heading = o->tilt;
+		m.turn = o->rings;
+		scShown.push_back( m );
+	}
+	sc.objects.swap( mine );
+	sc.composed = composed;
+	sc.lightning = lightning;
+	sc.hour = hour;
+	sc.clouds = clouds;
+}
+
+// the sky's models in the main view: far out where they are, the renderer places them (Vulkan)
+void CL_SkyComposer_AddToScene( const refdef_t *fd ) {
+	if ( scShown.empty() || ( fd->rdflags & RDF_NOWORLDMODEL ) || Q_stricmp( Cvar_VariableString( "cl_renderer" ), "rd-vulkan" ) )
+		return;
+	for ( size_t i = 0; i < scShown.size(); i++ ) {
+		const scShown_t *m = &scShown[i];
+		refEntity_t ent;
+		vec3_t angles;
+
+		memset( &ent, 0, sizeof( ent ) );
+		ent.reType = RT_MODEL;
+		ent.hModel = m->handle;
+		VectorSet( ent.angles, -m->pitch, m->yaw, 0.0f );
+		ent.radius = DEG2RAD( m->size );
+		// facing you at heading 0, turning if it's to
+		VectorSet( angles, 0.0f, m->yaw + 180.0f + m->heading + m->turn * cl.serverTime * 0.001f, 0.0f );
+		AnglesToAxis( angles, ent.axis );
+		VectorCopy( fd->vieworg, ent.origin );
+		VectorCopy( fd->vieworg, ent.oldorigin );
+		VectorCopy( fd->vieworg, ent.lightingOrigin );
+		ent.renderfx = RF_SKYMODEL | RF_NOSHADOW | RF_LIGHTING_ORIGIN | RF_MINLIGHT;
+		ent.shaderRGBA[0] = ent.shaderRGBA[1] = ent.shaderRGBA[2] = ent.shaderRGBA[3] = 255;
+		re->AddRefEntityToScene( &ent );
 	}
 }
 
@@ -221,7 +307,7 @@ static void SC_Look( float *yaw, float *pitch, int from ) {
 	SC_LookView( yaw, pitch );
 }
 
-static int SC_Add( int k, float size, float yaw, float pitch ) {
+static int SC_Add( int k, float size, float yaw, float pitch, const char *model ) {
 	scObject_t o;
 
 	if ( (int)sc.objects.size() >= SC_MAX )
@@ -235,6 +321,11 @@ static int SC_Add( int k, float size, float yaw, float pitch ) {
 	o.seed = (float)( rand() % 100 );
 	o.tilt = 20.0f;
 	o.rings = scKinds[k].rings;
+	if ( !Q_stricmp( scKinds[k].kind, "model" ) ) {
+		o.seed = o.tilt = 0.0f;
+		if ( model )
+			Q_strncpyz( o.model, model, sizeof( o.model ) );
+	}
 	sc.objects.push_back( o );
 	return (int)sc.objects.size() - 1;
 }
@@ -276,8 +367,12 @@ static void SC_List( void ) {
 	for ( size_t i = 0; i < sc.objects.size(); i++ ) {
 		const scObject_t *o = &sc.objects[i];
 
-		Com_Printf( "%2i  %-8s yaw %3.0f  pitch %3.0f  size %g  colour %.2f %.2f %.2f%s\n", (int)i + 1, o->kind, o->yaw, o->pitch, o->size,
-			o->color[0], o->color[1], o->color[2], o->rings > 0.0f ? "  rings" : "" );
+		if ( !Q_stricmp( o->kind, "model" ) )
+			Com_Printf( "%2i  model    yaw %3.0f  pitch %3.0f  size %g  %s  heading %.0f  turn %.0f\n", (int)i + 1, o->yaw, o->pitch, o->size,
+				o->model[0] ? o->model : "(no model yet)", o->tilt, o->rings );
+		else
+			Com_Printf( "%2i  %-8s yaw %3.0f  pitch %3.0f  size %g  colour %.2f %.2f %.2f%s\n", (int)i + 1, o->kind, o->yaw, o->pitch, o->size,
+				o->color[0], o->color[1], o->color[2], o->rings > 0.0f ? "  rings" : "" );
 	}
 	if ( !SC_Drawable() )
 		Com_Printf( S_COLOR_YELLOW "The sky composer draws with Vulkan and its post effects (cl_renderer rd-vulkan, r_fbo 1)\n" );
@@ -299,6 +394,10 @@ static void SC_Usage( void ) {
 	Com_Printf( "       " SC_CMD " rings <n> on|off        rings round it (a fleet: more ships)\n" );
 	Com_Printf( "       " SC_CMD " tilt <n> <degrees>      its rings' tilt\n" );
 	Com_Printf( "       " SC_CMD " seed <n> <number>       another one of its kind\n" );
+	Com_Printf( "       " SC_CMD " add model <path> [size [yaw pitch]]  a model of your choice (.md3)\n" );
+	Com_Printf( "       " SC_CMD " model <n> <path>        a model object's model\n" );
+	Com_Printf( "       " SC_CMD " heading <n> <degrees>   which way a model faces (0 toward you)\n" );
+	Com_Printf( "       " SC_CMD " turn <n> <degrees>      how fast a model turns, a second\n" );
 	Com_Printf( "       " SC_CMD " remove <n> | clear      one gone, or all of it\n" );
 	Com_Printf( "       " SC_CMD " share | unshare         to everyone here (RPMod admins), or taken back\n" );
 }
@@ -339,20 +438,23 @@ static void SC_Cmd_f( void ) {
 		sc.lightning = (qboolean)( !Q_stricmp( Cmd_Argv( 2 ), "on" ) || atoi( Cmd_Argv( 2 ) ) != 0 );
 	} else if ( !Q_stricmp( arg, "add" ) ) {
 		const int k = SC_Kind( Cmd_Argv( 2 ) );
+		const int a = k >= 0 && !Q_stricmp( scKinds[k].kind, "model" ) ? 4 : 3;	// a model's path first
 		float yaw, pitch;
 
-		if ( k < 0 ) {
-			Com_Printf( "usage: " SC_CMD " add <kind> [size [yaw pitch]]: kinds are planet, gas, ringed, moon, sun, station, nebula, fleet\n" );
+		if ( k < 0 || ( a == 4 && !Cmd_Argv( 3 )[0] ) ) {
+			Com_Printf( "usage: " SC_CMD " add <kind> [size [yaw pitch]]: kinds are planet, gas, ringed, moon, sun, station, nebula, fleet\n"
+				"       " SC_CMD " add model <path> [size [yaw pitch]]\n" );
 			return;
 		}
-		SC_Look( &yaw, &pitch, 4 );
-		if ( ( sw.pick = SC_Add( k, Cmd_Argc() > 3 ? Com_Clamp( 0.1f, 60.0f, atof( Cmd_Argv( 3 ) ) ) : 0.0f, yaw, pitch ) ) < 0 ) {
+		SC_Look( &yaw, &pitch, a + 1 );
+		if ( ( sw.pick = SC_Add( k, Cmd_Argc() > a ? Com_Clamp( 0.1f, 60.0f, atof( Cmd_Argv( a ) ) ) : 0.0f, yaw, pitch, a == 4 ? Cmd_Argv( 3 ) : NULL ) ) < 0 ) {
 			Com_Printf( "%i objects at most: remove one first\n", SC_MAX );
 			return;
 		}
 		Com_Printf( "%s added (%i), where you look\n", scKinds[k].kind, (int)sc.objects.size() );
 	} else if ( !Q_stricmp( arg, "here" ) || !Q_stricmp( arg, "size" ) || !Q_stricmp( arg, "color" ) || !Q_stricmp( arg, "colour" )
-		|| !Q_stricmp( arg, "rings" ) || !Q_stricmp( arg, "tilt" ) || !Q_stricmp( arg, "seed" ) || !Q_stricmp( arg, "remove" ) ) {
+		|| !Q_stricmp( arg, "rings" ) || !Q_stricmp( arg, "tilt" ) || !Q_stricmp( arg, "seed" ) || !Q_stricmp( arg, "remove" )
+		|| !Q_stricmp( arg, "model" ) || !Q_stricmp( arg, "heading" ) || !Q_stricmp( arg, "turn" ) ) {
 		const int n = SC_Index( Cmd_Argv( 2 ) );
 		scObject_t *o;
 
@@ -369,6 +471,12 @@ static void SC_Cmd_f( void ) {
 			o->tilt = Com_Clamp( -89.0f, 89.0f, atof( Cmd_Argv( 3 ) ) );
 		else if ( !Q_stricmp( arg, "seed" ) )
 			o->seed = atof( Cmd_Argv( 3 ) );
+		else if ( !Q_stricmp( arg, "model" ) )
+			Q_strncpyz( o->model, Cmd_Argv( 3 ), sizeof( o->model ) );
+		else if ( !Q_stricmp( arg, "heading" ) )
+			o->tilt = AngleNormalize360( atof( Cmd_Argv( 3 ) ) );
+		else if ( !Q_stricmp( arg, "turn" ) )
+			o->rings = Com_Clamp( -90.0f, 90.0f, atof( Cmd_Argv( 3 ) ) );
 		else if ( !Q_stricmp( arg, "remove" ) ) {
 			sc.objects.erase( sc.objects.begin() + n );
 			sw.pick = -1;
@@ -503,7 +611,7 @@ static void SC_Close( void ) {
 		return;
 	sw.open = qfalse;
 	sw.drag = NULL;
-	sw.looking = sw.held = qfalse;
+	sw.looking = sw.held = sw.typing = qfalse;
 	Key_SetCatcher( Key_GetCatcher() & ~KEYCATCH_SKYCOMPOSER );
 	SC_Apply();		// the server's sky again, if there's one
 }
@@ -612,12 +720,19 @@ static float SW_DrawObjects( float y ) {
 			float yaw, pitch;
 
 			SC_LookView( &yaw, &pitch );
-			sw.pick = SC_Add( k, 0.0f, yaw, pitch );
+			sw.pick = SC_Add( k, 0.0f, yaw, pitch, NULL );
 			sw.dirty = qtrue;
-			SW_Message( va( "%s added where you look", scKinds[k].title ) );
+			if ( !Q_stricmp( scKinds[k].kind, "model" ) && sw.pick >= 0 ) {
+				sw.path[0] = '\0';
+				sw.pathPick = sw.pick;
+				sw.typing = qtrue;
+				WG_EditReset();
+				SW_Message( "Type the model's path, then Enter" );
+			} else
+				SW_Message( va( "%s added where you look", scKinds[k].title ) );
 		}
 	}
-	y += 2 * ( SW_CTRL_H + 2 ) + 4;
+	y += ( ( ARRAY_LEN( scKinds ) + 3 ) / 4 ) * ( SW_CTRL_H + 2 ) + 4;
 
 	// the list
 	{
@@ -681,6 +796,53 @@ static float SW_DrawPicked( float y ) {
 	y += SW_ROW;
 	changed |= SW_Slider( SW_IN, y, SW_IW, "Size", &o->size, 0.5f, 45.0f, 0.5f, "%.1f", qtrue );
 	y += SW_ROW;
+	if ( !Q_stricmp( o->kind, "model" ) ) {
+		wgStyle_t style;
+
+		if ( sw.pathPick != sw.pick ) {
+			Q_strncpyz( sw.path, o->model, sizeof( sw.path ) );
+			sw.pathPick = sw.pick;
+			sw.typing = qfalse;
+			sw.pathBad = (qboolean)( o->model[0] && !re->RegisterModel( o->model ) );
+		}
+		memset( &style, 0, sizeof( style ) );
+		style.font = sw.font;
+		style.scale = SW_SCALE;
+		style.lineH = 13.0f;
+		style.padX = 4;
+		style.padY = 1;
+		style.fill = swItem;
+		style.border = swBorder;
+		style.text = swWhite;
+		style.dim = swDim;
+		SW_Box( SW_IN, y, SW_IW, SW_CTRL_H, swItem );
+		if ( sw.typing )
+			SW_Fill( SW_IN, y + SW_CTRL_H - 1, SW_IW, 1, swOrange );
+		WG_Field( &style, SW_IN, y, SW_IW, SW_CTRL_H, sw.path, sw.typing, "models/.../name.md3, Enter", sw.cursorX, sw.cursorY );
+		if ( SW_Clicked( SW_IN, y, SW_IW, SW_CTRL_H ) ) {
+			if ( !sw.typing )
+				WG_EditReset();
+			sw.typing = qtrue;
+			WG_FieldClick( sw.path, sw.clickX, sw.clickY );
+		} else if ( sw.click && sw.typing ) {
+			sw.typing = qfalse;		// a click elsewhere: the path as typed
+			Q_strncpyz( o->model, sw.path, sizeof( o->model ) );
+			sw.pathBad = (qboolean)( o->model[0] && !re->RegisterModel( o->model ) );
+			changed = 1;
+		}
+		y += SW_ROW + 2;
+		if ( sw.pathBad ) {
+			SW_Text( SW_IN, y, SW_IW, "No such model", swYellow, sw.font, SW_SCALE, qfalse );
+			y += SW_ROW;
+		}
+		changed |= SW_Slider( SW_IN, y, SW_IW, "Heading", &o->tilt, 0.0f, 360.0f, 1.0f, "%.0f", qtrue );
+		y += SW_ROW;
+		changed |= SW_Slider( SW_IN, y, SW_IW, "Turning", &o->rings, -30.0f, 30.0f, 0.5f, "%.1f", qtrue );
+		y += SW_ROW;
+		if ( changed )
+			sw.dirty = qtrue;
+		return y;
+	}
 	changed |= SW_Slider( SW_IN, y, SW_IW - 20, "Red", &o->color[0], 0.0f, 1.0f, 0.02f, "%.2f", qtrue );
 	changed |= SW_Slider( SW_IN, y + SW_ROW, SW_IW - 20, "Green", &o->color[1], 0.0f, 1.0f, 0.02f, "%.2f", qtrue );
 	changed |= SW_Slider( SW_IN, y + SW_ROW * 2, SW_IW - 20, "Blue", &o->color[2], 0.0f, 1.0f, 0.02f, "%.2f", qtrue );
@@ -785,6 +947,19 @@ void CL_SkyComposer_KeyEvent( int key, qboolean down ) {
 	}
 	if ( !down )
 		return;
+	if ( sw.typing ) {
+		if ( key == A_ENTER || key == A_KP_ENTER || key == A_TAB ) {
+			sw.typing = qfalse;
+			WG_EditReset();
+			if ( sw.pathPick >= 0 && sw.pathPick < (int)sc.objects.size() ) {
+				Q_strncpyz( sc.objects[sw.pathPick].model, sw.path, sizeof( sc.objects[sw.pathPick].model ) );
+				sw.pathBad = (qboolean)( sw.path[0] && !re->RegisterModel( sw.path ) );
+				sw.dirty = qtrue;
+			}
+		} else
+			WG_EditKey( sw.path, sizeof( sw.path ), key, NULL );
+		return;
+	}
 	if ( key == A_MWHEELUP )
 		sw.wheel--;
 	else if ( key == A_MWHEELDOWN )
@@ -810,7 +985,18 @@ void CL_SkyComposer_MouseEvent( int dx, int dy ) {
 	sw.cursorY = Com_Clamp( 0, SCREEN_HEIGHT, sw.cursorY + dy );
 }
 
+void CL_SkyComposer_CharEvent( int ch ) {
+	if ( sw.open && sw.typing )
+		WG_EditChar( sw.path, sizeof( sw.path ), ch, NULL );
+}
+
 void CL_SkyComposer_Escape( void ) {
+	if ( sw.typing ) {
+		sw.typing = qfalse;
+		sw.pathPick = -1;		// the path as it was
+		WG_EditReset();
+		return;
+	}
 	SC_Close();
 }
 
@@ -836,7 +1022,7 @@ void CL_SkyComposer_Disconnect( void ) {
 
 void CL_SkyComposer_Init( void ) {
 	memset( &sw, 0, sizeof( sw ) );
-	sw.pick = -1;
+	sw.pick = sw.pathPick = -1;
 	Cmd_AddCommand( SC_CMD, SC_Cmd_f, "The sky composer: the map's sky or one of the hour, clouds, lightning, planets, moons, a fleet... (Vulkan)" );
 }
 

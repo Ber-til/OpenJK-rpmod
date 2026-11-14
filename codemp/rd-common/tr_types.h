@@ -75,6 +75,11 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 
 #define RF_FORCEPOST		0x200000 //force it to post-render -rww
 
+// OpenJK-rpmod: a model in the sky (the sky composer's): angles give its direction from the view,
+// radius its size in radians across; the renderer sets it far out that way, behind the map's own
+// things and in front of the sky, every view anew (origin, axis scale, lighting at the view)
+#define RF_SKYMODEL			0x400000
+
 // refdef flags
 #define RDF_NOWORLDMODEL	1		// used for player configuration screen
 #define RDF_HYPERSPACE		4		// teleportation effect

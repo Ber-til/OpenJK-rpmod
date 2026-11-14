@@ -163,6 +163,8 @@ static struct {
 	float				skyClouds;			// its cloud cover, -1 none
 	qboolean			skyLightning;
 	qboolean			skyComposed;		// the composer's own sky in place of the map's skybox
+	qboolean			skyHasSun;			// a sun among its objects: the light's, for shafts and shadows
+	vec3_t				skySunDir, skySunColor;
 	vec2_t				cloudDrift;			// how far the clouds have drifted
 	int					cloudTime;
 	int					flashUntil, nextFlash;
@@ -274,7 +276,7 @@ void vk_rpmod_register_cvars( void ) {
 	ri.Cvar_CheckRange( r_shadowStrength, 0, 1, qfalse );
 	r_shadowSoftness = ri.Cvar_Get( "r_shadowSoftness", "2", CVAR_ARCHIVE_ND, "Real shadows: how soft their edges are, 0 hard" );
 	ri.Cvar_CheckRange( r_shadowSoftness, 0, 8, qfalse );
-	r_shadowSun = ri.Cvar_Get( "r_shadowSun", "0", CVAR_ARCHIVE_ND, "Real shadows: 0 cast nearly straight down, which suits indoors; 1 from the map's sun, on maps whose sky has one" );
+	r_shadowSun = ri.Cvar_Get( "r_shadowSun", "0", CVAR_ARCHIVE_ND, "Real shadows: 0 cast nearly straight down, which suits indoors; 1 from the map's sun, on maps whose sky has one (a sky composer's sun is followed either way)" );
 	ri.Cvar_CheckRange( r_shadowSun, 0, 1, qtrue );
 	r_sharpen = ri.Cvar_Get( "r_sharpen", "0", CVAR_ARCHIVE_ND, va( "Sharpening, from 0 (off) to 1%s", fbo ) );
 	ri.Cvar_CheckRange( r_sharpen, 0, 1, qfalse );
@@ -1424,21 +1426,56 @@ the sun, for sun shafts: where it is in the view and how much its beams show; qf
 map's sky has no sun, or it's behind the camera or too far off the side of the view
 ===============
 */
+static void RP_SkySun( vec3_t out );
+
+/*
+the sun that lights, for the sun shafts and real shadows: the sky composer's (its Sun object, else the
+sun of its hour), else the map's; qfalse when there's none up (the composer's night)
+*/
+static qboolean RP_LightSun( vec3_t dir, vec3_t color ) {
+	if ( rp.skyHasSun ) {
+		VectorCopy( rp.skySunDir, dir );
+		VectorCopy( rp.skySunColor, color );
+	} else if ( rp.skyTime >= 0.0f ) {
+		const float m = MAX( tr.sunLight[0], MAX( tr.sunLight[1], tr.sunLight[2] ) );
+
+		RP_SkySun( dir );
+		if ( m > 0.0f )
+			VectorScale( tr.sunLight, 1.0f / m, color );
+		else
+			VectorSet( color, 1.0f, 0.97f, 0.9f );
+		// orange low, gone below the horizon
+		{
+			const float low = 1.0f - Com_Clamp( 0.0f, 1.0f, dir[2] / 0.4f );
+
+			color[1] *= 1.0f - 0.5f * low;
+			color[2] *= 1.0f - 0.75f * low;
+			VectorScale( color, Com_Clamp( 0.0f, 1.0f, ( dir[2] + 0.05f ) / 0.15f ), color );
+		}
+	} else {
+		VectorCopy( tr.sunDirection, dir );
+		VectorCopy( tr.sunLight, color );
+	}
+	VectorNormalize( dir );
+	return (qboolean)( MAX( color[0], MAX( color[1], color[2] ) ) > 0.0f );
+}
+
 static qboolean RP_Sun( const VkRect2D *r, float *pos, float *color ) {
 	const float *axis0 = backEnd.viewParms.ori.axis[0], *axis1 = backEnd.viewParms.ori.axis[1], *axis2 = backEnd.viewParms.ori.axis[2];
-	const float m = MAX( tr.sunLight[0], MAX( tr.sunLight[1], tr.sunLight[2] ) );
-	float tanHalf[2], z, nx, ny, fade;
+	vec3_t sunDir, sunLight;
+	float m, tanHalf[2], z, nx, ny, fade;
 
-	if ( !r_sunShafts->integer || r_sunShaftsIntensity->value <= 0.0f || m <= 0.0f )
+	if ( !r_sunShafts->integer || r_sunShaftsIntensity->value <= 0.0f || !RP_LightSun( sunDir, sunLight ) )
 		return qfalse;
+	m = MAX( sunLight[0], MAX( sunLight[1], sunLight[2] ) );
 
 	// in the camera's space as the shaders have it: x right, y down, z forward
-	z = DotProduct( tr.sunDirection, axis0 );
+	z = DotProduct( sunDir, axis0 );
 	if ( z <= 0.05f )
 		return qfalse;
 	RP_TanHalf( tanHalf );
-	nx = -DotProduct( tr.sunDirection, axis1 ) / ( z * tanHalf[0] );
-	ny = -DotProduct( tr.sunDirection, axis2 ) / ( z * tanHalf[1] );
+	nx = -DotProduct( sunDir, axis1 ) / ( z * tanHalf[0] );
+	ny = -DotProduct( sunDir, axis2 ) / ( z * tanHalf[1] );
 	fade = Com_Clamp( 0.0f, 1.0f, ( z - 0.05f ) * 4.0f ) * Com_Clamp( 0.0f, 1.0f, 2.5f - MAX( fabsf( nx ), fabsf( ny ) ) );
 	if ( fade <= 0.0f )
 		return qfalse;
@@ -1446,7 +1483,7 @@ static qboolean RP_Sun( const VkRect2D *r, float *pos, float *color ) {
 	pos[0] = r->offset.x + ( nx * 0.5f + 0.5f ) * r->extent.width;
 	pos[1] = r->offset.y + ( ny * 0.5f + 0.5f ) * r->extent.height;
 	for ( int i = 0; i < 3; i++ )
-		color[i] = tr.sunLight[i] / m * r_sunShaftsIntensity->value * fade;
+		color[i] = sunLight[i] / m * r_sunShaftsIntensity->value * fade;
 	color[3] = 0.0f;
 	return qtrue;
 }
@@ -1583,13 +1620,12 @@ static void RP_ShadowLight( viewParms_t *lp, float *toLight, float *bias ) {
 	const float texel = 2.0f * R / RP_SHADOW_SIZE;
 	const float *org = backEnd.viewParms.ori.origin, *axis0 = backEnd.viewParms.ori.axis[0];
 	const float *axis1 = backEnd.viewParms.ori.axis[1], *axis2 = backEnd.viewParms.ori.axis[2];
-	vec3_t L, f, up, left, hint, fwd, C;
+	vec3_t L, f, up, left, hint, fwd, C, sunColor;
 	float viewer[16], proj[16], lightMvp[16], A[16], a, b;
 
-	// toward the light: the map's sun, or nearly straight down
-	if ( r_shadowSun->integer && tr.sunDirection[2] > 0.25f )
-		VectorCopy( tr.sunDirection, L );
-	else
+	// toward the light: the sky composer's sun when it has one (an admin's, outdoors), the map's
+	// with r_shadowSun, else nearly straight down; a sun too low casts down too
+	if ( !( ( rp.skyHasSun || rp.skyTime >= 0.0f || r_shadowSun->integer ) && RP_LightSun( L, sunColor ) && L[2] > 0.25f ) )
 		VectorSet( L, 0.4f, 0.25f, 1.0f );
 	VectorNormalize( L );
 	VectorScale( L, -1.0f, f );
@@ -2274,7 +2310,7 @@ static void RP_SkyScene( void ) {
 	}
 	rp.numSkyObjects = 0;
 	rp.skyTime = rp.skyClouds = -1.0f;
-	rp.skyLightning = rp.skyComposed = qfalse;
+	rp.skyLightning = rp.skyComposed = rp.skyHasSun = qfalse;
 	Com_Memset( table, 0, sizeof( table ) );
 
 	p = scene;
@@ -2340,6 +2376,11 @@ static void RP_SkyScene( void ) {
 			t[9] = DEG2RAD( v[7] );
 			t[10] = v[8];
 			t[11] = 1.0f;
+			if ( !Q_stricmp( rpSkyKinds[kind], "sun" ) && !rp.skyHasSun ) {
+				rp.skyHasSun = qtrue;
+				VectorCopy( dir, rp.skySunDir );
+				VectorCopy( t + 4, rp.skySunColor );
+			}
 			rp.numSkyObjects++;
 		}
 	}

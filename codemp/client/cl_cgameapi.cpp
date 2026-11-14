@@ -419,6 +419,8 @@ static void CL_R_RenderScene( const refdef_t *fd ) {
 	CL_Dismember_AddToScene( fd );
 	// the E-11's burst charging: a glow at the muzzle
 	CL_BurstFire_AddToScene( fd );
+	// the sky composer's models, far out in the sky
+	CL_SkyComposer_AddToScene( fd );
 	// where the crosshair looks, for an NPC's name under it
 	CL_NpcNames_View( fd );
 	CL_Aim_View( fd );

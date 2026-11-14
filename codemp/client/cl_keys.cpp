@@ -1999,6 +1999,7 @@ void CL_CharEvent( int key ) {
 	else if ( Key_GetCatcher() & KEYCATCH_WORLD )		CL_WorldItems_CharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_CHARACTERS )	CL_Characters_CharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_LANGUAGES )	CL_Languages_CharEvent( key );
+	else if ( Key_GetCatcher() & KEYCATCH_SKYCOMPOSER )	CL_SkyComposer_CharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_CGAME )		CGVM_KeyEvent( key|K_CHAR_FLAG, qtrue );
 	else if ( Key_GetCatcher() & KEYCATCH_MESSAGE )		Field_CharEvent( &chatField, key );
 	else if ( cls.state == CA_DISCONNECTED )			Field_CharEvent( &g_consoleField, key );

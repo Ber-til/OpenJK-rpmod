@@ -175,7 +175,7 @@ static const rmRow_t rmRows[] = {
 		"Players, NPCs and models cast soft shadows on the map and each other, in place of the blob",
 		"cvarFloatList { \"Off\" 0 \"On\" 1 }", RM_SHOW_POSTFX, 1 },
 	{ "ui_rd_shadowsun", "r_shadowSun", "0", "Shadow Direction:",
-		"Nearly straight down suits indoors; From the Sun follows the map's sun",
+		"Nearly straight down suits indoors; From the Sun follows the map's sun (a sky composer's sun is followed either way)",
 		"cvarFloatList { \"Down\" 0 \"From the Sun\" 1 }", RM_SHOW_POSTFX, 1 },
 	{ "ui_rd_tonemap", "r_tonemap", "0", "Tone Mapping:",
 		"Bright light rolls off instead of clipping to white; Film (ACES) darkens the shadows too",

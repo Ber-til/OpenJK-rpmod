@@ -1131,6 +1131,8 @@ void CL_SkyComposer_Disconnect( void );
 void CL_SkyComposer_Draw( void );
 void CL_SkyComposer_Close( void );
 void CL_SkyComposer_Escape( void );
+void CL_SkyComposer_CharEvent( int ch );
+void CL_SkyComposer_AddToScene( const refdef_t *fd );
 void CL_SkyComposer_KeyEvent( int key, qboolean down );
 void CL_SkyComposer_MouseEvent( int dx, int dy );
 void CL_SkyComposer_Hook( char **argv, int argc, const char *message );	// cmd:skyc...
