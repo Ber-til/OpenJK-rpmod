@@ -4,6 +4,10 @@ What changed in OpenJK-rpmod from version to version, newest first. What each fe
 
 OpenJK-rpmod is built on [OpenJK](https://github.com/JACoders/OpenJK); for the changes OpenJK itself made, see [its changelog](https://github.com/JACoders/OpenJK/blob/master/CHANGELOG.md).
 
+## 0.10.2 - unreleased
+
+- [Fixed] `Vulkan: 16-bit textures`. With `r_texturebits 16` (Texture Quality 16 bit, or the Fastest preset, often left from the OpenGL renderer), switching to Vulkan closed the game at once, with no message: the textures' data was laid out at half its size and read past its end. They load now, at 16 bits.
+
 ## 0.10.1 - Nov 14th 2026
 
 - [Added] `Datapad: group chats`. **New group** in Chat makes a group of main characters (up to 16 with you, never your own other accounts), named as you like; it's listed with the people, by its last message, with what's unread. In it, theirs show who sent them, yours who read them ("seen by 2 of 3", "seen by all"), typing shows who, and who joined or left is a line of its own. **Members** lists who's in it and online; the one who made it adds, removes and renames, anyone leaves (the owner leaving hands it on; the last one deletes it). Kept by C1B3R and told at once on any server, as messages are. `/datapad chat group <id>` opens one.

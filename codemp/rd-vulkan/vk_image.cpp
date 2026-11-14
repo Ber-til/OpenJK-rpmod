@@ -653,7 +653,9 @@ void vk_generate_image_upload_data(image_t* image, byte* data, Image_Upload_Data
 			VK_FORMAT_B4G4R4A4_UNORM_PACK16 :
 			VK_FORMAT_A1R5G5B5_UNORM_PACK16;
 
-		bytesPerPixel = 2;
+		// the data stays RGBA, 4 bytes a pixel: vk_upload_image_data converts it to 16 bits
+		// (vk_resample_image_data). Laid out at 2 bytes a pixel here, half of it was cut off
+		// and the upload read twice what the converted copy holds (a crash with r_texturebits 16)
 	}
 
 	upload_data->buffer_size = R_CalcUploadSize(
@@ -967,7 +969,7 @@ static byte *vk_resample_image_data( const int target_format, byte *data, const 
 		return buffer; // must be freed after upload!
 
 	case VK_FORMAT_B8G8R8A8_UNORM:
-		buffer = R_ImageScratchAlloc(&s_imageScratch.convert, data_size / 2);
+		buffer = R_ImageScratchAlloc(&s_imageScratch.convert, data_size);		// 4 bytes a pixel, as it came
 		for ( i = 0; i < data_size; i += 4 ) {
 			buffer[i + 0] = data[i + 2];
 			buffer[i + 1] = data[i + 1];
@@ -978,7 +980,7 @@ static byte *vk_resample_image_data( const int target_format, byte *data, const 
 		return buffer;
 
 	case VK_FORMAT_R8G8B8_UNORM: {
-		buffer = R_ImageScratchAlloc(&s_imageScratch.convert, data_size / 2);
+		buffer = R_ImageScratchAlloc(&s_imageScratch.convert, data_size / 4 * 3);	// 3 bytes a pixel
 		for ( i = 0, n = 0; i < data_size; i += 4, n += 3 ) {
 			buffer[n + 0] = data[i + 0];
 			buffer[n + 1] = data[i + 1];
