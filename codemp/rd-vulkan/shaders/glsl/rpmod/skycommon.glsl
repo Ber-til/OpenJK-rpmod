@@ -65,8 +65,9 @@ vec3 SkyColor( vec3 d, vec3 sun )
 	// dusk: the horizon toward the sun reddens, the rest of it pinker
 	horizon = mix( horizon, vec3( 1.0, 0.42, 0.16 ), dusk * ( 0.35 + 0.65 * pow( max( mu, 0.0 ), 3.0 ) ) );
 	vec3 c = mix( zenith, horizon, h );
-	// the glow round the sun, wider at dusk
-	c += SunColor( sun ) * ( pow( max( mu, 0.0 ), 48.0 ) * 0.6 + pow( max( mu, 0.0 ), 6.0 ) * ( 0.12 + 0.25 * dusk ) );
+	// a soft glow on the sun's side, wider at dusk (no bright one round it: the composer's Sun objects
+	// are the suns seen)
+	c += SunColor( sun ) * pow( max( mu, 0.0 ), 6.0 ) * ( 0.12 + 0.25 * dusk );
 	// under the horizon: the ground's dim reflection of it
 	if ( d.z < 0.0 )
 		c = mix( c, horizon * 0.35, smoothstep( 0.0, -0.2, d.z ) );

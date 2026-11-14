@@ -246,7 +246,7 @@ void vk_rpmod_register_cvars( void ) {
 	ri.Cvar_CheckRange( r_heatHazeStrength, 0, 12, qfalse );
 	r_skySharpen = ri.Cvar_Get( "r_skySharpen", "0", CVAR_ARCHIVE_ND, va( "Sky sharpening: the map's skybox crisper, 0 to 1%s", fbo ) );
 	ri.Cvar_CheckRange( r_skySharpen, 0, 1, qfalse );
-	r_clouds = ri.Cvar_Get( "r_clouds", "0", CVAR_ARCHIVE_ND, va( "Clouds over the sky, drifting with the wind and lit by the sun: their cover, 0 none to 1 overcast (the sky composer's in place of it)%s", fbo ) );
+	r_clouds = ri.Cvar_Get( "r_clouds", "1", CVAR_ARCHIVE_ND, va( "Clouds: 1 shows the clouds an admin composed in the sky (/skycomposer), drifting with the wind and lit by the sun; 0 hides them%s", fbo ) );
 	ri.Cvar_CheckRange( r_clouds, 0, 1, qfalse );
 	r_cloudShadows = ri.Cvar_Get( "r_cloudShadows", "0.5", CVAR_ARCHIVE_ND, "Clouds' shadows on the ground: how dark, 0 none to 1" );
 	ri.Cvar_CheckRange( r_cloudShadows, 0, 1, qfalse );
@@ -1583,7 +1583,7 @@ static qboolean RP_NeedDistance( const VkRect2D *r ) {
 		|| ( r_ssr->integer && r_ssrStrength->value > 0.0f )
 		|| ( r_water->integer && r_waterStrength->value > 0.0f ) || r_heatHaze->integer
 		|| ( r_wetSurfaces->integer && R_WetZones( NULL, NULL, NULL, 0 ) > 0 )
-		|| r_skySharpen->value > 0.0f || r_clouds->value > 0.0f || r_aerialHaze->value > 0.0f
+		|| r_skySharpen->value > 0.0f || r_aerialHaze->value > 0.0f
 		|| r_skyScene[0]->string[0]
 		|| ( r_shadowMaps->integer && r_shadowStrength->value > 0.0f && rp.shadowPipe != VK_NULL_HANDLE ) );
 }
@@ -2636,9 +2636,9 @@ static void RP_SunMapStep( void ) {
 	rpSun.ready = qtrue;
 }
 
-// the clouds' cover now: the composer's, else the setting; more in rain
+// the clouds' cover now: the sky composer's (none without it, or hidden by r_clouds 0); more in rain
 static float RP_CloudCover( void ) {
-	float cover = rp.skyClouds >= 0.0f ? rp.skyClouds : r_clouds->value;
+	float cover = ( rp.skyClouds > 0.0f && r_clouds->value > 0.0f ) ? rp.skyClouds : 0.0f;
 
 	if ( cover > 0.0f && R_IsRaining() )
 		cover = MAX( cover, 0.8f );

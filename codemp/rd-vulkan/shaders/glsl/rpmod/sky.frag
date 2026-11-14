@@ -274,7 +274,7 @@ void main()
 		vec3 atmo = SkyColor( d, sun );
 		if ( d.z > 0.0 )
 			atmo += Stars( d ) * night * pc.c.w;
-		atmo += SunColor( sun ) * 4.0 * smoothstep( 0.99985, 0.9999, dot( d, sun ) );
+		// no sun's disc of its own: the composer's Sun objects are the suns seen
 		c = mix( c, atmo, pc.sun.w );
 	}
 

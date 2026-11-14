@@ -362,7 +362,7 @@ static int SC_Index( const char *arg ) {
 
 static void SC_List( void ) {
 	Com_Printf( "Sky: %s, time %s, clouds %s, lightning %s%s\n", sc.composed ? "composed" : "classic (the map's)",
-		sc.hour >= 0.0f ? va( "%g", sc.hour ) : "the map's", sc.clouds >= 0.0f ? va( "%g", sc.clouds ) : "yours (r_clouds)",
+		sc.hour >= 0.0f ? va( "%g", sc.hour ) : "the map's", sc.clouds > 0.0f ? va( "%g", sc.clouds ) : "none",
 		sc.lightning ? "on" : "off", sc.sharedIn ? S_COLOR_YELLOW "  (the server's sky shows in place of this)" : "" );
 	for ( size_t i = 0; i < sc.objects.size(); i++ ) {
 		const scObject_t *o = &sc.objects[i];
@@ -383,7 +383,7 @@ static void SC_Usage( void ) {
 	Com_Printf( "       " SC_CMD " list                    what's in your sky\n" );
 	Com_Printf( "       " SC_CMD " sky classic|composed    the map's skybox, or a sky of the hour in its place\n" );
 	Com_Printf( "       " SC_CMD " time <0-24|off>         the hour: the sun's place, dusk, night and stars\n" );
-	Com_Printf( "       " SC_CMD " clouds <0-1|off>        the clouds' cover, 0 clear to 1 overcast\n" );
+	Com_Printf( "       " SC_CMD " clouds <0-1>            the clouds' cover, 0 none to 1 overcast\n" );
 	Com_Printf( "       " SC_CMD " lightning on|off        lightning in the clouds\n" );
 	Com_Printf( "       " SC_CMD " add <kind> [size [yaw pitch]]  an object where you look (or there); kinds:\n" );
 	for ( size_t i = 0; i < ARRAY_LEN( scKinds ); i++ )
@@ -411,7 +411,7 @@ static void SC_Cmd_f( void ) {
 	if ( !arg[0] ) {
 		if ( sw.open )
 			SC_Close();
-		else
+		else if ( CL_RpAdmin_Allow( "Sky composer", SC_CMD ) )
 			SC_Open();
 		return;
 	}
@@ -423,6 +423,8 @@ static void SC_Cmd_f( void ) {
 		SC_List();
 		return;
 	}
+	if ( !CL_RpAdmin_Allow( "Sky composer", SC_CMD ) )
+		return;		// RPMod admins only (asked, and run again once the rank is known)
 	if ( !Q_stricmp( arg, "sky" ) ) {
 		sc.composed = (qboolean)( !Q_stricmp( Cmd_Argv( 2 ), "composed" ) );
 	} else if ( !Q_stricmp( arg, "time" ) || !Q_stricmp( arg, "clouds" ) ) {
@@ -690,12 +692,8 @@ static float SW_DrawSky( float y ) {
 	}
 	y += SW_ROW;
 	sw.cloudsV = sc.clouds < 0.0f ? 0.0f : sc.clouds;
-	if ( SW_Slider( SW_IN, y, SW_IW - 52, "Clouds", &sw.cloudsV, 0.0f, 1.0f, 0.05f, sc.clouds < 0.0f ? "theirs" : "%.2f", qtrue ) ) {
+	if ( SW_Slider( SW_IN, y, SW_IW, "Clouds", &sw.cloudsV, 0.0f, 1.0f, 0.05f, sw.cloudsV > 0.0f ? "%.2f" : "none", qtrue ) ) {
 		sc.clouds = sw.cloudsV;
-		sw.dirty = qtrue;
-	}
-	if ( SW_Button( SW_IN + SW_IW - 48, y, 48, "Theirs", (qboolean)( sc.clouds < 0.0f ), qtrue ) && sc.clouds >= 0.0f ) {
-		sc.clouds = -1.0f;
 		sw.dirty = qtrue;
 	}
 	y += SW_ROW;
