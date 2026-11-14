@@ -29,13 +29,15 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 //                             by a shader of our own that reads the distances (soft particles)
 //   after dynamic glow        the passes over the view, between two images of the screen's size:
 //                             sun shafts, motion blur, depth of field, grading, the cinematic
-//                             filter, FXAA, sharpening; then the result back into the view
+//                             filter, SMAA or FXAA, sharpening; then the result back into the view
 //
 // Only with the post effects (r_fbo 1): the view is drawn into an image the passes can read. The
 // shaders are glsl/rpmod/*, compiled by shaders/compile_rpmod.bat into shader_data_rpmod.c.
 
 #include "tr_local.h"
 #include "shaders/spirv/shader_data_rpmod.c"
+#include "smaa/AreaTex.h"		// SMAA's tables (MIT licence: smaa/LICENSE.txt)
+#include "smaa/SearchTex.h"
 
 static cvar_t	*r_ssao;
 static cvar_t	*r_ssaoRadius;
@@ -43,6 +45,10 @@ static cvar_t	*r_ssaoIntensity;
 static cvar_t	*r_softParticles;
 static cvar_t	*r_softParticlesDepth;
 static cvar_t	*r_fxaa;
+static cvar_t	*r_smaa;
+static cvar_t	*r_water, *r_waterStrength, *r_waterRipples;
+static cvar_t	*r_wetSurfaces, *r_wetStrength;
+static cvar_t	*r_heatHaze, *r_heatHazeStrength;
 static cvar_t	*r_sharpen;
 static cvar_t	*r_relief, *r_reliefStrength, *r_reliefSpecular;
 static cvar_t	*r_volumetric, *r_volumetricIntensity, *r_volumetricFog;
@@ -63,12 +69,18 @@ static cvar_t	*r_sunShaftsIntensity;
 static cvar_t	*r_motionBlur;
 static cvar_t	*r_dofBokeh;
 
+#define RP_MAX_HAZE			12		// heat haze's sources a view, six a pass
+#define RP_MAX_WET			4		// rain boxes a view whose ground is wet
+
 static struct {
 	qboolean			usable;			// the depth buffer can be read by a shader
 	qboolean			ready;			// everything is there for this window
 
 	VkShaderModule		depthFs, depthMsFs, dofFs, filterFs, copyFs;
 	VkShaderModule		ssaoFs, aoBlurFs, aoApplyFs, shaftsFs[3], mblurFs, gradeFs, fxaaFs, casFs, volumFs, ssrFs, shadowFs;
+	VkShaderModule		smaaFs[3];		// edges, weights, blending
+	VkShaderModule		fsrFs[2];		// upscaling, sharpening
+	VkShaderModule		waterFs, wetFs, hazeFs;
 	VkShaderModule		softFs[6];		// in pairs, unfogged then fogged: vk_create_pipeline takes the next one for fog
 	VkPipelineLayout	layout;			// two image sets, 128 bytes of push constants
 
@@ -83,6 +95,14 @@ static struct {
 	VkImageView			aoView[2];
 	VkDeviceMemory		aoMemory[2];
 	VkImageView			depthView;		// the depth buffer's depth, to read
+
+	// SMAA: the edges and their weights, the screen's size; its two tables, made once a window
+	VkImage				smaaImage[2];
+	VkImageView			smaaView[2];
+	VkDeviceMemory		smaaMemory[2];
+	VkImage				smaaTable[2];	// area, search
+	VkImageView			smaaTableView[2];
+	VkDeviceMemory		smaaTableMemory[2];
 
 	// the shadow map: the models' depth from the light, and a colour image the pass needs beside it
 	VkFormat			shadowFormat;
@@ -104,13 +124,37 @@ static struct {
 	qboolean			haveMask;		// this view's shiny surfaces are in it
 
 	VkDescriptorSet		sceneSet, postSet[2], distSet, depthSet, aoSet[2];
+	VkDescriptorSet		smaaSet[2], smaaTableSet[2];
+
+	// FSR: the picture scaled up, then sharpened, the window's size (r_fsr)
+	VkImage				fsrImage[2];
+	VkImageView			fsrView[2];
+	VkDeviceMemory		fsrMemory[2];
+	VkFramebuffer		fsrFb[2];
+	VkDescriptorSet		fsrSet[2];
+	VkPipeline			fsrPipe[2];
+
+	// water: the water surfaces' depth alone, from the camera, the window's size (drawn with the shadow
+	// map's render pass, as the shiny surfaces are)
+	VkImage				waterImage, waterColor;
+	VkImageView			waterView, waterColorView;
+	VkDeviceMemory		waterMemory, waterColorMemory;
+	VkFramebuffer		waterFb;
+	VkDescriptorSet		waterSet;
+	qboolean			haveWater;		// this view's water surfaces are in it
+	VkPipeline			waterPipe, wetPipe, hazePipe;
+
+	// heat haze: what burns in this view, on the screen (x, y, radius in pixels, distance)
+	vec4_t				haze[RP_MAX_HAZE];
+	int					numHaze;
 	qboolean			setsAllocated;
 
-	VkRenderPass		postPass, distPass, aoPass;
-	VkFramebuffer		postFb[2], distFb, aoFb[2];
+	VkRenderPass		postPass, distPass, aoPass, smaaPass;
+	VkFramebuffer		postFb[2], distFb, aoFb[2], smaaFb[2];
 
 	VkPipeline			depthPipe, dofPipe, filterPipe, copyPipe;
 	VkPipeline			ssaoPipe, aoBlurPipe, aoApplyPipe, shaftsPipe[3], mblurPipe, gradePipe, fxaaPipe, casPipe, volumPipe, ssrPipe, shadowPipe;
+	VkPipeline			smaaPipe[3];
 
 	qboolean			haveDistance;	// this view's distances are in distImage
 	qboolean			softOn;			// and effects drawn now are faded by them
@@ -123,7 +167,7 @@ static struct {
 	VkRect2D			prevRect;
 } rp;
 
-#define RP_NUM_SETS 9	// sceneSet, postSet[2], distSet, depthSet, aoSet[2], shadowSet, maskSet
+#define RP_NUM_SETS 16	// sceneSet, postSet[2], distSet, depthSet, aoSet[2], shadowSet, maskSet, smaaSet[2], smaaTableSet[2], fsrSet[2], waterSet
 #if RP_NUM_SETS > VK_RPMOD_SETS
 #error the descriptor pool has to have room for these sets
 #endif
@@ -155,6 +199,22 @@ void vk_rpmod_register_cvars( void ) {
 	ri.Cvar_CheckRange( r_softParticlesDepth, 1, 256, qtrue );
 	r_fxaa = ri.Cvar_Get( "r_fxaa", "0", CVAR_ARCHIVE_ND, va( "FXAA: smooths edges over the finished view, those of grass and fences too%s", fbo ) );
 	ri.Cvar_CheckRange( r_fxaa, 0, 1, qtrue );
+	r_smaa = ri.Cvar_Get( "r_smaa", "0", CVAR_ARCHIVE_ND, va( "SMAA: smooths edges over the finished view, sharper than FXAA (in its place when both are on) and far cheaper than MSAA%s", fbo ) );
+	ri.Cvar_CheckRange( r_smaa, 0, 1, qtrue );
+	r_water = ri.Cvar_Get( "r_water", "0", CVAR_ARCHIVE_ND, va( "Water: the map's water ripples, bends and darkens what's under it with its depth, and mirrors the view more at a glancing look%s", fbo ) );
+	ri.Cvar_CheckRange( r_water, 0, 1, qtrue );
+	r_waterStrength = ri.Cvar_Get( "r_waterStrength", "1", CVAR_ARCHIVE_ND, "Water: how strong its look is, 0 to 2" );
+	ri.Cvar_CheckRange( r_waterStrength, 0, 2, qfalse );
+	r_waterRipples = ri.Cvar_Get( "r_waterRipples", "64", CVAR_ARCHIVE_ND, "Water: the size of its ripples, in world units" );
+	ri.Cvar_CheckRange( r_waterRipples, 8, 512, qfalse );
+	r_wetSurfaces = ri.Cvar_Get( "r_wetSurfaces", "0", CVAR_ARCHIVE_ND, va( "Wet surfaces: under the map editor's rain, the ground darkens, shines and gathers puddles that mirror the view, drying after%s", fbo ) );
+	ri.Cvar_CheckRange( r_wetSurfaces, 0, 1, qtrue );
+	r_wetStrength = ri.Cvar_Get( "r_wetStrength", "1", CVAR_ARCHIVE_ND, "Wet surfaces: how strongly puddles and the wet ground mirror, 0 to 2" );
+	ri.Cvar_CheckRange( r_wetStrength, 0, 2, qfalse );
+	r_heatHaze = ri.Cvar_Get( "r_heatHaze", "0", CVAR_ARCHIVE_ND, va( "Heat haze: the air shimmers over fire, explosions, thrusters and lava%s", fbo ) );
+	ri.Cvar_CheckRange( r_heatHaze, 0, 1, qtrue );
+	r_heatHazeStrength = ri.Cvar_Get( "r_heatHazeStrength", "3", CVAR_ARCHIVE_ND, "Heat haze: how far it bends what's behind, in pixels on a 480 high screen" );
+	ri.Cvar_CheckRange( r_heatHazeStrength, 0, 12, qfalse );
 	r_relief = ri.Cvar_Get( "r_relief", "0", CVAR_ARCHIVE_ND | CVAR_LATCH, "Surface relief: dynamic lights and lit sabers pick out the relief of stone, metal and cloth, worked out from each texture (needs \\r_dlightMode 2; \\vid_restart to change)" );
 	ri.Cvar_CheckRange( r_relief, 0, 1, qtrue );
 	r_reliefStrength = ri.Cvar_Get( "r_reliefStrength", "8", CVAR_ARCHIVE_ND, "Surface relief: how deep it is, in world units" );
@@ -334,6 +394,14 @@ void vk_rpmod_init( void ) {
 	RP_MODULE( rp.volumFs, rpmod_volum_frag_spv, "rpmod volumetric light" );
 	RP_MODULE( rp.ssrFs, rpmod_ssr_frag_spv, "rpmod reflections" );
 	RP_MODULE( rp.shadowFs, rpmod_shadow_frag_spv, "rpmod real shadows" );
+	RP_MODULE( rp.smaaFs[0], rpmod_smaa_edges_frag_spv, "rpmod smaa edges" );
+	RP_MODULE( rp.smaaFs[1], rpmod_smaa_weights_frag_spv, "rpmod smaa weights" );
+	RP_MODULE( rp.smaaFs[2], rpmod_smaa_blend_frag_spv, "rpmod smaa blending" );
+	RP_MODULE( rp.fsrFs[0], rpmod_fsr_easu_frag_spv, "rpmod fsr upscaling" );
+	RP_MODULE( rp.fsrFs[1], rpmod_fsr_rcas_frag_spv, "rpmod fsr sharpening" );
+	RP_MODULE( rp.waterFs, rpmod_water_frag_spv, "rpmod water" );
+	RP_MODULE( rp.wetFs, rpmod_wet_frag_spv, "rpmod wet surfaces" );
+	RP_MODULE( rp.hazeFs, rpmod_haze_frag_spv, "rpmod heat haze" );
 
 	push.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 	push.offset = 0;
@@ -351,7 +419,8 @@ void vk_rpmod_init( void ) {
 void vk_rpmod_shutdown( void ) {
 	VkShaderModule *modules[] = { &rp.depthFs, &rp.depthMsFs, &rp.dofFs, &rp.filterFs, &rp.copyFs,
 		&rp.ssaoFs, &rp.aoBlurFs, &rp.aoApplyFs, &rp.softFs[0], &rp.softFs[1], &rp.softFs[2], &rp.softFs[3], &rp.softFs[4], &rp.softFs[5],
-		&rp.shaftsFs[0], &rp.shaftsFs[1], &rp.shaftsFs[2], &rp.mblurFs, &rp.gradeFs, &rp.fxaaFs, &rp.casFs, &rp.volumFs, &rp.ssrFs, &rp.shadowFs };
+		&rp.shaftsFs[0], &rp.shaftsFs[1], &rp.shaftsFs[2], &rp.mblurFs, &rp.gradeFs, &rp.fxaaFs, &rp.casFs, &rp.volumFs, &rp.ssrFs, &rp.shadowFs,
+		&rp.smaaFs[0], &rp.smaaFs[1], &rp.smaaFs[2], &rp.fsrFs[0], &rp.fsrFs[1], &rp.waterFs, &rp.wetFs, &rp.hazeFs };
 
 	for ( size_t i = 0; i < ARRAY_LEN( modules ); i++ ) {
 		if ( *modules[i] != VK_NULL_HANDLE )
@@ -370,7 +439,7 @@ void vk_rpmod_shutdown( void ) {
 the images, with the window's other attachments
 ===============
 */
-static void RP_CreateImage( VkFormat format, VkImage *image, VkImageView *view, VkDeviceMemory *memory, const char *name ) {
+static void RP_CreateImageSized( VkFormat format, uint32_t width, uint32_t height, VkImage *image, VkImageView *view, VkDeviceMemory *memory, const char *name ) {
 	VkImageCreateInfo desc;
 	VkMemoryRequirements req;
 	VkMemoryAllocateInfo alloc;
@@ -380,8 +449,8 @@ static void RP_CreateImage( VkFormat format, VkImage *image, VkImageView *view, 
 	desc.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
 	desc.imageType = VK_IMAGE_TYPE_2D;
 	desc.format = format;
-	desc.extent.width = glConfig.vidWidth;
-	desc.extent.height = glConfig.vidHeight;
+	desc.extent.width = width;
+	desc.extent.height = height;
 	desc.extent.depth = 1;
 	desc.mipLevels = 1;
 	desc.arrayLayers = 1;
@@ -413,6 +482,11 @@ static void RP_CreateImage( VkFormat format, VkImage *image, VkImageView *view, 
 
 	VK_SET_OBJECT_NAME( *image, name, VK_DEBUG_REPORT_OBJECT_TYPE_IMAGE_EXT );
 	VK_SET_OBJECT_NAME( *view, name, VK_DEBUG_REPORT_OBJECT_TYPE_IMAGE_VIEW_EXT );
+}
+
+// one the picture's size
+static void RP_CreateImage( VkFormat format, VkImage *image, VkImageView *view, VkDeviceMemory *memory, const char *name ) {
+	RP_CreateImageSized( format, glConfig.vidWidth, glConfig.vidHeight, image, view, memory, name );
 }
 
 static void RP_DestroyImage( VkImage *image, VkImageView *view, VkDeviceMemory *memory ) {
@@ -462,7 +536,8 @@ the renderer points its own (vk_update_attachment_descriptors: new window size, 
 */
 void vk_rpmod_init_descriptors( void ) {
 	VkDescriptorSetAllocateInfo alloc;
-	VkDescriptorSet *sets[RP_NUM_SETS] = { &rp.sceneSet, &rp.postSet[0], &rp.postSet[1], &rp.distSet, &rp.depthSet, &rp.aoSet[0], &rp.aoSet[1], &rp.shadowSet, &rp.maskSet };
+	VkDescriptorSet *sets[RP_NUM_SETS] = { &rp.sceneSet, &rp.postSet[0], &rp.postSet[1], &rp.distSet, &rp.depthSet, &rp.aoSet[0], &rp.aoSet[1], &rp.shadowSet, &rp.maskSet,
+		&rp.smaaSet[0], &rp.smaaSet[1], &rp.smaaTableSet[0], &rp.smaaTableSet[1], &rp.fsrSet[0], &rp.fsrSet[1], &rp.waterSet };
 
 	Com_Memset( &alloc, 0, sizeof( alloc ) );
 	alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -479,6 +554,7 @@ void vk_rpmod_init_descriptors( void ) {
 void vk_rpmod_forget_descriptors( void ) {
 	rp.setsAllocated = qfalse;
 	rp.sceneSet = rp.postSet[0] = rp.postSet[1] = rp.distSet = rp.depthSet = rp.aoSet[0] = rp.aoSet[1] = rp.shadowSet = rp.maskSet = VK_NULL_HANDLE;
+	rp.smaaSet[0] = rp.smaaSet[1] = rp.smaaTableSet[0] = rp.smaaTableSet[1] = rp.fsrSet[0] = rp.fsrSet[1] = rp.waterSet = VK_NULL_HANDLE;
 	rp.haveDistance = rp.softOn = qfalse;
 }
 
@@ -497,6 +573,107 @@ void vk_rpmod_update_descriptors( void ) {
 		RP_SetImage( rp.shadowSet, rp.shadowView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, GL_NEAREST );
 	if ( rp.maskView != VK_NULL_HANDLE )
 		RP_SetImage( rp.maskSet, rp.maskView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, GL_NEAREST );
+	// SMAA reads the edges and the area table between pixels, the search table on them
+	if ( rp.smaaView[0] != VK_NULL_HANDLE ) {
+		RP_SetImage( rp.smaaSet[0], rp.smaaView[0], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, GL_LINEAR );
+		RP_SetImage( rp.smaaSet[1], rp.smaaView[1], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, GL_LINEAR );
+	}
+	if ( rp.smaaTableView[0] != VK_NULL_HANDLE ) {
+		RP_SetImage( rp.smaaTableSet[0], rp.smaaTableView[0], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, GL_LINEAR );
+		RP_SetImage( rp.smaaTableSet[1], rp.smaaTableView[1], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, GL_NEAREST );
+	}
+	if ( rp.waterView != VK_NULL_HANDLE )
+		RP_SetImage( rp.waterSet, rp.waterView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, GL_NEAREST );
+	// FSR's: read a pixel at a time, and shown one to one by the gamma pass
+	if ( rp.fsrView[0] != VK_NULL_HANDLE ) {
+		RP_SetImage( rp.fsrSet[0], rp.fsrView[0], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, GL_NEAREST );
+		RP_SetImage( rp.fsrSet[1], rp.fsrView[1], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, GL_NEAREST );
+	}
+}
+
+/*
+===============
+SMAA's two tables: images of their own, filled from the bytes once a window
+===============
+*/
+static void RP_CreateTable( VkFormat format, uint32_t width, uint32_t height, const unsigned char *bytes, size_t size,
+	VkImage *image, VkImageView *view, VkDeviceMemory *memory, const char *name ) {
+	VkImageCreateInfo desc;
+	VkMemoryRequirements req;
+	VkMemoryAllocateInfo alloc;
+	VkImageViewCreateInfo vdesc;
+	VkBufferCreateInfo bdesc;
+	VkBuffer staging;
+	VkDeviceMemory stagingMemory;
+	VkBufferImageCopy region;
+	VkCommandBuffer cmd;
+	void *data;
+
+	Com_Memset( &desc, 0, sizeof( desc ) );
+	desc.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+	desc.imageType = VK_IMAGE_TYPE_2D;
+	desc.format = format;
+	desc.extent.width = width;
+	desc.extent.height = height;
+	desc.extent.depth = 1;
+	desc.mipLevels = 1;
+	desc.arrayLayers = 1;
+	desc.samples = VK_SAMPLE_COUNT_1_BIT;
+	desc.tiling = VK_IMAGE_TILING_OPTIMAL;
+	desc.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+	desc.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	desc.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	VK_CHECK( qvkCreateImage( vk.device, &desc, NULL, image ) );
+	qvkGetImageMemoryRequirements( vk.device, *image, &req );
+	Com_Memset( &alloc, 0, sizeof( alloc ) );
+	alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+	alloc.allocationSize = req.size;
+	alloc.memoryTypeIndex = vk_find_memory_type( req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT );
+	VK_CHECK( qvkAllocateMemory( vk.device, &alloc, NULL, memory ) );
+	VK_CHECK( qvkBindImageMemory( vk.device, *image, *memory, 0 ) );
+
+	// the bytes through a buffer the CPU can write
+	Com_Memset( &bdesc, 0, sizeof( bdesc ) );
+	bdesc.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+	bdesc.size = size;
+	bdesc.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+	bdesc.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	VK_CHECK( qvkCreateBuffer( vk.device, &bdesc, NULL, &staging ) );
+	qvkGetBufferMemoryRequirements( vk.device, staging, &req );
+	alloc.allocationSize = req.size;
+	alloc.memoryTypeIndex = vk_find_memory_type( req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT );
+	VK_CHECK( qvkAllocateMemory( vk.device, &alloc, NULL, &stagingMemory ) );
+	VK_CHECK( qvkBindBufferMemory( vk.device, staging, stagingMemory, 0 ) );
+	VK_CHECK( qvkMapMemory( vk.device, stagingMemory, 0, VK_WHOLE_SIZE, 0, &data ) );
+	Com_Memcpy( data, bytes, size );
+	qvkUnmapMemory( vk.device, stagingMemory );
+
+	Com_Memset( &region, 0, sizeof( region ) );
+	region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	region.imageSubresource.layerCount = 1;
+	region.imageExtent.width = width;
+	region.imageExtent.height = height;
+	region.imageExtent.depth = 1;
+	cmd = vk_begin_command_buffer();
+	vk_record_image_layout_transition( cmd, *image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, 0 );
+	qvkCmdCopyBufferToImage( cmd, staging, *image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region );
+	vk_record_image_layout_transition( cmd, *image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 0 );
+	vk_end_command_buffer( cmd, __func__ );
+	qvkDestroyBuffer( vk.device, staging, NULL );
+	qvkFreeMemory( vk.device, stagingMemory, NULL );
+
+	Com_Memset( &vdesc, 0, sizeof( vdesc ) );
+	vdesc.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+	vdesc.image = *image;
+	vdesc.viewType = VK_IMAGE_VIEW_TYPE_2D;
+	vdesc.format = format;
+	vdesc.components.r = vdesc.components.g = vdesc.components.b = vdesc.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+	vdesc.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+	vdesc.subresourceRange.levelCount = 1;
+	vdesc.subresourceRange.layerCount = 1;
+	VK_CHECK( qvkCreateImageView( vk.device, &vdesc, NULL, view ) );
+	VK_SET_OBJECT_NAME( *image, name, VK_DEBUG_REPORT_OBJECT_TYPE_IMAGE_EXT );
+	VK_SET_OBJECT_NAME( *view, name, VK_DEBUG_REPORT_OBJECT_TYPE_IMAGE_VIEW_EXT );
 }
 
 /*
@@ -581,7 +758,8 @@ qboolean vk_rpmod_shadow_viewport( VkRect2D *r ) {
 void vk_rpmod_create_attachments( void ) {
 	VkImageViewCreateInfo vdesc;
 	VkCommandBuffer cmd;
-	VkImage *images[] = { &rp.postImage[0], &rp.postImage[1], &rp.distImage, &rp.aoImage[0], &rp.aoImage[1] };
+	VkImage *images[] = { &rp.postImage[0], &rp.postImage[1], &rp.distImage, &rp.aoImage[0], &rp.aoImage[1], &rp.smaaImage[0], &rp.smaaImage[1],
+		&rp.fsrImage[0], &rp.fsrImage[1] };
 
 	rp.ready = qfalse;
 	rp.usable = qfalse;
@@ -594,6 +772,17 @@ void vk_rpmod_create_attachments( void ) {
 	RP_CreateImage( VK_FORMAT_R32_SFLOAT, &rp.distImage, &rp.distView, &rp.distMemory, "rpmod distance" );
 	RP_CreateImage( VK_FORMAT_R8_UNORM, &rp.aoImage[0], &rp.aoView[0], &rp.aoMemory[0], "rpmod ambient occlusion 0" );
 	RP_CreateImage( VK_FORMAT_R8_UNORM, &rp.aoImage[1], &rp.aoView[1], &rp.aoMemory[1], "rpmod ambient occlusion 1" );
+	RP_CreateImage( VK_FORMAT_R8G8B8A8_UNORM, &rp.smaaImage[0], &rp.smaaView[0], &rp.smaaMemory[0], "rpmod smaa edges" );
+	RP_CreateImage( VK_FORMAT_R8G8B8A8_UNORM, &rp.smaaImage[1], &rp.smaaView[1], &rp.smaaMemory[1], "rpmod smaa weights" );
+	RP_CreateTable( VK_FORMAT_R8G8_UNORM, AREATEX_WIDTH, AREATEX_HEIGHT, areaTexBytes, sizeof( areaTexBytes ),
+		&rp.smaaTable[0], &rp.smaaTableView[0], &rp.smaaTableMemory[0], "rpmod smaa area table" );
+	RP_CreateTable( VK_FORMAT_R8_UNORM, SEARCHTEX_WIDTH, SEARCHTEX_HEIGHT, searchTexBytes, sizeof( searchTexBytes ),
+		&rp.smaaTable[1], &rp.smaaTableView[1], &rp.smaaTableMemory[1], "rpmod smaa search table" );
+	// FSR's, only when the picture is drawn smaller than the window for it
+	if ( r_fsr->integer && !r_renderScale->integer && ( glConfig.vidWidth != gls.windowWidth || glConfig.vidHeight != gls.windowHeight ) ) {
+		RP_CreateImageSized( vk.color_format, gls.windowWidth, gls.windowHeight, &rp.fsrImage[0], &rp.fsrView[0], &rp.fsrMemory[0], "rpmod fsr upscaled" );
+		RP_CreateImageSized( vk.color_format, gls.windowWidth, gls.windowHeight, &rp.fsrImage[1], &rp.fsrView[1], &rp.fsrMemory[1], "rpmod fsr sharpened" );
+	}
 	rp.shadowFormat = RP_ShadowFormat();
 	if ( rp.shadowFormat != VK_FORMAT_UNDEFINED ) {
 		RP_CreateShadowImage( rp.shadowFormat, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_DEPTH_BIT,
@@ -604,16 +793,24 @@ void vk_rpmod_create_attachments( void ) {
 			&rp.maskImage, &rp.maskView, &rp.maskMemory, "rpmod shiny surfaces", glConfig.vidWidth, glConfig.vidHeight );
 		RP_CreateShadowImage( VK_FORMAT_R8_UNORM, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
 			&rp.maskColor, &rp.maskColorView, &rp.maskColorMemory, "rpmod shiny surfaces colour", glConfig.vidWidth, glConfig.vidHeight );
+		RP_CreateShadowImage( rp.shadowFormat, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, VK_IMAGE_ASPECT_DEPTH_BIT,
+			&rp.waterImage, &rp.waterView, &rp.waterMemory, "rpmod water surfaces", glConfig.vidWidth, glConfig.vidHeight );
+		RP_CreateShadowImage( VK_FORMAT_R8_UNORM, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
+			&rp.waterColor, &rp.waterColorView, &rp.waterColorMemory, "rpmod water surfaces colour", glConfig.vidWidth, glConfig.vidHeight );
 	}
 
 	// as the render passes have them before and after
 	cmd = vk_begin_command_buffer();
-	for ( size_t i = 0; i < ARRAY_LEN( images ); i++ )
-		vk_record_image_layout_transition( cmd, *images[i], VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 0 );
+	for ( size_t i = 0; i < ARRAY_LEN( images ); i++ ) {
+		if ( *images[i] != VK_NULL_HANDLE )
+			vk_record_image_layout_transition( cmd, *images[i], VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 0 );
+	}
 	if ( rp.shadowImage != VK_NULL_HANDLE )
 		vk_record_image_layout_transition( cmd, rp.shadowImage, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 0 );
 	if ( rp.maskImage != VK_NULL_HANDLE )
 		vk_record_image_layout_transition( cmd, rp.maskImage, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 0 );
+	if ( rp.waterImage != VK_NULL_HANDLE )
+		vk_record_image_layout_transition( cmd, rp.waterImage, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0, 0 );
 	vk_end_command_buffer( cmd, __func__ );
 
 	// the depth buffer's depth, without its stencil
@@ -643,10 +840,17 @@ void vk_rpmod_destroy_attachments( void ) {
 	RP_DestroyImage( &rp.distImage, &rp.distView, &rp.distMemory );
 	RP_DestroyImage( &rp.aoImage[0], &rp.aoView[0], &rp.aoMemory[0] );
 	RP_DestroyImage( &rp.aoImage[1], &rp.aoView[1], &rp.aoMemory[1] );
+	for ( int i = 0; i < 2; i++ ) {
+		RP_DestroyImage( &rp.smaaImage[i], &rp.smaaView[i], &rp.smaaMemory[i] );
+		RP_DestroyImage( &rp.smaaTable[i], &rp.smaaTableView[i], &rp.smaaTableMemory[i] );
+		RP_DestroyImage( &rp.fsrImage[i], &rp.fsrView[i], &rp.fsrMemory[i] );
+	}
 	RP_DestroyImage( &rp.shadowImage, &rp.shadowView, &rp.shadowMemory );
 	RP_DestroyImage( &rp.shadowColor, &rp.shadowColorView, &rp.shadowColorMemory );
 	RP_DestroyImage( &rp.maskImage, &rp.maskView, &rp.maskMemory );
 	RP_DestroyImage( &rp.maskColor, &rp.maskColorView, &rp.maskColorMemory );
+	RP_DestroyImage( &rp.waterImage, &rp.waterView, &rp.waterMemory );
+	RP_DestroyImage( &rp.waterColor, &rp.waterColorView, &rp.waterColorMemory );
 }
 
 /*
@@ -769,10 +973,11 @@ void vk_rpmod_create_render_passes( void ) {
 	rp.postPass = RP_CreatePass( vk.color_format, "render pass - rpmod post" );
 	rp.distPass = RP_CreatePass( VK_FORMAT_R32_SFLOAT, "render pass - rpmod distance" );
 	rp.aoPass = RP_CreatePass( VK_FORMAT_R8_UNORM, "render pass - rpmod ambient occlusion" );
+	rp.smaaPass = RP_CreatePass( VK_FORMAT_R8G8B8A8_UNORM, "render pass - rpmod smaa" );
 }
 
 void vk_rpmod_destroy_render_passes( void ) {
-	VkRenderPass *passes[] = { &rp.postPass, &rp.distPass, &rp.aoPass, &rp.shadowPass };
+	VkRenderPass *passes[] = { &rp.postPass, &rp.distPass, &rp.aoPass, &rp.shadowPass, &rp.smaaPass };
 
 	rp.ready = qfalse;
 	for ( size_t i = 0; i < ARRAY_LEN( passes ); i++ ) {
@@ -782,7 +987,7 @@ void vk_rpmod_destroy_render_passes( void ) {
 	}
 }
 
-static VkFramebuffer RP_CreateFramebuffer( VkRenderPass pass, VkImageView view, const char *name ) {
+static VkFramebuffer RP_CreateFramebufferSized( VkRenderPass pass, VkImageView view, uint32_t width, uint32_t height, const char *name ) {
 	VkFramebufferCreateInfo desc;
 	VkFramebuffer fb;
 
@@ -791,12 +996,16 @@ static VkFramebuffer RP_CreateFramebuffer( VkRenderPass pass, VkImageView view, 
 	desc.renderPass = pass;
 	desc.attachmentCount = 1;
 	desc.pAttachments = &view;
-	desc.width = glConfig.vidWidth;
-	desc.height = glConfig.vidHeight;
+	desc.width = width;
+	desc.height = height;
 	desc.layers = 1;
 	VK_CHECK( qvkCreateFramebuffer( vk.device, &desc, NULL, &fb ) );
 	VK_SET_OBJECT_NAME( fb, name, VK_DEBUG_REPORT_OBJECT_TYPE_FRAMEBUFFER_EXT );
 	return fb;
+}
+
+static VkFramebuffer RP_CreateFramebuffer( VkRenderPass pass, VkImageView view, const char *name ) {
+	return RP_CreateFramebufferSized( pass, view, glConfig.vidWidth, glConfig.vidHeight, name );
 }
 
 void vk_rpmod_create_framebuffers( void ) {
@@ -807,6 +1016,13 @@ void vk_rpmod_create_framebuffers( void ) {
 	rp.distFb = RP_CreateFramebuffer( rp.distPass, rp.distView, "framebuffer - rpmod distance" );
 	rp.aoFb[0] = RP_CreateFramebuffer( rp.aoPass, rp.aoView[0], "framebuffer - rpmod ambient occlusion 0" );
 	rp.aoFb[1] = RP_CreateFramebuffer( rp.aoPass, rp.aoView[1], "framebuffer - rpmod ambient occlusion 1" );
+	rp.smaaFb[0] = RP_CreateFramebuffer( rp.smaaPass, rp.smaaView[0], "framebuffer - rpmod smaa edges" );
+	rp.smaaFb[1] = RP_CreateFramebuffer( rp.smaaPass, rp.smaaView[1], "framebuffer - rpmod smaa weights" );
+	// the post images' render pass: the same colour format
+	if ( rp.fsrView[0] != VK_NULL_HANDLE ) {
+		rp.fsrFb[0] = RP_CreateFramebufferSized( rp.postPass, rp.fsrView[0], gls.windowWidth, gls.windowHeight, "framebuffer - rpmod fsr upscaled" );
+		rp.fsrFb[1] = RP_CreateFramebufferSized( rp.postPass, rp.fsrView[1], gls.windowWidth, gls.windowHeight, "framebuffer - rpmod fsr sharpened" );
+	}
 	if ( rp.shadowPass != VK_NULL_HANDLE ) {
 		VkImageView views[2] = { rp.shadowColorView, rp.shadowView };
 		VkFramebufferCreateInfo desc;
@@ -828,11 +1044,19 @@ void vk_rpmod_create_framebuffers( void ) {
 			VK_CHECK( qvkCreateFramebuffer( vk.device, &desc, NULL, &rp.maskFb ) );
 			VK_SET_OBJECT_NAME( rp.maskFb, "framebuffer - rpmod shiny surfaces", VK_DEBUG_REPORT_OBJECT_TYPE_FRAMEBUFFER_EXT );
 		}
+		if ( rp.waterImage != VK_NULL_HANDLE ) {
+			views[0] = rp.waterColorView;
+			views[1] = rp.waterView;
+			desc.width = glConfig.vidWidth;
+			desc.height = glConfig.vidHeight;
+			VK_CHECK( qvkCreateFramebuffer( vk.device, &desc, NULL, &rp.waterFb ) );
+			VK_SET_OBJECT_NAME( rp.waterFb, "framebuffer - rpmod water surfaces", VK_DEBUG_REPORT_OBJECT_TYPE_FRAMEBUFFER_EXT );
+		}
 	}
 }
 
 void vk_rpmod_destroy_framebuffers( void ) {
-	VkFramebuffer *fbs[] = { &rp.postFb[0], &rp.postFb[1], &rp.distFb, &rp.aoFb[0], &rp.aoFb[1], &rp.shadowFb, &rp.maskFb };
+	VkFramebuffer *fbs[] = { &rp.postFb[0], &rp.postFb[1], &rp.distFb, &rp.aoFb[0], &rp.aoFb[1], &rp.shadowFb, &rp.maskFb, &rp.smaaFb[0], &rp.smaaFb[1], &rp.fsrFb[0], &rp.fsrFb[1], &rp.waterFb };
 
 	rp.ready = qfalse;
 	for ( size_t i = 0; i < ARRAY_LEN( fbs ); i++ ) {
@@ -958,7 +1182,7 @@ static VkPipeline RP_CreatePipeline( VkShaderModule fs, VkRenderPass pass, VkSam
 void vk_rpmod_destroy_pipelines( void ) {
 	VkPipeline *pipes[] = { &rp.depthPipe, &rp.dofPipe, &rp.filterPipe, &rp.copyPipe, &rp.ssaoPipe, &rp.aoBlurPipe,
 		&rp.aoApplyPipe, &rp.shaftsPipe[0], &rp.shaftsPipe[1], &rp.shaftsPipe[2], &rp.mblurPipe, &rp.gradePipe,
-		&rp.fxaaPipe, &rp.casPipe, &rp.volumPipe, &rp.ssrPipe, &rp.shadowPipe };
+		&rp.fxaaPipe, &rp.casPipe, &rp.volumPipe, &rp.ssrPipe, &rp.shadowPipe, &rp.smaaPipe[0], &rp.smaaPipe[1], &rp.smaaPipe[2], &rp.fsrPipe[0], &rp.fsrPipe[1], &rp.waterPipe, &rp.wetPipe, &rp.hazePipe };
 
 	rp.ready = qfalse;
 	for ( size_t i = 0; i < ARRAY_LEN( pipes ); i++ ) {
@@ -994,6 +1218,14 @@ void vk_rpmod_create_pipelines( void ) {
 	rp.fxaaPipe = RP_CreatePipeline( rp.fxaaFs, rp.postPass, one, qfalse, "rpmod fxaa" );
 	rp.casPipe = RP_CreatePipeline( rp.casFs, rp.postPass, one, qfalse, "rpmod sharpen" );
 	rp.ssrPipe = RP_CreatePipeline( rp.ssrFs, rp.postPass, one, qfalse, "rpmod reflections" );
+	rp.smaaPipe[0] = RP_CreatePipeline( rp.smaaFs[0], rp.smaaPass, one, qfalse, "rpmod smaa edges" );
+	rp.smaaPipe[1] = RP_CreatePipeline( rp.smaaFs[1], rp.smaaPass, one, qfalse, "rpmod smaa weights" );
+	rp.smaaPipe[2] = RP_CreatePipeline( rp.smaaFs[2], rp.postPass, one, qfalse, "rpmod smaa blending" );
+	rp.fsrPipe[0] = RP_CreatePipeline( rp.fsrFs[0], rp.postPass, one, qfalse, "rpmod fsr upscaling" );
+	rp.fsrPipe[1] = RP_CreatePipeline( rp.fsrFs[1], rp.postPass, one, qfalse, "rpmod fsr sharpening" );
+	rp.waterPipe = RP_CreatePipeline( rp.waterFs, rp.postPass, one, qfalse, "rpmod water" );
+	rp.wetPipe = RP_CreatePipeline( rp.wetFs, rp.postPass, one, qfalse, "rpmod wet surfaces" );
+	rp.hazePipe = RP_CreatePipeline( rp.hazeFs, rp.postPass, one, qfalse, "rpmod heat haze" );
 	// back into the view
 	rp.copyPipe = RP_CreatePipeline( rp.copyFs, vk.render_pass.main.handle, (VkSampleCountFlagBits)vkSamples, qfalse, "rpmod copy" );
 	rp.ready = qtrue;
@@ -1237,6 +1469,8 @@ static qboolean RP_NeedDistance( const VkRect2D *r ) {
 		|| r_motionBlur->value > 0.0f || RP_Sun( r, pos, color )
 		|| ( r_volumetric->integer && backEnd.refdef.num_dlights > 0 && rp.volumPipe != VK_NULL_HANDLE )
 		|| ( r_ssr->integer && r_ssrStrength->value > 0.0f )
+		|| ( r_water->integer && r_waterStrength->value > 0.0f ) || r_heatHaze->integer
+		|| ( r_wetSurfaces->integer && R_WetZones( NULL, NULL, NULL, 0 ) > 0 )
 		|| ( r_shadowMaps->integer && r_shadowStrength->value > 0.0f && rp.shadowPipe != VK_NULL_HANDLE ) );
 }
 
@@ -1497,7 +1731,149 @@ static qboolean RP_ShinyMask( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 	return qtrue;
 }
 
-void vk_rpmod_after_opaque( drawSurf_t *drawSurfs, int numDrawSurfs ) {
+/*
+===============
+water: the map's water surfaces (by material, or by being water), drawn again, their depth alone,
+from the camera; the shadow map's pipelines write depth for see-through surfaces too
+===============
+*/
+static qboolean RP_Water( const shader_t *shader ) {
+	return (qboolean)( !shader->isSky && ( ( shader->surfaceFlags & MATERIAL_MASK ) == MATERIAL_WATER || ( shader->contentFlags & CONTENTS_WATER ) ) );
+}
+
+static qboolean RP_WaterMask( drawSurf_t *drawSurfs, int numDrawSurfs ) {
+	static drawSurf_t water[RP_MAX_CASTERS];
+	int n = 0;
+
+	for ( int i = 0; i < numDrawSurfs && n < (int)ARRAY_LEN( water ); i++ ) {
+		int entityNum, fogNum, dlighted;
+		shader_t *shader;
+
+		R_DecomposeSort( drawSurfs[i].sort, &entityNum, &shader, &fogNum, &dlighted );
+		if ( shader->useDistortion || !RP_Water( shader ) )
+			continue;
+		if ( entityNum != REFENTITYNUM_WORLD
+			&& ( backEnd.refdef.entities[entityNum].e.renderfx & ( RF_FIRST_PERSON | RF_DEPTHHACK | RF_DISTORTION ) ) )
+			continue;
+		water[n++] = drawSurfs[i];
+	}
+	if ( !n )
+		return qfalse;
+
+	vk.renderPassIndex = RENDER_PASS_SHADOW;
+	vk.cmd->last_pipeline = VK_NULL_HANDLE;
+	vk_begin_render_pass( rp.shadowPass, rp.waterFb, qtrue, glConfig.vidWidth, glConfig.vidHeight );
+	Com_Memset( &vk.cmd->scissor_rect, 0, sizeof( vk.cmd->scissor_rect ) );
+	RB_RenderDrawSurfList( water, n );
+	vk_end_render_pass();
+
+	vk.renderPassIndex = RENDER_PASS_MAIN;
+	vk.cmd->last_pipeline = VK_NULL_HANDLE;
+	vk.cmd->depth_range = DEPTH_RANGE_COUNT;
+	Com_Memset( &vk.cmd->scissor_rect, 0, sizeof( vk.cmd->scissor_rect ) );
+	Com_Memcpy( vk_world.modelview_transform, backEnd.viewParms.world.modelViewMatrix, 64 );
+	return qtrue;
+}
+
+/*
+===============
+heat haze: the effects that burn (fire, flames, explosions, thrusters, lava, by their shader's name),
+as circles on the screen with their distance, the biggest kept
+===============
+*/
+static qboolean RP_Hot( const shader_t *shader ) {
+	static const char *words[] = { "fire", "flame", "explo", "burn", "heat", "thrust", "exhaust", "engine", "torch", "lava", "ember", "blaze", "inferno" };
+	char name[MAX_QPATH];
+
+	if ( shader->sort <= SS_OPAQUE )
+		return qfalse;
+	Q_strncpyz( name, shader->name, sizeof( name ) );
+	Q_strlwr( name );
+	for ( size_t i = 0; i < ARRAY_LEN( words ); i++ ) {
+		if ( strstr( name, words[i] ) )
+			return qtrue;
+	}
+	return qfalse;
+}
+
+static void RP_AddHaze( const vec3_t origin, float radius, const VkRect2D *r ) {
+	const float *axis0 = backEnd.viewParms.ori.axis[0], *axis1 = backEnd.viewParms.ori.axis[1], *axis2 = backEnd.viewParms.ori.axis[2];
+	vec3_t d;
+	float z, tanHalf[2], px, py, pr;
+	int k;
+
+	VectorSubtract( origin, backEnd.viewParms.ori.origin, d );
+	z = DotProduct( d, axis0 );
+	if ( z < 16.0f || radius <= 0.0f )
+		return;
+	RP_TanHalf( tanHalf );
+	px = r->offset.x + ( 1.0f + ( -DotProduct( d, axis1 ) / ( z * tanHalf[0] ) ) ) * 0.5f * r->extent.width;
+	py = r->offset.y + ( 1.0f + ( -DotProduct( d, axis2 ) / ( z * tanHalf[1] ) ) ) * 0.5f * r->extent.height;
+	// the column of hot air is a good deal bigger than the flame
+	pr = radius * 2.5f / ( z * tanHalf[1] ) * 0.5f * r->extent.height;
+	if ( pr < 4.0f || px + pr < r->offset.x || py + pr < r->offset.y
+		|| px - pr > r->offset.x + r->extent.width || py - pr > r->offset.y + r->extent.height )
+		return;
+	pr = MIN( pr, r->extent.height * 0.5f );
+
+	// one close to another of them is the same fire: the bigger one stays
+	for ( k = 0; k < rp.numHaze; k++ ) {
+		if ( Square( rp.haze[k][0] - px ) + Square( rp.haze[k][1] - py ) < Square( MAX( pr, rp.haze[k][2] ) * 0.5f ) ) {
+			if ( pr > rp.haze[k][2] )
+				Vector4Set( rp.haze[k], px, py, pr, z );
+			return;
+		}
+	}
+	if ( rp.numHaze < RP_MAX_HAZE ) {
+		Vector4Set( rp.haze[rp.numHaze], px, py, pr, z );
+		rp.numHaze++;
+		return;
+	}
+	// full: in place of the smallest, if it's bigger
+	for ( k = 0; k < RP_MAX_HAZE; k++ ) {
+		if ( rp.haze[k][2] < pr ) {
+			Vector4Set( rp.haze[k], px, py, pr, z );
+			return;
+		}
+	}
+}
+
+static void RP_FindHaze( drawSurf_t *drawSurfs, int numDrawSurfs, const VkRect2D *r ) {
+	rp.numHaze = 0;
+	for ( int i = 0; i < numDrawSurfs; i++ ) {
+		int entityNum, fogNum, dlighted;
+		shader_t *shader;
+
+		R_DecomposeSort( drawSurfs[i].sort, &entityNum, &shader, &fogNum, &dlighted );
+		if ( !RP_Hot( shader ) )
+			continue;
+		if ( *drawSurfs[i].surface == SF_POLY ) {
+			// an effect's polygon: its middle, and how far its corners reach
+			const srfPoly_t *poly = (const srfPoly_t *)drawSurfs[i].surface;
+			vec3_t mid;
+			float reach = 0.0f;
+
+			if ( poly->numVerts <= 0 )
+				continue;
+			VectorClear( mid );
+			for ( int v = 0; v < poly->numVerts; v++ )
+				VectorAdd( mid, poly->verts[v].xyz, mid );
+			VectorScale( mid, 1.0f / poly->numVerts, mid );
+			for ( int v = 0; v < poly->numVerts; v++ )
+				reach = MAX( reach, Distance( mid, poly->verts[v].xyz ) );
+			RP_AddHaze( mid, reach, r );
+		} else if ( entityNum != REFENTITYNUM_WORLD ) {
+			const refEntity_t *e = &backEnd.refdef.entities[entityNum].e;
+
+			if ( e->renderfx & ( RF_FIRST_PERSON | RF_DEPTHHACK ) )
+				continue;
+			if ( e->reType == RT_SPRITE || e->reType == RT_ORIENTED_QUAD )
+				RP_AddHaze( e->origin, e->radius, r );
+		}
+	}
+}
+
+void vk_rpmod_after_opaque( drawSurf_t *drawSurfs, int numDrawSurfs, int numAll ) {
 	const float zNear = backEnd.viewParms.zNear, zFar = backEnd.viewParms.zFar;
 	const qboolean ssao = (qboolean)( r_ssao->integer && r_ssaoIntensity->value > 0.0f && rp.ssaoPipe != VK_NULL_HANDLE );
 	float push[4], toLight[16], shadowBias = 0.0f;
@@ -1518,6 +1894,13 @@ void vk_rpmod_after_opaque( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 	rp.haveMask = qfalse;
 	if ( r_ssr->integer && r_ssrStrength->value > 0.0f && rp.ssrPipe != VK_NULL_HANDLE && rp.maskFb != VK_NULL_HANDLE )
 		rp.haveMask = RP_ShinyMask( drawSurfs, numDrawSurfs );
+	// water and what burns are see-through: the whole list for them
+	rp.haveWater = qfalse;
+	if ( r_water->integer && r_waterStrength->value > 0.0f && rp.waterPipe != VK_NULL_HANDLE && rp.waterFb != VK_NULL_HANDLE )
+		rp.haveWater = RP_WaterMask( drawSurfs, numAll );
+	rp.numHaze = 0;
+	if ( r_heatHaze->integer && r_heatHazeStrength->value > 0.0f && rp.hazePipe != VK_NULL_HANDLE )
+		RP_FindHaze( drawSurfs, numAll, &r );
 	RP_DepthBarrier( qtrue );
 	RP_Pass( rp.distPass, rp.distFb, rp.depthPipe, rp.depthSet, VK_NULL_HANDLE, push, sizeof( push ), &r );
 	RP_DepthBarrier( qfalse );
@@ -1821,9 +2204,16 @@ void vk_rpmod_post( void ) {
 	const qboolean dist = rp.haveDistance;
 	const qboolean dof = (qboolean)( dist && backEnd.refdef.dofBlur > 0.0f );
 	const qboolean filter = (qboolean)( backEnd.refdef.filterOn && backEnd.refdef.filter.strength > 0.0f );
-	const qboolean fxaa = (qboolean)( r_fxaa->integer != 0 );
+	const qboolean smaa = (qboolean)( r_smaa->integer != 0 && rp.smaaPipe[2] != VK_NULL_HANDLE && rp.smaaTableView[0] != VK_NULL_HANDLE );
+	const qboolean fxaa = (qboolean)( r_fxaa->integer != 0 && !smaa );
 	const qboolean sharpen = (qboolean)( r_sharpen->value > 0.0f );
 	const qboolean ssr = (qboolean)( dist && rp.haveMask && r_ssr->integer && r_ssrStrength->value > 0.0f && rp.ssrPipe != VK_NULL_HANDLE );
+	const qboolean water = (qboolean)( dist && rp.haveWater && r_water->integer && rp.waterPipe != VK_NULL_HANDLE );
+	const qboolean haze = (qboolean)( dist && rp.numHaze > 0 && r_heatHaze->integer && rp.hazePipe != VK_NULL_HANDLE );
+	vec3_t wetMins[RP_MAX_WET], wetMaxs[RP_MAX_WET];
+	float wetness[RP_MAX_WET];
+	const int numWet = ( dist && r_wetSurfaces->integer && r_wetStrength->value > 0.0f && rp.wetPipe != VK_NULL_HANDLE )
+		? R_WetZones( wetMins, wetMaxs, wetness, RP_MAX_WET ) : 0;
 	float sunPos[2], sunColor[4], mblur[16], mblurScale = 0.0f, grade[4], tint[4];
 	qboolean shafts, motion, graded;
 	VkDescriptorSet src = rp.sceneSet;
@@ -1838,7 +2228,7 @@ void vk_rpmod_post( void ) {
 	motion = (qboolean)( dist && RP_MotionBlur( &r, mblur, &mblurScale ) );
 	graded = RP_Grade( grade, tint );
 	RP_KeepCamera( &r );
-	if ( !shafts && !ssr && !motion && !dof && !graded && !filter && !fxaa && !sharpen )
+	if ( !shafts && !ssr && !water && !numWet && !haze && !motion && !dof && !graded && !filter && !smaa && !fxaa && !sharpen )
 		return;
 
 	vk_end_render_pass();
@@ -1895,6 +2285,87 @@ void vk_rpmod_post( void ) {
 		vk_end_render_pass();
 		src = rp.postSet[next];
 		next ^= 1;
+	}
+
+	// the camera in the world, for water's and the wet ground's: x right, y down, z forward, and where it is
+	if ( water || numWet ) {
+		const float *axis0 = backEnd.viewParms.ori.axis[0], *axis1 = backEnd.viewParms.ori.axis[1], *axis2 = backEnd.viewParms.ori.axis[2];
+		const float *o = backEnd.viewParms.ori.origin;
+		const float seconds = backEnd.refdef.time * 0.001f;
+		float cam[3][4];
+
+		for ( int i = 0; i < 3; i++ ) {
+			cam[0][i] = -axis1[i];
+			cam[1][i] = -axis2[i];
+			cam[2][i] = axis0[i];
+			cam[i][3] = o[i];
+		}
+
+		if ( water ) {
+			struct {
+				float rect[4];
+				float a[4];
+				float cam[3][4];
+				float b[4];
+			} p;
+
+			RP_RectVec( &r, p.rect );
+			RP_TanHalf( p.a );
+			p.a[2] = r_waterStrength->value;
+			p.a[3] = backEnd.viewParms.zFar;
+			Com_Memcpy( p.cam, cam, sizeof( p.cam ) );
+			p.b[0] = seconds;
+			p.b[1] = backEnd.viewParms.zNear;
+			p.b[2] = r_waterRipples->value;
+			p.b[3] = 0.0f;
+			vk_begin_render_pass( rp.postPass, rp.postFb[next], qfalse, glConfig.vidWidth, glConfig.vidHeight );
+			RP_Quad3( rp.waterPipe, src, rp.distSet, rp.waterSet, &p, sizeof( p ), &r );
+			vk_end_render_pass();
+			src = rp.postSet[next];
+			next ^= 1;
+		}
+
+		for ( int w = 0; w < numWet; w++ ) {
+			struct {
+				float rect[4];
+				float a[4];
+				float cam[3][4];
+				float mins[4];
+				float maxs[4];
+			} p;
+
+			RP_RectVec( &r, p.rect );
+			RP_TanHalf( p.a );
+			p.a[2] = wetness[w];
+			p.a[3] = backEnd.viewParms.zFar;
+			Com_Memcpy( p.cam, cam, sizeof( p.cam ) );
+			VectorCopy( wetMins[w], p.mins );
+			p.mins[3] = seconds;
+			VectorCopy( wetMaxs[w], p.maxs );
+			p.maxs[3] = r_wetStrength->value;
+			RP_NEXT( rp.wetPipe, rp.distSet, p );
+		}
+	}
+
+	if ( haze ) {
+		// six sources a pass, over what's there
+		for ( int first = 0; first < rp.numHaze; first += 6 ) {
+			struct {
+				float rect[4];
+				float a[4];
+				float src[6][4];
+			} p;
+			const int count = MIN( 6, rp.numHaze - first );
+
+			Com_Memset( &p, 0, sizeof( p ) );
+			RP_RectVec( &r, p.rect );
+			p.a[0] = backEnd.refdef.time * 0.001f;
+			p.a[1] = r_heatHazeStrength->value * glConfig.vidHeight / 480.0f;
+			p.a[2] = (float)count;
+			for ( int k = 0; k < count; k++ )
+				Vector4Copy( rp.haze[first + k], p.src[k] );
+			RP_NEXT( rp.hazePipe, rp.distSet, p );
+		}
 	}
 
 	if ( motion ) {
@@ -1986,6 +2457,23 @@ void vk_rpmod_post( void ) {
 		RP_NEXT( rp.filterPipe, VK_NULL_HANDLE, p );
 	}
 
+	if ( smaa ) {
+		// the edges, how much each takes from its neighbours, then the view blended by that
+		struct {
+			float metrics[4];
+		} p;
+
+		p.metrics[0] = 1.0f / glConfig.vidWidth;
+		p.metrics[1] = 1.0f / glConfig.vidHeight;
+		p.metrics[2] = (float)glConfig.vidWidth;
+		p.metrics[3] = (float)glConfig.vidHeight;
+		RP_Pass( rp.smaaPass, rp.smaaFb[0], rp.smaaPipe[0], src, VK_NULL_HANDLE, &p, sizeof( p ), &r );
+		vk_begin_render_pass( rp.smaaPass, rp.smaaFb[1], qfalse, glConfig.vidWidth, glConfig.vidHeight );
+		RP_Quad3( rp.smaaPipe[1], rp.smaaSet[0], rp.smaaTableSet[0], rp.smaaTableSet[1], &p, sizeof( p ), &r );
+		vk_end_render_pass();
+		RP_NEXT( rp.smaaPipe[2], rp.smaaSet[1], p );
+	}
+
 	if ( fxaa ) {
 		struct {
 			float rect[4];
@@ -2013,4 +2501,50 @@ void vk_rpmod_post( void ) {
 	RP_Resume();
 	RP_Quad( rp.copyPipe, src, VK_NULL_HANDLE, NULL, 0, &r );
 	RP_Restore();
+}
+
+/*
+===============
+vk_rpmod_fsr
+
+At the frame's end, before the gamma pass: with FSR, the finished picture (its 2D too) scaled up to
+the window and sharpened; the image set the gamma pass shows, the picture's own without it
+===============
+*/
+// the picture FSR made, for screenshots: the window's size, as it's seen; NULL without FSR
+VkImage vk_rpmod_fsr_image( uint32_t *width, uint32_t *height ) {
+	if ( !rp.ready || rp.fsrFb[1] == VK_NULL_HANDLE || !r_fsr->integer )
+		return VK_NULL_HANDLE;
+	*width = gls.windowWidth;
+	*height = gls.windowHeight;
+	return rp.fsrImage[1];
+}
+
+VkDescriptorSet vk_rpmod_fsr( void ) {
+	struct {
+		float a[4];
+		float b[4];
+	} p;
+	VkRect2D r;
+
+	if ( !rp.ready || !rp.setsAllocated || rp.fsrFb[0] == VK_NULL_HANDLE || rp.fsrPipe[0] == VK_NULL_HANDLE || !r_fsr->integer )
+		return vk.color_descriptor;
+
+	p.a[0] = p.a[2] = (float)glConfig.vidWidth;
+	p.a[1] = p.a[3] = (float)glConfig.vidHeight;
+	p.b[0] = (float)gls.windowWidth;
+	p.b[1] = (float)gls.windowHeight;
+	p.b[2] = 0.2f;		// AMD's suggested sharpening, in stops from the most
+	p.b[3] = 0.0f;
+	r.offset.x = r.offset.y = 0;
+	r.extent.width = gls.windowWidth;
+	r.extent.height = gls.windowHeight;
+
+	vk_begin_render_pass( rp.postPass, rp.fsrFb[0], qfalse, gls.windowWidth, gls.windowHeight );
+	RP_Quad( rp.fsrPipe[0], rp.sceneSet, VK_NULL_HANDLE, &p, sizeof( p ), &r );
+	vk_end_render_pass();
+	vk_begin_render_pass( rp.postPass, rp.fsrFb[1], qfalse, gls.windowWidth, gls.windowHeight );
+	RP_Quad( rp.fsrPipe[1], rp.fsrSet[0], VK_NULL_HANDLE, &p, sizeof( p ), &r );
+	vk_end_render_pass();
+	return rp.fsrSet[1];
 }

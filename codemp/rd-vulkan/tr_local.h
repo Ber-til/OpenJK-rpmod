@@ -1985,6 +1985,7 @@ extern cvar_t	*r_defaultImage;
 extern cvar_t	*r_device;
 extern cvar_t	*r_ext_multisample;
 extern cvar_t	*r_ext_supersample;
+extern cvar_t	*r_fsr;					// OpenJK-rpmod: FSR 1 upscaling, 1-4 (vk_rpmod_post.cpp)
 // OpenJK-rpmod: TaystJK's own supersampling (a capture image the window's size, the rest twice that)
 // stays off: it lost the graphics device, then drew nothing. r_ext_supersample renders at twice the
 // size the way r_renderScale does instead, scaled down by the gamma pass (vk_init.cpp)
@@ -2340,7 +2341,8 @@ void RE_SetSkyPortal( const vec3_t origin );										// OpenJK-rpmod
 void RE_SetDepthOfField( float focus, float range, float blur );					// OpenJK-rpmod
 void RE_SetScreenFilter( const screenFilter_t *filter );							// OpenJK-rpmod
 int vk_rpmod_split( const drawSurf_t *drawSurfs, int numDrawSurfs );				// OpenJK-rpmod
-void vk_rpmod_after_opaque( drawSurf_t *drawSurfs, int numDrawSurfs );			// OpenJK-rpmod
+void vk_rpmod_after_opaque( drawSurf_t *drawSurfs, int numDrawSurfs, int numAll );
+int R_WetZones( vec3_t *mins, vec3_t *maxs, float *wetness, int max );					// OpenJK-rpmod: the rain boxes' wet ground (tr_WorldEffects.cpp)			// OpenJK-rpmod
 int RE_ForgetMissing( const char **shaderFiles, int numShaderFiles );				// OpenJK-rpmod: loadpk3
 int R_ForgetBadSkins( void );														// OpenJK-rpmod: loadpk3
 // OpenJK-rpmod: the map editor's fog

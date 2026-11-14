@@ -6,6 +6,12 @@ OpenJK-rpmod is built on [OpenJK](https://github.com/JACoders/OpenJK); for the c
 
 ## 0.10.2 - unreleased
 
+- [Added] `Vulkan: SMAA`. `r_smaa 1` (or **SMAA** on Setup's RENDERER page, its new third page) smooths edges over the finished picture: sharper than FXAA, without its blur, and far cheaper than anti-aliasing at high resolutions.
+- [Added] `Vulkan: FSR upscaling`. `r_fsr` 1 to 4 (**FSR Upscaling**: Ultra Quality, Quality, Balanced, Performance) draws the picture at 77% down to 50% of the window and scales it up with AMD's FidelityFX Super Resolution 1, edges kept sharp: more frames a second on weaker graphics cards or big screens. Screenshots are the upscaled picture.
+- [Added] `Vulkan: water`. `r_water 1` (**Water**): the map's water ripples, bends and darkens what's under it with its depth, and mirrors the view along its rippled surface, more at a glancing look (`r_waterStrength`, `r_waterRipples`).
+- [Added] `Vulkan: wet surfaces under rain`. `r_wetSurfaces 1` (**Wet Surfaces**): under the map editor's rain the ground soaks dark, shines and gathers puddles that mirror the view, rings from the drops on them, and dries after the rain stops (`r_wetStrength`).
+- [Added] `Vulkan: heat haze`. `r_heatHaze 1` (**Heat Haze**): the air shimmers over fire, flames, explosions, thrusters and lava, what's behind them wavering (`r_heatHazeStrength`).
+- [Changed] `Renderer page: a third page`. Setup's RENDERER page has a third page (More Settings > on the second) with motion blur and the new effects.
 - [Fixed] `Vulkan: 16-bit textures`. With `r_texturebits 16` (Texture Quality 16 bit, or the Fastest preset, often left from the OpenGL renderer), switching to Vulkan closed the game at once, with no message: the textures' data was laid out at half its size and read past its end. They load now, at 16 bits.
 
 ## 0.10.1 - Nov 14th 2026

@@ -67,7 +67,7 @@ static void vk_set_render_scale( void )
 		vk.windowAdjusted = qtrue;
 	}
 
-	if (r_fbo->integer && r_ext_supersample->integer && !r_renderScale->integer) // OpenJK-rpmod: supersampling, as above
+	if (r_fbo->integer && ( r_ext_supersample->integer || r_fsr->integer ) && !r_renderScale->integer) // OpenJK-rpmod: supersampling, FSR, as above
 	{
 		vk.blitFilter = GL_LINEAR;
 	}
@@ -353,6 +353,15 @@ void vk_create_window( void ) {
 			else if ( r_ext_supersample->integer ) {
 				glConfig.vidWidth *= 2;
 				glConfig.vidHeight *= 2;
+			}
+			// OpenJK-rpmod: FSR upscaling: drawn smaller, by its quality's share of the window, and
+			// scaled up by vk_rpmod_fsr before the gamma pass
+			else if ( r_fsr->integer ) {
+				static const float shares[5] = { 1.0f, 1.0f / 1.3f, 1.0f / 1.5f, 1.0f / 1.7f, 1.0f / 2.0f };
+				const float share = shares[Com_Clampi( 0, 4, r_fsr->integer )];
+
+				glConfig.vidWidth = MAX( 320, (int)( glConfig.vidWidth * share + 0.5f ) & ~1 );
+				glConfig.vidHeight = MAX( 240, (int)( glConfig.vidHeight * share + 0.5f ) & ~1 );
 			}
 
 			gls.captureWidth = glConfig.vidWidth;

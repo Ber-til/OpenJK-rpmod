@@ -187,6 +187,7 @@ cvar_t	*r_device;
 //cvar_t	*r_stencilbits;
 cvar_t	*r_ext_multisample;
 cvar_t	*r_ext_supersample;
+cvar_t	*r_fsr;		// OpenJK-rpmod: FSR 1 upscaling (vk_rpmod_post.cpp)
 cvar_t	*r_ext_alpha_to_coverage;
 cvar_t	*r_fbo;
 cvar_t	*r_hdr;
@@ -921,6 +922,8 @@ void R_Register( void )
 	ri.Cvar_CheckRange(r_ext_multisample, 0, 64, qtrue);
 	r_ext_supersample					= ri.Cvar_Get("r_ext_supersample",					"0",						CVAR_ARCHIVE_ND | CVAR_LATCH, "Supersampling: the picture drawn at twice the width and height, then scaled down to the window. Smooths every edge; costs about four times the drawing\nRequires " S_COLOR_CYAN "\\r_fbo 1"); // OpenJK-rpmod: described
 	ri.Cvar_CheckRange(r_ext_supersample, 0, 1, qtrue);
+	r_fsr								= ri.Cvar_Get("r_fsr",								"0",						CVAR_ARCHIVE_ND | CVAR_LATCH, "FSR upscaling: the picture drawn at a lower resolution and scaled up to the window sharply (AMD FidelityFX Super Resolution 1), for more frames a second. 1 Ultra Quality (77%), 2 Quality (67%), 3 Balanced (59%), 4 Performance (50%); not with supersampling\nRequires " S_COLOR_CYAN "\\r_fbo 1"); // OpenJK-rpmod
+	ri.Cvar_CheckRange(r_fsr, 0, 4, qtrue);
 	r_ext_alpha_to_coverage				= ri.Cvar_Get("r_ext_alpha_to_coverage",			"0",						CVAR_ARCHIVE_ND | CVAR_LATCH, "");
 	ri.Cvar_CheckRange(r_ext_alpha_to_coverage, 0, 1, qtrue);
 	r_fbo								= ri.Cvar_Get("r_fbo",								"0",						CVAR_ARCHIVE_ND | CVAR_LATCH, "");
