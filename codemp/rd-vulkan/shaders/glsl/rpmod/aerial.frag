@@ -53,7 +53,11 @@ vec2 Pixel( vec3 P )
 	return pc.rect.xy + ( ndc * 0.5 + 0.5 ) * ( pc.rect.zw - pc.rect.xy );
 }
 
-// whether the way from P toward the sun is open as far as the screen shows: false under a roof
+// whether the way from P toward the sun is open as far as the screen shows: false under a roof. Only
+// what's well above counts (a roof, an awning): a person, a crate, a lamp post standing near would cut
+// their shape out of the cloud shadows, a bright patch beside them under thick clouds
+const float ROOF_MIN = 160.0;
+
 bool SunOpen( vec3 P, vec3 sunCam )
 {
 	vec3 Q = P + sunCam * 4.0;
@@ -70,7 +74,7 @@ bool SunOpen( vec3 P, vec3 sunCam )
 		const float d = Dist( s );
 		if ( d >= pc.a.z * 0.99 )
 			continue;			// sky there
-		if ( Q.z > d + 4.0 && Q.z < d + max( 64.0, stepLen * 2.0 ) )
+		if ( Q.z > d + 4.0 && Q.z < d + max( 64.0, stepLen * 2.0 ) && length( Q - P ) > ROOF_MIN )
 			return false;
 	}
 	return true;

@@ -1846,8 +1846,9 @@ static qboolean RP_WaterMask( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 		R_DecomposeSort( drawSurfs[i].sort, &entityNum, &shader, &fogNum, &dlighted );
 		if ( shader->useDistortion || !RP_Water( shader ) )
 			continue;
-		if ( entityNum != REFENTITYNUM_WORLD
-			&& ( backEnd.refdef.entities[entityNum].e.renderfx & ( RF_FIRST_PERSON | RF_DEPTHHACK | RF_DISTORTION ) ) )
+		// the map's own water only: not a decal, an effect's polygons or a model whose shader is water
+		// (a splash or puddle laid on the floor took the water's look, the sky mirrored in it)
+		if ( entityNum != REFENTITYNUM_WORLD || shader->polygonOffset || *drawSurfs[i].surface == SF_POLY )
 			continue;
 		water[n++] = drawSurfs[i];
 	}
