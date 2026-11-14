@@ -284,7 +284,7 @@ void CL_SkyComposer_AddToScene( const refdef_t *fd ) {
 		VectorCopy( fd->vieworg, ent.origin );
 		VectorCopy( fd->vieworg, ent.oldorigin );
 		VectorCopy( fd->vieworg, ent.lightingOrigin );
-		ent.renderfx = RF_SKYMODEL | RF_NOSHADOW | RF_LIGHTING_ORIGIN | RF_MINLIGHT;
+		ent.renderfx = RF_SKYMODEL | RF_NOSHADOW | RF_LIGHTING_ORIGIN;
 		ent.shaderRGBA[0] = ent.shaderRGBA[1] = ent.shaderRGBA[2] = ent.shaderRGBA[3] = 255;
 		re->AddRefEntityToScene( &ent );
 	}

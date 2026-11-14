@@ -2342,6 +2342,7 @@ void RE_SetDepthOfField( float focus, float range, float blur );					// OpenJK-r
 void RE_SetScreenFilter( const screenFilter_t *filter );							// OpenJK-rpmod
 int vk_rpmod_split( const drawSurf_t *drawSurfs, int numDrawSurfs );				// OpenJK-rpmod
 void vk_rpmod_after_opaque( drawSurf_t *drawSurfs, int numDrawSurfs, int numAll );
+qboolean vk_rpmod_sky_sun( vec3_t dir, vec3_t color );	// OpenJK-rpmod: the sky composer's sun, else the map's (vk_rpmod_post.cpp)
 int R_WetZones( vec3_t *mins, vec3_t *maxs, float *wetness, int max );					// OpenJK-rpmod: the rain boxes' wet ground (tr_WorldEffects.cpp)			// OpenJK-rpmod
 int RE_ForgetMissing( const char **shaderFiles, int numShaderFiles );				// OpenJK-rpmod: loadpk3
 int R_ForgetBadSkins( void );														// OpenJK-rpmod: loadpk3

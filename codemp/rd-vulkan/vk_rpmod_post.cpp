@@ -1460,6 +1460,10 @@ static qboolean RP_LightSun( vec3_t dir, vec3_t color ) {
 	return (qboolean)( MAX( color[0], MAX( color[1], color[2] ) ) > 0.0f );
 }
 
+qboolean vk_rpmod_sky_sun( vec3_t dir, vec3_t color ) {
+	return RP_LightSun( dir, color );
+}
+
 static qboolean RP_Sun( const VkRect2D *r, float *pos, float *color ) {
 	const float *axis0 = backEnd.viewParms.ori.axis[0], *axis1 = backEnd.viewParms.ori.axis[1], *axis2 = backEnd.viewParms.ori.axis[2];
 	vec3_t sunDir, sunLight;
