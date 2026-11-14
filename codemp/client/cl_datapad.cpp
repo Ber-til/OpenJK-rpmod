@@ -42,6 +42,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #include "client.h"
 #include "cl_datapad.h"
 #include "cl_widgets.h"
+#include "cl_games.h"
 
 #define DP_CMD			"datapad"
 #define DP_OPEN_CMD		DP_CMD " open"
@@ -78,11 +79,14 @@ typedef enum {
 	DP_COMPORT,
 	DP_NOTES,
 	DP_CHAT,
+	DP_GAMES,		// a folder: Pazaak, WANGA and The Path
+	DP_WANGA,
+	DP_PATH,
 	DP_NUM_APPS
 } dpApp_t;
 
 // an app that needs the room has the datapad bigger while it's on its screen
-static const qboolean dpAppFull[DP_NUM_APPS] = { qfalse, qfalse, qtrue, qtrue, qtrue, qtrue, qtrue };
+static const qboolean dpAppFull[DP_NUM_APPS] = { qfalse, qfalse, qtrue, qtrue, qtrue, qtrue, qtrue, qfalse, qtrue, qtrue };
 
 // the apps in files of their own: what each is told and given
 static void DP_AppShown( dpApp_t app, qboolean shown ) {
@@ -96,6 +100,10 @@ static void DP_AppShown( dpApp_t app, qboolean shown ) {
 		CL_Notes_Shown( shown );
 	else if ( app == DP_CHAT )
 		CL_Chat_Shown( shown );
+	else if ( app == DP_WANGA )
+		CL_Games_Shown( GM_WANGA, shown );
+	else if ( app == DP_PATH )
+		CL_Games_Shown( GM_PATH, shown );
 }
 
 typedef enum {
@@ -835,6 +843,68 @@ static void DP_ChatPicture( float x, float y, float w, float h ) {
 		DP_Fill( x + w * ( 0.3f + 0.15f * i ), y + h * 0.4f, w * 0.09f, h * 0.09f, dpButton );
 }
 
+// the Games folder's picture: a die, a card and a board's squares
+static void DP_GamesPicture( float x, float y, float w, float h ) {
+	const float red[4] = { 0.85f, 0.30f, 0.28f, 1.0f };
+
+	DP_Fill( x + w * 0.16f, y + h * 0.2f, w * 0.3f, h * 0.44f, red );
+	DP_Frame( x + w * 0.16f, y + h * 0.2f, w * 0.3f, h * 0.44f, dpWhite );
+	for ( int r = 0; r < 3; r++ ) {
+		for ( int c = 0; c < 3; c++ )
+			DP_Fill( x + w * ( 0.52f + 0.1f * c ), y + h * ( 0.36f + 0.1f * r ), w * 0.08f, h * 0.08f, ( r + c ) & 1 ? dpText : dpWhite );
+	}
+}
+
+// WANGA's picture: four syndicates' cards, fanned
+static void DP_WangaPicture( float x, float y, float w, float h ) {
+	static const float colors[4][4] = { { 0.78f, 0.13f, 0.14f, 1.0f }, { 0.20f, 0.42f, 0.88f, 1.0f }, { 0.16f, 0.58f, 0.30f, 1.0f }, { 0.86f, 0.66f, 0.12f, 1.0f } };
+
+	for ( int i = 0; i < 4; i++ ) {
+		DP_Fill( x + w * ( 0.16f + 0.14f * i ), y + h * ( 0.2f + 0.04f * i ), w * 0.28f, h * 0.5f, colors[i] );
+		DP_Frame( x + w * ( 0.16f + 0.14f * i ), y + h * ( 0.2f + 0.04f * i ), w * 0.28f, h * 0.5f, dpWhite );
+	}
+}
+
+// The Path's picture: a board's squares, a Master and a Padawan on it
+static void DP_PathPicture( float x, float y, float w, float h ) {
+	for ( int r = 0; r < 4; r++ ) {
+		for ( int c = 0; c < 4; c++ )
+			DP_Frame( x + w * ( 0.18f + 0.16f * c ), y + h * ( 0.18f + 0.16f * r ), w * 0.15f, h * 0.15f, dpText );
+	}
+	DP_Fill( x + w * 0.37f, y + h * 0.69f, w * 0.1f, h * 0.1f, dpWhite );
+	DP_Fill( x + w * 0.53f, y + h * 0.21f, w * 0.1f, h * 0.1f, dpWhite );
+}
+
+// the Games folder: its games, three to a row, as the home screen has its apps
+static void DP_DrawGames( const dpRect_t *s ) {
+	const float size = 34.0f;
+	const float x = s->x + DP_Wide( 10 ), y = s->y + DP_STATUS_H + 26;
+	static const struct {
+		dpApp_t		app;
+		const char	*name;
+		void		( *picture )( float, float, float, float );
+	} games[] = {
+		{ DP_PAZAAK,	"Pazaak",	DP_PazaakPicture },
+		{ DP_WANGA,		"WANGA",	DP_WangaPicture },
+		{ DP_PATH,		"The Path",	DP_PathPicture },
+	};
+
+	if ( DP_Button( s->x + DP_Wide( 6 ), s->y + DP_STATUS_H + 4, DP_Wide( 50 ), "< Home", qfalse ) ) {
+		DP_SetApp( DP_HOME );
+		return;
+	}
+	DP_Text( s->x + DP_Wide( 62 ), s->y + DP_STATUS_H + 4, s->w, "Games", dpText, dp.titleFont, 0.5f, qfalse );
+	for ( int i = 0; i < (int)ARRAY_LEN( games ); i++ ) {
+		if ( DP_AppIcon( x + DP_Wide( size + 16 ) * ( i % 3 ), y + ( size + 26 ) * ( i / 3 ), size, games[i].name, games[i].picture ) )
+			DP_SetApp( games[i].app );
+	}
+}
+
+// back to the Games folder: a game's own Back
+void CL_Datapad_ToGames( void ) {
+	DP_SetApp( DP_GAMES );
+}
+
 static void DP_DrawHome( const dpRect_t *s ) {
 	const float size = 34.0f;
 	const float x = s->x + DP_Wide( 10 ), y = s->y + DP_STATUS_H + 10;
@@ -847,7 +917,7 @@ static void DP_DrawHome( const dpRect_t *s ) {
 	} apps[] = {
 		{ DP_HOLONET,	"HoloNet",	DP_HoloNetPicture },
 		{ DP_COMPORT,	"Comport",	DP_ComportPicture },
-		{ DP_PAZAAK,	"Pazaak",	DP_PazaakPicture },
+		{ DP_GAMES,		"Games",	DP_GamesPicture },
 		{ DP_NOTES,		"Notes",	DP_NotesPicture },
 		{ DP_CHAT,		"Chat",		DP_ChatPicture },
 		{ DP_SETTINGS,	"Settings",	DP_SettingsPicture },
@@ -955,11 +1025,17 @@ static void DP_DrawApps( const dpRect_t *s ) {
 			CL_Notes_Draw( s );
 		else if ( dp.app == DP_CHAT )
 			CL_Chat_Draw( s );
+		else if ( dp.app == DP_WANGA )
+			CL_Games_Draw( GM_WANGA, s );
+		else if ( dp.app == DP_PATH )
+			CL_Games_Draw( GM_PATH, s );
 		return;
 	}
 	if ( t >= 1.0f || dp.app == dp.appFrom ) {
 		if ( dp.app == DP_SETTINGS )
 			DP_DrawSettings( s );
+		else if ( dp.app == DP_GAMES )
+			DP_DrawGames( s );
 		else
 			DP_DrawHome( s );
 		return;
@@ -967,18 +1043,24 @@ static void DP_DrawApps( const dpRect_t *s ) {
 	// on its way: drawn where it is, nothing clickable meanwhile
 	dp.click = qfalse;
 	in = out = *s;
-	if ( dp.app == DP_SETTINGS ) {
+	if ( dp.app == DP_SETTINGS || dp.app == DP_GAMES ) {
 		in.x = s->x + s->w * ( 1.0f - t );
 		out.x = s->x - s->w * 0.3f * t;
 		DP_DrawHome( &out );
 		DP_Fill( in.x, s->y + DP_STATUS_H, s->x + s->w - in.x, s->h - DP_STATUS_H, dpScreen );
-		DP_DrawSettings( &in );
+		if ( dp.app == DP_GAMES )
+			DP_DrawGames( &in );
+		else
+			DP_DrawSettings( &in );
 	} else {
 		out.x = s->x + s->w * t;
 		in.x = s->x - s->w * 0.3f * ( 1.0f - t );
 		DP_DrawHome( &in );
 		DP_Fill( out.x, s->y + DP_STATUS_H, s->x + s->w - out.x, s->h - DP_STATUS_H, dpScreen );
-		DP_DrawSettings( &out );
+		if ( dp.appFrom == DP_GAMES )
+			DP_DrawGames( &out );
+		else
+			DP_DrawSettings( &out );
 	}
 }
 
@@ -1067,7 +1149,8 @@ void CL_Datapad_KeyEvent( int key, qboolean down ) {
 	}
 	if ( ( dp.app == DP_PAZAAK && CL_Pazaak_Key( key ) ) || ( dp.app == DP_HOLONET && CL_HoloNet_Key( key ) )
 		|| ( dp.app == DP_COMPORT && CL_Comport_Key( key ) ) || ( dp.app == DP_NOTES && CL_Notes_Key( key ) )
-		|| ( dp.app == DP_CHAT && CL_Chat_Key( key ) ) )
+		|| ( dp.app == DP_CHAT && CL_Chat_Key( key ) ) || ( dp.app == DP_WANGA && CL_Games_Key( GM_WANGA, key ) )
+		|| ( dp.app == DP_PATH && CL_Games_Key( GM_PATH, key ) ) )
 		return;
 	// its keys work while it's open, as they do in the game
 	binding = Key_GetBinding( key );
@@ -1084,6 +1167,10 @@ void CL_Datapad_CharEvent( int ch ) {
 		CL_Notes_Char( ch );
 	else if ( dp.state == DP_OPEN && dp.app == DP_CHAT )
 		CL_Chat_Char( ch );
+	else if ( dp.state == DP_OPEN && dp.app == DP_WANGA )
+		CL_Games_Char( GM_WANGA, ch );
+	else if ( dp.state == DP_OPEN && dp.app == DP_PATH )
+		CL_Games_Char( GM_PATH, ch );
 }
 
 void CL_Datapad_MouseEvent( int dx, int dy ) {
@@ -1136,13 +1223,15 @@ static void DP_Datapad_f( void ) {
 	} else if ( !Q_stricmp( arg, "open" ) ) {
 		DP_Set( DP_OPEN );
 	} else if ( !Q_stricmp( arg, "settings" ) || !Q_stricmp( arg, "pazaak" ) || !Q_stricmp( arg, "holonet" ) || !Q_stricmp( arg, "comport" )
-		|| !Q_stricmp( arg, "notes" ) || !Q_stricmp( arg, "chat" ) ) {
+		|| !Q_stricmp( arg, "notes" ) || !Q_stricmp( arg, "chat" ) || !Q_stricmp( arg, "games" ) || !Q_stricmp( arg, "wanga" )
+		|| !Q_stricmp( arg, "path" ) ) {
 		// yours, not a datapad item's
 		if ( dp.state == DP_OPEN && dp.itemMode )
 			DP_Set( DP_CLOSED );
 		DP_Set( DP_OPEN );
 		if ( dp.state == DP_OPEN )
-			DP_SetApp( !Q_stricmp( arg, "pazaak" ) ? DP_PAZAAK : !Q_stricmp( arg, "holonet" ) ? DP_HOLONET
+			DP_SetApp( !Q_stricmp( arg, "pazaak" ) ? DP_PAZAAK : !Q_stricmp( arg, "games" ) ? DP_GAMES : !Q_stricmp( arg, "wanga" ) ? DP_WANGA
+				: !Q_stricmp( arg, "path" ) ? DP_PATH : !Q_stricmp( arg, "holonet" ) ? DP_HOLONET
 				: !Q_stricmp( arg, "comport" ) ? DP_COMPORT : !Q_stricmp( arg, "notes" ) ? DP_NOTES : !Q_stricmp( arg, "chat" ) ? DP_CHAT : DP_SETTINGS );
 		// straight to an article, or a forum
 		if ( dp.state == DP_OPEN && Cmd_Argc() > 2 ) {
@@ -1174,7 +1263,7 @@ static void DP_Datapad_f( void ) {
 		Com_Printf( "usage: " DP_CMD "                opens the datapad, or puts it away\n" );
 		Com_Printf( "       " DP_CMD " open|close\n" );
 		Com_Printf( "       " DP_CMD " settings       open on its Settings\n" );
-		Com_Printf( "       " DP_CMD " pazaak|holonet|comport|notes|chat   open on that app\n" );
+		Com_Printf( "       " DP_CMD " games|pazaak|wanga|path|holonet|comport|notes|chat   open on that app\n" );
 		Com_Printf( "       " DP_CMD " chat <account>   the conversation with that account's main character\n" );
 		Com_Printf( "       " DP_CMD " chat group <id>   that group chat\n" );
 		Com_Printf( "       (things in the world, datapads too: /world)\n" );
@@ -1192,6 +1281,7 @@ void CL_Datapad_Init( void ) {
 	cl_datapadHand = Cvar_Get( "cl_datapadHand", "1", CVAR_ARCHIVE_ND, "A datapad model shows in your character's hand during the datapad emote (/emlift), seen by everyone with the client" );
 	Cmd_AddCommand( DP_CMD, DP_Datapad_f, "The datapad: open like a phone, folded in the corner, or put away" );
 	CL_Pazaak_Init();
+	CL_Games_Init();
 	CL_Comport_Init();
 	CL_Chat_Init();
 }

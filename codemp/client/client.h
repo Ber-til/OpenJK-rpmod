@@ -1119,6 +1119,7 @@ void CL_Datapad_KeyEvent( int key, qboolean down );
 void CL_Datapad_MouseEvent( int dx, int dy );
 void CL_Datapad_CharEvent( int ch );
 void CL_Pazaak_Frame( void );		// cl_pazaak.cpp
+void CL_Games_Frame( void );		// cl_games.cpp: WANGA, The Path
 void CL_Datapad_OpenItem( int item, const char *name, int world );	// a datapad item's (or a placed one's) Notes
 void CL_Notes_Frame( void );		// cl_notes.cpp
 void CL_RealShadows_Frame( void );	// cl_rendermenu.cpp: Vulkan's real shadows in place of the blob

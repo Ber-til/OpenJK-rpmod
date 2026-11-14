@@ -2422,6 +2422,7 @@ void CL_Frame ( int msec ) {
 	CL_Presence_Frame();
 	CL_EffectSwap_Frame();
 	CL_Pazaak_Frame();
+	CL_Games_Frame();
 	CL_Notes_Frame();
 	CL_Chat_Frame();
 	CL_RealShadows_Frame();
