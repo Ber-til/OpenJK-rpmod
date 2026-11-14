@@ -139,6 +139,14 @@ static struct {
 	VkFramebuffer		fsrFb[2];
 	VkDescriptorSet		fsrSet[2];
 	VkPipeline			fsrPipe[2];
+	// and the rest of the frame after the last world view (the HUD, the console, the menus and their
+	// models) drawn into the sharpened picture at the window's size: its depth, render pass, framebuffer
+	VkImage				fsrDepth;
+	VkImageView			fsrDepthView;
+	VkDeviceMemory		fsrDepthMemory;
+	VkRenderPass		fsrWindowPass;
+	VkFramebuffer		fsrWindowFb;
+	qboolean			fsrWindow;		// this frame's switched to it
 
 	// water: the water surfaces' depth alone, from the camera, the window's size (drawn with the shadow
 	// map's render pass, as the shiny surfaces are)
@@ -853,6 +861,11 @@ void vk_rpmod_create_attachments( void ) {
 	if ( r_fsr->integer && !r_renderScale->integer && ( glConfig.vidWidth != gls.windowWidth || glConfig.vidHeight != gls.windowHeight ) ) {
 		RP_CreateImageSized( vk.color_format, gls.windowWidth, gls.windowHeight, &rp.fsrImage[0], &rp.fsrView[0], &rp.fsrMemory[0], "rpmod fsr upscaled" );
 		RP_CreateImageSized( vk.color_format, gls.windowWidth, gls.windowHeight, &rp.fsrImage[1], &rp.fsrView[1], &rp.fsrMemory[1], "rpmod fsr sharpened" );
+		// the 2D after it at the window's size: not with MSAA (its own multisampled image would be needed)
+		if ( !vk.msaaActive )
+			RP_CreateShadowImage( vk.depth_format, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+				VK_IMAGE_ASPECT_DEPTH_BIT | ( glConfig.stencilBits > 0 ? VK_IMAGE_ASPECT_STENCIL_BIT : 0 ),
+				&rp.fsrDepth, &rp.fsrDepthView, &rp.fsrDepthMemory, "rpmod fsr window depth", gls.windowWidth, gls.windowHeight );
 	}
 	rp.shadowFormat = RP_ShadowFormat();
 	if ( rp.shadowFormat != VK_FORMAT_UNDEFINED ) {
@@ -916,6 +929,7 @@ void vk_rpmod_destroy_attachments( void ) {
 		RP_DestroyImage( &rp.smaaTable[i], &rp.smaaTableView[i], &rp.smaaTableMemory[i] );
 		RP_DestroyImage( &rp.fsrImage[i], &rp.fsrView[i], &rp.fsrMemory[i] );
 	}
+	RP_DestroyImage( &rp.fsrDepth, &rp.fsrDepthView, &rp.fsrDepthMemory );
 	RP_DestroyImage( &rp.shadowImage, &rp.shadowView, &rp.shadowMemory );
 	RP_DestroyImage( &rp.shadowColor, &rp.shadowColorView, &rp.shadowColorMemory );
 	RP_DestroyImage( &rp.maskImage, &rp.maskView, &rp.maskMemory );
@@ -1038,6 +1052,69 @@ static VkRenderPass RP_CreateShadowPass( void ) {
 	return pass;
 }
 
+// FSR's window: the sharpened picture kept and drawn over at the window's size, a depth of its own
+// cleared; like the view's own render pass (its colour and depth formats), so its pipelines draw in it
+static VkRenderPass RP_CreateFsrWindowPass( void ) {
+	VkAttachmentDescription att[2];
+	VkAttachmentReference color, depth;
+	VkSubpassDescription sub;
+	VkSubpassDependency deps[3];
+	VkRenderPassCreateInfo desc;
+	VkRenderPass pass;
+
+	Com_Memset( att, 0, sizeof( att ) );
+	att[0].format = vk.color_format;
+	att[0].samples = VK_SAMPLE_COUNT_1_BIT;
+	att[0].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+	att[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+	att[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+	att[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	att[0].initialLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	att[0].finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+	att[1].format = vk.depth_format;
+	att[1].samples = VK_SAMPLE_COUNT_1_BIT;
+	att[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+	att[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	att[1].stencilLoadOp = glConfig.stencilBits > 0 ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+	att[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	att[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	att[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+	color.attachment = 0;
+	color.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	depth.attachment = 1;
+	depth.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+	Com_Memset( &sub, 0, sizeof( sub ) );
+	sub.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+	sub.colorAttachmentCount = 1;
+	sub.pColorAttachments = &color;
+	sub.pDepthStencilAttachment = &depth;
+
+	deps[0] = vk.render_pass.subpass_deps.shader_to_color;
+	deps[1] = vk.render_pass.subpass_deps.color_to_shader;
+	// the depth, after the last frame's use of it
+	Com_Memset( &deps[2], 0, sizeof( deps[2] ) );
+	deps[2].srcSubpass = VK_SUBPASS_EXTERNAL;
+	deps[2].dstSubpass = 0;
+	deps[2].srcStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+	deps[2].dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+	deps[2].srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+	deps[2].dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+	Com_Memset( &desc, 0, sizeof( desc ) );
+	desc.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+	desc.attachmentCount = 2;
+	desc.pAttachments = att;
+	desc.subpassCount = 1;
+	desc.pSubpasses = &sub;
+	desc.dependencyCount = ARRAY_LEN( deps );
+	desc.pDependencies = deps;
+	VK_CHECK( qvkCreateRenderPass( vk.device, &desc, NULL, &pass ) );
+	VK_SET_OBJECT_NAME( pass, "render pass - rpmod fsr window", VK_DEBUG_REPORT_OBJECT_TYPE_RENDER_PASS_EXT );
+	return pass;
+}
+
 void vk_rpmod_create_render_passes( void ) {
 	if ( !vk.fboActive || rp.postImage[0] == VK_NULL_HANDLE )
 		return;
@@ -1047,10 +1124,12 @@ void vk_rpmod_create_render_passes( void ) {
 	rp.distPass = RP_CreatePass( VK_FORMAT_R32_SFLOAT, "render pass - rpmod distance" );
 	rp.aoPass = RP_CreatePass( VK_FORMAT_R8_UNORM, "render pass - rpmod ambient occlusion" );
 	rp.smaaPass = RP_CreatePass( VK_FORMAT_R8G8B8A8_UNORM, "render pass - rpmod smaa" );
+	if ( rp.fsrDepth != VK_NULL_HANDLE )
+		rp.fsrWindowPass = RP_CreateFsrWindowPass();
 }
 
 void vk_rpmod_destroy_render_passes( void ) {
-	VkRenderPass *passes[] = { &rp.postPass, &rp.distPass, &rp.aoPass, &rp.shadowPass, &rp.smaaPass };
+	VkRenderPass *passes[] = { &rp.postPass, &rp.distPass, &rp.aoPass, &rp.shadowPass, &rp.smaaPass, &rp.fsrWindowPass };
 
 	rp.ready = qfalse;
 	for ( size_t i = 0; i < ARRAY_LEN( passes ); i++ ) {
@@ -1095,6 +1174,21 @@ void vk_rpmod_create_framebuffers( void ) {
 	if ( rp.fsrView[0] != VK_NULL_HANDLE ) {
 		rp.fsrFb[0] = RP_CreateFramebufferSized( rp.postPass, rp.fsrView[0], gls.windowWidth, gls.windowHeight, "framebuffer - rpmod fsr upscaled" );
 		rp.fsrFb[1] = RP_CreateFramebufferSized( rp.postPass, rp.fsrView[1], gls.windowWidth, gls.windowHeight, "framebuffer - rpmod fsr sharpened" );
+		if ( rp.fsrWindowPass != VK_NULL_HANDLE ) {
+			VkImageView views[2] = { rp.fsrView[1], rp.fsrDepthView };
+			VkFramebufferCreateInfo desc;
+
+			Com_Memset( &desc, 0, sizeof( desc ) );
+			desc.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+			desc.renderPass = rp.fsrWindowPass;
+			desc.attachmentCount = 2;
+			desc.pAttachments = views;
+			desc.width = gls.windowWidth;
+			desc.height = gls.windowHeight;
+			desc.layers = 1;
+			VK_CHECK( qvkCreateFramebuffer( vk.device, &desc, NULL, &rp.fsrWindowFb ) );
+			VK_SET_OBJECT_NAME( rp.fsrWindowFb, "framebuffer - rpmod fsr window", VK_DEBUG_REPORT_OBJECT_TYPE_FRAMEBUFFER_EXT );
+		}
 	}
 	if ( rp.shadowPass != VK_NULL_HANDLE ) {
 		VkImageView views[2] = { rp.shadowColorView, rp.shadowView };
@@ -1129,7 +1223,7 @@ void vk_rpmod_create_framebuffers( void ) {
 }
 
 void vk_rpmod_destroy_framebuffers( void ) {
-	VkFramebuffer *fbs[] = { &rp.postFb[0], &rp.postFb[1], &rp.distFb, &rp.aoFb[0], &rp.aoFb[1], &rp.shadowFb, &rp.maskFb, &rp.smaaFb[0], &rp.smaaFb[1], &rp.fsrFb[0], &rp.fsrFb[1], &rp.waterFb };
+	VkFramebuffer *fbs[] = { &rp.postFb[0], &rp.postFb[1], &rp.distFb, &rp.aoFb[0], &rp.aoFb[1], &rp.shadowFb, &rp.maskFb, &rp.smaaFb[0], &rp.smaaFb[1], &rp.fsrFb[0], &rp.fsrFb[1], &rp.waterFb, &rp.fsrWindowFb };
 
 	rp.ready = qfalse;
 	for ( size_t i = 0; i < ARRAY_LEN( fbs ); i++ ) {
@@ -1437,7 +1531,7 @@ static void RP_Restore( void ) {
 // the world's main view in an image the passes can read; not the sky portal's scene, the main
 // view after it covers that too
 static qboolean RP_MainView( void ) {
-	return (qboolean)( rp.ready && rp.setsAllocated && vk.fboActive && vk.renderPassIndex != RENDER_PASS_SCREENMAP
+	return (qboolean)( rp.ready && rp.setsAllocated && vk.fboActive && vk.renderPassIndex != RENDER_PASS_SCREENMAP && !rp.fsrWindow
 		&& backEnd.viewParms.portalView == PV_NONE && !( backEnd.refdef.rdflags & ( RDF_NOWORLDMODEL | RDF_SKYBOXPORTAL ) ) );
 }
 
@@ -3096,8 +3190,10 @@ void vk_rpmod_post( void ) {
 ===============
 vk_rpmod_fsr
 
-At the frame's end, before the gamma pass: with FSR, the finished picture (its 2D too) scaled up to
-the window and sharpened; the image set the gamma pass shows, the picture's own without it
+With FSR, the view drawn smaller is scaled up to the window and sharpened. After the frame's last
+world view, at its first 2D (vk_rpmod_fsr_window, from vk_set_2d), so the HUD, the console and the
+menus are drawn on it at the window's own size, sharp; else at the frame's end, before the gamma pass
+(vk_rpmod_fsr). The image set the gamma pass shows, the picture's own without FSR
 ===============
 */
 // the picture FSR made, for screenshots: the window's size, as it's seen; NULL without FSR
@@ -3109,15 +3205,17 @@ VkImage vk_rpmod_fsr_image( uint32_t *width, uint32_t *height ) {
 	return rp.fsrImage[1];
 }
 
-VkDescriptorSet vk_rpmod_fsr( void ) {
+static qboolean RP_FsrReady( void ) {
+	return (qboolean)( rp.ready && rp.setsAllocated && rp.fsrFb[0] != VK_NULL_HANDLE && rp.fsrPipe[0] != VK_NULL_HANDLE && r_fsr->integer );
+}
+
+// the view so far, scaled up and sharpened into fsrImage[1]; outside any render pass
+static void RP_FsrUpscale( void ) {
 	struct {
 		float a[4];
 		float b[4];
 	} p;
 	VkRect2D r;
-
-	if ( !rp.ready || !rp.setsAllocated || rp.fsrFb[0] == VK_NULL_HANDLE || rp.fsrPipe[0] == VK_NULL_HANDLE || !r_fsr->integer )
-		return vk.color_descriptor;
 
 	p.a[0] = p.a[2] = (float)glConfig.vidWidth;
 	p.a[1] = p.a[3] = (float)glConfig.vidHeight;
@@ -3135,5 +3233,52 @@ VkDescriptorSet vk_rpmod_fsr( void ) {
 	vk_begin_render_pass( rp.postPass, rp.fsrFb[1], qfalse, gls.windowWidth, gls.windowHeight );
 	RP_Quad( rp.fsrPipe[1], rp.fsrSet[0], VK_NULL_HANDLE, &p, sizeof( p ), &r );
 	vk_end_render_pass();
+}
+
+// the frame's start: drawn at the view's size again
+void vk_rpmod_fsr_begin_frame( void ) {
+	rp.fsrWindow = qfalse;
+}
+
+// the rest of the frame drawn at the window's size (no dynamic glow or refraction then: their passes
+// are the view's size)
+qboolean vk_rpmod_fsr_drawing_window( void ) {
+	return rp.fsrWindow;
+}
+
+// on the way to 2D: once the frame's world views are all drawn, the view scaled up now, and what
+// follows drawn over it at the window's size
+void vk_rpmod_fsr_window( void ) {
+	if ( rp.fsrWindow || rp.fsrWindowFb == VK_NULL_HANDLE || !RP_FsrReady() || !vk.fboActive )
+		return;
+	if ( backEnd.rpWorldViews > 0 || vk.renderPassIndex != RENDER_PASS_MAIN )
+		return;
+
+	// bloom first, on the view at its own size, and not again over the window's picture
+	if ( vk.bloomActive )
+		vk_bloom();
+	backEnd.doneBloom = qtrue;
+
+	vk_end_render_pass();
+	RP_FsrUpscale();
+
+	vk.renderPassIndex = RENDER_PASS_MAIN;
+	vk.renderWidth = gls.windowWidth;
+	vk.renderHeight = gls.windowHeight;
+	vk.renderScaleX = (float)gls.windowWidth / (float)glConfig.vidWidth;
+	vk.renderScaleY = (float)gls.windowHeight / (float)glConfig.vidHeight;
+	vk_begin_render_pass( rp.fsrWindowPass, rp.fsrWindowFb, qtrue, vk.renderWidth, vk.renderHeight );
+	RP_Restore();
+	rp.fsrWindow = qtrue;
+}
+
+VkDescriptorSet vk_rpmod_fsr( void ) {
+	if ( rp.fsrWindow ) {
+		rp.fsrWindow = qfalse;
+		return rp.fsrSet[1];
+	}
+	if ( !RP_FsrReady() )
+		return vk.color_descriptor;
+	RP_FsrUpscale();
 	return rp.fsrSet[1];
 }

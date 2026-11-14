@@ -1080,7 +1080,9 @@ const void	*RB_DrawSurfs( const void *data ) {
 	}
 
 	// refraction / distortion pass
-	if ( backEnd.hasRefractionSurfaces ) {
+	// OpenJK-rpmod: not once the rest of the frame is drawn at the window's size for FSR (a menu's model):
+	// its passes are the view's size
+	if ( backEnd.hasRefractionSurfaces && !vk_rpmod_fsr_drawing_window() ) {
 		vk_end_render_pass();
 	
 		// extract/copy offscreen color attachment to make it usable as input
@@ -1095,7 +1097,7 @@ const void	*RB_DrawSurfs( const void *data ) {
 
 	// checked in previous RB_RenderDrawSurfList() if there is at least one glowing surface
 	// OpenJK-rpmod: and in a preview that asks for it (a lit blade, RDF_UIGLOW)
-	if ( vk.dglowActive && ( !( backEnd.refdef.rdflags & RDF_NOWORLDMODEL ) || ( backEnd.refdef.rdflags & RDF_UIGLOW ) ) && backEnd.hasGlowSurfaces )
+	if ( vk.dglowActive && ( !( backEnd.refdef.rdflags & RDF_NOWORLDMODEL ) || ( backEnd.refdef.rdflags & RDF_UIGLOW ) ) && backEnd.hasGlowSurfaces && !vk_rpmod_fsr_drawing_window() )
 	{
 		vk_end_render_pass();
 
@@ -1114,6 +1116,10 @@ const void	*RB_DrawSurfs( const void *data ) {
 
 	//TODO Maybe check for rdf_noworld stuff but q3mme has full 3d ui
 	backEnd.doneSurfaces = qtrue; // for bloom
+
+	// OpenJK-rpmod: one world view fewer to come this frame (FSR's 2D after the last)
+	if ( !( cmd->refdef.rdflags & RDF_NOWORLDMODEL ) && backEnd.rpWorldViews > 0 )
+		backEnd.rpWorldViews--;
 
 	return (const void*)(cmd + 1);
 }

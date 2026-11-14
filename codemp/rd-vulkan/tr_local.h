@@ -1604,6 +1604,7 @@ typedef struct backEndState_s {
 	qboolean doneSurfaces;						// done any 3d surfaces already
 	qboolean screenMapDone;
 	qboolean doneBloom;
+	int rpWorldViews;							// OpenJK-rpmod: world views queued this frame and not yet drawn (FSR draws the 2D after the last at the window's size)
 
 	qboolean hasGlowSurfaces;					// renderdoc shows empty dglow pass, or passes with 2 or 3 surfaces. maybe use a min surf count instead?
 	qboolean isGlowPass;

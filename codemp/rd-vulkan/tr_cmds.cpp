@@ -186,6 +186,8 @@ void	R_AddDrawSurfCmd( drawSurf_t *drawSurfs, int numDrawSurfs ) {
 	cmd->viewParms = tr.viewParms;
 
 	tr.numDrawSurfCmds++;
+	if ( !( tr.refdef.rdflags & RDF_NOWORLDMODEL ) )
+		backEnd.rpWorldViews++; // OpenJK-rpmod: FSR's 2D after the last (vk_rpmod_fsr_window)
 	if (tr.drawSurfCmd == NULL) {
 		tr.drawSurfCmd = cmd;
 	}
@@ -362,6 +364,7 @@ void RE_BeginFrame( stereoFrame_t stereoFrame ) {
 	ResetGhoul2RenderableSurfaceHeap();
 
 	backEnd.doneBloom = qfalse;
+	backEnd.rpWorldViews = 0; // OpenJK-rpmod
 
 	tr.frameCount++;
 	tr.frameSceneNum = 0;

@@ -1169,6 +1169,9 @@ VkRenderPass	vk_rpmod_shadow_pass( void );			// OpenJK-rpmod: r_shadowMaps' rend
 qboolean	vk_rpmod_shadow_viewport( VkRect2D *r );
 void		vk_rpmod_post( void );
 VkDescriptorSet	vk_rpmod_fsr( void );
+void		vk_rpmod_fsr_begin_frame( void );	// OpenJK-rpmod: FSR's 2D at the window's size (vk_rpmod_fsr_window from vk_set_2d)
+void		vk_rpmod_fsr_window( void );
+qboolean	vk_rpmod_fsr_drawing_window( void );
 VkImage		vk_rpmod_fsr_image( uint32_t *width, uint32_t *height );		// OpenJK-rpmod: what FSR made, for screenshots						// OpenJK-rpmod: FSR upscaling before the gamma pass: the set it shows
 qboolean	vk_rpmod_soft_active( void );
 VkDescriptorSet vk_rpmod_soft_set( void );

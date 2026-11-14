@@ -164,10 +164,13 @@ void get_scissor_rect( VkRect2D *r ) {
 		if (r->offset.y < 0)
 			r->offset.y = 0;
 
-		if (r->offset.x + r->extent.width > glConfig.vidWidth)
-			r->extent.width = glConfig.vidWidth - r->offset.x;
-		if (r->offset.y + r->extent.height > glConfig.vidHeight)
-			r->extent.height = glConfig.vidHeight - r->offset.y;
+		// OpenJK-rpmod: within what's drawn into: FSR's 2D is the window's size, larger than the view
+		const int maxW = MAX( glConfig.vidWidth, (int)vk.renderWidth ), maxH = MAX( glConfig.vidHeight, (int)vk.renderHeight );
+
+		if (r->offset.x + r->extent.width > maxW)
+			r->extent.width = maxW - r->offset.x;
+		if (r->offset.y + r->extent.height > maxH)
+			r->extent.height = maxH - r->offset.y;
 	}
 }
 

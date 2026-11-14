@@ -99,6 +99,10 @@ void vk_set_2d( void )
 		return;
 	}
 
+	// OpenJK-rpmod: with FSR, after the frame's last world view, the view scaled up now and the 2D
+	// drawn at the window's size
+	vk_rpmod_fsr_window();
+
 	backEnd.projection2D = qtrue;
 
 	vk_update_mvp(NULL);

@@ -478,6 +478,7 @@ _retry:
     vk.cmd->last_pipeline = VK_NULL_HANDLE;
 
     backEnd.screenMapDone = qfalse;
+    vk_rpmod_fsr_begin_frame(); // OpenJK-rpmod: drawn at the view's size until FSR's switch
 
     if (vk_find_screenmap_drawsurfs()) {
         vk_begin_screenmap_render_pass();
