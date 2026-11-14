@@ -425,6 +425,9 @@ static void CL_R_RenderScene( const refdef_t *fd ) {
 	CL_NpcNames_View( fd );
 	CL_Aim_View( fd );
 	// the holster's live editing first: it closes the managers as it opens
+	// photo mode's camera before any tool's: the view the picture is taken from
+	if ( CL_PhotoMode_RenderScene( fd ) )
+		return;
 	if ( !CL_WorldItems_RenderScene( fd ) && !CL_Holster_RenderScene( fd ) && !CL_NpcManager_RenderScene( fd ) && !CL_ShaderManager_RenderScene( fd ) && !CL_EffectManager_RenderScene( fd )
 		&& !CL_MapEditor_RenderScene( fd ) && !CL_RpCinematic_RenderScene( fd ) )
 		CL_ModelManager_RenderScene( fd );
@@ -432,22 +435,22 @@ static void CL_R_RenderScene( const refdef_t *fd ) {
 
 // the map editor, and a cinematic hiding the HUD, leave out the cgame's 2D, but not what covers the whole screen
 static void CL_R_DrawStretchPic( float x, float y, float w, float h, float s1, float t1, float s2, float t2, qhandle_t hShader ) {
-	if ( !CL_MapEditor_Hide2D( x, y, w, h ) && !CL_RpCinematic_Hide2D( x, y, w, h ) )
+	if ( !CL_PhotoMode_Hide2D() && !CL_MapEditor_Hide2D( x, y, w, h ) && !CL_RpCinematic_Hide2D( x, y, w, h ) )
 		re->DrawStretchPic( x, y, w, h, s1, t1, s2, t2, hShader );
 }
 
 static void CL_R_DrawRotatePic( float x, float y, float w, float h, float s1, float t1, float s2, float t2, float a, qhandle_t hShader ) {
-	if ( !CL_MapEditor_Hide2D( x, y, w, h ) && !CL_RpCinematic_Hide2D( x, y, w, h ) )
+	if ( !CL_PhotoMode_Hide2D() && !CL_MapEditor_Hide2D( x, y, w, h ) && !CL_RpCinematic_Hide2D( x, y, w, h ) )
 		re->DrawRotatePic( x, y, w, h, s1, t1, s2, t2, a, hShader );
 }
 
 static void CL_R_DrawRotatePic2( float x, float y, float w, float h, float s1, float t1, float s2, float t2, float a, qhandle_t hShader ) {
-	if ( !CL_MapEditor_Hide2D( x, y, w, h ) && !CL_RpCinematic_Hide2D( x, y, w, h ) )
+	if ( !CL_PhotoMode_Hide2D() && !CL_MapEditor_Hide2D( x, y, w, h ) && !CL_RpCinematic_Hide2D( x, y, w, h ) )
 		re->DrawRotatePic2( x, y, w, h, s1, t1, s2, t2, a, hShader );
 }
 
 static void CL_R_Font_DrawString( int ox, int oy, const char *text, const float *rgba, const int setIndex, int iCharLimit, const float scale ) {
-	if ( !CL_MapEditor_Hide2D( 0, 0, 0, 0 ) && !CL_RpCinematic_Hide2D( 0, 0, 0, 0 ) )
+	if ( !CL_PhotoMode_Hide2D() && !CL_MapEditor_Hide2D( 0, 0, 0, 0 ) && !CL_RpCinematic_Hide2D( 0, 0, 0, 0 ) )
 		re->Font_DrawString( ox, oy, text, rgba, setIndex, iCharLimit, scale );
 }
 
@@ -462,7 +465,7 @@ static void CL_FX_AddScheduledEffects( qboolean portal ) {
 	refdef_t *cgameView = theFxHelper.refdef, view;
 	vec3_t origin, angles;
 
-	if ( !portal && cgameView && ( CL_ModelManager_Camera( origin, angles ) || CL_ShaderManager_Camera( origin, angles )
+	if ( !portal && cgameView && ( CL_PhotoMode_Camera( origin, angles ) || CL_ModelManager_Camera( origin, angles ) || CL_ShaderManager_Camera( origin, angles )
 		|| CL_EffectManager_Camera( origin, angles ) || CL_NpcManager_Camera( origin, angles )
 		|| CL_MapEditor_Camera( origin, angles ) || CL_RpCinematic_Camera( origin, angles ) ) ) {
 		view = *cgameView;

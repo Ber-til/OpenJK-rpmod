@@ -702,7 +702,8 @@ void CL_ModelManager_Draw( void );
 #define KEYCATCH_CHARACTERS		0x4000000	// engine only, the characters window owns keyboard and mouse
 #define KEYCATCH_WORLD			0x8000000	// engine only, the world's reader or editor owns keyboard and mouse
 #define KEYCATCH_SKYCOMPOSER	0x20000000	// engine only, the sky composer owns keyboard and mouse
-#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELMANAGER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER | KEYCATCH_MAPEDITOR | KEYCATCH_STORYTELLER | KEYCATCH_CINEDITOR | KEYCATCH_SOUNDMANAGER | KEYCATCH_RADIALMENU | KEYCATCH_LANGUAGES | KEYCATCH_CONSETTINGS | KEYCATCH_ANIMMANAGER | KEYCATCH_PRESETS | KEYCATCH_FEEDBACK | KEYCATCH_ASSETMANAGER | KEYCATCH_SPECIALMOVES | KEYCATCH_CHATLOG | KEYCATCH_DATAPAD | KEYCATCH_ESCMENU | KEYCATCH_INVENTORY | KEYCATCH_INSPECT | KEYCATCH_HOLSTER | KEYCATCH_CHARACTERS | KEYCATCH_WORLD | KEYCATCH_SKYCOMPOSER )	// mods never see or clear these
+#define KEYCATCH_PHOTOMODE		0x10000000	// engine only, photo mode owns keyboard and mouse
+#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELMANAGER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER | KEYCATCH_MAPEDITOR | KEYCATCH_STORYTELLER | KEYCATCH_CINEDITOR | KEYCATCH_SOUNDMANAGER | KEYCATCH_RADIALMENU | KEYCATCH_LANGUAGES | KEYCATCH_CONSETTINGS | KEYCATCH_ANIMMANAGER | KEYCATCH_PRESETS | KEYCATCH_FEEDBACK | KEYCATCH_ASSETMANAGER | KEYCATCH_SPECIALMOVES | KEYCATCH_CHATLOG | KEYCATCH_DATAPAD | KEYCATCH_ESCMENU | KEYCATCH_INVENTORY | KEYCATCH_INSPECT | KEYCATCH_HOLSTER | KEYCATCH_CHARACTERS | KEYCATCH_WORLD | KEYCATCH_SKYCOMPOSER | KEYCATCH_PHOTOMODE )	// mods never see or clear these
 
 void CL_NpcManager_Init( void );
 void CL_NpcManager_Shutdown( void );
@@ -1125,6 +1126,18 @@ void CL_Chat_Init( void );			// cl_chat.cpp: the datapad's Chat
 void CL_Chat_Frame( void );
 void CL_Chat_Disconnect( void );
 void CL_Chat_Hook( char **argv, int argc, const char *message );	// cmd:chat/...
+void CL_PhotoMode_Init( void );			// cl_photomode.cpp: a free camera to take pictures
+void CL_PhotoMode_Shutdown( void );
+void CL_PhotoMode_Close( void );
+qboolean CL_PhotoMode_Active( void );
+void CL_PhotoMode_Frame( void );
+void CL_PhotoMode_Draw( void );
+qboolean CL_PhotoMode_RenderScene( const refdef_t *fd );
+qboolean CL_PhotoMode_Camera( vec3_t origin, vec3_t angles );
+qboolean CL_PhotoMode_Hide2D( void );
+void CL_PhotoMode_KeyEvent( int key, qboolean down );
+void CL_PhotoMode_MouseEvent( int dx, int dy );
+void CL_PhotoMode_Escape( void );
 void CL_SkyComposer_Init( void );		// cl_skycomposer.cpp: the sky composer (Vulkan's sky)
 void CL_SkyComposer_Shutdown( void );
 void CL_SkyComposer_Disconnect( void );
@@ -1158,6 +1171,7 @@ void CL_WorldItems_Command( const char *what, const char *args );	// datapad pla
 void CL_WorldItems_Drop( int item, const char *name );	// an item of yours put down where you aim
 void CL_WorldItems_PickUp( int world );
 void CL_RpHooks_NewLoad( void );		// a new load of the map: the objectives go
+void CL_RpHooks_DrawPlaying( void );	// the objectives while playing, when held or turned on
 void CL_MapEditor_NewLoad( void );		// a new load of the map: the shared edits go
 void CL_WorldItems_DumpCommand( void );		// rpdump save|load|delete on its way: the world things go with it
 qboolean CL_WorldItems_Admin( void );

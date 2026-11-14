@@ -15,7 +15,7 @@
 #define BF_CHARGE_MS		400			// right click held this long before the burst
 #define BF_SHOTS			4			// shots in a burst
 #define BF_BURST_MAX_MS		1200		// a burst ends by then whatever was counted (unlimited ammo)
-#define BF_COOL_MS			1500		// then nothing until this has passed
+#define BF_COOL_MS			1000		// then nothing until this has passed (was 1500: C1B3R report #35)
 
 enum { BF_IDLE, BF_CHARGING, BF_FIRING, BF_COOLING };
 

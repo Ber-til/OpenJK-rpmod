@@ -333,6 +333,9 @@ typedef struct refexport_s {
 		// next map, or FreeBrushModel; 0 if there's no room
 		qhandle_t			(*BrushModel)							( qhandle_t reuse, const brushFace_t *faces, int numFaces, const vec3_t origin, const vec3_t axis[3] );
 		void				(*FreeBrushModel)						( qhandle_t h );
+		// the client's photo mode: the next PNG screenshot cut to this part of the picture, as fractions
+		// of it from the top left (0 0 1 1 all of it); used once
+		void				(*SetScreenshotCrop)					( float x0, float y0, float x1, float y1 );
 	} ext;
 
 } refexport_t;

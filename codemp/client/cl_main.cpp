@@ -864,6 +864,7 @@ void CL_Disconnect( qboolean showMainMenu ) {
 	CL_ChatLog_Disconnect();
 	CL_Datapad_Disconnect();
 	CL_SkyComposer_Disconnect();
+	CL_PhotoMode_Close();
 	CL_Inventory_Disconnect();
 	CL_Inspect_Disconnect();
 	CL_Holster_Disconnect();
@@ -2960,6 +2961,7 @@ void CL_Init( void ) {
 	CL_SoundManager_Init ();
 	CL_RpHooks_Init ();
 	CL_SkyComposer_Init();
+	CL_PhotoMode_Init();
 	CL_RpAdmin_Init ();
 	CL_Update_Init ();
 	CL_Feedback_Init ();
@@ -3229,6 +3231,7 @@ void CL_Shutdown( void ) {
 	Cmd_RemoveCommand ("csusage");
 	CL_RpHooks_Shutdown();
 	CL_SkyComposer_Shutdown();
+	CL_PhotoMode_Shutdown();
 	Cmd_RemoveCommand( "toolaccess" );
 	CL_Update_Shutdown();
 	CL_Feedback_Shutdown();

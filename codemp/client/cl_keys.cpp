@@ -1683,6 +1683,10 @@ void CL_KeyDownEvent( int key, unsigned time )
 			CL_SkyComposer_Escape();
 			return;
 		}
+		if ( ( Key_GetCatcher() & KEYCATCH_PHOTOMODE ) && !( Key_GetCatcher() & KEYCATCH_UI ) ) {
+			CL_PhotoMode_Escape();
+			return;
+		}
 		if ( ( Key_GetCatcher() & KEYCATCH_CHATLOG ) && !( Key_GetCatcher() & KEYCATCH_UI ) ) {
 			CL_ChatLog_Escape();
 			return;
@@ -1836,6 +1840,10 @@ void CL_KeyDownEvent( int key, unsigned time )
 	else if ( Key_GetCatcher() & KEYCATCH_SKYCOMPOSER ) {
 		CL_SkyComposer_KeyEvent( key, qtrue );
 	}
+	// photo mode
+	else if ( Key_GetCatcher() & KEYCATCH_PHOTOMODE ) {
+		CL_PhotoMode_KeyEvent( key, qtrue );
+	}
 	// chat log
 	else if ( Key_GetCatcher() & KEYCATCH_CHATLOG ) {
 		CL_ChatLog_KeyEvent( key, qtrue );
@@ -1929,6 +1937,7 @@ void CL_KeyUpEvent( int key, unsigned time )
 	// always, so a key held when a menu opened over the placer doesn't stay held
 	CL_ModelManager_KeyEvent( key, qfalse );
 	CL_SkyComposer_KeyEvent( key, qfalse );
+	CL_PhotoMode_KeyEvent( key, qfalse );
 	CL_NpcManager_KeyEvent( key, qfalse );
 	CL_ShaderManager_KeyEvent( key, qfalse );
 	CL_EffectManager_KeyEvent( key, qfalse );

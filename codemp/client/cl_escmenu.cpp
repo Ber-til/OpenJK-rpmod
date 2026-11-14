@@ -133,6 +133,7 @@ const escTool_t escTools[] = {
 	{ "Effect Replacer",	"effectreplacer",	"Your own powers' and saber's effects as others" },
 	{ "Shader Manager",		"shadermanager",	"Remap shaders, overlays, the sky" },
 	{ "Sky Composer",		"skycomposer",		"The sky of the hour, clouds, planets, moons, a fleet (Vulkan)" },
+	{ "Photo Mode",			"photomode",		"A free camera for pictures: focus, filters, a frame" },
 	{ "Map Editor",			"mapedit",			"Move, hide and retexture the map; lights, fog" },
 	{ "Storyteller",		"storyteller",		"Missions out of steps, played for everyone" },
 	{ "Cinematic Manager",	"cinematicmanager",	"Camera shots and what everyone does in them" },

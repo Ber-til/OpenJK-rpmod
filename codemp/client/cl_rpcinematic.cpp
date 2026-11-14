@@ -2317,6 +2317,18 @@ qboolean RC_Filter( int type, int strength ) {
 	return qtrue;
 }
 
+// photo mode's look: a filter (none for none) with a grade over it: saturation, contrast and
+// brightness (1 as it is) and warmth (-1 cold to 1 warm)
+void RC_PhotoFilter( screenFilter_t *f, int type, float saturation, float contrast, float brightness, float warmth ) {
+	RC_BuildFilter( Com_Clampi( 0, RC_NUM_FILTERS - 1, type ), f );
+	if ( saturation != 1.0f )
+		RC_FilterSaturation( f, saturation );
+	if ( contrast != 1.0f )
+		RC_FilterContrast( f, contrast, 0.25f );
+	if ( brightness != 1.0f || warmth != 0.0f )
+		RC_FilterTint( f, brightness * ( 1.0f + 0.15f * warmth ), brightness * ( 1.0f + 0.03f * warmth ), brightness * ( 1.0f - 0.15f * warmth ), 0.0f );
+}
+
 void RC_NoFilter( void ) {
 	if ( re->ext.SetScreenFilter )
 		re->ext.SetScreenFilter( NULL );

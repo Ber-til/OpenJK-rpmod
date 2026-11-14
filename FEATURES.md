@@ -333,7 +333,7 @@ Assemble a mission out of steps, then play it: NPCs, models, effects, sounds, mu
 ### NPC talk and objectives *(experimental)*
 
 - NPC talk: an NPC says a line in chat as a player would, with its own name, name color and an optional emote. During a cinematic with the HUD hidden it shows as a subtitle
-- Objectives: a list of mission objectives on the left while the Esc menu is up. Add them, strike them through, take them off or clear them, from a step or with `/objective`
+- Objectives: a list of mission objectives on the left while the Esc menu is up, or while playing with `/objectives` (on and off) or `+objectives` (held), for a bind or a radial menu. Add them, strike them through, take them off or clear them, from a step or with `/objective`
 
 ## Cinematic Manager *(playing it for others is experimental)*
 
@@ -577,6 +577,17 @@ A menu drawn by this client, with room for everything, in two looks: **Modern** 
 - **Setup > Game Options > Camera Settings** on shows the third person camera's settings beside the in-game menu: third person on or off, distance, angle around you, height, side, tilt, how closely it follows your aim, see-through, field of view and the HUD, and **Defaults**. While it's on, the camera keeps right behind you (`cg_thirdPersonCameraDamp 1`), so it never swings round as you turn. They're the game's own settings (`cg_thirdPerson...`, `cg_fov`)
 - **Camera presets**: type a name under the settings and **Save** them as it; **<** and **>** go through the saved ones, each loaded as it comes up; **Delete** takes the one named out. Kept in `camerapresets.txt`, also `/campreset`
 - Nothing is shipped for it: the menus, RPMod's or the base game's, are changed as the game reads them
+
+## Photo Mode
+
+A free camera to take pictures: `/photomode`, or **Photo Mode** under the Esc menu's Tools.
+
+- The view leaves you: hold the right mouse button to look around, **WASD** to fly (**Space** up, **C** down, **Shift** fast, **Ctrl** slow), **Q** and **E** to roll, the wheel to zoom. The HUD, chat and crosshair are hidden and your own character is in the picture; the game goes on round you. The camera stays within reach of you (the server only sends what's near)
+- **Camera** page: zoom (field of view), roll, **Back to my view**; **Depth of field**: click the scene to focus on what's there (a person, before the wall behind them), with how much stays sharp and how blurred the rest is; a **Frame** to shoot in (Screen, 16:9, 21:9, 4:3, 1:1, 9:16), the rest darkened, with the rule of thirds' lines if wanted
+- **Look** page: the cinematic camera's filters (Noir, Sepia, Old film, Night vision...) and their strength; colour: saturation, contrast, brightness, warmth; lens: grain, vignette, colour fringes, scanlines; **Reset**
+- **Snap** (or **Enter**) saves a PNG at your window's full size, cut to the frame, without the panel, in `screenshots/photo_<date>_<time>.png`. **H** hides the panel; **Esc** closes
+- Depth of field and the Look need the Vulkan renderer; the camera, frame and Snap work with either
+- An idea from a player's report
 
 ## Emote Preview
 

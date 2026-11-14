@@ -509,6 +509,7 @@ if(BuildMPEngine)
 		"${MPDir}/client/cl_notes.cpp"
 		"${MPDir}/client/cl_chat.cpp"
 		"${MPDir}/client/cl_skycomposer.cpp"
+		"${MPDir}/client/cl_photomode.cpp"
 		"${MPDir}/client/cl_worlditems.cpp"
 		"${MPDir}/client/cl_inventory.cpp"
 		"${MPDir}/client/cl_inspect.cpp"

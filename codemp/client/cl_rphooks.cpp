@@ -880,16 +880,22 @@ void CL_RpHooks_DrawSubtitles( void ) {
 	}
 }
 
-// the objectives, while the menu is up in game
-void CL_RpHooks_Draw( void ) {
+// the objectives shown while playing too (C1B3R report #34): held (+objectives) or turned on
+// (objectives), for a bind or a radial menu
+static qboolean rhObjHeld, rhObjOn;
+
+// the objectives' panel; with none, a line saying so when asked for
+static void RH_DrawObjectives( qboolean asked ) {
 	char plain[RH_OBJECTIVE_LEN];
 	float x = RH_OBJ_X + RH_OBJ_PAD, y, h;
 	int font, lines = 1;
 
-	if ( !rhObj.count || cls.state != CA_ACTIVE || !( Key_GetCatcher() & KEYCATCH_UI ) )
+	if ( ( !rhObj.count && !asked ) || cls.state != CA_ACTIVE )
 		return;
 	font = RH_Font();
 
+	if ( !rhObj.count )
+		lines++;
 	for ( int i = 0; i < rhObj.count; i++ )
 		lines += RH_Wrap( font, 0, 0, va( RH_OBJ_BULLET "%s", rhObj.items[i].text ), rhObjText, qfalse, qfalse );
 	h = lines * RH_OBJ_ROW_H + RH_OBJ_PAD * 2 + 4;
@@ -902,6 +908,8 @@ void CL_RpHooks_Draw( void ) {
 	y = RH_OBJ_Y + RH_OBJ_PAD;
 	re->Font_DrawString( (int)x, (int)y, rhObj.title[0] ? rhObj.title : RH_OBJ_TITLE, rhObjTitle, font | STYLE_DROPSHADOW, -1, RH_OBJ_SCALE );
 	y += RH_OBJ_ROW_H + 4;
+	if ( !rhObj.count )
+		RH_Wrap( font, x, y, "No objectives", rhObjDone, qfalse, qtrue );
 
 	for ( int i = 0; i < rhObj.count; i++ ) {
 		if ( rhObj.items[i].done ) {
@@ -913,6 +921,33 @@ void CL_RpHooks_Draw( void ) {
 			y += RH_Wrap( font, x, y, va( RH_OBJ_BULLET "%s", rhObj.items[i].text ), rhObjText, qfalse, qtrue ) * RH_OBJ_ROW_H;
 		}
 	}
+}
+
+// while the menu is up in game
+void CL_RpHooks_Draw( void ) {
+	if ( Key_GetCatcher() & KEYCATCH_UI )
+		RH_DrawObjectives( (qboolean)( rhObjHeld || rhObjOn ) );
+}
+
+// while playing, when held or turned on
+void CL_RpHooks_DrawPlaying( void ) {
+	if ( ( rhObjHeld || rhObjOn ) && !( Key_GetCatcher() & KEYCATCH_UI ) )
+		RH_DrawObjectives( qtrue );
+}
+
+static void CL_ObjectivesDown_f( void ) {
+	rhObjHeld = qtrue;
+}
+
+static void CL_ObjectivesUp_f( void ) {
+	rhObjHeld = qfalse;
+}
+
+// objectives [on|off]: the panel shown while playing, or not; turned over without a word
+static void CL_Objectives_f( void ) {
+	const char *arg = Cmd_Argv( 1 );
+
+	rhObjOn = !Q_stricmp( arg, "on" ) ? qtrue : !Q_stricmp( arg, "off" ) ? qfalse : (qboolean)!rhObjOn;
 }
 
 // objective: lists them; objective <verb> [text]: sends one to everyone, through C1B3R
@@ -1033,12 +1068,18 @@ void CL_RpHooks_Init( void ) {
 	cl_rpExperimental = Cvar_Get( "cl_rpExperimental", "0", CVAR_ARCHIVE, "Experimental features on as the game starts (rpexperimental)" );
 	rhExperimental = (qboolean)( cl_rpExperimental->integer != 0 );
 	Cmd_AddCommand( "objective", CL_Objective_f, "Lists the mission objectives, or sends one to everyone with this client" );
+	Cmd_AddCommand( "objectives", CL_Objectives_f, "Shows the mission objectives while playing, or hides them (on, off, or turned over); +objectives while held" );
+	Cmd_AddCommand( "+objectives", CL_ObjectivesDown_f, "Shows the mission objectives while held" );
+	Cmd_AddCommand( "-objectives", CL_ObjectivesUp_f, "Shows the mission objectives while held" );
 	Cmd_AddCommand( "rpexperimental", CL_RpExperimental_f, "Turns experimental features on or off, and keeps them so every time the game starts" );
 	Cmd_AddCommand( "combat", CL_Combat_f, "Lethal or non-lethal fights for everyone with this client: lightsaber cuts shown or not" );
 }
 
 void CL_RpHooks_Shutdown( void ) {
 	Cmd_RemoveCommand( "objective" );
+	Cmd_RemoveCommand( "objectives" );
+	Cmd_RemoveCommand( "+objectives" );
+	Cmd_RemoveCommand( "-objectives" );
 	Cmd_RemoveCommand( "rpexperimental" );
 	Cmd_RemoveCommand( "combat" );
 	RH_SetCombat( RH_COMBAT_OFF, qfalse );		// the player's own setting kept in their config
