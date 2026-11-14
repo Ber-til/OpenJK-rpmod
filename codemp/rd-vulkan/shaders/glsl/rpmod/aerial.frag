@@ -3,14 +3,15 @@
 
 // OpenJK-rpmod: what lies under the sky (vk_rpmod_post.cpp), where the view shows the world:
 //   aerial haze    far things fade into the sky's colour, less high up (r_aerialHaze)
-//   cloud shadows  the cloud layer's shadows on the ground, drifting with it (r_cloudShadows); not
-//                  where something on screen stands between the point and the sun (under a roof)
+//   cloud shadows  the cloud layer's shadows on the ground, drifting with it, soft (r_cloudShadows);
+//                  not under a roof (the sun map: the map traced from the sun)
 
 #include "view.glsl"
 #include "skycommon.glsl"
 
 layout(set = 0, binding = 0) uniform sampler2D sourceTexture;
 layout(set = 1, binding = 0) uniform sampler2D distanceTexture;
+layout(set = 2, binding = 0) uniform sampler2D sunMap;			// where the sun reaches
 
 // rect: the view's pixels; a: tan half fov across and down, far plane, time in seconds
 // right, down, fwd: the camera's axes in the world, its x, y, z in w
@@ -53,31 +54,53 @@ vec2 Pixel( vec3 P )
 	return pc.rect.xy + ( ndc * 0.5 + 0.5 ) * ( pc.rect.zw - pc.rect.xy );
 }
 
-// whether the way from P toward the sun is open as far as the screen shows: false under a roof. Only
-// what's well above counts (a roof, an awning): a person, a crate, a lamp post standing near would cut
-// their shape out of the cloud shadows, a bright patch beside them under thick clouds
-const float ROOF_MIN = 160.0;
-
-bool SunOpen( vec3 P, vec3 sunCam )
+// the sun map (vk_rpmod_post.cpp RP_SunMap): row 0 its header, then how far the sun's light goes
+// down through each texel. How much of the sun reaches W, 0 under a roof to 1 in the open, soft at
+// the edges: four bilinear looks around it
+float Header( int i )
 {
-	vec3 Q = P + sunCam * 4.0;
-	float stepLen = max( 8.0, P.z * 0.02 );
+	return texelFetch( sunMap, ivec2( i, 0 ), 0 ).r;
+}
 
-	for ( int i = 0; i < 16; i++ ) {
-		Q += sunCam * stepLen;
-		stepLen *= 1.35;
-		if ( Q.z <= 1.0 )
-			return true;
-		const vec2 s = Pixel( Q );
-		if ( any( lessThan( s, pc.rect.xy ) ) || any( greaterThan( s, pc.rect.zw ) ) )
-			return true;		// off the screen: open, as far as can be told
-		const float d = Dist( s );
-		if ( d >= pc.a.z * 0.99 )
-			continue;			// sky there
-		if ( Q.z > d + 4.0 && Q.z < d + max( 64.0, stepLen * 2.0 ) && length( Q - P ) > ROOF_MIN )
-			return false;
+float OpenAt( ivec2 t, float d, float bias, int w, int h )
+{
+	if ( t.x < 0 || t.y < 0 || t.x >= w || t.y >= h )
+		return 1.0;
+	return d <= texelFetch( sunMap, ivec2( t.x, t.y + 1 ), 0 ).r + bias ? 1.0 : 0.0;
+}
+
+float SunReach( vec3 W, vec3 L )
+{
+	const float texel = Header( 2 );
+	const int w = int( Header( 3 ) ), h = int( Header( 4 ) );
+	const vec3 f = -L;
+	const vec3 hint = abs( f.z ) > 0.99 ? vec3( 1.0, 0.0, 0.0 ) : vec3( 0.0, 0.0, 1.0 );
+	const vec3 up = normalize( hint - dot( hint, f ) * f );
+	const vec3 left = cross( up, f );
+	const vec2 at = vec2( ( dot( W, left ) - Header( 0 ) ) / texel, ( dot( W, up ) - Header( 1 ) ) / texel ) - 0.5;
+	const float d = dot( W, f );
+	const float bias = texel * 0.75 + 24.0;
+	float sum = 0.0;
+
+	for ( int k = 0; k < 4; k++ ) {
+		const vec2 q = at + vec2( ( k & 1 ) == 0 ? -0.5 : 0.5, ( k & 2 ) == 0 ? -0.5 : 0.5 );
+		const ivec2 t = ivec2( floor( q ) );
+		const vec2 fr = q - floor( q );
+
+		sum += mix( mix( OpenAt( t, d, bias, w, h ), OpenAt( t + ivec2( 1, 0 ), d, bias, w, h ), fr.x ),
+			mix( OpenAt( t + ivec2( 0, 1 ), d, bias, w, h ), OpenAt( t + ivec2( 1, 1 ), d, bias, w, h ), fr.x ), fr.y );
 	}
-	return true;
+	return sum * 0.25;
+}
+
+// the clouds' shadow: their broad shapes, softer than the clouds seen (fewer octaves, a wider edge)
+float CloudShadow( vec2 w, float cover, vec2 wind )
+{
+	vec2 q = ( w + wind ) / 2600.0;
+	q += vec2( SkyFbm( q * 0.7 + 3.1, 3 ), SkyFbm( q * 0.7 + 8.7, 3 ) ) * 0.9;
+	const float n = SkyFbm( q, 3 );
+
+	return smoothstep( 1.0 - cover * 0.9 - 0.25, 1.1 - cover * 0.75 + 0.1, n );
 }
 
 void main()
@@ -95,12 +118,16 @@ void main()
 	const vec3 W = cam + ToWorld( P );
 	const vec3 sun = normalize( pc.sun.xyz );
 
-	// cloud shadows: the layer over the point toward the sun, by day, where the sun reaches
-	if ( pc.b.x > 0.0 && pc.b.w > 0.0 && sun.z > 0.05 ) {
-		const vec2 at = W.xy + sun.xy * ( ( cam.z + CLOUD_HEIGHT - W.z ) / sun.z );
-		const float dens = CloudDensity( at, pc.b.x, pc.b.yz );
-		if ( dens > 0.01 && SunOpen( P, normalize( ToCamera( sun ) ) ) )
-			c *= 1.0 - dens * pc.b.w * SkyDay( sun ) * ( 1.0 - 0.5 * pc.c.x );
+	// cloud shadows: the layer over the point toward the sun the light comes from (the sky composer's
+	// Sun, else its hour, else the map's: the sun map's), by day, where the sun reaches
+	if ( pc.b.x > 0.0 && pc.b.w > 0.0 ) {
+		const vec3 L = normalize( vec3( Header( 5 ), Header( 6 ), Header( 7 ) ) );
+		if ( L.z > 0.05 ) {
+			const vec2 at = W.xy + L.xy * ( ( cam.z + CLOUD_HEIGHT - W.z ) / L.z );
+			const float dens = CloudShadow( at, pc.b.x, pc.b.yz );
+			if ( dens > 0.01 )
+				c *= 1.0 - dens * pc.b.w * SkyDay( L ) * ( 1.0 - 0.5 * pc.c.x ) * SunReach( W, L );
+		}
 	}
 
 	// haze: thicker the farther, thinner high up, the sky's colour that way
