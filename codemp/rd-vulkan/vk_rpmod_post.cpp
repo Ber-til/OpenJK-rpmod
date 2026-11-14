@@ -2034,8 +2034,13 @@ static qboolean RP_Hot( const shader_t *shader ) {
 
 	if ( shader->sort <= SS_OPAQUE )
 		return qfalse;
+	// a mark left on a wall (a blaster's burn, a scorch): a decal, cold, however it's named
+	if ( shader->polygonOffset )
+		return qfalse;
 	Q_strncpyz( name, shader->name, sizeof( name ) );
 	Q_strlwr( name );
+	if ( strstr( name, "mark" ) || strstr( name, "scorch" ) || strstr( name, "decal" ) )
+		return qfalse;
 	for ( size_t i = 0; i < ARRAY_LEN( words ); i++ ) {
 		if ( strstr( name, words[i] ) )
 			return qtrue;
