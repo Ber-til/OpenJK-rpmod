@@ -333,7 +333,7 @@ Assemble a mission out of steps, then play it: NPCs, models, effects, sounds, mu
 ### NPC talk and objectives *(experimental)*
 
 - NPC talk: an NPC says a line in chat as a player would, with its own name, name color and an optional emote. During a cinematic with the HUD hidden it shows as a subtitle
-- Objectives: a list of mission objectives on the left while the Esc menu is up. Add them, strike them through, take them off or clear them, from a step or with `/objective`
+- Objectives: a list of mission objectives on the left while the Esc menu is up, or while playing with `/objectives` (on and off) or `+objectives` (held), for a bind or a radial menu. Add them, strike them through, take them off or clear them, from a step or with `/objective`
 
 ## Cinematic Manager *(playing it for others is experimental)*
 
@@ -405,6 +405,8 @@ Edit the map on your own screen: move or hide any part of it, place models, ligh
 - **Brushes**: any brush of the map, not only its props, moved with the X, Y and Z arrows, or hidden on your screen
 - **Models**: place models, carry them to the crosshair, turn and scale them. The map's own props can be lifted out too, to move or remove them; or swapped for another model: pick it in the list and **Swap for ...** hides the prop and stands the model where it was, as big as fits in its place, ready to turn and scale. It takes the light around it rather than the light baked into the map
   - Other maps too, whole: type *map* in the list, pick one and Add puts it at the crosshair, its middle there and its lowest point on what you're looking at; move, turn and scale it like a model to fuse the two maps; it turns and scales around that spot, and its sky and fog are left out. It's drawn only: no one can walk on it, as the server only knows its own map. Others see it shared if they have that map too
+- **Brushes**: shapes of your own, built like the map's: a **Box**, a **Wedge**, a **Cylinder** (its sides) or **Stairs** (its steps), put at the crosshair with the texture it's on. Drag the yellow handles on its sides to size it, the arrows to move it, on a grid of 8, 16 or 32 units (Shift: by a unit); turn it with Yaw, Pitch and Roll. On the **Faces** page, click its faces (Shift adds more) and pick a texture for them, with its scale, shift and turn. A brush of the map's, clicked, can be **Made editable**: the map's is hidden and yours takes its place, its faces moved one by one with their handles and given other textures; Delete puts the map's back. They're lit by the map's light where they stand (its baked shadows aren't on them). *Needs the release's renderer, OpenGL or Vulkan.*
+  - They're only drawn: no one bumps into them or stands on them, as the server knows nothing of them
 - **Lights**: dynamic lights with a color and reach, that can follow a light style
 - **Sounds**: speakers that play any music or sound, heard near them or everywhere, looping
 - **Styles**: give the map's switchable lights a new pattern (flicker, pulse, strobe...) and color, change its existing light styles, or the lighting of the whole map
@@ -422,8 +424,8 @@ Edit the map on your own screen: move or hide any part of it, place models, ligh
 - `Clear` takes away the edits shown
 - **Share** *(experimental)* sends your edits to everyone on the map who uses this client; **Unshare** takes them back
 - Shared edits show in place of the receiver's own without touching their files, until they're unshared or the map changes; `rpc_mapShare 0` opts out
-- Only the look of the map changes: hidden walls still block and moved props have no collision, since the server knows nothing of it. Triggers are the world editor's now (`/world`: zones used or walked into, kept by C1B3R)
-- Players who join later need it shared again
+- Only the look of the map changes for the server: hidden walls still block and moved props have no collision, since it knows nothing of them. Triggers are the world editor's now (`/world`: zones used or walked into, kept by C1B3R)
+- Players who join later get what's shared too (C1B3R keeps it until the map changes)
 
 ## Sound and Music Managers
 
@@ -576,6 +578,17 @@ A menu drawn by this client, with room for everything, in two looks: **Modern** 
 - **Camera presets**: type a name under the settings and **Save** them as it; **<** and **>** go through the saved ones, each loaded as it comes up; **Delete** takes the one named out. Kept in `camerapresets.txt`, also `/campreset`
 - Nothing is shipped for it: the menus, RPMod's or the base game's, are changed as the game reads them
 
+## Photo Mode
+
+A free camera to take pictures: `/photomode`, or **Photo Mode** under the Esc menu's Tools.
+
+- The view leaves you: hold the right mouse button to look around, **WASD** to fly (**Space** up, **C** down, **Shift** fast, **Ctrl** slow), **Q** and **E** to roll, the wheel to zoom. The HUD, chat and crosshair are hidden and your own character is in the picture; the game goes on round you. The camera stays within reach of you (the server only sends what's near)
+- **Camera** page: zoom (field of view), roll, **Back to my view**; **Depth of field**: click the scene to focus on what's there (a person, before the wall behind them), with how much stays sharp and how blurred the rest is; a **Frame** to shoot in (Screen, 16:9, 21:9, 4:3, 1:1, 9:16), the rest darkened, with the rule of thirds' lines if wanted
+- **Look** page: the cinematic camera's filters (Noir, Sepia, Old film, Night vision...) and their strength; colour: saturation, contrast, brightness, warmth; lens: grain, vignette, colour fringes, scanlines; **Reset**
+- **Snap** (or **Enter**) saves a PNG at your window's full size, cut to the frame, without the panel, in `screenshots/photo_<date>_<time>.png`. **H** hides the panel; **Esc** closes
+- Depth of field and the Look need the Vulkan renderer; the camera, frame and Snap work with either
+- An idea from a player's report
+
 ## Emote Preview
 
 See an emote before you do it, right in the Help menu.
@@ -634,12 +647,23 @@ A datapad on your screen, used like a phone. `/datapad`, or **TOOLS** in the in-
   - **Colour:** what it's lit in: cyan, blue, green, amber, red, violet or white
   - **Keys:** click **Open it** or **Close it**, then press the key for it (Esc leaves it as it was). They work while you play and while it's open
   - **Your character holds a datapad while it's open:** your character plays RPMod's `/emlift` as you open it, and it ends (a moment's crouch, as C does) as you fold or close it
+- **Games:** a folder on the home screen with Pazaak, WANGA and The Path. Each is played against others on the same server, through C1B3R, which deals and checks every move. **< Games** goes back to the folder
 - **Pazaak:** KOTOR's card game, against another player on the same server, through C1B3R. The datapad grows to the right side of the screen for it
   - **Play:** the server's tables, to **Join** one waiting for a player or **Watch** a match; or start one (a name, all cards or ± cards only, your deck) and wait for someone to sit down
   - **The table:** each player's 3x3 table, total, sets won and turn; your hand of 4 (the other one face down). Click a card, then **Play it** (+ or − for ± cards, 1 or 2 for the 1±2), then **End turn** or **Stand**. A turn lasts 90 s. Leaving or **Forfeit** gives the match to the other player
   - **Side decks:** build 10-card decks from every card, name them and **Save** them on C1B3R (they follow your game everywhere); **Play with it** picks the one you play with
   - **Rules** on the datapad. C1B3R deals and checks every move: nobody sees your hand or plays a card they don't have
   - The cards are the datapad's own; Jedi Academy's sounds. Art of your own in a pk3 is used instead: `pazaak/cards/main`, `plus`, `minus`, `either`, `special`, `back` (.png, .tga or .jpg) and `pazaak/sounds/click`, `deal`, `play`, `turn`, `stand`, `win`, `lose` (.wav)
+- **WANGA:** a cantina card game of the backworlds, for 2 to 10 players at a table (UNO's rules). The syndicates are its colours: Crimson Dawn, the Pyke Syndicate, Black Sun and the Hutt Cartel
+  - **Play:** the server's tables, to **Join** one or **Watch** it; or start one and wait for players. The host **Starts** it once there are two or more
+  - **The table:** the players, their cards left and whose turn it is, the way play goes; the discards and the syndicate asked for; your hand, the cards you can play lit. Click one to play it (a wild asks for the syndicate), or **Draw** (a card you can play: play it or **Keep it**)
+  - **The cards:** each syndicate has 0 to 9 and three actions: **Ambush** (the next player loses their turn), **Double-Cross** (play turns the other way), **Pay Up +2**; the wilds are **Smuggler's Run** (you name the syndicate) and **Bounty +4** (only when you hold nothing of the syndicate asked for)
+  - **WANGA!:** press it as you play your second-to-last card; down to one without calling it, anyone can **Catch** you before the next player's move, and you draw two. The first with no cards wins; the host can **Play again**
+  - A turn lasts 60 s, then you draw one and pass. Art of your own: `wanga/cards/crimson`, `pyke`, `blacksun`, `hutt`, `wild`, `back` (.png, .tga or .jpg)
+- **The Path:** a JEDI original for two, from [JEDI's rules](https://www.jediholo.net/archives/documents-2/the-path/): a 5x5 board, each player's Master on their Force Nexus and four Padawans
+  - Five of the sixteen Techniques (Jung, Jung Ma, Shun, Sai, Flowing Water, Dulon, Shii-Cho, Makashi, Soresu, Ataru, Shien, Djem So, Niman, Sokan, Jar'Kai, Trakata) are dealt: two each and one shared. The board is always drawn from your side
+  - **A turn:** click one of your pawns, then a lit square (a solid one is your first Technique's, an outlined one your second's): it moves there and takes a pawn of the other's on it; the Technique used is swapped with the shared one. With no move at all, **Only swap** one
+  - **Winning:** take the other's Master (Mastery of Body), or bring your Master onto their Nexus (Mastery of Spirit). A turn lasts 90 s, then a move is made for you
 - **HoloNet:** JEDI's news from jediholo.net, read by your game straight from the site: the latest articles listed (title, date, author, category), one opened whole with its pictures, scrolled with the wheel, and **Open on the web**. Read again every 10 minutes, or with **Refresh**
 - **Comport:** JEDI's forum, as datapad pages: the forums by category, a forum's topics (pinned ones first, with their replies and views, page by page), a topic's posts with their quotes and pictures, and **On the web**
   - **Log in** with your Comport name and password to read what needs an account, and to **Reply** to a topic (Enter starts a new paragraph; BBCode as on the site). The forum's own messages show if something's refused (posting too soon, too short...)
@@ -863,6 +887,15 @@ The tools share what they do with everyone with this client ("hooks": NPC walks 
   - **Ambient occlusion** (`r_ssao 1`): corners, creases and the ground under things darkened. `r_ssaoRadius` is how far it reaches (48 units), `r_ssaoIntensity` how dark (0.6); the RENDERER page's **AO Strength** under it sets that: Low (0.3), Medium (0.6, the default) or Strong (1)
   - **Soft particles** (`r_softParticles 1`): smoke, fire, sprites and other effects fade where they meet walls and floors instead of cutting into them with a hard line; `r_softParticlesDepth` is how far in front of a wall they start to fade (24). In fog too; not on the map's own surfaces
   - **FXAA** (`r_fxaa 1`): smooths edges over the finished picture, the edges of grass and fences too, which anti-aliasing misses
+  - **SMAA** (`r_smaa 1`): smooths edges over the finished picture as FXAA does but sharper, without its blur, and far cheaper than anti-aliasing at high resolutions; in FXAA's place when both are on
+  - **FSR upscaling** (`r_fsr` 1 Ultra Quality, 2 Quality, 3 Balanced, 4 Performance; then `vid_restart`): the picture is drawn at 77%, 67%, 59% or 50% of the window and scaled up by AMD's FidelityFX Super Resolution 1, edges kept sharp, for more frames a second; only the 3D view: the HUD, the console and the menus are drawn on it at the window's own size, sharp (not with MSAA, where they're scaled up with it); screenshots are the upscaled picture. Not with supersampling, which wins when both are on
+  - **Water** (`r_water 1`): the map's water (by its material or for being water) ripples, bends and darkens what's under it the deeper it is, and mirrors the view along its rippled surface, more at a glancing look; water that slopes or falls (a slide, a waterfall) flows instead, what's seen through it wavering downhill with streaks of light running down it. The map's own water only, not decals or effects. `r_waterStrength` (1, 0 to 2), `r_waterRipples` the ripples' size (64 units)
+  - **Wet surfaces** (`r_wetSurfaces 1`): under the map editor's rain (a rain weather box), the ground darkens as it soaks for about 20 seconds, shines, and gathers puddles that mirror the view with rings from the drops; after the rain it dries over a minute and a half. `r_wetStrength` (1, 0 to 2). The whole box gets wet, its indoor parts too
+  - **Clouds** (`r_clouds`, on or off, on): the clouds an admin composed (the sky composer sets their cover; none without it), a layer over the world, drifting with the weather's wind, lit by the sun (bright edges toward it, pink at dusk), heavier and grey while it rains, lit from inside by the composer's lightning. **Cloud shadows** (`r_cloudShadows`, 0 to 1, 0.5) drift softly over the ground with them under open sky, never under a roof (the map traced from the sun), cast by the composer's sun
+  - **Aerial haze** (`r_aerialHaze`, 0 to 4; `r_aerialHazeStart`, 768 units): far things fade into the sky's colour that way, less high up
+  - **Sky sharpening** (`r_skySharpen`, 0 to 1): the map's skybox, often a small picture blown up, crisper
+  - **The sky composer** (`/skycomposer`, or Sky Composer under the Esc menu's Tools): a window that sets the sky for everyone: **Classic** (the map's skybox) or **Composed** (a sky worked out from the hour in its place: blue by day, red and orange low at dusk, deep blue at night with twinkling stars), the hour, the clouds and lightning, and objects in the sky, each added where you look: planets (land, seas and a glow of air), gas giants (banded, ringed or not), moons (grey, cratered), a second sun, a battle station (plates, a trench, a dish), nebulae, a fleet of ships with lit engines, and a model of your choice (a ship, a construct: far out in the sky, behind the map's own things, lit by the sky's sun (dark at night), facing a heading or turning); each moved, sized, coloured and ringed with sliders, lit by the sun as it moves round them. Hold the right mouse button to look around. **Share** (RPMod admins) shows it to everyone, kept by C1B3R for who joins later; a shared sky shows in place of your own, except while the window is open. Its Sun object (else its hour's sun) is the sun for the sun shafts and real shadows; at night its Moon object takes over, wherever it's placed: a dim, cool moonlight, fainter shafts, lighter shadows and cloud shadows, cast from the moon's side
+  - **Heat haze** (`r_heatHaze 1`): the air shimmers over fire, flames, explosions, thrusters and lava (effects found by their name), what's behind them wavering, more above them; `r_heatHazeStrength` how far, in pixels on a 480 high screen (3)
   - **Sharpening** (`r_sharpen`, 0 to 1): crisper detail, against the softness of FXAA or a lower `r_renderScale`
   - **Sun shafts** (`r_sunShafts 1`): beams of light from the sun through gaps, on maps whose sky has a sun; `r_sunShaftsIntensity` how bright (1)
   - **Volumetric light** (`r_volumetric 1`): sabers, blaster bolts, torches, force effects and every other dynamic light glow in the air around them, the glow gathered round the light and fading out to its radius; with `cg_saberlight`, lit sabers too. `r_volumetricIntensity` is how thick the air is (0.5; the RENDERER page's **Volumetric Strength**: Low 0.25, Medium 0.5, High 1), `r_volumetricFog` how many times more it glows on a map with fog all over (2). The 12 lights that glow most in view take part

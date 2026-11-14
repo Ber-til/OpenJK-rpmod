@@ -478,6 +478,7 @@ _retry:
     vk.cmd->last_pipeline = VK_NULL_HANDLE;
 
     backEnd.screenMapDone = qfalse;
+    vk_rpmod_fsr_begin_frame(); // OpenJK-rpmod: drawn at the view's size until FSR's switch
 
     if (vk_find_screenmap_drawsurfs()) {
         vk_begin_screenmap_render_pass();
@@ -715,6 +716,8 @@ void vk_end_frame( void )
             if ( vk.cmd->toSwapchain ) {
                 vk_end_render_pass();
 
+                VkDescriptorSet gammaSource = vk_rpmod_fsr(); // OpenJK-rpmod: with FSR, the picture scaled up to the window
+
                 vk.renderWidth = gls.windowWidth;
                 vk.renderHeight = gls.windowHeight;
                 vk.renderScaleX = vk.renderScaleY = 1.0;
@@ -722,7 +725,7 @@ void vk_end_frame( void )
                 vk_begin_render_pass( vk.render_pass.gamma.handle, vk.framebuffers.gamma[vk.cmd->swapchain_image_index], qfalse, vk.renderWidth, vk.renderHeight );
                 qvkCmdBindPipeline( vk.cmd->command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.gamma_pipeline );
                 //qvkCmdBindDescriptorSets( vk.cmd->command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.pipeline_layout_post_process, 0, 1, &vk.dglow_image_descriptor[0], 0, NULL );
-                qvkCmdBindDescriptorSets( vk.cmd->command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.pipeline_layout_post_process, 0, 1, &vk.color_descriptor, 0, NULL );
+                qvkCmdBindDescriptorSets( vk.cmd->command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.pipeline_layout_post_process, 0, 1, &gammaSource, 0, NULL );
 
                 qvkCmdDraw( vk.cmd->command_buffer, 4, 1, 0, 0 );
             }
@@ -892,8 +895,14 @@ void vk_read_pixels( byte *buffer, uint32_t width, uint32_t height )
             srcImage = vk.capture.image;
         }
         else {
+            uint32_t fsrWidth, fsrHeight;
+            VkImage fsr = vk_rpmod_fsr_image( &fsrWidth, &fsrHeight );
+
             srcImageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             srcImage = vk.color_image;
+            // OpenJK-rpmod: with FSR, the picture as it's seen, scaled up (the screenshot asked its size)
+            if ( fsr != VK_NULL_HANDLE && width == fsrWidth && height == fsrHeight )
+                srcImage = fsr;
         }
     }
     else {

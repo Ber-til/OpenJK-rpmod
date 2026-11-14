@@ -136,6 +136,7 @@ The console commands, keys and settings this client adds. What each feature does
 - `/storyteller disarm [name|all]` disarms one, or all; `/storyteller armed` lists the armed stories
 - `/storyteller close` closes the storyteller
 - `/objective [list]` lists the objectives; `/objective add|done|undone|remove <text or number>`, `/objective clear [done]` and `/objective title [text]` change them for everyone with this client (experimental)
+- `/objectives [on|off]` shows the objectives while you play (or hides them); `+objectives` shows them while the key is held. Both work in binds and radial menus
 
 ## Storyteller keys
 
@@ -178,6 +179,9 @@ The console commands, keys and settings this client adds. What each feature does
 - `/mapedit clear` takes away the edits shown
 - `/mapedit share` sends your edits to everyone on the map with this client; `/mapedit unshare` takes them back (experimental)
 - `/mapedit on | off` shows the edits outside the editor too, or not
+- `/mapedit brush add <box|wedge|cylinder|stairs>` puts a brush of your own at the crosshair, with the texture it's on
+- `/mapedit brush edit` makes the map's brush at the crosshair one of yours, to reshape and retexture
+- `/mapedit grid <8|16|32|off>` what brushes move and size by
 
 ## Map Editor keys
 
@@ -241,6 +245,11 @@ The console commands, keys and settings this client adds. What each feature does
 - `/specialmove <name>` plays a move: its keys pressed for you for a moment. Bind keys to it, e.g. `bind k "specialmove kata"`. Names: `kata`, `lunge`, `spinattack`, `dfa`, `flipslash`, `staffleap`, `dualleap`, `stabdown`, `backattack`, `backattackcrouch`, `backflipattack`, `cartwheelleft`, `cartwheelright`, `butterflyleft`, `butterflyright`, `kickfront`, `kickback`, `kickleft`, `kickright`, `rollstab`, `rollforward`, `rollback`, `rollleft`, `rollright`, `backflip`, `flipforward`, `flipleft`, `flipright`, `wallrunleft`, `wallrunright`, `wallflipleft`, `wallflipright`, `wallrunup`, `wallgrab`
 - `cl_specialMovesDebug 1` prints each step of a move played and what the game shows
 
+## Photo Mode
+
+- `/photomode` opens or closes photo mode (a free camera for pictures); `/photomode snap` takes one, `/photomode frame <Screen|16:9|21:9|4:3|1:1|9:16>` sets the frame, `/photomode filter <name>` a filter (as the panel names it, e.g. Noir), `/photomode focus <units>` the depth of field's focus (0 off)
+- Keys: right mouse looks, `WASD`, `Space`, `C` fly (Shift fast, Ctrl slow), `Q`/`E` roll, wheel zooms, left click on the scene focuses, `Enter` snaps, `H` hides the panel, `Esc` closes
+
 ## Other tools
 
 - `/escmenu [modern|kotor|classic] [category]` opens the Esc menu in that style, on that category or tab (`/escmenu kotor options`); `cl_escMenu` picks what Esc opens: 0 the game's own (default), 1 Modern, 2 KOTOR
@@ -251,11 +260,13 @@ The console commands, keys and settings this client adds. What each feature does
 - `/inventory` opens what your RPMod account carries, or closes it (`/inventory staff` on its staff page, for RPMod admins); `/inventory list` prints your items as last asked, `/inventory give <item> [client]` gives one to the player you aim at (or that client number), `/inventory show|hide <item>` shows it on Inspect or not
 - `/datapad` opens your datapad in the bottom right corner, or puts it away; `/datapad open`, `/datapad close` and `/datapad settings` go straight there. Its Settings set the keys that open and close it; Esc puts it away
 - `/datapad holonet [n]` opens the HoloNet on it (the n-th article); `/datapad comport [guest|<forum number>]` the Comport (its forums, or that one)
+- `/datapad games` opens the Games folder; `/datapad wanga` and `/datapad path` open WANGA and The Path: `/wanga` and `/thepath` `create [name]`, `join <table>`, `watch <table>`, `start`, `again`, `leave`, and their moves (`/wanga play <card> [R|B|G|Y]`, `draw`, `keep`, `call`, `catch`; `/thepath move <technique 0|1> <x> <y> <x> <y>`, `swap <technique 0|1>`), for binds
 - `/datapad pazaak` opens Pazaak on it; `/pazaak create [name]`, `/pazaak join <table>`, `/pazaak watch <table>`, `/pazaak end`, `/pazaak stand`, `/pazaak play <card 0-3> [1|-1] [1|2]` and `/pazaak leave` do what its buttons do, for binds; `cl_pazaakDeck` is the side deck you play with
-- `/burstfire [on|off]` or `cl_burstFire 1` (the default): the E-11's alt fire in bursts (0.4 s charge with a glow at the muzzle and the Bryar's charge sound, 4 shots, 1.5 s cool down)
+- `/burstfire [on|off]` or `cl_burstFire 1` (the default): the E-11's alt fire in bursts (0.4 s charge with a glow at the muzzle and the Bryar's charge sound, 4 shots, 1 s cool down)
 - `/datapad notes` opens Notes
+- `/skycomposer` opens the sky composer (RPMod admins; Vulkan with `r_fbo 1`); its words, for binds: `sky classic|composed`, `time <0-24|off>`, `direction <0-360|auto>` (the side the hour's sun and its glow are on), `clouds <0-1>`, `lightning on|off`, `add <planet|gas|ringed|moon|sun|station|nebula|fleet> [size [yaw pitch]]` (where you look, or there), `here <n> [yaw pitch]`, `size <n> <degrees>`, `color <n> <r g b>`, `rings <n> on|off` (a fleet: how many more ships), `tilt <n> <degrees>`, `seed <n> <number>`, `add model <path> [size [yaw pitch]]`, `model <n> <path>`, `heading <n> <degrees>`, `turn <n> <degrees a second>`, `remove <n>`, `clear`, `list`, `share`, `unshare`, `help`
 - `/datapad chat [account]` opens Chat (straight to the conversation with that RPMod account's main character); `/datapad chat group <id>` a group chat; `cl_chatSound`, `cl_chatRingtone` and `cl_chatNotify` are its sounds and notices
-- `/world` opens the world editor (RPMod admins): objects, zones (used, or walked into for the storyteller), bodies and containers on this map, each with an optional story name for the storyteller; `/world read` reads what you aim at or stand in, `/world drop` drops the item picked in the Inventory, `/world near` lists what's near you, `/world edit <id>` edits one; Use on a thing reads it
+- `/world` opens the world editor (RPMod admins): objects, zones (used, or walked into for the storyteller), bodies, containers and items (one of yours, or made there, for anyone to pick up) on this map, each with an optional story name for the storyteller; `/world read` reads what you aim at or stand in, `/world drop` drops the item picked in the Inventory, `/world near` lists what's near you, `/world edit <id>` edits one, `/world remove <id or story name>` takes one away (admins: from a bind, or a story's Run a command step once a trigger's been used); Use on a thing reads it
 - `rpdump save <what> <name>` / `rpdump load <name>` / `rpdump delete <name>` (RPMod's own) also save, swap in or forget the map's world things on C1B3R (RPMod admins)
 - `cl_datapadColor` (0-6) is its colour; `cl_datapadEmote 1` has your character hold a datapad (`/emlift`) while it's open; `cl_datapadHand 1` shows a datapad model in the hand then, seen by everyone with the client (`cl_datapadHandPos "<tag> <x y z> <pitch yaw roll> <scale>"` where it sits)
 - `/datapad pos <x> <y>` moves where it opens on the 640x480 screen (its top left; `cl_datapadX`, `cl_datapadY`); `/datapad pos` puts it back above the HUD

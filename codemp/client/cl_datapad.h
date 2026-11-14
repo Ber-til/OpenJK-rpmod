@@ -78,6 +78,8 @@ void		CL_Comport_Init( void );
 void		CL_Comport_Open( const char *what );
 void		CL_HoloNet_Open( int n );
 
+void		CL_Datapad_ToGames( void );			// back to the Games folder, from a game
+
 // cl_pazaak.cpp: the Pazaak app
 void		CL_Pazaak_Draw( const dpRect_t *screen );
 void		CL_Pazaak_Shown( qboolean shown );		// on the datapad's screen, or not any more

@@ -2703,7 +2703,10 @@ static qboolean ST_Play( stRun_t *r, stStep_t *steps, int numSteps, const char *
 				return qfalse;
 			ST_TypedText( s->values[2], 0, &total );
 			if ( s->values[7][0] && !r->typeSounded && total ) {
-				CL_AddReliableCommand( va( "rpsound once %s all", s->values[7] ), qfalse );
+				// heard by whoever the message is for, not everyone (C1B3R report #38)
+				const char *who = ST_Target( s->values[0], "all", &error );
+
+				CL_AddReliableCommand( va( "rpsound once %s %s", s->values[7], who && who[0] ? who : "all" ), qfalse );
 				r->sent++;
 				r->typeSounded = qtrue;
 				st.nextSend = cls.realtime + ST_CommandGap();

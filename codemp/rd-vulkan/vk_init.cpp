@@ -67,7 +67,7 @@ static void vk_set_render_scale( void )
 		vk.windowAdjusted = qtrue;
 	}
 
-	if (r_fbo->integer && r_ext_supersample->integer && !r_renderScale->integer) // OpenJK-rpmod: supersampling, as above
+	if (r_fbo->integer && ( r_ext_supersample->integer || r_fsr->integer ) && !r_renderScale->integer) // OpenJK-rpmod: supersampling, FSR, as above
 	{
 		vk.blitFilter = GL_LINEAR;
 	}
@@ -164,10 +164,13 @@ void get_scissor_rect( VkRect2D *r ) {
 		if (r->offset.y < 0)
 			r->offset.y = 0;
 
-		if (r->offset.x + r->extent.width > glConfig.vidWidth)
-			r->extent.width = glConfig.vidWidth - r->offset.x;
-		if (r->offset.y + r->extent.height > glConfig.vidHeight)
-			r->extent.height = glConfig.vidHeight - r->offset.y;
+		// OpenJK-rpmod: within what's drawn into: FSR's 2D is the window's size, larger than the view
+		const int maxW = MAX( glConfig.vidWidth, (int)vk.renderWidth ), maxH = MAX( glConfig.vidHeight, (int)vk.renderHeight );
+
+		if (r->offset.x + r->extent.width > maxW)
+			r->extent.width = maxW - r->offset.x;
+		if (r->offset.y + r->extent.height > maxH)
+			r->extent.height = maxH - r->offset.y;
 	}
 }
 
@@ -353,6 +356,15 @@ void vk_create_window( void ) {
 			else if ( r_ext_supersample->integer ) {
 				glConfig.vidWidth *= 2;
 				glConfig.vidHeight *= 2;
+			}
+			// OpenJK-rpmod: FSR upscaling: drawn smaller, by its quality's share of the window, and
+			// scaled up by vk_rpmod_fsr before the gamma pass
+			else if ( r_fsr->integer ) {
+				static const float shares[5] = { 1.0f, 1.0f / 1.3f, 1.0f / 1.5f, 1.0f / 1.7f, 1.0f / 2.0f };
+				const float share = shares[Com_Clampi( 0, 4, r_fsr->integer )];
+
+				glConfig.vidWidth = MAX( 320, (int)( glConfig.vidWidth * share + 0.5f ) & ~1 );
+				glConfig.vidHeight = MAX( 240, (int)( glConfig.vidHeight * share + 0.5f ) & ~1 );
 			}
 
 			gls.captureWidth = glConfig.vidWidth;

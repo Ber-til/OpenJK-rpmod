@@ -484,7 +484,13 @@ void SCR_DrawScreenField( stereoFrame_t stereoFrame ) {
 			CL_RpCinematic_Frame();
 			CL_NpcWalk_Frame();
 			CL_Languages_Frame();
+			CL_PhotoMode_Frame();
 			CL_CGameRendering( stereoFrame );
+			// photo mode: the picture alone, with its own panel
+			if ( CL_PhotoMode_Active() ) {
+				CL_PhotoMode_Draw();
+				break;
+			}
 			CL_RpCinematic_Draw();
 			CL_NpcNames_Draw();
 			CL_Inspect_DrawHint();
@@ -501,8 +507,10 @@ void SCR_DrawScreenField( stereoFrame_t stereoFrame ) {
 			CL_AnimManager_Draw();
 			CL_Presets_Draw();
 			CL_SpecialMoves_Draw();
+			CL_SkyComposer_Draw();
 			CL_BurstFire_Draw();
 			CL_ChatLog_Draw();
+			CL_RpHooks_DrawPlaying();	// the objectives, when held or turned on
 			CL_Inventory_Draw();
 			CL_Inspect_Draw();
 			CL_Holster_Draw();

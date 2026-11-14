@@ -1281,6 +1281,9 @@ VkPipeline vk_create_pipeline( const Vk_Pipeline_Def *def, renderPass_t renderPa
     depth_stencil_state.flags = 0;
     depth_stencil_state.depthTestEnable = (def->state_bits & GLS_DEPTHTEST_DISABLE) ? VK_FALSE : VK_TRUE;
     depth_stencil_state.depthWriteEnable = (def->state_bits & GLS_DEPTHMASK_TRUE) ? VK_TRUE : VK_FALSE;
+    // OpenJK-rpmod: the shadow map's pass draws depth alone, for see-through surfaces too (r_water's)
+    if ( renderPassIndex == RENDER_PASS_SHADOW )
+        depth_stencil_state.depthWriteEnable = VK_TRUE;
 
 #ifdef USE_REVERSED_DEPTH
     depth_stencil_state.depthCompareOp = (def->state_bits & GLS_DEPTHFUNC_EQUAL) ? VK_COMPARE_OP_EQUAL : VK_COMPARE_OP_GREATER_OR_EQUAL;

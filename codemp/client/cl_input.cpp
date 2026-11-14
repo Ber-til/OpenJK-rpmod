@@ -1118,6 +1118,10 @@ void CL_MouseEvent( int dx, int dy, int time ) {
 		CL_EscMenu_MouseEvent( dx, dy );
 	} else if ( Key_GetCatcher( ) & KEYCATCH_SPECIALMOVES ) {
 		CL_SpecialMoves_MouseEvent( dx, dy );
+	} else if ( Key_GetCatcher( ) & KEYCATCH_SKYCOMPOSER ) {
+		CL_SkyComposer_MouseEvent( dx, dy );
+	} else if ( Key_GetCatcher( ) & KEYCATCH_PHOTOMODE ) {
+		CL_PhotoMode_MouseEvent( dx, dy );
 	} else if ( Key_GetCatcher( ) & KEYCATCH_CHATLOG ) {
 		CL_ChatLog_MouseEvent( dx, dy );
 	} else if ( Key_GetCatcher( ) & KEYCATCH_INVENTORY ) {
@@ -1427,7 +1431,8 @@ void CL_CmdButtons( usercmd_t *cmd ) {
 
 	// typing: the talk balloon, but not while hanging on a wall with cl_wallstick, as the game
 	// takes every move from a player who talks, the jump holding them there too
-	if ( Key_GetCatcher( ) && !clWallStick.holding ) {
+	// (nor in photo mode alone: the balloon would be in the picture)
+	if ( Key_GetCatcher( ) && Key_GetCatcher( ) != KEYCATCH_PHOTOMODE && !clWallStick.holding ) {
 		cmd->buttons |= BUTTON_TALK;
 	}
 

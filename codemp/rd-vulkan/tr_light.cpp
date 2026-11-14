@@ -382,6 +382,25 @@ void R_SetupEntityLighting( const trRefdef_t *refdef, trRefEntity_t *ent ) {
 		}
 	}
 
+	// OpenJK-rpmod: a model in the sky (the sky composer's) lit by the sky's sun, not by where you stand:
+	// the sun's colour from its side, the sky's light on the rest; a dim light at night
+	if ( ent->e.renderfx & RF_SKYMODEL ) {
+		vec3_t sunDir, sunColor;
+		float m, day;
+
+		if ( vk_rpmod_sky_sun( sunDir, sunColor ) && ( m = MAX( sunColor[0], MAX( sunColor[1], sunColor[2] ) ) ) > 0.0f ) {
+			day = Com_Clamp( 0.0f, 1.0f, ( sunDir[2] + 0.1f ) / 0.25f ) * Com_Clamp( 0.0f, 1.0f, m );
+			VectorScale( sunColor, tr.identityLightByte * 1.1f * day / m, ent->directedLight );
+			VectorCopy( sunDir, lightDir );
+		} else {
+			day = 0.0f;
+			VectorSet( ent->directedLight, 0.12f * tr.identityLightByte, 0.14f * tr.identityLightByte, 0.2f * tr.identityLightByte );
+			VectorSet( lightDir, 0.0f, 0.0f, 1.0f );
+		}
+		VectorSet( ent->ambientLight, 0.8f, 0.86f, 1.0f );
+		VectorScale( ent->ambientLight, tr.identityLightByte * ( 0.12f + 0.28f * day ), ent->ambientLight );
+	}
+
 	// clamp ambient
 	for ( i = 0 ; i < 3 ; i++ ) {
 		if ( ent->ambientLight[i] > tr.identityLightByte ) {
@@ -406,6 +425,8 @@ void R_SetupEntityLighting( const trRefdef_t *refdef, trRefEntity_t *ent ) {
 	ent->modelLightDir[0] = DotProduct( lightDir, ent->e.axis[0] );
 	ent->modelLightDir[1] = DotProduct( lightDir, ent->e.axis[1] );
 	ent->modelLightDir[2] = DotProduct( lightDir, ent->e.axis[2] );
+	if ( ent->e.renderfx & RF_SKYMODEL )
+		VectorNormalize( ent->modelLightDir );		// its axes are scaled up
 
 #ifdef USE_PMLIGHT
 	if (r_shadows->integer == 2 && r_dlightMode->integer == 2) {

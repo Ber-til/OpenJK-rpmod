@@ -989,6 +989,38 @@ void R_TakeScreenshot( int x, int y, int width, int height, char *fileName ) {
 
 /*
 ==================
+OpenJK-rpmod: the photo mode's crop, for the next PNG screenshot only
+==================
+*/
+static float rpShotCrop[4] = { 0.0f, 0.0f, 1.0f, 1.0f };
+
+void RE_SetScreenshotCrop( float x0, float y0, float x1, float y1 ) {
+	rpShotCrop[0] = Com_Clamp( 0.0f, 1.0f, x0 );
+	rpShotCrop[1] = Com_Clamp( 0.0f, 1.0f, y0 );
+	rpShotCrop[2] = Com_Clamp( rpShotCrop[0], 1.0f, x1 );
+	rpShotCrop[3] = Com_Clamp( rpShotCrop[1], 1.0f, y1 );
+}
+
+// the picture's rows (bottom up, 3 bytes a pixel, packed) cut to the crop, in place; its new size
+static void R_CropShot( byte *buf, int *width, int *height ) {
+	const int w = *width, h = *height;
+	const int x0 = (int)( rpShotCrop[0] * w + 0.5f ), x1 = (int)( rpShotCrop[2] * w + 0.5f );
+	const int y0 = (int)( rpShotCrop[1] * h + 0.5f ), y1 = (int)( rpShotCrop[3] * h + 0.5f );
+	const int cw = x1 - x0, ch = y1 - y0, bottom = h - y1;
+
+	rpShotCrop[0] = rpShotCrop[1] = 0.0f;
+	rpShotCrop[2] = rpShotCrop[3] = 1.0f;
+	if ( cw <= 0 || ch <= 0 || ( cw == w && ch == h ) )
+		return;
+	for ( int r = 0; r < ch; r++ )
+		memmove( buf + (size_t)r * cw * 3, buf + ( (size_t)( bottom + r ) * w + x0 ) * 3, (size_t)cw * 3 );
+	*width = cw;
+	*height = ch;
+}
+
+
+/*
+==================
 R_TakeScreenshotPNG
 ==================
 */
@@ -998,7 +1030,8 @@ void R_TakeScreenshotPNG( int x, int y, int width, int height, char *fileName ) 
 	int padlen=0;
 
 	buffer = RB_ReadPixels( x, y, width, height, &offset, &padlen );
-	RE_SavePNG( fileName, buffer, width, height, 3 );
+	R_CropShot( buffer + offset, &width, &height );	// OpenJK-rpmod: photo mode's frame
+	RE_SavePNG( fileName, buffer + offset, width, height, 3 );
 	ri.Hunk_FreeTempMemory( buffer );
 }
 
@@ -2193,6 +2226,9 @@ Q_EXPORT refexport_t* QDECL GetRefAPI( int apiVersion, refimport_t *rimp ) {
 	re.ext.G2API_FreeBone = G2API_FreeBone;	// OpenJK-rpmod
 	re.ext.SetWorldShaders					= RE_SetWorldShaders;	// OpenJK-rpmod
 	re.ext.MakeSpriteShader					= RE_MakeSpriteShader;	// OpenJK-rpmod
+	re.ext.BrushModel						= RE_BrushModel;		// OpenJK-rpmod
+	re.ext.FreeBrushModel					= RE_FreeBrushModel;
+	re.ext.SetScreenshotCrop				= RE_SetScreenshotCrop;	// OpenJK-rpmod
 	re.ext.WorldPieceModel					= RE_WorldPieceModel;
 
 	return &re;

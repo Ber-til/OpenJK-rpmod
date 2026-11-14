@@ -216,6 +216,7 @@ qboolean RC_FocusTarget( const char *who, vec3_t out );
 qboolean RC_Filter( int type, int strength );
 void RC_NoFilter( void );
 const char *RC_FilterName( int type );
+void RC_PhotoFilter( struct screenFilter_s *f, int type, float saturation, float contrast, float brightness, float warmth );	// photo mode's look
 void RC_DrawTransitions( const rcShot_t *shot, int ms );
 
 // the camera, for a cinematic: the HUD and the bars as it has them, then each of its shots, msIn

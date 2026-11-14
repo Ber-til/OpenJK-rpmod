@@ -47,6 +47,19 @@ typedef struct screenFilter_s {
 	float	strength;			// 0 none of it, 1 all
 } screenFilter_t;
 
+// OpenJK-rpmod: a face of a brush of the map editor's own (re.ext.BrushModel): a flat convex polygon in the
+// model's own space, its texture coordinates in world units (divided by the texture's own size, so a
+// bigger face shows more of it), facing normal
+#define BRUSHFACE_MAX_POINTS	32
+
+typedef struct brushFace_s {
+	char	shader[MAX_QPATH];
+	int		numPoints;
+	vec3_t	xyz[BRUSHFACE_MAX_POINTS];
+	vec2_t	st[BRUSHFACE_MAX_POINTS];
+	vec3_t	normal;
+} brushFace_t;
+
 //
 // these are the functions exported by the refresh module
 //
@@ -314,6 +327,15 @@ typedef struct refexport_s {
 		// sprite image growing up from it, width by height, spacing apart (as surfaceSprites vertical);
 		// until the shaders are loaded again
 		void				(*MakeSpriteShader)						( const char *name, const char *ground, const char *sprite, int width, int height, int spacing );
+		// the client's map editor: a brush of its own, its faces as one model, lit as the map's vertex-lit
+		// surfaces are, by the light grid where it stands (origin, axis: only for its light; it's drawn
+		// wherever its entity is). reuse: a handle it gave before, made again in its place. Until the
+		// next map, or FreeBrushModel; 0 if there's no room
+		qhandle_t			(*BrushModel)							( qhandle_t reuse, const brushFace_t *faces, int numFaces, const vec3_t origin, const vec3_t axis[3] );
+		void				(*FreeBrushModel)						( qhandle_t h );
+		// the client's photo mode: the next PNG screenshot cut to this part of the picture, as fractions
+		// of it from the top left (0 0 1 1 all of it); used once
+		void				(*SetScreenshotCrop)					( float x0, float y0, float x1, float y1 );
 	} ext;
 
 } refexport_t;

@@ -1679,6 +1679,14 @@ void CL_KeyDownEvent( int key, unsigned time )
 			CL_SpecialMoves_Escape();
 			return;
 		}
+		if ( ( Key_GetCatcher() & KEYCATCH_SKYCOMPOSER ) && !( Key_GetCatcher() & KEYCATCH_UI ) ) {
+			CL_SkyComposer_Escape();
+			return;
+		}
+		if ( ( Key_GetCatcher() & KEYCATCH_PHOTOMODE ) && !( Key_GetCatcher() & KEYCATCH_UI ) ) {
+			CL_PhotoMode_Escape();
+			return;
+		}
 		if ( ( Key_GetCatcher() & KEYCATCH_CHATLOG ) && !( Key_GetCatcher() & KEYCATCH_UI ) ) {
 			CL_ChatLog_Escape();
 			return;
@@ -1828,6 +1836,14 @@ void CL_KeyDownEvent( int key, unsigned time )
 	else if ( Key_GetCatcher() & KEYCATCH_SPECIALMOVES ) {
 		CL_SpecialMoves_KeyEvent( key, qtrue );
 	}
+	// the sky composer
+	else if ( Key_GetCatcher() & KEYCATCH_SKYCOMPOSER ) {
+		CL_SkyComposer_KeyEvent( key, qtrue );
+	}
+	// photo mode
+	else if ( Key_GetCatcher() & KEYCATCH_PHOTOMODE ) {
+		CL_PhotoMode_KeyEvent( key, qtrue );
+	}
 	// chat log
 	else if ( Key_GetCatcher() & KEYCATCH_CHATLOG ) {
 		CL_ChatLog_KeyEvent( key, qtrue );
@@ -1920,6 +1936,8 @@ void CL_KeyUpEvent( int key, unsigned time )
 
 	// always, so a key held when a menu opened over the placer doesn't stay held
 	CL_ModelManager_KeyEvent( key, qfalse );
+	CL_SkyComposer_KeyEvent( key, qfalse );
+	CL_PhotoMode_KeyEvent( key, qfalse );
 	CL_NpcManager_KeyEvent( key, qfalse );
 	CL_ShaderManager_KeyEvent( key, qfalse );
 	CL_EffectManager_KeyEvent( key, qfalse );
@@ -1990,6 +2008,7 @@ void CL_CharEvent( int key ) {
 	else if ( Key_GetCatcher() & KEYCATCH_WORLD )		CL_WorldItems_CharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_CHARACTERS )	CL_Characters_CharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_LANGUAGES )	CL_Languages_CharEvent( key );
+	else if ( Key_GetCatcher() & KEYCATCH_SKYCOMPOSER )	CL_SkyComposer_CharEvent( key );
 	else if ( Key_GetCatcher() & KEYCATCH_CGAME )		CGVM_KeyEvent( key|K_CHAR_FLAG, qtrue );
 	else if ( Key_GetCatcher() & KEYCATCH_MESSAGE )		Field_CharEvent( &chatField, key );
 	else if ( cls.state == CA_DISCONNECTED )			Field_CharEvent( &g_consoleField, key );

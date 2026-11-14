@@ -2358,8 +2358,8 @@ void Con_DrawConsole( void ) {
 	if ( con.displayFrac ) {
 		Con_DrawSolidConsole( con.displayFrac );
 	} else {
-		// draw notify lines
-		if ( cls.state == CA_ACTIVE ) {
+		// draw notify lines (not over photo mode's picture)
+		if ( cls.state == CA_ACTIVE && !CL_PhotoMode_Active() ) {
 			Con_DrawNotify ();
 		}
 	}

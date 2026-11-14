@@ -1604,6 +1604,7 @@ typedef struct backEndState_s {
 	qboolean doneSurfaces;						// done any 3d surfaces already
 	qboolean screenMapDone;
 	qboolean doneBloom;
+	int rpWorldViews;							// OpenJK-rpmod: world views queued this frame and not yet drawn (FSR draws the 2D after the last at the window's size)
 
 	qboolean hasGlowSurfaces;					// renderdoc shows empty dglow pass, or passes with 2 or 3 surfaces. maybe use a min surf count instead?
 	qboolean isGlowPass;
@@ -1985,6 +1986,7 @@ extern cvar_t	*r_defaultImage;
 extern cvar_t	*r_device;
 extern cvar_t	*r_ext_multisample;
 extern cvar_t	*r_ext_supersample;
+extern cvar_t	*r_fsr;					// OpenJK-rpmod: FSR 1 upscaling, 1-4 (vk_rpmod_post.cpp)
 // OpenJK-rpmod: TaystJK's own supersampling (a capture image the window's size, the rest twice that)
 // stays off: it lost the graphics device, then drew nothing. r_ext_supersample renders at twice the
 // size the way r_renderScale does instead, scaled down by the gamma pass (vk_init.cpp)
@@ -2340,7 +2342,9 @@ void RE_SetSkyPortal( const vec3_t origin );										// OpenJK-rpmod
 void RE_SetDepthOfField( float focus, float range, float blur );					// OpenJK-rpmod
 void RE_SetScreenFilter( const screenFilter_t *filter );							// OpenJK-rpmod
 int vk_rpmod_split( const drawSurf_t *drawSurfs, int numDrawSurfs );				// OpenJK-rpmod
-void vk_rpmod_after_opaque( drawSurf_t *drawSurfs, int numDrawSurfs );			// OpenJK-rpmod
+void vk_rpmod_after_opaque( drawSurf_t *drawSurfs, int numDrawSurfs, int numAll );
+qboolean vk_rpmod_sky_sun( vec3_t dir, vec3_t color );	// OpenJK-rpmod: the sky composer's sun, else the map's (vk_rpmod_post.cpp)
+int R_WetZones( vec3_t *mins, vec3_t *maxs, float *wetness, int max );					// OpenJK-rpmod: the rain boxes' wet ground (tr_WorldEffects.cpp)			// OpenJK-rpmod
 int RE_ForgetMissing( const char **shaderFiles, int numShaderFiles );				// OpenJK-rpmod: loadpk3
 int R_ForgetBadSkins( void );														// OpenJK-rpmod: loadpk3
 // OpenJK-rpmod: the map editor's fog
@@ -2353,6 +2357,8 @@ void RE_ClearAddedFogs( void );
 extern int tr_worldLoads;
 void RE_HideWorldTriangles( const int *surfaces, const int *triangles, int count );
 qhandle_t RE_WorldPieceModel( const int *surfaces, const int *triangles, int count, const vec3_t origin );
+qhandle_t	RE_BrushModel( qhandle_t reuse, const brushFace_t *faces, int numFaces, const vec3_t origin, const vec3_t axis[3] );	// OpenJK-rpmod
+void		RE_FreeBrushModel( qhandle_t h );
 void RE_SetWorldShaders( const int *surfaces, const char * const *shaders, int count );
 void RE_MakeSpriteShader( const char *name, const char *ground, const char *sprite, int width, int height, int spacing );
 

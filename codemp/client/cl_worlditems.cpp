@@ -1142,6 +1142,11 @@ static void WT_ActDone( void ) {
 	} else if ( !strcmp( wtActWhat, "build" ) ) {
 		WT_Said( "Built", qfalse );
 		WE_Saved();
+		if ( we.open && we.d.kind == WT_ITEM && we.sel == -1 ) {
+			we.picking = we.making = qfalse;
+			we.makeName[0] = we.makeDescr[0] = we.makeModel[0] = '\0';
+			WE_Select( 0 );
+		}
 		if ( we.open && we.sel == -1 && number > 0 ) {
 			for ( int s = 0; s < WT_BODIES; s++ ) {
 				if ( wtBodies[s].id == -1 )
@@ -2064,8 +2069,42 @@ static void WE_New( int kind, qboolean container, qboolean walk ) {
 	we.descr[0] = '\0';
 	we.descrKnown = qtrue;
 	we.changed = qtrue;
-	we.expiry = 1;		// till the map loads again
+	we.expiry = kind == WT_ITEM ? 0 : 1;		// till the map loads again; an item till it's picked up
 	we.mode = WE_MOVE;
+}
+
+static void WE_AddVec( std::string &out, const char *name, const vec3_t v );
+
+// a new item built where it stands, for anyone to pick up: one of yours (item), or made now (item 0,
+// from the make form) (C1B3R report #40)
+static void WE_BuildItem( int item ) {
+	std::string f;
+
+	WE_AddVec( f, "pos", we.d.pos );
+	WE_AddVec( f, "angles", we.d.ang );
+	f += va( ",\"scale\":%.2f,\"kind\":\"item\"", we.d.scale );
+	if ( we.expiry >= 0 && we.expiry < WT_NUM_EXPIRIES ) {
+		const int secs = wtExpiries[we.expiry].secs;
+
+		f += va( ",\"expires\":%i,\"maponly\":%i", secs == WT_TILL_MAP ? 0 : secs, secs == WT_TILL_MAP ? 1 : 0 );
+	}
+	if ( item > 0 ) {
+		f += va( ",\"item\":%i", item );
+	} else {
+		f += va( ",\"new\":{\"kind\":\"%s\",\"name\":", wtMakeKinds[we.makeKind] );
+		CL_Presence_Json( f, we.makeName );
+		f += ",\"descr\":";
+		CL_Presence_Json( f, we.makeDescr );
+		f += ",\"model\":";
+		CL_Presence_Json( f, we.makeModel );
+		f += "}";
+	}
+	WT_Act( "build", "/v2/world/build", f );
+}
+
+// a new item being placed, not built yet
+static qboolean WE_NewItem( void ) {
+	return (qboolean)( we.d.kind == WT_ITEM && we.sel == -1 );
 }
 
 static void WE_AddVec( std::string &out, const char *name, const vec3_t v ) {
@@ -2269,7 +2308,7 @@ static void WE_DrawPicking( float x, float y, float w, float bottom ) {
 	const float rowH = 34.0f, view = 30.0f, bw = 56.0f;
 	int visible;
 
-	WT_Text( x, y, w, "Put one of your items in it:", wtOrange, wt.font, WT_TEXT, qfalse );
+	WT_Text( x, y, w, WE_NewItem() ? "Place one of your items here:" : "Put one of your items in it:", wtOrange, wt.font, WT_TEXT, qfalse );
 	y += 16;
 	if ( wtMineHttp.state == HTTP_BUSY && !we.numMine ) {
 		WT_Text( x, y, w, "Asking C1B3R...", wtDim, wt.font, WT_SMALL, qfalse );
@@ -2301,8 +2340,12 @@ static void WE_DrawPicking( float x, float y, float w, float bottom ) {
 		}
 		WT_Text( tx, ry + 4, w - ( tx - x ) - bw - 6, m->name, wtWhite, wt.font, WT_TEXT, qfalse );
 		WT_Text( tx, ry + 18, w - ( tx - x ) - bw - 6, m->kind, wtDim, wt.font, WT_SMALL, qfalse );
-		if ( WT_Button( x + w - bw - 3, ry + ( rowH - 2 - WT_CTRL_H ) * 0.5f, bw, "Put in", qfalse, (qboolean)( wtActHttp.state != HTTP_BUSY ) ) )
-			WT_Act( "lootadd", "/v2/world/loot/add", va( ",\"id\":%i,\"item\":%i", we.sel, m->id ) );
+		if ( WT_Button( x + w - bw - 3, ry + ( rowH - 2 - WT_CTRL_H ) * 0.5f, bw, WE_NewItem() ? "Place" : "Put in", qfalse, (qboolean)( wtActHttp.state != HTTP_BUSY ) ) ) {
+			if ( WE_NewItem() )
+				WE_BuildItem( m->id );
+			else
+				WT_Act( "lootadd", "/v2/world/loot/add", va( ",\"id\":%i,\"item\":%i", we.sel, m->id ) );
+		}
 	}
 }
 
@@ -2310,7 +2353,7 @@ static void WE_DrawPicking( float x, float y, float w, float bottom ) {
 static void WE_DrawMaking( float x, float y, float w ) {
 	const float row = WT_CTRL_H + 3;
 
-	WT_Text( x, y, w, "Make a new item in it:", wtOrange, wt.font, WT_TEXT, qfalse );
+	WT_Text( x, y, w, WE_NewItem() ? "Make a new item here:" : "Make a new item in it:", wtOrange, wt.font, WT_TEXT, qfalse );
 	y += 16;
 	WE_Field( x, y, w, WF_MAKE_NAME, we.makeName, "Its name" );
 	y += row;
@@ -2328,6 +2371,13 @@ static void WE_DrawMaking( float x, float y, float w ) {
 	y += row;
 	WE_Field( x, y, w, WF_MAKE_MODEL, we.makeModel, "Model (empty: its kind's own)" );
 	y += row + 4;
+	if ( WE_NewItem() ) {
+		if ( WT_Button( x, y, w, wtActHttp.state == HTTP_BUSY ? "Making..." : "Make it here", qtrue, (qboolean)( we.makeName[0] && wtActHttp.state != HTTP_BUSY ) ) )
+			WE_BuildItem( 0 );
+		y += row;
+		WT_Text( x, y, w, "It lies here for anyone to pick up", wtDim, wt.font, WT_SMALL, qfalse );
+		return;
+	}
 	if ( WT_Button( x, y, w, wtActHttp.state == HTTP_BUSY ? "Making..." : "Make it", qtrue, (qboolean)( we.makeName[0] && wtActHttp.state != HTTP_BUSY ) ) ) {
 		std::string f = va( ",\"id\":%i,\"kind\":\"%s\"", we.sel, wtMakeKinds[we.makeKind] );
 
@@ -2350,7 +2400,7 @@ static void WE_DrawEdit( float x, float y, float w, float bottom ) {
 
 	const qboolean looted = (qboolean)( d->kind != WT_ITEM && we.sel > 0 && d->loot != WT_LOOT_NONE );
 
-	if ( !looted )
+	if ( !looted && !WE_NewItem() )
 		we.picking = we.making = qfalse;
 	if ( WT_Button( x, y, 60, we.picking || we.making ? "< Back" : "< List", qfalse, qtrue ) ) {
 		if ( we.picking || we.making )
@@ -2372,7 +2422,25 @@ static void WE_DrawEdit( float x, float y, float w, float bottom ) {
 		return;
 	}
 
-	if ( d->kind == WT_ITEM ) {
+	if ( WE_NewItem() ) {
+		WT_Text( x, y, w, "A new item, for anyone to pick up:", wtWhite, wt.font, WT_TEXT, qfalse );
+		y += 16;
+		if ( WT_Button( x, y, half, "From your inventory", qfalse, qtrue ) ) {
+			we.picking = qtrue;
+			we.mineScroll = 0;
+			we.numMine = 0;
+			WT_Post( &wtMineHttp, "/v2/inv/list", "" );
+		}
+		if ( WT_Button( x + half + 4, y, half, "Make a new item", qfalse, qtrue ) ) {
+			we.making = qtrue;
+			we.focus = WF_MAKE_NAME;
+			WG_EditReset();
+		}
+		y += row;
+		WT_Text( x, y, w, "Move it where it goes first: it's built where", wtDim, wt.font, WT_SMALL, qfalse );
+		WT_Text( x, y + 11, w, "it stands when you pick or make it", wtDim, wt.font, WT_SMALL, qfalse );
+		y += 28;
+	} else if ( d->kind == WT_ITEM ) {
 		WT_Text( x, y, w, va( "An item: \"%s\"", WT_Name( d ) ), wtWhite, wt.font, WT_TEXT, qfalse );
 		y += 14;
 		WT_Text( x, y, w, "It's moved and turned here; its name and", wtDim, wt.font, WT_SMALL, qfalse );
@@ -2602,7 +2670,9 @@ static void WE_DrawEdit( float x, float y, float w, float bottom ) {
 	{
 		const float by = bottom - WT_CTRL_H;
 
-		if ( we.sel == -1 ) {
+		if ( WE_NewItem() ) {
+			WT_Text( x, by + 2, w, "Pick one of yours or make one to build it", wtDim, wt.font, WT_SMALL, qfalse );
+		} else if ( we.sel == -1 ) {
 			if ( WT_Button( x, by, w, wtActHttp.state == HTTP_BUSY ? "Building..." : "Build it", qtrue, (qboolean)( wtActHttp.state != HTTP_BUSY ) ) )
 				WE_Save();
 		} else if ( d->kind == WT_ITEM ) {
@@ -2675,6 +2745,9 @@ static void WE_Draw( void ) {
 			WE_New( WT_OBJECT, qtrue, qfalse );
 		if ( WT_Button( x + half + 4, y, half, "New walk-in zone", qfalse, qtrue ) )
 			WE_New( WT_ZONE, qfalse, qtrue );
+		y += WT_CTRL_H + 4;
+		if ( WT_Button( x, y, half, "New item", qfalse, qtrue ) )
+			WE_New( WT_ITEM, qfalse, qfalse );
 		y += WT_CTRL_H + 8;
 		WE_DrawList( x, y, w, bottom );
 	} else {
@@ -2940,6 +3013,25 @@ static void WT_World_f( void ) {
 			CL_WorldItems_Drop( item, name );
 	} else if ( !Q_stricmp( arg, "near" ) ) {
 		WT_Near();
+	} else if ( !Q_stricmp( arg, "remove" ) && Cmd_Argc() > 2 ) {
+		// one taken away by its number or story name (RPMod admins): from a bind, or a storyteller's
+		// Run a command step after it's been used (C1B3R report #32)
+		const char *what = Cmd_Argv( 2 );
+		const wtThing_t *t = NULL;
+
+		if ( strspn( what, "0123456789" ) == strlen( what ) )
+			t = WT_Find( atoi( what ) );
+		for ( int i = 0; i < wt.num && !t; i++ ) {
+			if ( wt.things[i].story[0] && !Q_stricmp( wt.things[i].story, what ) )
+				t = &wt.things[i];
+		}
+		if ( !t || t->id <= 0 ) {
+			Com_Printf( "World: nothing on this map by the number or story name %s\n", what );
+			return;
+		}
+		// an item a player dropped goes back to them
+		if ( WT_Act( "remove", "/v2/world/remove", va( ",\"id\":%i,\"back\":%i", t->id, t->kind == WT_ITEM ? 1 : 0 ) ) )
+			Com_Printf( "World: removing #%i %s\n", t->id, WT_Name( t ) );
 	} else if ( !Q_stricmp( arg, "edit" ) && Cmd_Argc() > 2 ) {
 		const int id = atoi( Cmd_Argv( 2 ) );
 
@@ -2956,6 +3048,7 @@ static void WT_World_f( void ) {
 		Com_Printf( "       " WT_CMD " drop         drops the item picked in /inventory where you aim\n" );
 		Com_Printf( "       " WT_CMD " near         what's near you\n" );
 		Com_Printf( "       " WT_CMD " edit <id>    the editor on that one\n" );
+		Com_Printf( "       " WT_CMD " remove <id or story name>   takes it away (RPMod admins): e.g. a trigger, from a story's Run a command once used\n" );
 	}
 }
 

@@ -1457,6 +1457,8 @@ int			RE_ForgetMissing( const char **shaderFiles, int numShaderFiles );
 int			R_ForgetBadModels( void );
 int			R_ForgetBadSkins( void );
 qhandle_t	RE_WorldPieceModel( const int *surfaces, const int *triangles, int count, const vec3_t origin );
+qhandle_t	RE_BrushModel( qhandle_t reuse, const brushFace_t *faces, int numFaces, const vec3_t origin, const vec3_t axis[3] );	// OpenJK-rpmod
+void		RE_FreeBrushModel( qhandle_t h );
 void		RE_SetWorldShaders( const int *surfaces, const char * const *shaders, int count );
 void		RE_MakeSpriteShader( const char *name, const char *ground, const char *sprite, int width, int height, int spacing );
 

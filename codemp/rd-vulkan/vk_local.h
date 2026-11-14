@@ -1146,7 +1146,7 @@ void		vk_end_render_pass( void );
 
 // OpenJK-rpmod: vk_rpmod_post.cpp, the cinematic camera's depth of field and filter, ambient
 // occlusion, soft particles and the passes over the view
-#define VK_RPMOD_SETS 9	// its image sets, in the descriptor pool
+#define VK_RPMOD_SETS 18	// its image sets, in the descriptor pool
 void		vk_rpmod_register_cvars( void );
 void		vk_rpmod_light_modules( void );						// OpenJK-rpmod: surface relief (r_relief)
 void		vk_rpmod_light_params( float *depth, float *shine );
@@ -1168,6 +1168,11 @@ void		vk_rpmod_destroy_pipelines( void );
 VkRenderPass	vk_rpmod_shadow_pass( void );			// OpenJK-rpmod: r_shadowMaps' render pass
 qboolean	vk_rpmod_shadow_viewport( VkRect2D *r );
 void		vk_rpmod_post( void );
+VkDescriptorSet	vk_rpmod_fsr( void );
+void		vk_rpmod_fsr_begin_frame( void );	// OpenJK-rpmod: FSR's 2D at the window's size (vk_rpmod_fsr_window from vk_set_2d)
+void		vk_rpmod_fsr_window( void );
+qboolean	vk_rpmod_fsr_drawing_window( void );
+VkImage		vk_rpmod_fsr_image( uint32_t *width, uint32_t *height );		// OpenJK-rpmod: what FSR made, for screenshots						// OpenJK-rpmod: FSR upscaling before the gamma pass: the set it shows
 qboolean	vk_rpmod_soft_active( void );
 VkDescriptorSet vk_rpmod_soft_set( void );
 uint32_t	vk_rpmod_soft_pipeline( uint32_t pipeline );

@@ -1633,6 +1633,8 @@ static int *WE_Indexes( int surface, int *numIndexes, int **vboItemIndex ) {
 }
 
 // before the world's changed back: what was kept for one gone is just let go
+static void WE_FreeBrushes( void );
+
 static void WE_CheckWorld( void ) {
 	if ( weWorld == tr_worldLoads )
 		return;
@@ -1643,6 +1645,7 @@ static void WE_CheckWorld( void ) {
 		Z_Free( wePieces[i] );
 	weNumPieces = 0;
 	weNumShaded = 0;
+	WE_FreeBrushes(); // OpenJK-rpmod: the map editor's brushes
 	weWorld = tr_worldLoads;
 }
 
@@ -1860,6 +1863,227 @@ qhandle_t RE_WorldPieceModel( const int *surfaces, const int *triangles, int cou
 	mod->data.bmodel = bmodel;
 	Com_sprintf( mod->name, sizeof( mod->name ), "*mapedit%i", weNumPieces );
 	return mod->index;
+}
+
+/*
+===============================================================================
+
+The map editor's brushes: models of its own, made from the faces it gives. Each is kept in a slot,
+so a brush changed is made again in its place rather than piling up; the slot's model is kept for
+the next one when it's freed. Lit per vertex by the light grid where it stands, with the shaders as
+the map's vertex-lit surfaces have them (a lightmap stage becomes the vertex light)
+
+===============================================================================
+*/
+
+#define WE_MAX_BRUSHES	256
+
+static struct {
+	model_t		*mod;		// the renderer's own, by its handle
+	int			handle;
+	void		*mem;		// its surfaces, NULL while it's free
+} weBrushes[WE_MAX_BRUSHES];
+
+// the slot's model still the one made for it: a vid_restart forgets every model
+static qboolean WE_BrushModelOk( int i ) {
+	return (qboolean)( weBrushes[i].mod && R_GetModelByHandle( weBrushes[i].handle ) == weBrushes[i].mod
+		&& !Q_stricmp( weBrushes[i].mod->name, va( "*mebrush%i", i ) ) );
+}
+
+static void WE_FreeBrush( int i ) {
+	if ( weBrushes[i].mem ) {
+		Z_Free( weBrushes[i].mem );
+		weBrushes[i].mem = NULL;
+	}
+	if ( WE_BrushModelOk( i ) ) {
+		weBrushes[i].mod->type = MOD_BAD;
+		weBrushes[i].mod->data.bmodel = NULL;
+	} else {
+		weBrushes[i].mod = NULL;
+	}
+}
+
+static void WE_FreeBrushes( void ) {
+	for ( int i = 0; i < WE_MAX_BRUSHES; i++ )
+		WE_FreeBrush( i );
+}
+
+static int WE_BrushSlot( qhandle_t h ) {
+	if ( h <= 0 )
+		return -1;
+	for ( int i = 0; i < WE_MAX_BRUSHES; i++ ) {
+		if ( weBrushes[i].mem && weBrushes[i].handle == h && WE_BrushModelOk( i ) )
+			return i;
+	}
+	return -1;
+}
+
+void RE_FreeBrushModel( qhandle_t h ) {
+	const int i = WE_BrushSlot( h );
+
+	if ( i >= 0 ) {
+		// (the backend runs at the frame's end)
+		WE_FreeBrush( i );
+	}
+}
+
+// a vertex's light from the grid: what's all round, and what comes from its side
+static void WE_BrushLight( const vec3_t world, const vec3_t normal, byte *out ) {
+	vec3_t ambient, directed, dir, at;
+	float d;
+
+	VectorMA( world, 2.0f, normal, at );
+	if ( !tr.world->lightGridData || !R_LightForPoint( at, ambient, directed, dir ) ) {
+		out[0] = out[1] = out[2] = 200;
+		out[3] = 255;
+		return;
+	}
+	d = Q_max( 0.0f, DotProduct( normal, dir ) );
+	for ( int k = 0; k < 3; k++ )
+		out[k] = (byte)Com_Clampi( 0, 255, (int)( ambient[k] + directed[k] * d ) );
+	out[3] = 255;
+}
+
+// the shader's own texture's size, for its texture coordinates in world units
+static void WE_ShaderSize( const shader_t *sh, float *w, float *h ) {
+	*w = *h = 128.0f;
+	for ( int i = 0; i < MAX_SHADER_STAGES && sh->stages[i]; i++ ) {
+		const shaderStage_t *st = sh->stages[i];
+		const image_t *img = st->bundle[0].image[0];
+
+		if ( !st->active || st->bundle[0].isLightmap || !img || !img->width || !img->height )
+			continue;
+		*w = img->width;
+		*h = img->height;
+		return;
+	}
+}
+
+qhandle_t RE_BrushModel( qhandle_t reuse, const brushFace_t *faces, int numFaces, const vec3_t origin, const vec3_t axis[3] ) {
+	int slot, size = sizeof( bmodel_t ), count = 0;
+	bmodel_t *bmodel;
+	msurface_t *msurf;
+	model_t *mod;
+	byte *p;
+
+	WE_CheckWorld();
+	if ( !tr.world || !faces || numFaces <= 0 )
+		return 0;
+	for ( int i = 0; i < numFaces; i++ ) {
+		const int n = Com_Clampi( 0, BRUSHFACE_MAX_POINTS, faces[i].numPoints );
+
+		if ( n < 3 )
+			continue;
+		size += sizeof( msurface_t ) + sizeof( srfTriangles_t ) + 16 + n * sizeof( drawVert_t ) + ( n - 2 ) * 3 * sizeof( int );
+		count++;
+	}
+	if ( !count )
+		return 0;
+
+	// (the backend runs at the frame's end)
+	// its own slot again, else a free one (its model kept), else a new one
+	slot = WE_BrushSlot( reuse );
+	if ( slot >= 0 ) {
+		Z_Free( weBrushes[slot].mem );
+		weBrushes[slot].mem = NULL;
+	} else {
+		for ( int i = 0; i < WE_MAX_BRUSHES && slot < 0; i++ ) {
+			if ( !weBrushes[i].mem && WE_BrushModelOk( i ) )
+				slot = i;
+		}
+		for ( int i = 0; i < WE_MAX_BRUSHES && slot < 0; i++ ) {
+			if ( !weBrushes[i].mem && !WE_BrushModelOk( i ) ) {
+				model_t *m = R_AllocModel();
+
+				if ( !m )
+					return 0;
+				weBrushes[i].mod = m;
+				weBrushes[i].handle = m->index;
+				Com_sprintf( m->name, sizeof( m->name ), "*mebrush%i", i );
+				m->type = MOD_BAD;
+				slot = i;
+			}
+		}
+		if ( slot < 0 )
+			return 0;
+	}
+	mod = weBrushes[slot].mod;
+
+	p = (byte *)Z_Malloc( size, TAG_GENERAL, qtrue );
+	weBrushes[slot].mem = p;
+	bmodel = (bmodel_t *)p;
+	msurf = (msurface_t *)( bmodel + 1 );
+	p = (byte *)( msurf + count );
+	bmodel->firstSurface = msurf;
+	bmodel->numSurfaces = 0;
+	ClearBounds( bmodel->bounds[0], bmodel->bounds[1] );
+
+	for ( int i = 0; i < numFaces; i++ ) {
+		const brushFace_t *face = &faces[i];
+		const int n = Com_Clampi( 0, BRUSHFACE_MAX_POINTS, face->numPoints );
+		srfTriangles_t *tri;
+		shader_t *sh;
+		float tw, th;
+		vec3_t worldNormal;
+
+		if ( n < 3 )
+			continue;
+		sh = face->shader[0] ? R_FindShader( face->shader, lightmapsVertex, stylesDefault, qtrue ) : tr.defaultShader;
+		WE_ShaderSize( sh, &tw, &th );
+		for ( int k = 0; k < 3; k++ )
+			worldNormal[k] = face->normal[0] * axis[0][k] + face->normal[1] * axis[1][k] + face->normal[2] * axis[2][k];
+		VectorNormalize( worldNormal );
+
+		tri = (srfTriangles_t *)p;
+		p += sizeof( srfTriangles_t );
+		p = (byte *)( ( (intptr_t)p + 15 ) & ~(intptr_t)15 );
+		tri->surfaceType = SF_TRIANGLES;
+		tri->verts = (drawVert_t *)p;
+		p += n * sizeof( drawVert_t );
+		tri->indexes = (int *)p;
+		p += ( n - 2 ) * 3 * sizeof( int );
+		tri->numVerts = n;
+		tri->numIndexes = ( n - 2 ) * 3;
+		ClearBounds( tri->bounds[0], tri->bounds[1] );
+
+		for ( int v = 0; v < n; v++ ) {
+			drawVert_t *out = &tri->verts[v];
+			vec3_t world;
+
+			VectorCopy( face->xyz[v], out->xyz );
+			out->st[0] = face->st[v][0] / tw;
+			out->st[1] = face->st[v][1] / th;
+			VectorCopy( face->normal, out->normal );
+			VectorCopy( origin, world );
+			for ( int k = 0; k < 3; k++ )
+				VectorMA( world, face->xyz[v][k], axis[k], world );
+			WE_BrushLight( world, worldNormal, out->color[0] );
+			for ( int k = 1; k < MAXLIGHTMAPS; k++ )
+				memcpy( out->color[k], out->color[0], 4 );
+			AddPointToBounds( out->xyz, tri->bounds[0], tri->bounds[1] );
+		}
+		// a fan from the first corner
+		for ( int t = 0; t < n - 2; t++ ) {
+			tri->indexes[t * 3 + 0] = 0;
+			tri->indexes[t * 3 + 1] = t + 1;
+			tri->indexes[t * 3 + 2] = t + 2;
+		}
+
+		{
+			msurface_t *out = &msurf[bmodel->numSurfaces++];
+
+			out->viewCount = 0;
+			out->shader = sh;
+			out->fogIndex = 0;
+			out->data = (surfaceType_t *)tri;
+			AddPointToBounds( tri->bounds[0], bmodel->bounds[0], bmodel->bounds[1] );
+			AddPointToBounds( tri->bounds[1], bmodel->bounds[0], bmodel->bounds[1] );
+		}
+	}
+
+	mod->type = MOD_BRUSH;
+	mod->data.bmodel = bmodel;
+	return weBrushes[slot].handle;
 }
 
 // a world surface's place in the world cache, NULL for one that has none

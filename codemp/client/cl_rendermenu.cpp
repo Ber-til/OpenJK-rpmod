@@ -24,7 +24,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 // the UI reads them. The button and the rows are copies of the menu's own DEFAULTS button and VIDEO
 // QUALITY row, so they look as the rest of it does whoever made it; a menu without those is left be.
 //
-// Two pages: JKA's Setup menu has room for 15 rows, and a button at the end of each goes to the other.
+// Three pages: JKA's Setup menu has room for 15 rows, and buttons at the end of each go to the others.
 // With Vulkan, the effects that need Post Effects (r_fbo) show only once it's on, under it, and the
 // second page with them: a row shows for one cvar only, so ui_rd_postfx says both are so.
 //
@@ -54,6 +54,9 @@ extern const char *( *LoadScriptFile_Patch )( const char *filename, const char *
 
 #define RM_GROUP		"renderer"		// the first page
 #define RM_GROUP2		"renderer2"		// the second
+#define RM_GROUP3		"renderer3"		// the third
+#define RM_HIDE_ALL		"hide " RM_GROUP " hide " RM_GROUP2 " hide " RM_GROUP3
+static const char *rmGroups[3] = { RM_GROUP, RM_GROUP2, RM_GROUP3 };
 #define RM_BUTTON		"renderermenubutton"
 #define RM_GLOW			"rendererbutton_glow"
 #define RM_VULKAN		"rd-vulkan"
@@ -92,7 +95,8 @@ typedef struct {
 	const char	*desc;
 	const char	*list;			// cvarStrList (commas between) or cvarFloatList (none), braces and all
 	rmShow_t	show;
-	int			page;			// 0 or 1
+	int			page;			// 0, 1 or 2
+	int			to;				// a button's: the page it goes to
 } rmRow_t;
 
 static const rmRow_t rmRows[] = {
@@ -134,8 +138,8 @@ static const rmRow_t rmRows[] = {
 		"How dark ambient occlusion makes corners and creases; lower it if the picture looks too dark",
 		"cvarFloatList { \"Low\" 0.3 \"Medium\" 0.6 \"Strong\" 1 }", RM_SHOW_POSTFX, 0 },
 	{ NULL, NULL, NULL, "More Settings >",
-		"Supersampling, soft particles, FXAA, sharpening, sun shafts, volumetric light, reflections, real shadows, tone mapping, motion blur",
-		NULL, RM_SHOW_POSTFX, 0 },
+		"Supersampling, soft particles, FXAA, sharpening, sun shafts, volumetric light, reflections, real shadows, tone mapping",
+		NULL, RM_SHOW_POSTFX, 0, 1 },
 	// the second page: Vulkan's own additions (rd-vulkan's vk_rpmod_post.cpp)
 	{ "ui_rd_ssaa", "r_ext_supersample", "0", "Supersampling:",
 		"Draws the picture at twice the size and scales it down: smooths every edge, costs about four times the drawing",
@@ -171,17 +175,54 @@ static const rmRow_t rmRows[] = {
 		"Players, NPCs and models cast soft shadows on the map and each other, in place of the blob",
 		"cvarFloatList { \"Off\" 0 \"On\" 1 }", RM_SHOW_POSTFX, 1 },
 	{ "ui_rd_shadowsun", "r_shadowSun", "0", "Shadow Direction:",
-		"Nearly straight down suits indoors; From the Sun follows the map's sun",
+		"Nearly straight down suits indoors; From the Sun follows the map's sun (a sky composer's sun is followed either way)",
 		"cvarFloatList { \"Down\" 0 \"From the Sun\" 1 }", RM_SHOW_POSTFX, 1 },
 	{ "ui_rd_tonemap", "r_tonemap", "0", "Tone Mapping:",
 		"Bright light rolls off instead of clipping to white; Film (ACES) darkens the shadows too",
 		"cvarFloatList { \"Off\" 0 \"Soft\" 1 \"Film\" 2 }", RM_SHOW_POSTFX, 1 },
-	{ "ui_rd_mblur", "r_motionBlur", "0", "Motion Blur:",
-		"The picture smears as the camera moves or turns",
-		"cvarFloatList { \"Off\" 0 \"Low\" 0.3 \"Medium\" 0.6 \"High\" 1 }", RM_SHOW_POSTFX, 1 },
+	{ NULL, NULL, NULL, "More Settings >",
+		"Motion blur, SMAA, FSR upscaling, water, wet surfaces, heat haze, clouds, cloud shadows, aerial haze, sky sharpening",
+		NULL, RM_SHOW_POSTFX, 1, 2 },
 	{ NULL, NULL, NULL, "< Back",
 		"The renderer, anti-aliasing, glow, post effects and the rest",
-		NULL, RM_SHOW_POSTFX, 1 },
+		NULL, RM_SHOW_POSTFX, 1, 0 },
+	// the third page: more of Vulkan's own
+	{ "ui_rd_mblur", "r_motionBlur", "0", "Motion Blur:",
+		"The picture smears as the camera moves or turns",
+		"cvarFloatList { \"Off\" 0 \"Low\" 0.3 \"Medium\" 0.6 \"High\" 1 }", RM_SHOW_POSTFX, 2 },
+	{ "ui_rd_smaa", "r_smaa", "0", "SMAA:",
+		"Smooths edges over the finished picture, sharper than FXAA and far cheaper than anti-aliasing",
+		"cvarFloatList { \"Off\" 0 \"On\" 1 }", RM_SHOW_POSTFX, 2 },
+	{ "ui_rd_fsr", "r_fsr", "0", "FSR Upscaling:",
+		"Draws the picture smaller and scales it up sharply (AMD FSR): more frames a second. Not with supersampling",
+		"cvarFloatList { \"Off\" 0 \"Ultra Quality\" 1 \"Quality\" 2 \"Balanced\" 3 \"Performance\" 4 }", RM_SHOW_POSTFX, 2 },
+	{ "ui_rd_water", "r_water", "0", "Water:",
+		"Water ripples, bends and darkens what's under it with its depth, and mirrors the view",
+		"cvarFloatList { \"Off\" 0 \"On\" 1 }", RM_SHOW_POSTFX, 2 },
+	{ "ui_rd_waterstrength", "r_waterStrength", "1", "Water Strength:",
+		"How strong the water's look is",
+		"cvarFloatList { \"Low\" 0.5 \"Medium\" 1 \"High\" 1.5 }", RM_SHOW_POSTFX, 2 },
+	{ "ui_rd_wet", "r_wetSurfaces", "0", "Wet Surfaces:",
+		"Under the map editor's rain the ground darkens, shines and gathers puddles that mirror the view",
+		"cvarFloatList { \"Off\" 0 \"On\" 1 }", RM_SHOW_POSTFX, 2 },
+	{ "ui_rd_haze", "r_heatHaze", "0", "Heat Haze:",
+		"The air shimmers over fire, explosions, thrusters and lava",
+		"cvarFloatList { \"Off\" 0 \"On\" 1 }", RM_SHOW_POSTFX, 2 },
+	{ "ui_rd_clouds", "r_clouds", "1", "Clouds:",
+		"The clouds an admin composed in the sky (the sky composer), drifting with the wind and lit by the sun",
+		"cvarFloatList { \"Off\" 0 \"On\" 1 }", RM_SHOW_POSTFX, 2 },
+	{ "ui_rd_cloudshadows", "r_cloudShadows", "0.5", "Cloud Shadows:",
+		"The clouds' shadows drift over the ground, where the sun reaches",
+		"cvarFloatList { \"Off\" 0 \"Light\" 0.3 \"Medium\" 0.5 \"Dark\" 0.8 }", RM_SHOW_POSTFX, 2 },
+	{ "ui_rd_aerial", "r_aerialHaze", "0", "Aerial Haze:",
+		"Far things fade into the sky's colour, for a sense of distance on big maps",
+		"cvarFloatList { \"Off\" 0 \"Light\" 0.5 \"Medium\" 1 \"Thick\" 2 }", RM_SHOW_POSTFX, 2 },
+	{ "ui_rd_skysharpen", "r_skySharpen", "0", "Sky Sharpening:",
+		"The map's skybox crisper, often a small picture blown up",
+		"cvarFloatList { \"Off\" 0 \"Low\" 0.3 \"High\" 0.7 }", RM_SHOW_POSTFX, 2 },
+	{ NULL, NULL, NULL, "< Back",
+		"Supersampling, soft particles, FXAA, sharpening, sun shafts, volumetric light, reflections, real shadows, tone mapping",
+		NULL, RM_SHOW_POSTFX, 2, 1 },
 };
 static const int rmNumRows = (int)ARRAY_LEN( rmRows );
 
@@ -530,7 +571,7 @@ static const char *RM_Patch( const char *filename, const char *text, int *length
 		RM_SetValue( button, "descText", RM_Quote( "OpenGL or Vulkan, and their graphics settings" ) );
 		RM_SetRectY( button, y );
 		// its first page instead of DEFAULTS', with the settings as they are
-		RM_ReplaceCommand( button, "show", "defaults", "hide defaults hide " RM_GROUP2 " show " RM_GROUP " exec \"renderersettings sync\"" );
+		RM_ReplaceCommand( button, "show", "defaults", "hide defaults hide " RM_GROUP2 " hide " RM_GROUP3 " show " RM_GROUP " exec \"renderersettings sync\"" );
 
 		RM_ReplaceWord( shine, "gamedefaultsbutton_glow", RM_GLOW );
 		RM_SetRectY( shine, y );
@@ -540,14 +581,14 @@ static const char *RM_Patch( const char *filename, const char *text, int *length
 
 	// the rows, as VIDEO QUALITY is, each page from the top; the buttons to the other page as they are
 	// but for the setting
-	for ( int i = 0, onPage[2] = { 0, 0 }; i < rmNumRows; i++ ) {
+	for ( int i = 0, onPage[3] = { 0, 0, 0 }; i < rmNumRows; i++ ) {
 		const rmRow_t *rr = &rmRows[i];
 		std::string item = s.substr( row->start, row->end - row->start );
 		const int at = onPage[rr->page]++;
 		char highlight[32];
 
 		RM_SetValue( item, "name", va( "rd_row%i", i ) );
-		RM_SetValue( item, "group", rr->page ? RM_GROUP2 : RM_GROUP );
+		RM_SetValue( item, "group", rmGroups[rr->page] );
 		RM_SetValue( item, "text", RM_Quote( rr->label ) );
 		RM_SetValue( item, "descText", RM_Quote( rr->desc ) );
 		RM_SetValue( item, "visible", "0" );
@@ -559,9 +600,7 @@ static const char *RM_Patch( const char *filename, const char *text, int *length
 		if ( !rr->ui ) {
 			RM_RemoveValue( item, "cvar" );
 			RM_SetValue( item, "type", "ITEM_TYPE_BUTTON" );
-			RM_ReplaceBlock( item, "action", rr->page
-				? "action { play \"sound/interface/button1\" hide " RM_GROUP2 " show " RM_GROUP " }"
-				: "action { play \"sound/interface/button1\" hide " RM_GROUP " show " RM_GROUP2 " }" );
+			RM_ReplaceBlock( item, "action", va( "action { play \"sound/interface/button1\" " RM_HIDE_ALL " show %s }", rmGroups[rr->to] ) );
 		} else {
 			RM_SetValue( item, "cvar", RM_Quote( rr->ui ) );
 			RM_ReplaceBlock( item, "action", "action { play \"sound/interface/button1\" show applyChanges }" );
@@ -648,10 +687,10 @@ static const char *RM_Patch( const char *filename, const char *text, int *length
 	}
 
 	// the menu's own scripts: its other pages hide these two, and the restart applies them
-	RM_AfterCommand( s, "show", "video2", " hide " RM_GROUP " hide " RM_GROUP2 );
-	RM_AfterCommand( s, "hide", "video2", " hide " RM_GROUP " hide " RM_GROUP2 );
-	RM_AfterCommand( s, "show", "defaults", " hide " RM_GROUP " hide " RM_GROUP2 );
-	RM_AfterCommand( s, "hide", "defaults", " hide " RM_GROUP " hide " RM_GROUP2 );
+	RM_AfterCommand( s, "show", "video2", " " RM_HIDE_ALL );
+	RM_AfterCommand( s, "hide", "video2", " " RM_HIDE_ALL );
+	RM_AfterCommand( s, "show", "defaults", " " RM_HIDE_ALL );
+	RM_AfterCommand( s, "hide", "defaults", " " RM_HIDE_ALL );
 	{
 		const std::string apply = "exec \"renderersettings apply\" ";
 

@@ -2023,3 +2023,87 @@ bool R_IsPuffing()
 { //Eh? Don't want surfacesprites to know this?
 	return false;
 }
+
+// OpenJK-rpmod: the ground under the map editor's rain (r_wetSurfaces, vk_rpmod_post.cpp): each rain box
+// soaks over WET_IN_MS while it rains and dries over WET_OUT_MS after, its box remembered while it does.
+// The boxes wet now and how wet (0 to 1); with no room asked for, only how many there are
+#define WET_IN_MS		20000
+#define WET_OUT_MS		90000
+#define MAX_WET			8
+
+static struct {
+	vec3_t	mins, maxs;
+	float	wet;
+} weWet[MAX_WET];
+static int weNumWet, weWetTime;
+
+int R_WetZones(vec3_t *mins, vec3_t *maxs, float *wetness, int max)
+{
+	const int now = ri.Milliseconds();
+	const float dt = (weWetTime && now > weWetTime) ? (float)(now - weWetTime) : 0.0f;
+	bool raining[MAX_WET] = { false };
+	int out = 0;
+
+	// once a frame is enough: asked again the same moment, as it was
+	if (dt > 0.0f || !weWetTime)
+	{
+		weWetTime = now;
+		for (int i = 0; i < mParticleClouds.size(); i++)
+		{
+			const CWeatherParticleCloud &cloud = mParticleClouds[i];
+			int k;
+
+			if (!cloud.mWaterParticles || !cloud.mBoxed)
+			{
+				continue;
+			}
+			for (k = 0; k < weNumWet; k++)
+			{
+				if (VectorCompare(weWet[k].mins, cloud.mBoxMins.v) && VectorCompare(weWet[k].maxs, cloud.mBoxMaxs.v))
+				{
+					break;
+				}
+			}
+			if (k == weNumWet)
+			{
+				if (weNumWet == MAX_WET)
+				{
+					continue;
+				}
+				VectorCopy(cloud.mBoxMins.v, weWet[k].mins);
+				VectorCopy(cloud.mBoxMaxs.v, weWet[k].maxs);
+				weWet[k].wet = 0.0f;
+				weNumWet++;
+			}
+			raining[k] = true;
+		}
+		for (int k = 0; k < weNumWet; k++)
+		{
+			weWet[k].wet += raining[k] ? dt / WET_IN_MS : -dt / WET_OUT_MS;
+			weWet[k].wet = Com_Clamp(0.0f, 1.0f, weWet[k].wet);
+			// dry and no rain: forgotten
+			if (!raining[k] && weWet[k].wet <= 0.0f)
+			{
+				weWet[k] = weWet[--weNumWet];
+				raining[k] = raining[weNumWet];
+				k--;
+			}
+		}
+	}
+
+	for (int k = 0; k < weNumWet; k++)
+	{
+		if (weWet[k].wet <= 0.0f)
+		{
+			continue;
+		}
+		if (out < max && mins && maxs && wetness)
+		{
+			VectorCopy(weWet[k].mins, mins[out]);
+			VectorCopy(weWet[k].maxs, maxs[out]);
+			wetness[out] = weWet[k].wet;
+		}
+		out++;
+	}
+	return (max > 0) ? Q_min(out, max) : out;
+}

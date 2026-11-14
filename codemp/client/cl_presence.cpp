@@ -653,7 +653,7 @@ static const char *PS_HookCommand( const char *cmd, int *to ) {
 // the tools' hooks, which change what everyone sees: RPMod admins' only (C1B3R's relay.py ADMIN_HOOKS)
 static qboolean PS_AdminHook( const char *text ) {
 	static const char *tools[] = { "map", "combat", "story", "cine", "cin", "cinematic", "anim", "startcinematic", "endcinematic",
-		"objective", "objectives", "npc", "npcnames", "sky", "dismember" };
+		"objective", "objectives", "npc", "npcnames", "sky", "skyc", "dismember" };
 	char kind[32];
 	int n = 0;
 

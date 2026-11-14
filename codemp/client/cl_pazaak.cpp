@@ -596,8 +596,15 @@ static void PZ_Title( const dpRect_t *s, float *y, const char *title, qboolean b
 
 static void PZ_DrawMenu( const dpRect_t *s ) {
 	const float x = s->x + DP_Wide( 30 ), w = s->w - DP_Wide( 60 );
-	float y = s->y + DP_STATUS_H + 24;
+	float y = s->y + DP_STATUS_H + 6;
 
+	// in the Games folder
+	if ( DP_Button( s->x + DP_Wide( 8 ), y, DP_Wide( 56 ), "< Games", qfalse ) ) {
+		PZ_Sound( PZ_SND_CLICK );
+		CL_Datapad_ToGames();
+		return;
+	}
+	y += 18;
 	DP_Text( s->x, y, s->w, "PAZAAK", dpText, DP_TitleFont(), 1.1f, qtrue );
 	y += 30;
 	DP_Text( s->x, y, s->w, "Get closer to 20 than the other player. First to three sets.", dpDim, DP_Font(), 0.6f, qtrue );
