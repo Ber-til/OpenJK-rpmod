@@ -1520,6 +1520,7 @@ Q_EXPORT refexport_t* QDECL GetRefAPI( int apiVersion, refimport_t *rimp ) {
 
 	re.ext.Font_StrLenPixels				= RE_Font_StrLenPixelsNew;
 	re.ext.SetSkyLook						= RE_SetSkyLook;		// OpenJK-rpmod
+	re.ext.G2API_GetSkins					= G2API_GetSkins;		// OpenJK-rpmod: the shader manager names models' shaders
 	re.ext.SetSkyZoom						= RE_SetSkyZoom;		// OpenJK-rpmod
 	re.ext.SetSkyPortal						= RE_SetSkyPortal;		// OpenJK-rpmod
 	re.ext.SetDepthOfField					= RE_SetDepthOfField;	// OpenJK-rpmod

@@ -10,6 +10,8 @@ OpenJK-rpmod is built on [OpenJK](https://github.com/JACoders/OpenJK); for the c
 - [Fixed] `Chat: the size of what you type`. With `con_scale 2` (or display scaling that doubles the console), what you typed after Say: was drawn in the console's small letters; it's as big as Say: again.
 - [Fixed] `Presets: a model without a head top tag`. Its cards drew it small, in the top of the card; it's measured from its neck now, and fills its card like any other.
 
+- [Fixed] `Shader Manager on Vulkan: players, NPCs and vehicles`. Pointing at a player, NPC or vehicle named no shader with the Vulkan renderer (it couldn't tell which skin they wore); it names it as with OpenGL. *Needs the release's rd-vulkan_x86.dll.*
+
 ## 0.10.2 - Nov 14th 2026
 
 - [Added] `Vulkan: SMAA`. `r_smaa 1` (or **SMAA** on Setup's RENDERER page, its new third page) smooths edges over the finished picture: sharper than FXAA, without its blur, and far cheaper than anti-aliasing at high resolutions.
