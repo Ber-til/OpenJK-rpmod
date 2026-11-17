@@ -402,7 +402,10 @@ x, y, amd width are in pixels
 ===================
 */
 extern console_t con;
-void Field_VariableSizeDraw( field_t *edit, int x, int y, int size, qboolean showCursor, qboolean noColorEscape ) {
+// small: the console's line, in its own letters (screen pixels); else the chat line, in big letters on the
+// 640x480 screen. Told, not guessed from the size: with con_scale 2 the console's letters are as wide as
+// the big ones, and the chat line came out in the console's
+static void Field_VariableSizeDraw( field_t *edit, int x, int y, int size, qboolean small, qboolean showCursor, qboolean noColorEscape ) {
 	int		len;
 	int		drawLen;
 	int		prestep;
@@ -451,7 +454,7 @@ void Field_VariableSizeDraw( field_t *edit, int x, int y, int size, qboolean sho
 			a = Q_max( a, prestep ) - prestep;
 			b = Q_min( b, prestep + drawLen ) - prestep;
 			if ( b > a ) {
-				if ( size == con.charWidth ) {
+				if ( small ) {
 					re->SetColor( sel );
 					re->DrawStretchPic( ( x + a * size ) * con.xadjust, y * con.yadjust, ( b - a ) * size * con.xadjust, con.charHeight * con.yadjust, 0, 0, 0, 0, cls.whiteShader );
 					re->SetColor( NULL );
@@ -467,7 +470,6 @@ void Field_VariableSizeDraw( field_t *edit, int x, int y, int size, qboolean sho
 	if ( noColorEscape ) {
 		const vec4_t white = { 1.0f, 1.0f, 1.0f, 1.0f }, shadow = { 0.0f, 0.0f, 0.0f, 1.0f };
 		const float *color = white;
-		const qboolean small = (qboolean)( size == con.charWidth );
 		const float step = small ? (float)size : size * cls.widthRatioCoef;
 
 		for ( i = 0; i < prestep; i++ ) {
@@ -493,7 +495,7 @@ void Field_VariableSizeDraw( field_t *edit, int x, int y, int size, qboolean sho
 				SCR_DrawChar( (int)( x + i * step ), y, (float)size, str[i] );
 		}
 		re->SetColor( NULL );
-	} else if ( size == con.charWidth ) {
+	} else if ( small ) {
 		float	color[4];
 
 		color[0] = color[1] = color[2] = color[3] = 1.0;
@@ -517,7 +519,7 @@ void Field_VariableSizeDraw( field_t *edit, int x, int y, int size, qboolean sho
 
 		i = drawLen - strlen( str );
 
-		if ( size == con.charWidth ) {
+		if ( small ) {
 			SCR_DrawSmallChar( x + ( edit->cursor - prestep - i ) * size, y, cursorChar );
 		} else {
 			str[0] = cursorChar;
@@ -529,12 +531,12 @@ void Field_VariableSizeDraw( field_t *edit, int x, int y, int size, qboolean sho
 
 void Field_Draw( field_t *edit, int x, int y, qboolean showCursor, qboolean noColorEscape )
 {
-	Field_VariableSizeDraw( edit, x, y, con.charWidth, showCursor, noColorEscape );
+	Field_VariableSizeDraw( edit, x, y, con.charWidth, qtrue, showCursor, noColorEscape );
 }
 
 void Field_BigDraw( field_t *edit, int x, int y, qboolean showCursor, qboolean noColorEscape )
 {
-	Field_VariableSizeDraw( edit, x, y, BIGCHAR_WIDTH, showCursor, noColorEscape );
+	Field_VariableSizeDraw( edit, x, y, BIGCHAR_WIDTH, qfalse, showCursor, noColorEscape );
 }
 
 /*

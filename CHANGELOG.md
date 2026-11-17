@@ -4,6 +4,10 @@ What changed in OpenJK-rpmod from version to version, newest first. What each fe
 
 OpenJK-rpmod is built on [OpenJK](https://github.com/JACoders/OpenJK); for the changes OpenJK itself made, see [its changelog](https://github.com/JACoders/OpenJK/blob/master/CHANGELOG.md).
 
+## 0.10.3 - in progress
+
+- [Fixed] `Chat: the size of what you type`. With `con_scale 2` (or display scaling that doubles the console), what you typed after Say: was drawn in the console's small letters; it's as big as Say: again.
+
 ## 0.10.2 - Nov 14th 2026
 
 - [Added] `Vulkan: SMAA`. `r_smaa 1` (or **SMAA** on Setup's RENDERER page, its new third page) smooths edges over the finished picture: sharper than FXAA, without its blur, and far cheaper than anti-aliasing at high resolutions.
