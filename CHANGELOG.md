@@ -7,6 +7,7 @@ OpenJK-rpmod is built on [OpenJK](https://github.com/JACoders/OpenJK); for the c
 ## 0.10.3 - in progress
 
 - [Fixed] `Chat: the size of what you type`. With `con_scale 2` (or display scaling that doubles the console), what you typed after Say: was drawn in the console's small letters; it's as big as Say: again.
+- [Fixed] `Presets: a model without a head top tag`. Its cards drew it small, in the top of the card; it's measured from its neck now, and fills its card like any other.
 
 ## 0.10.2 - Nov 14th 2026
 

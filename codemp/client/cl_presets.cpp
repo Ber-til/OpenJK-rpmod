@@ -680,17 +680,18 @@ static void PR_BuildView( prView_t *v, const char *model, const char *saber1, co
 	PR_Pose( *v->g2, "BOTH_STAND1" );		// standing, the saber or not
 }
 
-// how tall it stands: its head's top to its feet, as posed; the model's bounds when it hasn't the tags
+// how tall it stands: its head's top to its feet, as posed; without a head top tag, its neck's and a head
+// above it (a model made at another size than its bounds say, as Amani); the model's bounds without either
 static void PR_Measure( prView_t *v ) {
-	static const char *tags[] = { "*head_top", "*r_leg_foot", "*l_leg_foot" };
+	static const char *tags[] = { "*head_top", "*r_leg_foot", "*l_leg_foot", "*torso_cap_head", "*head_cap_torso" };
 	vec3_t zero = { 0, 0, 0 };
-	float z[3];
+	float z[5];
 	int found = 0;
 
 	v->measured = qtrue;
 	v->bottom = v->mins[2];
 	v->top = v->maxs[2];
-	for ( int t = 0; t < 3; t++ ) {
+	for ( int t = 0; t < 5; t++ ) {
 		const int bolt = re->G2API_AddBolt( *v->g2, 0, tags[t] );
 		mdxaBone_t m;
 
@@ -704,6 +705,14 @@ static void PR_Measure( prView_t *v ) {
 
 		v->bottom = feet - 3.0f;
 		v->top = z[0] + 3.0f;
+	} else if ( ( found & 24 ) && ( found & 6 ) ) {
+		const float feet = ( found & 2 ) && ( found & 4 ) ? Q_min( z[1], z[2] ) : ( found & 2 ) ? z[1] : z[2];
+		const float neck = ( found & 8 ) ? z[3] : z[4];
+
+		if ( neck > feet ) {
+			v->bottom = feet - 3.0f;
+			v->top = neck + ( neck - feet ) * 0.2f + 3.0f;		// a head is about a fifth of the rest
+		}
 	}
 }
 
