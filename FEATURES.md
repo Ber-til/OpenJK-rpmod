@@ -179,6 +179,7 @@ Click any surface, see what it's made of, and swap its texture for everyone on t
 
 - Search a shader and draw it over everyone's screen with `rpshader overlay add`: where it goes and how big on a 640x480 screen (empty for the whole screen), and its fade
 - Preview it where it would go, on your screen only, before you add it
+- Place it without typing: drag the preview to move it and its bottom right corner to size it, or step each number with its **-** and **+** (8 at a time, Shift 1; the fade 1, Shift 0.1) or the mouse wheel over it
 - List the server's overlays, and remove one or all of them
 
 ### Sky

@@ -23,6 +23,8 @@ OpenJK-rpmod is built on [OpenJK](https://github.com/JACoders/OpenJK); for the c
 
 - [Added] `Head only: +headlook`. Held, the mouse or arrow keys turn your head, not your body, and let go it turns back; your view turns with it in first person (`cl_headLookView`). Others with the client see your head turn, through C1B3R.
 
+- [Added] `Shader Manager: placing an overlay without typing`. Drag the overlay's preview to move it and its corner to size it, or step each number with - and + (8 at a time, Shift 1) or the mouse wheel; `/shadermanager overlays` opens on the tab.
+
 ## 0.10.2 - Nov 14th 2026
 
 - [Added] `Vulkan: SMAA`. `r_smaa 1` (or **SMAA** on Setup's RENDERER page, its new third page) smooths edges over the finished picture: sharper than FXAA, without its blur, and far cheaper than anti-aliasing at high resolutions.

@@ -372,6 +372,8 @@ static struct {
 	qboolean	skySet;							// the renderer has a sky look to put back
 	int			portalTime;						// a 3D skybox's view last rendered
 	float		*drag;							// the slider the mouse holds
+	int			ovDrag;							// the overlay's preview held: 1 moved, 2 sized by its corner
+	float		ovDragX, ovDragY, ovStart[4];	// where the mouse took it, and its x y w h then
 	char		portalMap[MAX_QPATH];			// the map the portals were read for
 	std::vector<smPortal_t> portals;
 	smList_t	portalList;						// row 0 is none
@@ -3530,24 +3532,73 @@ static void SM_RemoveOverlay( int i ) {
 	sm.overlays.erase( sm.overlays.begin() + i );
 }
 
-// where the picked shader would show, on this screen only
+// an overlay's number set: whole, a size at least 1
+static void SM_OverlaySet( int field, float v ) {
+	if ( field >= 3 )
+		v = Q_max( 1.0f, v );
+	if ( field >= 1 )
+		v = floorf( v + 0.5f );
+	Q_strncpyz( sm.fields[SM_F_OV_FADE + field], va( "%g", v ), sizeof( sm.fields[0] ) );
+}
+
+// a number stepped by its - or + (or the wheel over it): 8 at a time, Shift 1 (the fade 1, Shift 0.1)
+static void SM_OverlayNudge( int field, int dir ) {
+	const float step = field == 0 ? ( SM_ShiftDown() ? 0.1f : 1.0f ) : ( SM_ShiftDown() ? 1.0f : 8.0f );
+
+	SM_OverlaySet( field, Q_max( 0.0f, (float)atof( SM_OverlayValue( field ) ) + dir * step ) );
+}
+
+// where the picked shader would show, on this screen only; held inside, it's moved, by its
+// bottom right corner, sized
 static void SM_DrawOverlayPreview( void ) {
 	const char *shader = SM_OverlayShader();
 	float x, y, w, h;
 	qhandle_t hShader;
 
-	if ( sm.tab != SM_TAB_OVERLAYS || !sm.overlayPreview || !shader || !( hShader = SM_PreviewHandle( shader ) ) )
+	if ( sm.tab != SM_TAB_OVERLAYS || !sm.overlayPreview || !shader || !( hShader = SM_PreviewHandle( shader ) ) ) {
+		sm.ovDrag = 0;
 		return;
+	}
 	x = (float)atof( SM_OverlayValue( 1 ) );
 	y = (float)atof( SM_OverlayValue( 2 ) );
 	w = (float)atof( SM_OverlayValue( 3 ) );
 	h = (float)atof( SM_OverlayValue( 4 ) );
+	// taken (in the view, not under the panel): not a pick of what's under it
+	if ( sm.click && sm.clickX < SM_PANEL_X && sm.clickX >= x && sm.clickX <= x + w && sm.clickY >= y && sm.clickY <= y + h ) {
+		sm.click = qfalse;
+		sm.ovDrag = ( sm.clickX >= x + w - 12 && sm.clickY >= y + h - 12 ) ? 2 : 1;
+		sm.ovDragX = sm.clickX;
+		sm.ovDragY = sm.clickY;
+		sm.ovStart[0] = x;
+		sm.ovStart[1] = y;
+		sm.ovStart[2] = w;
+		sm.ovStart[3] = h;
+	}
+	if ( sm.ovDrag && !sm.held[A_MOUSE1] )
+		sm.ovDrag = 0;
+	if ( sm.ovDrag ) {
+		const float dx = sm.cursorX - sm.ovDragX, dy = sm.cursorY - sm.ovDragY;
+
+		if ( sm.ovDrag == 1 ) {
+			SM_OverlaySet( 1, sm.ovStart[0] + dx );
+			SM_OverlaySet( 2, sm.ovStart[1] + dy );
+		} else {
+			SM_OverlaySet( 3, sm.ovStart[2] + dx );
+			SM_OverlaySet( 4, sm.ovStart[3] + dy );
+		}
+		x = (float)atof( SM_OverlayValue( 1 ) );
+		y = (float)atof( SM_OverlayValue( 2 ) );
+		w = (float)atof( SM_OverlayValue( 3 ) );
+		h = (float)atof( SM_OverlayValue( 4 ) );
+	}
 	re->SetColor( NULL );
 	re->DrawStretchPic( x, y, w, h, 0, 0, 1, 1, hShader );
 	SM_Fill( x, y, w, 1, smBorder );
 	SM_Fill( x, y + h - 1, w, 1, smBorder );
 	SM_Fill( x, y, 1, h, smBorder );
 	SM_Fill( x + w - 1, y, 1, h, smBorder );
+	// the corner that sizes it
+	SM_Fill( x + w - 8, y + h - 8, 8, 8, sm.ovDrag == 2 ? smWhite : smBorder );
 }
 
 static void SM_DrawOverlaysTab( float x, float y, float w ) {
@@ -3571,10 +3622,21 @@ static void SM_DrawOverlaysTab( float x, float y, float w ) {
 	for ( int i = 0; i < 5; i++ ) {
 		static const char *placeholders[] = { "0", "0", "0", "640", "480" };
 
-		SM_Text( x + i * ( cw + 4 ), y, labels[i], smDim );
-		SM_Field( (smField_t)( SM_F_OV_FADE + i ), x + i * ( cw + 4 ), y + 12, cw, placeholders[i] );
+		const float fx = x + i * ( cw + 4 ), half = ( cw - 2 ) * 0.5f;
+
+		SM_Text( fx, y, labels[i], smDim );
+		SM_Field( (smField_t)( SM_F_OV_FADE + i ), fx, y + 12, cw, placeholders[i] );
+		// stepped: - and +, or the wheel over it
+		if ( SM_Button( fx, y + 30, half, "-", qfalse, qtrue ) )
+			SM_OverlayNudge( i, -1 );
+		if ( SM_Button( fx + half + 2, y + 30, half, "+", qfalse, qtrue ) )
+			SM_OverlayNudge( i, 1 );
+		if ( sm.wheel && SM_InRect( fx, y + 12, cw, SM_CTRL_H ) ) {
+			SM_OverlayNudge( i, sm.wheel < 0 ? 1 : -1 );
+			sm.wheel = 0;
+		}
 	}
-	y += 31;
+	y += 49;
 	if ( SM_Button( x, y, 70, "Full screen", qfalse, qtrue ) ) {
 		for ( int i = 1; i < 5; i++ )
 			sm.fields[SM_F_OV_FADE + i][0] = '\0';
@@ -3605,8 +3667,8 @@ static void SM_DrawOverlaysTab( float x, float y, float w ) {
 		sm.overlays.clear();
 	}
 	y += 22;
-	SM_TextClipped( x, y, w, S_COLOR_GREY "Place on a 640x480 screen. Overlays others added show", smWhite );
-	SM_TextClipped( x, y + 12, w, S_COLOR_GREY "here once listed from the server.", smWhite );
+	SM_TextClipped( x, y, w, S_COLOR_GREY "Place on a 640x480 screen: drag the preview, its corner", smWhite );
+	SM_TextClipped( x, y + 12, w, S_COLOR_GREY "sizes it; - + step 8 (Shift 1). Others' show once listed.", smWhite );
 }
 
 /*
@@ -4552,6 +4614,11 @@ void CL_ShaderManager_f( void ) {
 		SM_RebuildMineView();
 	} else if ( !Q_stricmp( arg, "close" ) ) {
 		CL_ShaderManager_Close();
+	} else if ( !Q_stricmp( arg, "overlays" ) ) {
+		if ( sm.state == SM_OFF )
+			SM_Open();
+		if ( sm.state != SM_OFF )
+			SM_EnterEdit( SM_TAB_OVERLAYS );
 	} else {
 		Com_Printf( "usage: " SM_TOGGLE_CMD "              toggle the shader manager (bind a key to it)\n" );
 		Com_Printf( "       " SM_TOGGLE_CMD " crosshair    show/hide the shader under the crosshair\n" );
@@ -4559,6 +4626,7 @@ void CL_ShaderManager_f( void ) {
 		Com_Printf( "       " SM_TOGGLE_CMD " mine [reset] list your player shaders, or put them back\n" );
 		Com_Printf( "       " SM_TOGGLE_CMD " mine others  the player shaders others shared\n" );
 		Com_Printf( "       " SM_TOGGLE_CMD " mine share   send yours again (with Shared on in the Mine tab)\n" );
+		Com_Printf( "       " SM_TOGGLE_CMD " overlays     open on the Overlays tab\n" );
 		Com_Printf( "       " SM_TOGGLE_CMD " reindex      rescan the filesystem for shaders\n" );
 		Com_Printf( "       " SM_TOGGLE_CMD " close        close the shader manager\n" );
 	}

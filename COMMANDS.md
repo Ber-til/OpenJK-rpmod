@@ -82,6 +82,7 @@ The console commands, keys and settings this client adds. What each feature does
 - `/shadermanager` opens or closes the manager (I recommend binding it to a key)
 - `/shadermanager crosshair` shows or hides the shader under your crosshair (`cl_shaderCrosshair`)
 - `/shadermanager remaps` lists the shaders remapped in this map
+- `/shadermanager overlays` opens it on the Overlays tab
 - `/shadermanager mine [reset]` lists your player shaders, or puts them all back
 - `/shadermanager mine others` lists the player shaders others shared; `/shadermanager mine share` sends yours again
 - `/shadermanager reindex` rescans for shaders
