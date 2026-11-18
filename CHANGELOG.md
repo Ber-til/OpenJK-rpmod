@@ -13,6 +13,8 @@ OpenJK-rpmod is built on [OpenJK](https://github.com/JACoders/OpenJK); for the c
 - [Fixed] `Holsters (and characters) of players who came in after you`. Your game learned who else has the client only when it first spoke to C1B3R, so someone who joined or linked later had their holster unseen until your next map or name change. It asks again 10 and 30 seconds after someone comes in, at once when their character changes, and once a minute. A holster saved while it was being fetched is fetched again too.
 - [Fixed] `Sky Composer: Share reached no one`. Shared from the window, the sky was written over in the game's memory while it was shown on your own screen, so C1B3R got something else and refused it without a word; only Unshare went through. It's sent as composed now. The same could happen to a limb cut or put back with the dismember tool.
 
+- [Changed] `Characters: back from a tool`. A tool opened from `/characters` (Look and presets, Inventory, the character panel, Holster, Datapad settings, Effect Replacer, Player shaders, Languages) comes back to Characters when you close it, so you don't type `/characters` again.
+
 ## 0.10.2 - Nov 14th 2026
 
 - [Added] `Vulkan: SMAA`. `r_smaa 1` (or **SMAA** on Setup's RENDERER page, its new third page) smooths edges over the finished picture: sharper than FXAA, without its blur, and far cheaper than anti-aliasing at high resolutions.

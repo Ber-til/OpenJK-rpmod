@@ -124,8 +124,12 @@ typedef struct {
 	int		items;
 } chOffer_t;
 
+#define CH_BACK_WAIT_MS		3000		// a tool opened from here that hasn't shown by then never will
+
 static struct {
 	qboolean	open;
+	int			back;			// a tool opened from here: 1 till it shows, 2 while it's open; back here once it closes
+	int			backSince;
 	int			font, titleFont;
 	sfxHandle_t	clickSound;
 	float		cursorX, cursorY;
@@ -526,11 +530,31 @@ Each frame: answers, and keeping the one played up to date
 ===============================================================================
 */
 
+static void CH_Open( void );
+
+// a tool opened from here (Look and presets, Inventory, Holster...): once it closes, back here, as a
+// way back without typing /characters again
+static void CH_BackFrame( void ) {
+	if ( !ch.back )
+		return;
+	if ( ch.open ) {
+		ch.back = 0;
+	} else if ( Key_GetCatcher() & KEYCATCH_ENGINETOOLS & ~KEYCATCH_CHARACTERS ) {
+		ch.back = 2;
+	} else if ( ch.back == 2 ) {
+		ch.back = 0;
+		CH_Open();
+	} else if ( cls.realtime - ch.backSince > CH_BACK_WAIT_MS ) {
+		ch.back = 0;		// it never opened (not allowed here, say)
+	}
+}
+
 void CL_Characters_Frame( void ) {
 	const char *session = CL_Presence_Session();
 
 	if ( cls.state != CA_ACTIVE )
 		return;
+	CH_BackFrame();
 	// a new session (linked since, or C1B3R again): the list asked again
 	if ( session && Q_stricmp( session, ch.listFor ) && chListHttp.state != HTTP_BUSY )
 		CH_AskList();
@@ -1043,6 +1067,9 @@ static void CH_Tool( float x, float *y, float w, const char *label, const char *
 	if ( CH_Button( x, *y, w, label, qfalse, enabled ) ) {
 		CL_Characters_Close();
 		Cbuf_AddText( va( "%s\n", cmd ) );
+		// closing it comes back here
+		ch.back = 1;
+		ch.backSince = cls.realtime;
 	}
 	*y += CH_CTRL_H + 3;
 }
@@ -1390,6 +1417,7 @@ void CL_Characters_Escape( void ) {
 
 void CL_Characters_Disconnect( void ) {
 	CL_Characters_Close();
+	ch.back = 0;
 	ch.known = qfalse;
 	ch.num = ch.activeId = ch.sel = 0;
 	ch.listFor[0] = '\0';
