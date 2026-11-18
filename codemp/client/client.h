@@ -901,6 +901,9 @@ void CL_EffectManager_Init( void );
 void CL_EffectManager_Shutdown( void );
 void CL_EffectManager_f( void );
 void CL_EffectReplacer_f( void );
+qboolean CL_CamShake_View( const refdef_t *fd, refdef_t *out );	// the camera sway (camshake): the view swayed, while it lasts
+void CL_CamShake_Hook( char **argv, int argc );
+void CL_CamShake_Disconnect( void );
 qboolean CL_EffectManager_Active( void );
 void CL_EffectManager_Close( void );
 void CL_EffectManager_OpenForStory( void );

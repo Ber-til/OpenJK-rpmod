@@ -15,6 +15,8 @@ OpenJK-rpmod is built on [OpenJK](https://github.com/JACoders/OpenJK); for the c
 
 - [Changed] `Characters: back from a tool`. A tool opened from `/characters` (Look and presets, Inventory, the character panel, Holster, Datapad settings, Effect Replacer, Player shaders, Languages) comes back to Characters when you close it, so you don't type `/characters` again.
 
+- [Added] `Camera sway with a speed (/camshake)`. RPMod's camera shake has a pace of its own; this one sways at the speed you set, slow for someone drunk or fast for a quake, for everyone with the client or one player. In the Effect Manager's Presets as **Sway**. RPMod admins, through C1B3R.
+
 ## 0.10.2 - Nov 14th 2026
 
 - [Added] `Vulkan: SMAA`. `r_smaa 1` (or **SMAA** on Setup's RENDERER page, its new third page) smooths edges over the finished picture: sharper than FXAA, without its blur, and far cheaper than anti-aliasing at high resolutions.

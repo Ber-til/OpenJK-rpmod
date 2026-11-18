@@ -262,6 +262,7 @@ Browse every effect, watch it play live, put it exactly where you want (or on so
 - Make the checked ones (or the one picked) bigger or smaller with Size *(experimental)*, or back to x1
 - Remove every effect, or everything bolted to you, a player or an NPC
 - One-click presets: alarm, fade out / fade back in, and camera shake with intensity and duration
+- **Sway** (ours, `/camshake`): the camera swayed at the speed you set, for everyone with the client or one player by name or number: 0.5 a slow drunken sway, 1 held by hand, 5 and up a quake. Strength 1 to 10, up to 600 seconds, fading in and out; Stop ends it. An RPMod admin's, sent through C1B3R
 - Several commands in a row are spaced out automatically, so the server's flood protection doesn't drop them
 
 ### Your own effects as others (Effect Replacer, Mine tab)

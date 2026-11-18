@@ -401,6 +401,11 @@ static void CL_FX_PlayEntityEffectID( int id, vec3_t org, matrix3_t axis, const 
 }
 
 static void CL_R_RenderScene( const refdef_t *fd ) {
+	refdef_t swayed;
+
+	// the camera sway (camshake) on every view of the world, its sky's too
+	if ( CL_CamShake_View( fd, &swayed ) )
+		fd = &swayed;
 	// the lights held back, and the blades' own
 	CL_SaberLight_RenderScene();
 	// the sky's look the shader manager set, spinning
