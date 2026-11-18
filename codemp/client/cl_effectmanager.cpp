@@ -5970,7 +5970,7 @@ static void EM_DrawPresets( void ) {
 		Cbuf_AddText( va( "camshake %s %s %s %s\n", em.fields[EM_F_SWAY_STRENGTH], em.fields[EM_F_SWAY_SPEED], em.fields[EM_F_SWAY_SECONDS], em.fields[EM_F_SWAY_WHO] ) );
 	if ( EM_Button( cx + 328, y, 50, "Stop", qfalse, qtrue ) )
 		Cbuf_AddText( va( "camshake stop %s\n", em.fields[EM_F_SWAY_WHO] ) );
-	EM_Text( cx + 386, y + 2, S_COLOR_GREY "a camera sway at a speed (0.5 drunk, 5 a quake)", emWhite );
+	EM_Text( cx + 386, y + 2, S_COLOR_GREY "speed: 0.5 drunk, 5 a quake", emWhite );
 	y += 18;
 	EM_Text( cx, y, S_COLOR_GREY "Sway is ours: only those with the client see it; a name or number for one player", emWhite );
 

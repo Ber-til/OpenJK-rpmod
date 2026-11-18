@@ -317,7 +317,7 @@ qboolean CL_PhotoMode_RenderScene( const refdef_t *fd ) {
 		if ( PM_LookChanged() && re->ext.SetScreenFilter ) {
 			screenFilter_t f;
 
-			RC_PhotoFilter( &f, ph.filter, ph.saturation, ph.contrast, ph.brightness, ph.warmth );
+			RC_PhotoFilter( &f, ph.filter, ph.filter != RC_FI_NONE ? ph.strength / 100.0f : 1.0f, ph.saturation, ph.contrast, ph.brightness, ph.warmth );
 			f.grain = Q_max( f.grain, ph.grain );
 			f.vignette = Q_max( f.vignette, ph.vignette );
 			f.aberration = Q_max( f.aberration, ph.aberration );
@@ -326,7 +326,6 @@ qboolean CL_PhotoMode_RenderScene( const refdef_t *fd ) {
 				if ( f.scanlineCount <= 0.0f )
 					f.scanlineCount = 240.0f;
 			}
-			f.strength = ph.filter != RC_FI_NONE ? ph.strength / 100.0f : 1.0f;
 			re->ext.SetScreenFilter( &f );
 			look = qtrue;
 		}

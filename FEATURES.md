@@ -585,7 +585,7 @@ A free camera to take pictures: `/photomode`, or **Photo Mode** under the Esc me
 
 - The view leaves you: hold the right mouse button to look around, **WASD** to fly (**Space** up, **C** down, **Shift** fast, **Ctrl** slow), **Q** and **E** to roll, the wheel to zoom. The HUD, chat and crosshair are hidden and your own character is in the picture; the game goes on round you. The camera stays within reach of you (the server only sends what's near)
 - **Camera** page: zoom (field of view), roll, **Back to my view**; **Depth of field**: click the scene to focus on what's there (a person, before the wall behind them), with how much stays sharp and how blurred the rest is; a **Frame** to shoot in (Screen, 16:9, 21:9, 4:3, 1:1, 9:16), the rest darkened, with the rule of thirds' lines if wanted
-- **Look** page: the cinematic camera's filters (Noir, Sepia, Old film, Night vision...) and their strength; colour: saturation, contrast, brightness, warmth; lens: grain, vignette, colour fringes, scanlines; **Reset**
+- **Look** page: the cinematic camera's filters (Noir, Sepia, Old film, Night vision...) and their strength (the filter's alone); colour: saturation, contrast, brightness, warmth; lens: grain, vignette, colour fringes, scanlines; **Reset**
 - **Snap** (or **Enter**) saves a PNG at your window's full size, cut to the frame, without the panel, in `screenshots/photo_<date>_<time>.png`. **H** hides the panel; **Esc** closes
 - Depth of field and the Look need the Vulkan renderer; the camera, frame and Snap work with either
 - An idea from a player's report
