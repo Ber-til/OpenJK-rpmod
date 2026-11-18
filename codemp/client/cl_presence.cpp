@@ -761,8 +761,14 @@ qboolean CL_Presence_Outgoing( const char *cmd ) {
 
 // a hook (cmd:...) to everyone with this client here (to -1) or one player, through C1B3R; shown here
 // too. The tools' only from an RPMod admin: not even here otherwise, as it goes nowhere else
-qboolean CL_Presence_Hook( int to, const char *text ) {
-	if ( !text || Q_stricmpn( text, "cmd:", 4 ) )
+qboolean CL_Presence_Hook( int to, const char *in ) {
+	// a copy: the hook is often a va() string, and running it here first (the sky redrawn, a limb
+	// put back) calls va() enough to write over it before it's queued, so C1B3R got something else
+	// (refused as no hook, unsaid): a shared sky never reached anyone, its Unshare did
+	const std::string copy = in ? in : "";
+	const char *text = copy.c_str();
+
+	if ( !in || Q_stricmpn( text, "cmd:", 4 ) )
 		return qfalse;
 	// (with no C1B3R for this server, a local one, it runs here as ever: it can't reach anyone else)
 	if ( PS_AdminHook( text ) && to != clc.clientNum && PS_Active() && !( psv.on && psv.sends && psv.admin ) ) {

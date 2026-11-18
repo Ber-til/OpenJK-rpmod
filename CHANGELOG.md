@@ -11,6 +11,7 @@ OpenJK-rpmod is built on [OpenJK](https://github.com/JACoders/OpenJK); for the c
 - [Fixed] `Presets: a model without a head top tag`. Its cards drew it small, in the top of the card; it's measured from its neck now, and fills its card like any other.
 - [Fixed] `Shader Manager on Vulkan: players, NPCs and vehicles`. Pointing at a player, NPC or vehicle named no shader with the Vulkan renderer (it couldn't tell which skin they wore); it names it as with OpenGL. *Needs the release's rd-vulkan_x86.dll.*
 - [Fixed] `Holsters (and characters) of players who came in after you`. Your game learned who else has the client only when it first spoke to C1B3R, so someone who joined or linked later had their holster unseen until your next map or name change. It asks again 10 and 30 seconds after someone comes in, at once when their character changes, and once a minute. A holster saved while it was being fetched is fetched again too.
+- [Fixed] `Sky Composer: Share reached no one`. Shared from the window, the sky was written over in the game's memory while it was shown on your own screen, so C1B3R got something else and refused it without a word; only Unshare went through. It's sent as composed now. The same could happen to a limb cut or put back with the dismember tool.
 
 ## 0.10.2 - Nov 14th 2026
 
