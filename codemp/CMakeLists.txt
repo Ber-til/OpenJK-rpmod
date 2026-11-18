@@ -521,6 +521,7 @@ if(BuildMPEngine)
 		"${MPDir}/client/cl_dismember.cpp"
 		"${MPDir}/client/cl_characters.cpp"
 		"${MPDir}/client/cl_aim.cpp"
+		"${MPDir}/client/cl_headlook.cpp"
 		"${MPDir}/client/cl_sabers.cpp"
 		"${MPDir}/client/cl_html.cpp"
 		"${MPDir}/client/cl_holonet.cpp"

@@ -297,6 +297,9 @@ The console commands, keys and settings this client adds. What each feature does
 
 ## Settings
 
+- `+headlook` (held, e.g. `/bind alt +headlook`) turns only your head with the mouse or arrow keys, seen by others with the client; `cl_headLookView 0|1|2` whether your view turns with it (never, first person, always)
+- `cl_lookLean <0-4>` how far players lean back and forward with their look (2; 1 as the game does it)
+
 - `rpc_removeExtraColorsInConsole 0` shows RPMod's extra colors in the console
 - `rpc_chatRangeConsole_mode <0-3>`, `rpc_chatRangeConsole_min`, `rpc_chatRangeConsole_max`, `rpc_chatRangeConsole_alpha` set the chat range in the console
 - `cl_updateCheck 0` never asks GitHub whether there's a newer OpenJK-rpmod

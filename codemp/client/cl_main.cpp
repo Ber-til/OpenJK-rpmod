@@ -872,6 +872,7 @@ void CL_Disconnect( qboolean showMainMenu ) {
 	CL_Feedback_Disconnect();
 	CL_NpcNames_Disconnect();
 	CL_Aim_Disconnect();
+	CL_HeadLook_Disconnect();
 	CL_AdminFlags_Reset();
 	CL_RpCinematic_Reset();
 	CL_NpcWalk_Reset();
@@ -2431,6 +2432,7 @@ void CL_Frame ( int msec ) {
 	CL_Holster_PollFrame();
 	CL_Presets_Frame();			// previews let go of last frame freed, before this one draws
 	CL_Characters_Frame();
+	CL_HeadLook_Frame();
 	CL_DatapadWeb_Frame();
 	CL_AssetManager_Frame();
 	// the RENDERER page's effects, shown with Post Effects on
@@ -2991,6 +2993,7 @@ void CL_Init( void ) {
 	CL_Dismember_Init();
 	CL_WorldItems_Init();
 	CL_Characters_Init();
+	CL_HeadLook_Init();
 	CL_Datapad_Init ();
 	CL_EscMenu_Init ();
 	CL_AssetManager_Init ();

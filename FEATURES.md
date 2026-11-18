@@ -786,6 +786,14 @@ Your game now tracks when the takeoff is about to end and stops sending jump unt
 
 - `/cl_fighterTakeoffGuard 0` turns the guard off and brings back the old behaviour (*1* by default)
 
+## Looking Around
+
+Players look with their whole body, and you can look with your head alone.
+
+- **Leaning with the look**: looking up, a player leans back; looking down, forward over the waist, not only with the head (as MBII's do). `cl_lookLean` sets how much: 2 by default, 1 as the game does it, 0 to 4. Everyone you see leans so, on your screen
+- **Head only** (`+headlook`, e.g. `/bind alt +headlook`): held, the mouse (or the arrow keys) turns your head, up to 75° to either side and 50° up or down, and your body stays as it faces; let go and it turns back. Your view turns with it in first person; in third person the camera stays and you watch your character look round (`cl_headLookView`: 0 never, 1 in first person, 2 always)
+- Others with the client see your head turn, sent through C1B3R a few times a second while it's turned
+
 ## Toggle Crouch
 
 Stay crouched without holding the key.

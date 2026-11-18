@@ -904,6 +904,16 @@ void CL_EffectReplacer_f( void );
 qboolean CL_CamShake_View( const refdef_t *fd, refdef_t *out );	// the camera sway (camshake): the view swayed, while it lasts
 void CL_CamShake_Hook( char **argv, int argc );
 void CL_CamShake_Disconnect( void );
+// cl_headlook.cpp: +headlook, the head turned without the body, seen by others with the client
+qboolean CL_HeadLook_Held( void );
+void CL_HeadLook_Turn( float yaw, float pitch );
+void CL_HeadLook_Frame( void );
+void CL_HeadLook_Hook( char **argv, int argc );
+qboolean CL_HeadLook_View( const refdef_t *fd, refdef_t *out );
+void CL_HeadLook_Entity( const refEntity_t *ent, void *bodyGhoul2 );
+qboolean CL_HeadLook_Bone( void *g2, const char *bone, const vec3_t in, vec3_t out );
+void CL_HeadLook_Disconnect( void );
+void CL_HeadLook_Init( void );
 qboolean CL_EffectManager_Active( void );
 void CL_EffectManager_Close( void );
 void CL_EffectManager_OpenForStory( void );

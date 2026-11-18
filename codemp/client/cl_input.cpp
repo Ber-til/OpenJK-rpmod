@@ -1363,6 +1363,10 @@ void CL_MouseMove( usercmd_t *cmd ) {
 	mx *= cl.cgameSensitivity;
 	my *= cl.cgameSensitivity;
 
+	// +headlook held: the turn below goes to the head, the body's way kept
+	vec3_t bodyAngles;
+	VectorCopy( cl.viewangles, bodyAngles );
+
 	// add mouse X/Y movement to cmd
 	if ( in_strafe.active )
 		cmd->rightmove = ClampChar( cmd->rightmove + m_side->value * mx );
@@ -1388,6 +1392,11 @@ void CL_MouseMove( usercmd_t *cmd ) {
 	}
 	else
 		cmd->forwardmove = ClampChar( cmd->forwardmove - m_forward->value * my );
+
+	if ( CL_HeadLook_Held() ) {
+		CL_HeadLook_Turn( cl.viewangles[YAW] - bodyAngles[YAW], cl.viewangles[PITCH] - bodyAngles[PITCH] );
+		VectorCopy( bodyAngles, cl.viewangles );
+	}
 }
 
 qboolean CL_NoUseableForce(void)
@@ -1547,8 +1556,12 @@ usercmd_t CL_CreateCmd( void ) {
 
 	VectorCopy( cl.viewangles, oldAngles );
 
-	// keyboard angle adjustment
+	// keyboard angle adjustment (with +headlook held, the head's)
 	CL_AdjustAngles ();
+	if ( CL_HeadLook_Held() ) {
+		CL_HeadLook_Turn( cl.viewangles[YAW] - oldAngles[YAW], cl.viewangles[PITCH] - oldAngles[PITCH] );
+		VectorCopy( oldAngles, cl.viewangles );
+	}
 
 	Com_Memset( &cmd, 0, sizeof( cmd ) );
 

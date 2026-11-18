@@ -19,6 +19,10 @@ OpenJK-rpmod is built on [OpenJK](https://github.com/JACoders/OpenJK); for the c
 
 - [Changed] `Photo mode: Strength is the filter's alone`. It weakened the colour (saturation, contrast, brightness, warmth) and the lens (grain, vignette, fringes, scanlines) along with the filter; now it sets only the filter, and those below it stay as you set them.
 
+- [Added] `Leaning with the look (cl_lookLean)`. Players lean back as they look up and forward as they look down, over the waist and not only the head, as in MBII; 2 by default, 1 as the game had it. An idea from a player's report.
+
+- [Added] `Head only: +headlook`. Held, the mouse or arrow keys turn your head, not your body, and let go it turns back; your view turns with it in first person (`cl_headLookView`). Others with the client see your head turn, through C1B3R.
+
 ## 0.10.2 - Nov 14th 2026
 
 - [Added] `Vulkan: SMAA`. `r_smaa 1` (or **SMAA** on Setup's RENDERER page, its new third page) smooths edges over the finished picture: sharper than FXAA, without its blur, and far cheaper than anti-aliasing at high resolutions.
