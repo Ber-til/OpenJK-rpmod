@@ -30,8 +30,8 @@ layout(push_constant) uniform Params {
 
 layout(location = 0) out vec4 out_color;
 
-const int STEPS = 24;
-const int REFINE = 4;
+const int STEPS = 48;		// short steps growing slowly: thin edges (a chair's rim) found where they are
+const int REFINE = 7;
 
 float Dist( vec2 p )
 {
@@ -41,6 +41,25 @@ float Dist( vec2 p )
 vec3 Source( vec2 p )
 {
 	return texelFetch( sourceTexture, ivec2( ClampToView( p, pc.rect ) ), 0 ).rgb;
+}
+
+// a reflection's colour where the ray landed: blended across a small footprint round the exact point,
+// not the one whole pixel it falls in, so what's mirrored isn't blocky
+vec3 SourceSoft( vec2 p )
+{
+	const vec2 size = vec2( textureSize( sourceTexture, 0 ) );
+	const vec2 c = ClampToView( p, pc.rect );
+	return 0.25 * ( texture( sourceTexture, ( c + vec2( -0.6, -0.6 ) ) / size ).rgb + texture( sourceTexture, ( c + vec2( 0.6, -0.6 ) ) / size ).rgb
+		+ texture( sourceTexture, ( c + vec2( -0.6, 0.6 ) ) / size ).rgb + texture( sourceTexture, ( c + vec2( 0.6, 0.6 ) ) / size ).rgb );
+}
+
+// a hit is only as good as how near what's drawn there the ray ended: one that went far behind it (past a
+// chair's leg) has nothing true to show, and faded out rather than smeared downward from it
+float HitThickness( vec3 Q, vec2 q )
+{
+	const float behind = Q.z - Dist( q );
+	const float thick = max( 6.0, Q.z * 0.015 );
+	return 1.0 - smoothstep( thick, thick * 3.0, behind );
 }
 
 // the water surface's distance at a pixel, 0 where there's none
@@ -192,14 +211,14 @@ void main()
 	const vec3 R = reflect( V, N );
 	const float cosT = clamp( dot( -V, N ), 0.0, 1.0 );
 	const float fresnel = 0.02 + 0.98 * pow( 1.0 - cosT, 5.0 );
-	float stepLen = max( 4.0, wz * 0.02 ) * ( 0.75 + 0.5 * PixelNoise( gl_FragCoord.xy ) );
+	float stepLen = max( 2.0, wz * 0.008 ) * ( 0.95 + 0.1 * PixelNoise( gl_FragCoord.xy ) );	// barely turned: a jitter between neighbours made a reflection\'s outline ragged
 	vec3 Q = P + N * 1.0, prev = Q;
 	bool hit = false;
 
 	for ( int i = 0; i < STEPS; i++ ) {
 		prev = Q;
 		Q += R * stepLen;
-		stepLen *= 1.2;
+		stepLen *= 1.08;
 		if ( Q.z <= 1.0 )
 			break;
 		const vec2 s = Pixel( Q );
@@ -225,8 +244,8 @@ void main()
 		const vec2 s = Pixel( Q );
 		const vec2 size = pc.rect.zw - pc.rect.xy;
 		const vec2 edge = min( s - pc.rect.xy, pc.rect.zw - s ) / size;
-		reflected = Source( s );
-		reflectW = smoothstep( 0.0, 0.08, min( edge.x, edge.y ) ) * ( 1.0 - smoothstep( 800.0, 1600.0, length( Q - P ) ) );
+		reflected = SourceSoft( s );
+		reflectW = smoothstep( 0.0, 0.08, min( edge.x, edge.y ) ) * ( 1.0 - smoothstep( 800.0, 1600.0, length( Q - P ) ) ) * HitThickness( Q, s );
 	} else {
 		// nothing found: what lies that way at the top of the view, likely sky, more faintly
 		const vec2 s = clamp( Pixel( P + R * 4096.0 ), pc.rect.xy + 0.5, pc.rect.zw - 0.5 );

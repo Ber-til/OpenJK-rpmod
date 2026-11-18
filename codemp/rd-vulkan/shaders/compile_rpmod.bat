@@ -44,6 +44,7 @@ call :frag rpmod_fxaa_frag_spv glsl\rpmod\fxaa.frag || exit /b 1
 call :frag rpmod_cas_frag_spv glsl\rpmod\cas.frag || exit /b 1
 call :frag rpmod_volum_frag_spv glsl\rpmod\volum.frag || exit /b 1
 call :frag rpmod_ssr_frag_spv glsl\rpmod\ssr.frag || exit /b 1
+call :frag rpmod_ssrblur_frag_spv glsl\rpmod\ssrblur.frag || exit /b 1
 call :frag rpmod_shadow_frag_spv glsl\rpmod\shadow.frag || exit /b 1
 call :frag rpmod_smaa_edges_frag_spv glsl\rpmod\smaa.frag -DSMAA_EDGES || exit /b 1
 call :frag rpmod_smaa_weights_frag_spv glsl\rpmod\smaa.frag -DSMAA_WEIGHTS || exit /b 1

@@ -83,7 +83,7 @@ static struct {
 	qboolean			ready;			// everything is there for this window
 
 	VkShaderModule		depthFs, depthMsFs, dofFs, filterFs, copyFs;
-	VkShaderModule		ssaoFs, aoBlurFs, aoApplyFs, shaftsFs[3], mblurFs, gradeFs, fxaaFs, casFs, volumFs, ssrFs, shadowFs;
+	VkShaderModule		ssaoFs, aoBlurFs, aoApplyFs, shaftsFs[3], mblurFs, gradeFs, fxaaFs, casFs, volumFs, ssrFs, ssrBlurFs, shadowFs;
 	VkShaderModule		smaaFs[3];		// edges, weights, blending
 	VkShaderModule		fsrFs[2];		// upscaling, sharpening
 	VkShaderModule		waterFs, wetFs, hazeFs, skyFs, aerialFs;
@@ -195,7 +195,7 @@ static struct {
 	VkFramebuffer		postFb[2], distFb, aoFb[2], smaaFb[2];
 
 	VkPipeline			depthPipe, dofPipe, filterPipe, copyPipe;
-	VkPipeline			ssaoPipe, aoBlurPipe, aoApplyPipe, shaftsPipe[3], mblurPipe, gradePipe, fxaaPipe, casPipe, volumPipe, ssrPipe, shadowPipe;
+	VkPipeline			ssaoPipe, aoBlurPipe, aoApplyPipe, shaftsPipe[3], mblurPipe, gradePipe, fxaaPipe, casPipe, volumPipe, ssrPipe, ssrBlurPipe, shadowPipe;
 	VkPipeline			smaaPipe[3];
 
 	qboolean			haveDistance;	// this view's distances are in distImage
@@ -451,6 +451,7 @@ void vk_rpmod_init( void ) {
 	RP_MODULE( rp.casFs, rpmod_cas_frag_spv, "rpmod sharpen" );
 	RP_MODULE( rp.volumFs, rpmod_volum_frag_spv, "rpmod volumetric light" );
 	RP_MODULE( rp.ssrFs, rpmod_ssr_frag_spv, "rpmod reflections" );
+	RP_MODULE( rp.ssrBlurFs, rpmod_ssrblur_frag_spv, "rpmod reflections softened" );
 	RP_MODULE( rp.shadowFs, rpmod_shadow_frag_spv, "rpmod real shadows" );
 	RP_MODULE( rp.smaaFs[0], rpmod_smaa_edges_frag_spv, "rpmod smaa edges" );
 	RP_MODULE( rp.smaaFs[1], rpmod_smaa_weights_frag_spv, "rpmod smaa weights" );
@@ -481,7 +482,7 @@ void vk_rpmod_init( void ) {
 void vk_rpmod_shutdown( void ) {
 	VkShaderModule *modules[] = { &rp.depthFs, &rp.depthMsFs, &rp.dofFs, &rp.filterFs, &rp.copyFs,
 		&rp.ssaoFs, &rp.aoBlurFs, &rp.aoApplyFs, &rp.softFs[0], &rp.softFs[1], &rp.softFs[2], &rp.softFs[3], &rp.softFs[4], &rp.softFs[5],
-		&rp.shaftsFs[0], &rp.shaftsFs[1], &rp.shaftsFs[2], &rp.mblurFs, &rp.gradeFs, &rp.fxaaFs, &rp.casFs, &rp.volumFs, &rp.ssrFs, &rp.shadowFs,
+		&rp.shaftsFs[0], &rp.shaftsFs[1], &rp.shaftsFs[2], &rp.mblurFs, &rp.gradeFs, &rp.fxaaFs, &rp.casFs, &rp.volumFs, &rp.ssrFs, &rp.ssrBlurFs, &rp.shadowFs,
 		&rp.smaaFs[0], &rp.smaaFs[1], &rp.smaaFs[2], &rp.fsrFs[0], &rp.fsrFs[1], &rp.waterFs, &rp.wetFs, &rp.hazeFs, &rp.skyFs, &rp.aerialFs };
 
 	for ( size_t i = 0; i < ARRAY_LEN( modules ); i++ ) {
@@ -1352,7 +1353,7 @@ static VkPipeline RP_CreatePipeline( VkShaderModule fs, VkRenderPass pass, VkSam
 void vk_rpmod_destroy_pipelines( void ) {
 	VkPipeline *pipes[] = { &rp.depthPipe, &rp.dofPipe, &rp.filterPipe, &rp.copyPipe, &rp.ssaoPipe, &rp.aoBlurPipe,
 		&rp.aoApplyPipe, &rp.shaftsPipe[0], &rp.shaftsPipe[1], &rp.shaftsPipe[2], &rp.mblurPipe, &rp.gradePipe,
-		&rp.fxaaPipe, &rp.casPipe, &rp.volumPipe, &rp.ssrPipe, &rp.shadowPipe, &rp.smaaPipe[0], &rp.smaaPipe[1], &rp.smaaPipe[2], &rp.fsrPipe[0], &rp.fsrPipe[1], &rp.waterPipe, &rp.wetPipe, &rp.hazePipe, &rp.skyPipe, &rp.aerialPipe };
+		&rp.fxaaPipe, &rp.casPipe, &rp.volumPipe, &rp.ssrPipe, &rp.ssrBlurPipe, &rp.shadowPipe, &rp.smaaPipe[0], &rp.smaaPipe[1], &rp.smaaPipe[2], &rp.fsrPipe[0], &rp.fsrPipe[1], &rp.waterPipe, &rp.wetPipe, &rp.hazePipe, &rp.skyPipe, &rp.aerialPipe };
 
 	rp.ready = qfalse;
 	for ( size_t i = 0; i < ARRAY_LEN( pipes ); i++ ) {
@@ -1387,7 +1388,9 @@ void vk_rpmod_create_pipelines( void ) {
 	rp.gradePipe = RP_CreatePipeline( rp.gradeFs, rp.postPass, one, qfalse, "rpmod colour grading" );
 	rp.fxaaPipe = RP_CreatePipeline( rp.fxaaFs, rp.postPass, one, qfalse, "rpmod fxaa" );
 	rp.casPipe = RP_CreatePipeline( rp.casFs, rp.postPass, one, qfalse, "rpmod sharpen" );
-	rp.ssrPipe = RP_CreatePipeline( rp.ssrFs, rp.postPass, one, qfalse, "rpmod reflections" );
+	// the reflections alone into the SMAA edges' image (free till SMAA, later), then softened onto the view
+	rp.ssrPipe = RP_CreatePipeline( rp.ssrFs, rp.smaaPass, one, qfalse, "rpmod reflections" );
+	rp.ssrBlurPipe = RP_CreatePipeline( rp.ssrBlurFs, rp.postPass, one, qfalse, "rpmod reflections softened" );
 	rp.smaaPipe[0] = RP_CreatePipeline( rp.smaaFs[0], rp.smaaPass, one, qfalse, "rpmod smaa edges" );
 	rp.smaaPipe[1] = RP_CreatePipeline( rp.smaaFs[1], rp.smaaPass, one, qfalse, "rpmod smaa weights" );
 	rp.smaaPipe[2] = RP_CreatePipeline( rp.smaaFs[2], rp.postPass, one, qfalse, "rpmod smaa blending" );
@@ -2939,7 +2942,8 @@ void vk_rpmod_post( void ) {
 	const qboolean smaa = (qboolean)( r_smaa->integer != 0 && rp.smaaPipe[2] != VK_NULL_HANDLE && rp.smaaTableView[0] != VK_NULL_HANDLE );
 	const qboolean fxaa = (qboolean)( r_fxaa->integer != 0 && !smaa );
 	const qboolean sharpen = (qboolean)( r_sharpen->value > 0.0f );
-	const qboolean ssr = (qboolean)( dist && rp.haveMask && r_ssr->integer && r_ssrStrength->value > 0.0f && rp.ssrPipe != VK_NULL_HANDLE );
+	const qboolean ssr = (qboolean)( dist && rp.haveMask && r_ssr->integer && r_ssrStrength->value > 0.0f && rp.ssrPipe != VK_NULL_HANDLE
+		&& rp.ssrBlurPipe != VK_NULL_HANDLE && rp.smaaFb[0] != VK_NULL_HANDLE );
 	const qboolean water = (qboolean)( dist && rp.haveWater && r_water->integer && rp.waterPipe != VK_NULL_HANDLE );
 	const qboolean haze = (qboolean)( dist && rp.numHaze > 0 && r_heatHaze->integer && rp.hazePipe != VK_NULL_HANDLE );
 	vec3_t wetMins[RP_MAX_WET], wetMaxs[RP_MAX_WET];
@@ -3012,8 +3016,13 @@ void vk_rpmod_post( void ) {
 		p.up[1] = -axis2[2];
 		p.up[2] = axis0[2];
 		p.up[3] = backEnd.viewParms.zNear;
-		vk_begin_render_pass( rp.postPass, rp.postFb[next], qfalse, glConfig.vidWidth, glConfig.vidHeight );
+		// the reflections alone (colour, and how strongly) into the SMAA edges' image
+		vk_begin_render_pass( rp.smaaPass, rp.smaaFb[0], qfalse, glConfig.vidWidth, glConfig.vidHeight );
 		RP_Quad3( rp.ssrPipe, src, rp.distSet, rp.maskSet, &p, sizeof( p ), &r );
+		vk_end_render_pass();
+		// then softened at their outlines and laid on the view
+		vk_begin_render_pass( rp.postPass, rp.postFb[next], qfalse, glConfig.vidWidth, glConfig.vidHeight );
+		RP_Quad3( rp.ssrBlurPipe, src, rp.smaaSet[0], rp.distSet, p.rect, sizeof( p.rect ), &r );
 		vk_end_render_pass();
 		src = rp.postSet[next];
 		next ^= 1;

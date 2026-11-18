@@ -8,6 +8,10 @@
 // Which floors: those facing up (from the distances) whose surface is shiny by its material (marble,
 // tiles, metal, glass...: the shiny surfaces' own depth, drawn alone, is what the pixel shows); more
 // at a glancing look (Fresnel). It fades where the ray leaves the screen or finds nothing.
+//
+// It writes the reflection alone, its colour and how strongly it shows (alpha), into an image of its
+// own: ssrblur.frag softens it across its neighbours at the same depth and lays it on the view, so a
+// reflection's outline (a seat's) isn't stair-stepped pixel by pixel.
 
 #include "view.glsl"
 
@@ -25,8 +29,8 @@ layout(push_constant) uniform Params {
 
 layout(location = 0) out vec4 out_color;
 
-const int STEPS = 32;
-const int REFINE = 5;
+const int STEPS = 64;		// short steps growing slowly: thin edges (a chair's rim) found where they are
+const int REFINE = 8;
 
 float Dist( vec2 p )
 {
@@ -43,6 +47,25 @@ vec3 Source( vec2 p )
 	return texelFetch( sourceTexture, ivec2( ClampToView( p, pc.rect ) ), 0 ).rgb;
 }
 
+// a reflection's colour where the ray landed: blended across a small footprint round the exact point,
+// not the one whole pixel it falls in, so what's mirrored isn't blocky
+vec3 SourceSoft( vec2 p )
+{
+	const vec2 size = vec2( textureSize( sourceTexture, 0 ) );
+	const vec2 c = ClampToView( p, pc.rect );
+	return 0.25 * ( texture( sourceTexture, ( c + vec2( -0.6, -0.6 ) ) / size ).rgb + texture( sourceTexture, ( c + vec2( 0.6, -0.6 ) ) / size ).rgb
+		+ texture( sourceTexture, ( c + vec2( -0.6, 0.6 ) ) / size ).rgb + texture( sourceTexture, ( c + vec2( 0.6, 0.6 ) ) / size ).rgb );
+}
+
+// a hit is only as good as how near what's drawn there the ray ended: one that went far behind it (past a
+// chair's leg) has nothing true to show, and faded out rather than smeared downward from it
+float HitThickness( vec3 Q, vec2 q )
+{
+	const float behind = Q.z - Dist( q );
+	const float thick = max( 6.0, Q.z * 0.015 );
+	return 1.0 - smoothstep( thick, thick * 3.0, behind );
+}
+
 vec2 Pixel( vec3 P )
 {
 	const vec2 ndc = P.xy / ( P.z * pc.a.xy );
@@ -52,10 +75,9 @@ vec2 Pixel( vec3 P )
 void main()
 {
 	const vec2 p = floor( gl_FragCoord.xy ) + 0.5;
-	const vec3 here = Source( p );
 	const float z = Dist( p );
 
-	out_color = vec4( here, 1.0 );
+	out_color = vec4( 0.0 );		// no reflection here
 	if ( z >= pc.a.w * 0.99 )
 		return;		// the sky
 
@@ -92,14 +114,14 @@ void main()
 	const float fresnel = 0.15 + 0.85 * pow( 1.0 - cosT, 5.0 );
 
 	// steps that grow with the distance, a little turned by the pixel against banding
-	float stepLen = max( 4.0, z * 0.02 ) * ( 0.75 + 0.5 * PixelNoise( gl_FragCoord.xy ) );
+	float stepLen = max( 2.0, z * 0.008 ) * ( 0.95 + 0.1 * PixelNoise( gl_FragCoord.xy ) );	// barely turned: a jitter between neighbours made a reflection\'s outline ragged
 	vec3 Q = P + N * 1.0, prev = Q;
 	bool hit = false;
 
 	for ( int i = 0; i < STEPS; i++ ) {
 		prev = Q;
 		Q += R * stepLen;
-		stepLen *= 1.18;
+		stepLen *= 1.08;
 		if ( Q.z <= 1.0 )
 			break;		// back past the camera
 		const vec2 q = Pixel( Q );
@@ -134,6 +156,6 @@ void main()
 	const float edgeW = smoothstep( 0.0, 0.08, min( edge.x, edge.y ) );
 	const float farW = 1.0 - smoothstep( 600.0, 1200.0, length( Q - P ) );
 
-	const float w = clamp( pc.a.z * floorW * smoothW * fresnel * edgeW * farW, 0.0, 0.85 );
-	out_color = vec4( mix( here, Source( q ), w ), 1.0 );
+	const float w = clamp( pc.a.z * floorW * smoothW * fresnel * edgeW * farW * HitThickness( Q, q ), 0.0, 0.85 );
+	out_color = vec4( SourceSoft( q ), w );
 }
