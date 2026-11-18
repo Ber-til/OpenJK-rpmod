@@ -86,6 +86,7 @@ typedef struct {
 	int			retryAt;
 	char		slotName[MAX_INFO_VALUE];	// whom it's for (all of it: a coloured name is long), another in the slot asked again
 	qboolean	linked;				// as C1B3R's list said when it was asked: linked since, asked again
+	qboolean	again;				// changed while it was being asked: the answer may be older, asked again
 	hsItem_t	items[HS_MAX];
 	int			num;
 	qboolean	hand;				// a datapad in hand during the datapad emote (their datapad setting)
@@ -395,11 +396,12 @@ static void HS_FetchFrame( void ) {
 		if ( hsViewHttp.status == 200 ) {
 			c->num = HS_ReadItems( hsViewHttp.answer, c->items, HS_MAX );
 			c->hand = (qboolean)( strstr( va( "\n%s\n", hsViewHttp.answer ), "\ndatapadhand\t1\n" ) != NULL );
-			c->state = 2;
+			c->state = c->again ? 0 : 2;
 		} else {
 			c->state = 0;
 			c->retryAt = cls.realtime + HS_RETRY_MS;
 		}
+		c->again = qfalse;
 		hsViewFor = -1;
 	}
 	if ( hsViewHttp.state == HTTP_BUSY || !CL_Presence_Session() )
@@ -431,8 +433,12 @@ void CL_Holster_CharHook( char **argv, int argc ) {
 	const int client = argc >= 1 && argv[0][0] ? atoi( argv[0] ) : -1;
 
 	if ( client >= 0 && client < MAX_CLIENTS ) {
-		hsClients[client].state = 0;
+		hsClients[client].again = (qboolean)( hsClients[client].state == 1 );
+		hsClients[client].state = hsClients[client].state == 1 ? 1 : 0;
 		hsClients[client].retryAt = 0;
+		// their game is on C1B3R: if ours didn't know it yet (they came in after our hello), it asks now
+		if ( !CL_Presence_Linked( client ) )
+			CL_Presence_Relist();
 	}
 }
 

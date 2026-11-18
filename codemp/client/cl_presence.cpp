@@ -58,6 +58,9 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define PS_ACCOUNT_WAIT_MS	6000				// in game this long before the account is asked: the welcome prints first
 #define PS_ACCOUNT_RETRY_MS	30000				// the server didn't answer rpinfo: asked again
 #define PS_LINK_WAIT_MS		3000				// a link's code asked about this often, till it's used in Discord
+#define PS_RELIST_MS		60000				// who has the client asked again this often, in case
+#define PS_RELIST_JOIN_MS	10000				// and this long after someone came in (their game says hello by then)
+#define PS_RELIST_LATE_MS	30000				// and again this long after: a slow hello, a link made since
 
 typedef struct {
 	int			num;
@@ -84,6 +87,9 @@ static struct {
 	int			askNext;			// not before this, after a failure
 	qboolean	print;				// /clientusers is waiting for it
 	int			noteTime;
+	int			listTime;			// when it was last asked
+	int			relist[2];			// asked again then (0 none): someone came in or changed name
+	unsigned	slots;				// the players here as last seen, to tell when someone came in
 } ps;
 
 // the session
@@ -249,8 +255,47 @@ static void PS_AskList( void ) {
 		return;
 	PS_Json( body, psv.id );
 	body += "}";
+	ps.listTime = cls.realtime;
 	if ( !PS_Send( &psListHttp, "/v2/list", body ) )
 		ps.askNext = cls.realtime + PS_RETRY_MS;
+}
+
+// who has the client asked again as the server's players change: their games say hello to C1B3R after
+// they come in, so a list asked only at our own hello never knows them (their holsters, their
+// characters unseen till our next session); once a minute too, and at once when asked to
+static void PS_RelistFrame( void ) {
+	unsigned sum = 0;
+
+	for ( int i = 0; i < MAX_CLIENTS; i++ ) {
+		const char *name = CL_PlayerSlotName( i );
+
+		if ( !name[0] )
+			continue;
+		sum = sum * 31 + (unsigned)i + 1;
+		for ( const char *c = name; *c; c++ )
+			sum = sum * 31 + (unsigned char)*c;
+	}
+	if ( sum != ps.slots ) {
+		ps.slots = sum;
+		ps.relist[0] = cls.realtime + PS_RELIST_JOIN_MS;
+		ps.relist[1] = cls.realtime + PS_RELIST_LATE_MS;
+	}
+	if ( !psv.on || psListHttp.state == HTTP_BUSY || cls.realtime < ps.askNext )
+		return;
+	for ( int i = 0; i < 2; i++ ) {
+		if ( ps.relist[i] && cls.realtime >= ps.relist[i] ) {
+			ps.relist[i] = 0;
+			PS_AskList();
+			return;
+		}
+	}
+	if ( cls.realtime - ps.listTime >= PS_RELIST_MS )
+		PS_AskList();
+}
+
+// someone's game is on C1B3R now (a hook of theirs came): who has the client asked again soon
+void CL_Presence_Relist( void ) {
+	ps.relist[0] = cls.realtime;
 }
 
 static const char *PS_Rank( void );
@@ -885,6 +930,8 @@ static void PS_Reset( void ) {
 	ps.known = qfalse;
 	ps.numPlayers = 0;
 	ps.askNext = 0;
+	ps.listTime = ps.relist[0] = ps.relist[1] = 0;
+	ps.slots = 0;
 	psa.known = qfalse;
 	psa.account[0] = '\0';
 }
@@ -956,6 +1003,7 @@ void CL_Presence_Frame( void ) {
 	if ( psa.known || psv.on || cls.realtime - ps.joinTime >= PS_ACCOUNT_WAIT_MS * 3 )
 		PS_Hello();
 	PS_Poll();
+	PS_RelistFrame();
 	PS_LinkFrame();
 	PS_RelayFrame();
 }

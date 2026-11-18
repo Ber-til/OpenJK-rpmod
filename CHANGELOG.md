@@ -9,8 +9,8 @@ OpenJK-rpmod is built on [OpenJK](https://github.com/JACoders/OpenJK); for the c
 - [Changed] `Map editor: weather boxes fall outdoors only`. A new rain, snow or sand box starts as **Map's outdoors only**, so it no longer comes through roofs; **The whole box** is still a click away. A box already saved in a layout keeps its own setting.
 - [Fixed] `Chat: the size of what you type`. With `con_scale 2` (or display scaling that doubles the console), what you typed after Say: was drawn in the console's small letters; it's as big as Say: again.
 - [Fixed] `Presets: a model without a head top tag`. Its cards drew it small, in the top of the card; it's measured from its neck now, and fills its card like any other.
-
 - [Fixed] `Shader Manager on Vulkan: players, NPCs and vehicles`. Pointing at a player, NPC or vehicle named no shader with the Vulkan renderer (it couldn't tell which skin they wore); it names it as with OpenGL. *Needs the release's rd-vulkan_x86.dll.*
+- [Fixed] `Holsters (and characters) of players who came in after you`. Your game learned who else has the client only when it first spoke to C1B3R, so someone who joined or linked later had their holster unseen until your next map or name change. It asks again 10 and 30 seconds after someone comes in, at once when their character changes, and once a minute. A holster saved while it was being fetched is fetched again too.
 
 ## 0.10.2 - Nov 14th 2026
 
