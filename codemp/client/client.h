@@ -1148,7 +1148,8 @@ void CL_Instruments_Escape( void );
 void CL_Instruments_Hook( char **argv, int argc, const char *message );	// cmd:music/...
 int CL_Instruments_Playing( int client );	// the instrument that player plays now, -1 none
 const char *CL_Instruments_Model( int instrument );	// the model held playing it, "" none
-void CL_AnimManager_Loop( int num, const char *anim );	// an animation looped on a player, on this screen; "" stops it
+void CL_Instruments_View( const refdef_t *fd );	// the view the world is drawn from, for the notes over heads
+void CL_Instruments_DrawNotes( void );			// a note over the head of whoever plays
 const char *CL_Whisper_InfoNotice( const char *text, int ms );	// RPMod's top-left info notice and its sound, as a cgame command
 void CL_Dice_Hook( char **argv, int argc, const char *message );	// cmd:dice/roll|ask/...
 // the Storyteller asking a player for a roll: a token, 0 if it can't now; its state C1B3R's number for

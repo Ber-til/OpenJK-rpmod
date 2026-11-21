@@ -33,6 +33,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 // holds whatever the network does. Your own is heard at once.
 
 #include "client.h"
+#include "qcommon/cm_public.h"
 #include "cl_presence.h"
 #include "snd_public.h"
 
@@ -73,22 +74,17 @@ typedef struct {
 	const char	*title;
 	float		seconds;		// how long a note lasts
 	float		gain;
-	const char	*anim;			// played on whoever plays it (the game's own animations)
 } inDef_t;
 
-#define IN_HANDS_OUT	"BOTH_BUTTON_HOLD"		// hands held out in front: strings, keys, bars
-#define IN_TO_MOUTH		"BOTH_TALKCOMM1"		// a hand at the mouth: wind
-#define IN_STRIKING		"BOTH_BUTTON2"			// pressing again and again: drums
-
 static const inDef_t inDefs[IN_NUM] = {
-	{ "harp",		"Harp",		2.2f,	0.9f,	IN_HANDS_OUT },
-	{ "lute",		"Lute",		1.5f,	0.9f,	IN_HANDS_OUT },
-	{ "keys",		"Keys",		2.0f,	0.8f,	IN_HANDS_OUT },
-	{ "flute",		"Flute",	1.1f,	0.7f,	IN_TO_MOUTH },
-	{ "chimes",		"Chimes",	2.6f,	0.7f,	IN_HANDS_OUT },
-	{ "marimba",	"Marimba",	0.9f,	0.9f,	IN_HANDS_OUT },
-	{ "horn",		"Horn",		1.0f,	0.65f,	IN_TO_MOUTH },
-	{ "drums",		"Drums",	1.2f,	0.9f,	IN_STRIKING },
+	{ "harp",		"Harp",		2.2f,	0.9f },
+	{ "lute",		"Lute",		1.5f,	0.9f },
+	{ "keys",		"Keys",		2.0f,	0.8f },
+	{ "flute",		"Flute",	1.1f,	0.7f },
+	{ "chimes",		"Chimes",	2.6f,	0.7f },
+	{ "marimba",	"Marimba",	0.9f,	0.9f },
+	{ "horn",		"Horn",		1.0f,	0.65f },
+	{ "drums",		"Drums",	1.2f,	0.9f },
 };
 
 // the drum kit, a sound to each of the twelve keys of an octave
@@ -142,7 +138,13 @@ static struct {
 	std::vector<inScheduled_t> due;
 	int			playingUntil[MAX_CLIENTS];
 	int			playingInstrument[MAX_CLIENTS];
-	int			animShown[MAX_CLIENTS];		// the instrument whose animation plays on them, +1; 0 none
+	int			emoteAt;					// ours (cl_instrumentEmote): when it was last done
+
+	// the view the world was last drawn from, for the notes over the players' heads
+	qboolean	viewKnown;
+	vec3_t		viewOrg, viewAxis[3];
+	float		tanX, tanY;
+	float		viewX, viewY, viewW, viewH;		// on the 640x480 screen
 
 	char		message[160];
 	int			messageTime;
@@ -151,7 +153,7 @@ static struct {
 static inCached_t inCache[IN_CACHE];
 static short inPcm[IN_MAX_SAMPLES];
 static float inWork[IN_MAX_SAMPLES];
-static cvar_t *s_volumeInstruments, *cl_instrumentDebug;
+static cvar_t *s_volumeInstruments, *cl_instrumentDebug, *cl_instrumentEmote, *cl_instrumentEmoteRepeat;
 
 static void IN_Message( const char *text ) {
 	Q_strncpyz( in.message, text, sizeof( in.message ) );
@@ -904,15 +906,19 @@ void CL_Instruments_Frame( void ) {
 			i++;
 		}
 	}
-	// whoever plays, animated as they play
+	// our emote as we play (cl_instrumentEmote): as we start, and again as often as said
 	if ( cls.state == CA_ACTIVE ) {
-		for ( int c = 0; c < MAX_CLIENTS; c++ ) {
-			const int playing = CL_Instruments_Playing( c ) + 1;
+		const int me = cl.snap.ps.clientNum;
 
-			if ( playing == in.animShown[c] )
-				continue;
-			in.animShown[c] = playing;
-			CL_AnimManager_Loop( c, playing ? inDefs[playing - 1].anim : "" );
+		if ( cl_instrumentEmote->string[0] && CL_Instruments_Playing( me ) >= 0 ) {
+			if ( !in.emoteAt || ( cl_instrumentEmoteRepeat->value > 0.0f
+				&& cls.realtime - in.emoteAt >= (int)( Q_max( 2.0f, cl_instrumentEmoteRepeat->value ) * 1000.0f ) ) ) {
+				in.emoteAt = cls.realtime;
+				Cbuf_AddText( va( "%s\n", cl_instrumentEmote->string[0] == '/' || cl_instrumentEmote->string[0] == '\\'
+					? cl_instrumentEmote->string + 1 : cl_instrumentEmote->string ) );
+			}
+		} else {
+			in.emoteAt = 0;
 		}
 	}
 	// keys let go
@@ -940,11 +946,120 @@ const char *CL_Instruments_Model( int instrument ) {
 }
 
 void CL_Instruments_Disconnect( void ) {
-	memset( in.animShown, 0, sizeof( in.animShown ) );
+	in.viewKnown = qfalse;
 	in.songPlaying = in.sending = qfalse;
 	in.batch.clear();
 	in.due.clear();
 	memset( in.playingUntil, 0, sizeof( in.playingUntil ) );
+}
+
+/*
+===============================================================================
+
+A note over the head of whoever plays, where the chat balloon would be
+
+===============================================================================
+*/
+
+static void IN_Fill( float x, float y, float w, float h, const float *color );
+
+#define IN_NOTE_RANGE	1500.0f
+#define IN_NOTE_HEIGHT	44.0f		// above a player's origin: just over the head
+
+// the view the world is drawn from this frame (from the cgame's scene)
+void CL_Instruments_View( const refdef_t *fd ) {
+	if ( !fd || ( fd->rdflags & RDF_NOWORLDMODEL ) || fd->width <= 0 || cls.glconfig.vidWidth <= 0 )
+		return;
+	VectorCopy( fd->vieworg, in.viewOrg );
+	for ( int k = 0; k < 3; k++ )
+		VectorCopy( fd->viewaxis[k], in.viewAxis[k] );
+	in.tanX = tanf( DEG2RAD( fd->fov_x * 0.5f ) );
+	in.tanY = tanf( DEG2RAD( fd->fov_y * 0.5f ) );
+	in.viewX = fd->x * (float)SCREEN_WIDTH / cls.glconfig.vidWidth;
+	in.viewY = fd->y * (float)SCREEN_HEIGHT / cls.glconfig.vidHeight;
+	in.viewW = fd->width * (float)SCREEN_WIDTH / cls.glconfig.vidWidth;
+	in.viewH = fd->height * (float)SCREEN_HEIGHT / cls.glconfig.vidHeight;
+	in.viewKnown = qtrue;
+}
+
+// a point in the world on the 640x480 screen; its distance in front
+static qboolean IN_ToScreen( const vec3_t p, float *x, float *y, float *depth ) {
+	vec3_t d;
+	float fwd;
+
+	VectorSubtract( p, in.viewOrg, d );
+	fwd = DotProduct( d, in.viewAxis[0] );
+	if ( fwd < 8.0f || in.tanX <= 0.0f || in.tanY <= 0.0f )
+		return qfalse;
+	*x = in.viewX + in.viewW * 0.5f * ( 1.0f - DotProduct( d, in.viewAxis[1] ) / fwd / in.tanX );
+	*y = in.viewY + in.viewH * 0.5f * ( 1.0f - DotProduct( d, in.viewAxis[2] ) / fwd / in.tanY );
+	*depth = fwd;
+	return (qboolean)( *x > -20 && *x < SCREEN_WIDTH + 20 && *y > -20 && *y < SCREEN_HEIGHT + 20 );
+}
+
+// a quaver drawn at x, y (its head's bottom left), size its height
+static void IN_DrawQuaver( float x, float y, float size, const float *color ) {
+	const float head = size * 0.36f, stem = Q_max( 1.0f, size * 0.1f );
+
+	// the head: a slanted oval, in a few rows
+	for ( int r = 0; r < 4; r++ ) {
+		const float t = ( r + 0.5f ) / 4.0f;
+		const float w = head * 1.25f * sqrtf( 1.0f - ( 2.0f * t - 1.0f ) * ( 2.0f * t - 1.0f ) * 0.75f );
+
+		IN_Fill( x + ( head * 1.3f - w ) * 0.5f + ( 1.0f - t ) * head * 0.15f, y - head + r * head / 4.0f, w, head / 4.0f + 0.5f, color );
+	}
+	// the stem, up the head's right, and the flag off its top
+	IN_Fill( x + head * 1.3f - stem, y - size, stem, size - head * 0.5f, color );
+	for ( int r = 0; r < 4; r++ ) {
+		const float fy = y - size + r * size * 0.09f;
+
+		IN_Fill( x + head * 1.3f, fy, size * ( 0.32f - 0.05f * r ), Q_max( 1.0f, size * 0.09f ), color );
+	}
+}
+
+static void IN_DrawNoteAt( const vec3_t head, int client ) {
+	static const float shadow[4] = { 0.0f, 0.0f, 0.0f, 0.65f };
+	static const float note[4] = { 1.0f, 0.82f, 0.35f, 1.0f };
+	trace_t tr;
+	float x, y, depth, size, bob;
+
+	if ( !IN_ToScreen( head, &x, &y, &depth ) || depth > IN_NOTE_RANGE )
+		return;
+	// behind a wall: not shown
+	CM_BoxTrace( &tr, in.viewOrg, head, vec3_origin, vec3_origin, 0, CONTENTS_SOLID | CONTENTS_TERRAIN, qfalse );
+	if ( tr.fraction < 0.98f )
+		return;
+	size = Com_Clamp( 7.0f, 22.0f, 6000.0f / depth );
+	bob = sinf( cls.realtime * 0.004f + client ) * size * 0.12f;
+	x -= size * 0.35f;
+	y -= bob;
+	IN_DrawQuaver( x + 1.0f, y + 1.0f, size, shadow );
+	IN_DrawQuaver( x, y, size, note );
+}
+
+// over everyone playing now: you too in third person
+void CL_Instruments_DrawNotes( void ) {
+	const int me = cl.snap.ps.clientNum;
+
+	if ( !in.viewKnown || cls.state != CA_ACTIVE || !cl.snap.valid )
+		return;
+	if ( CL_Instruments_Playing( me ) >= 0 && Cvar_VariableIntegerValue( "cg_thirdPerson" ) ) {
+		vec3_t head;
+
+		VectorCopy( cl.snap.ps.origin, head );
+		head[2] += IN_NOTE_HEIGHT;
+		IN_DrawNoteAt( head, me );
+	}
+	for ( int i = 0; i < cl.snap.numEntities; i++ ) {
+		const entityState_t *es = &cl.parseEntities[( cl.snap.parseEntitiesNum + i ) & ( MAX_PARSE_ENTITIES - 1 )];
+		vec3_t head;
+
+		if ( es->number >= MAX_CLIENTS || es->number == me || CL_Instruments_Playing( es->number ) < 0 )
+			continue;
+		VectorCopy( es->pos.trBase, head );
+		head[2] += IN_NOTE_HEIGHT;
+		IN_DrawNoteAt( head, es->number );
+	}
 }
 
 /*
@@ -1321,6 +1436,10 @@ void CL_Instruments_Init( void ) {
 	in.instrument = IN_HARP;
 	in.followPrograms = qtrue;
 	s_volumeInstruments = Cvar_Get( "s_volumeInstruments", "0.8", CVAR_ARCHIVE_ND, "How loud instruments are played, yours and others' (0-1)" );
+	cl_instrumentEmote = Cvar_Get( "cl_instrumentEmote", "", CVAR_ARCHIVE_ND,
+		"Instruments: a command done as you start playing, an emote (emsit, or one of your custom emotes); \"\" none" );
+	cl_instrumentEmoteRepeat = Cvar_Get( "cl_instrumentEmoteRepeat", "0", CVAR_ARCHIVE_ND,
+		"Instruments: cl_instrumentEmote done again every this many seconds while you play (2 at least), for an emote that ends by itself; 0 once" );
 	cl_instrumentDebug = Cvar_Get( "cl_instrumentDebug", "0", CVAR_TEMP, "Instruments: a console line for each batch of others' notes" );
 	Cmd_AddCommand( "instrument", IN_Instrument_f, "Play an instrument: on the keyboard, or a MIDI file, heard by those near you with the client" );
 }

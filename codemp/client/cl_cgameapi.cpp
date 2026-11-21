@@ -436,6 +436,7 @@ static void CL_R_RenderScene( const refdef_t *fd ) {
 	CL_SkyComposer_AddToScene( fd );
 	// where the crosshair looks, for an NPC's name under it
 	CL_NpcNames_View( fd );
+	CL_Instruments_View( fd );
 	CL_Aim_View( fd );
 	// the holster's live editing first: it closes the managers as it opens
 	// photo mode's camera before any tool's: the view the picture is taken from

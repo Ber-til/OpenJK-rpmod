@@ -493,6 +493,7 @@ void SCR_DrawScreenField( stereoFrame_t stereoFrame ) {
 			}
 			CL_RpCinematic_Draw();
 			CL_NpcNames_Draw();
+			CL_Instruments_DrawNotes();
 			CL_Inspect_DrawHint();
 			CL_AdminFlags_Draw();
 			SCR_DrawDemoRecording();
