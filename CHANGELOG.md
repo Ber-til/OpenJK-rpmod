@@ -29,6 +29,8 @@ OpenJK-rpmod is built on [OpenJK](https://github.com/JACoders/OpenJK); for the c
 
 - [Fixed] `Lag when a body burns`. Burning a killed NPC's body could throw nearly two thousand debris pieces at once, each drawn again for every light of the fire: the game stuttered, and the Vulkan renderer printed "frame geometry grew to 32/64/128 MB". At most 96 pieces are drawn at a time now (`r_maxChunks`, 0 draws them all), with either renderer. *Needs the release's renderer DLLs.*
 
+- [Fixed] `Vulkan: the game closing during saber fights`. Sparring with dual sabers (against a saber or a staff), the game could close without a word: when a saber left a hand, the Vulkan renderer still took its empty place for a model until the next frame, and a saber's hit traced through it. It's left out at once now, as with OpenGL. *Needs the release's rd-vulkan_x86.dll.*
+
 ## 0.10.2 - Nov 14th 2026
 
 - [Added] `Vulkan: SMAA`. `r_smaa 1` (or **SMAA** on Setup's RENDERER page, its new third page) smooths edges over the finished picture: sharper than FXAA, without its blur, and far cheaper than anti-aliasing at high resolutions.
