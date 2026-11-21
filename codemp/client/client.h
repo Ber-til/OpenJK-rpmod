@@ -794,6 +794,26 @@ typedef struct {
 	int			cfg;					// its animation.cfg, -1 none
 } clPosedBody_t;
 qboolean CL_Extras_PoseBody( clPosedBody_t *b, const char *model, const char *anim );
+// a body played live, legs and torso animations by name (a HoloCall's hologram)
+typedef struct {
+	void		*g2;
+	char		key[MAX_QPATH];
+	int			cfg;
+	char		legs[48], torso[48];
+	int			legsStart, torsoStart;
+} clLiveBody_t;
+qboolean CL_Extras_LiveBody( clLiveBody_t *b, const char *model, const char *legs, const char *torso );
+void CL_Extras_FreeLiveBody( clLiveBody_t *b );
+// cl_holocall.cpp: HoloCall, players calling each other on any server, seen as holograms
+void CL_HoloCall_Init( void );
+void CL_HoloCall_Frame( void );
+void CL_HoloCall_Draw( void );
+void CL_HoloCall_Disconnect( void );
+void CL_HoloCall_AddToScene( const refdef_t *fd );
+void CL_HoloCall_Hook( char **argv, int argc, const char *message );	// cmd:holo/...
+void CL_HoloCall_Outgoing( const char *cmd );	// what you say, to the call too
+void CL_HoloCall_Start( const char *who );
+float CL_HoloCall_DrawBar( float x, float y, float w );	// on the datapad's Chat
 void CL_Extras_FreeBody( clPosedBody_t *b );
 void CL_Cinematic_AddToScene( const refdef_t *fd );
 int CL_Cinematic_LightStyle( int style, int color );

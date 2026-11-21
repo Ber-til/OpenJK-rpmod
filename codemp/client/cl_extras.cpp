@@ -307,22 +307,26 @@ static void EX_Build( extra_t *x ) {
 
 // an animation on a bone, from when it started: round and round if it's a stand, a walk or a run,
 // else held on its last frame
-static void EX_Play( extra_t *x, const char *anim, const char *bone, char *playing, int *start ) {
+static void EX_PlayOn( CGhoul2Info_v *g2, int cfg, const char *anim, const char *bone, char *playing, int *start ) {
 	const rcAnimDef_t *d;
 	const qboolean loop = (qboolean)( Q_stristr( anim, "STAND" ) || Q_stristr( anim, "WALK" ) || Q_stristr( anim, "RUN" ) );
 
-	if ( x->cfg < 0 || !( d = RC_FindAnim( x->cfg, anim ) ) || d->num <= 0 || !d->fps )
+	if ( !g2 || cfg < 0 || !( d = RC_FindAnim( cfg, anim ) ) || d->num <= 0 || !d->fps )
 		return;
 	if ( Q_stricmp( playing, anim ) ) {
 		Q_strncpyz( playing, anim, 48 );
 		*start = cl.serverTime;
 	}
 	if ( d->fps > 0.0f )
-		re->G2API_SetBoneAnim( *x->g2, 0, bone, d->first, d->first + d->num, loop ? BONE_ANIM_OVERRIDE_LOOP : BONE_ANIM_OVERRIDE_FREEZE,
+		re->G2API_SetBoneAnim( *g2, 0, bone, d->first, d->first + d->num, loop ? BONE_ANIM_OVERRIDE_LOOP : BONE_ANIM_OVERRIDE_FREEZE,
 			d->fps / 20.0f, re->G2API_GetTime( *start ), -1, 150 );
 	else
-		re->G2API_SetBoneAnim( *x->g2, 0, bone, d->first + d->num, d->first, loop ? BONE_ANIM_OVERRIDE_LOOP : BONE_ANIM_OVERRIDE_FREEZE,
+		re->G2API_SetBoneAnim( *g2, 0, bone, d->first + d->num, d->first, loop ? BONE_ANIM_OVERRIDE_LOOP : BONE_ANIM_OVERRIDE_FREEZE,
 			d->fps / 20.0f, re->G2API_GetTime( *start ), -1, 150 );
+}
+
+static void EX_Play( extra_t *x, const char *anim, const char *bone, char *playing, int *start ) {
+	EX_PlayOn( x->g2, x->cfg, anim, bone, playing, start );
 }
 
 // standing, walking or running as it's moved, or what a recording has it doing
@@ -451,6 +455,43 @@ qboolean CL_Extras_PoseBody( clPosedBody_t *b, const char *model, const char *an
 		}
 	}
 	return qtrue;
+}
+
+/*
+===============================================================================
+
+A body played live: a player model with the legs and torso animations it's told, by name, played as a
+player's are (a HoloCall's hologram, cl_holocall.cpp). Not an extra either
+
+===============================================================================
+*/
+
+qboolean CL_Extras_LiveBody( clLiveBody_t *b, const char *model, const char *legs, const char *torso ) {
+	CGhoul2Info_v *g2 = (CGhoul2Info_v *)b->g2;
+
+	if ( Q_stricmp( b->key, model ) ) {
+		CL_Extras_FreeLiveBody( b );
+		Q_strncpyz( b->key, model, sizeof( b->key ) );
+		if ( !EX_LoadModel( model, &g2, &b->cfg ) )
+			return qfalse;
+		b->g2 = g2;
+	}
+	if ( !g2 )
+		return qfalse;
+	if ( legs && legs[0] )
+		EX_PlayOn( g2, b->cfg, legs, "model_root", b->legs, &b->legsStart );
+	if ( torso && torso[0] )
+		EX_PlayOn( g2, b->cfg, torso, "lower_lumbar", b->torso, &b->torsoStart );
+	return qtrue;
+}
+
+void CL_Extras_FreeLiveBody( clLiveBody_t *b ) {
+	CGhoul2Info_v *g2 = (CGhoul2Info_v *)b->g2;
+
+	if ( g2 )
+		re->G2API_CleanGhoul2Models( &g2 );
+	memset( b, 0, sizeof( *b ) );
+	b->cfg = -1;
 }
 
 void CL_Extras_FreeBody( clPosedBody_t *b ) {

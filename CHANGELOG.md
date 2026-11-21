@@ -6,6 +6,8 @@ OpenJK-rpmod is built on [OpenJK](https://github.com/JACoders/OpenJK); for the c
 
 ## 0.10.3 - in progress
 
+- [Added] `HoloCall`. Call another player, on any server, from a conversation in the datapad's Chat (**HoloCall**) or with `/holocall <account>`: they're rung (Answer or Decline on their datapad, or `/holocall answer`), and once answered each of you appears to the other as a hologram, a step in front of them, moving as you move and playing your emotes. What you say in chat reaches them too, read around your hologram as chat from it, by the chat range, by everyone there with the client. `/holocall here` moves the hologram where you aim (onto a holo pedestal), `/holocall end` hangs up. Through C1B3R, your games linked. From a player's idea (#51).
+
 - [Added] `Datapad: Do not disturb`. On in the datapad's Settings, or with `/datapad silent` (on, off, or turned over, for a bind): Chat's messages still come and are counted as unread, without a notice, a ringtone or a sound. DND shows in its top bar while it's on. From a player's idea (#68).
 
 - [Fixed] `Presets: the game closing as a preset is deleted`. Deleting one let go of every card's character while the page was still being drawn, and the renderer then drew the cards already on it from what was gone. They're let go of before the next frame now. From a player's report (#70).

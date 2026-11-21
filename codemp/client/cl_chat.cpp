@@ -1177,8 +1177,15 @@ void CL_Chat_Draw( const dpRect_t *s ) {
 			CH_AskContacts();
 			return;
 		}
-		DP_Text( x + w * 0.32f, y + 2, w * ( members ? 0.4f : 0.68f ), ch.view == CH_TALK ? ch.withName.c_str()
+		const qboolean holo = (qboolean)( ch.view == CH_TALK && ch.group <= 0 && !ch.with.empty() );
+
+		DP_Text( x + w * 0.32f, y + 2, w * ( members || holo ? 0.4f : 0.68f ), ch.view == CH_TALK ? ch.withName.c_str()
 			: ch.view == CH_GROUPNEW ? "New group" : "Settings", dpText, DP_Font(), 0.64f, qfalse );
+		// a conversation with one: call them as a hologram
+		if ( holo && DP_Button( x + w * 0.74f, y, w * 0.26f, "HoloCall", qfalse ) ) {
+			CL_HoloCall_Start( ch.with.c_str() );
+			return;
+		}
 		if ( members && DP_Button( x + w * 0.74f, y, w * 0.26f, "Members", qfalse ) ) {
 			ch.view = CH_MEMBERS;
 			ch.typing = qfalse;
@@ -1204,6 +1211,8 @@ void CL_Chat_Draw( const dpRect_t *s ) {
 		}
 	}
 	y += DP_CTRL_H + 6;
+	// a HoloCall ringing or going on: answered, moved or ended here
+	y += CL_HoloCall_DrawBar( x, y, w );
 	if ( ch.view == CH_LIST )
 		CH_DrawList( x, y, w, bottom );
 	else if ( ch.view == CH_TALK )
