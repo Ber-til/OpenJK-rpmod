@@ -154,6 +154,7 @@ static struct {
 
 	dpApp_t		app;				// the screen's: the home screen or an app over it
 	dpApp_t		appFrom;
+	int			homeScroll, gamesScroll;	// the icon grids scrolled down this far (pixels), when they don't all fit
 	int			appTime;
 	dpBind_t	binding;			// a key being picked in Settings
 	qboolean	emoting;			// the emote's on: ended as it folds or closes
@@ -453,7 +454,19 @@ static void DP_Colors( void ) {
 	dpTile[3] = 0.9f;
 }
 
+// what's drawn kept between these heights (a grid scrolled: a row partly out of the screen cut at its
+// edge); none set, everything's drawn
+static float dpClipTop = -1.0e9f, dpClipBottom = 1.0e9f;
+
 void DP_Fill( float x, float y, float w, float h, const float *color ) {
+	if ( y < dpClipTop ) {
+		h -= dpClipTop - y;
+		y = dpClipTop;
+	}
+	if ( y + h > dpClipBottom )
+		h = dpClipBottom - y;
+	if ( h <= 0.0f || w <= 0.0f )
+		return;
 	re->SetColor( color );
 	re->DrawStretchPic( x, y, w, h, 0, 0, 0, 0, cls.whiteShader );
 	re->SetColor( NULL );
@@ -531,6 +544,10 @@ static void DP_ColoredText( float x, float y, float w, const char *text, const f
 void DP_Text( float x, float y, float w, const char *text, const float *color, int font, float scale, qboolean centred ) {
 	char buf[MAX_STRING_CHARS];
 	int len;
+
+	// text isn't cut: a line not all inside the clip isn't drawn
+	if ( y < dpClipTop || y + 22.0f * scale > dpClipBottom )
+		return;
 
 	// colour codes in it: drawn as colours, RPMod's too, never as text
 	for ( const char *p = text; *p; p++ ) {
@@ -783,13 +800,15 @@ static void DP_StatusBar( const dpRect_t *s, float scale ) {
 // an app's icon: a lit tile (square on the screen, wide or not), its picture, its name under it; clicked
 static qboolean DP_AppIcon( float x, float y, float size, const char *name, void ( *picture )( float, float, float, float ) ) {
 	const float w = DP_Wide( size );
-	const qboolean hover = DP_InRect( x, y, w, size + 13 );
+	// hovered and clicked where it shows: a part cut off by a scrolled grid's edge isn't there
+	const float top = Q_max( y, dpClipTop ), bottom = Q_min( y + size + 13, dpClipBottom );
+	const qboolean hover = (qboolean)( bottom > top && DP_InRect( x, top, w, bottom - top ) );
 
 	DP_Fill( x, y, w, size, hover ? dpButtonHover : dpTile );
 	DP_Frame( x, y, w, size, dpGlow );
 	picture( x, y, w, size );
 	DP_Text( x - w * 0.3f, y + size + 2, w * 1.6f, name, hover ? dpWhite : dpText, dp.font, 0.6f, qtrue );
-	return DP_Clicked( x, y, w, size + 13 );
+	return (qboolean)( bottom > top && DP_Clicked( x, top, w, bottom - top ) );
 }
 
 // Settings' picture: three sliders
@@ -902,15 +921,49 @@ static void DP_ArcadePicture( float x, float y, float w, float h ) {
 	DP_Fill( x + w * 0.4f, y + h * 0.8f, w * 0.2f, h * 0.06f, dpText );
 }
 
+// an app's icon on a grid
+typedef struct {
+	dpApp_t		app;
+	const char	*name;
+	void		( *picture )( float, float, float, float );
+} dpIcon_t;
+
+#define DP_ICON_SIZE	34.0f
+#define DP_ICON_ROW		( DP_ICON_SIZE + 26.0f )	// an icon, its name and the gap under it
+
+// icons three to a row, from y down to bottom; when they don't all fit they're scrolled through with
+// the wheel (*scroll, in pixels), the row at the edge cut off there, a bar at the right saying where.
+// The one clicked, or NULL
+static const dpIcon_t *DP_IconGrid( const dpRect_t *s, float y, float bottom, const dpIcon_t *icons, int count, int *scroll ) {
+	const float x = s->x + DP_Wide( 10 );
+	const int rows = ( count + 2 ) / 3;
+	const float view = bottom - y;
+	const float content = ( rows - 1 ) * DP_ICON_ROW + DP_ICON_SIZE + 16.0f;	// the last row's name under it, and a little room
+	const dpIcon_t *picked = NULL;
+
+	*scroll = (int)Com_Clamp( 0.0f, Q_max( 0.0f, content - view ), (float)*scroll );
+	dpClipTop = y;
+	dpClipBottom = bottom;
+	for ( int i = 0; i < count && !picked; i++ ) {
+		const float iy = y + DP_ICON_ROW * ( i / 3 ) - *scroll;
+
+		if ( iy + DP_ICON_ROW < y || iy > bottom )
+			continue;
+		if ( DP_AppIcon( x + DP_Wide( DP_ICON_SIZE + 16 ) * ( i % 3 ), iy, DP_ICON_SIZE, icons[i].name, icons[i].picture ) )
+			picked = &icons[i];
+	}
+	dpClipTop = -1.0e9f;
+	dpClipBottom = 1.0e9f;
+	if ( content > view )
+		DP_ScrollBar( s->x + s->w - DP_Wide( 7 ), y, view, (float)*scroll, content );
+	return picked;
+}
+
 // the Games folder: its games, three to a row, as the home screen has its apps
 static void DP_DrawGames( const dpRect_t *s ) {
-	const float size = 34.0f;
-	const float x = s->x + DP_Wide( 10 ), y = s->y + DP_STATUS_H + 26;
-	static const struct {
-		dpApp_t		app;
-		const char	*name;
-		void		( *picture )( float, float, float, float );
-	} games[] = {
+	const float y = s->y + DP_STATUS_H + 26;
+	const dpIcon_t *picked;
+	static const dpIcon_t games[] = {
 		{ DP_PAZAAK,	"Pazaak",	DP_PazaakPicture },
 		{ DP_WANGA,		"WANGA",	DP_WangaPicture },
 		{ DP_PATH,		"The Path",	DP_PathPicture },
@@ -922,10 +975,8 @@ static void DP_DrawGames( const dpRect_t *s ) {
 		return;
 	}
 	DP_Text( s->x + DP_Wide( 62 ), s->y + DP_STATUS_H + 4, s->w, "Games", dpText, dp.titleFont, 0.5f, qfalse );
-	for ( int i = 0; i < (int)ARRAY_LEN( games ); i++ ) {
-		if ( DP_AppIcon( x + DP_Wide( size + 16 ) * ( i % 3 ), y + ( size + 26 ) * ( i / 3 ), size, games[i].name, games[i].picture ) )
-			DP_SetApp( games[i].app );
-	}
+	if ( ( picked = DP_IconGrid( s, y, s->y + s->h - 4, games, (int)ARRAY_LEN( games ), &dp.gamesScroll ) ) != NULL )
+		DP_SetApp( picked->app );
 }
 
 // back to the Games folder: a game's own Back
@@ -939,15 +990,11 @@ void CL_Datapad_Home( void ) {
 }
 
 static void DP_DrawHome( const dpRect_t *s ) {
-	const float size = 34.0f;
-	const float x = s->x + DP_Wide( 10 ), y = s->y + DP_STATUS_H + 10;
+	const float y = s->y + DP_STATUS_H + 10;
+	const dpIcon_t *picked;
 
 	// the apps in their order, three to a row
-	static const struct {
-		dpApp_t		app;
-		const char	*name;
-		void		( *picture )( float, float, float, float );
-	} apps[] = {
+	static const dpIcon_t apps[] = {
 		{ DP_HOLONET,	"HoloNet",	DP_HoloNetPicture },
 		{ DP_COMPORT,	"Comport",	DP_ComportPicture },
 		{ DP_GAMES,		"Games",	DP_GamesPicture },
@@ -957,10 +1004,8 @@ static void DP_DrawHome( const dpRect_t *s ) {
 		{ DP_DICE,		"Dice",		DP_DicePicture },
 	};
 
-	for ( int i = 0; i < (int)ARRAY_LEN( apps ); i++ ) {
-		if ( DP_AppIcon( x + DP_Wide( size + 16 ) * ( i % 3 ), y + ( size + 26 ) * ( i / 3 ), size, apps[i].name, apps[i].picture ) )
-			DP_SetApp( apps[i].app );
-	}
+	if ( ( picked = DP_IconGrid( s, y, s->y + s->h - 4, apps, (int)ARRAY_LEN( apps ), &dp.homeScroll ) ) != NULL )
+		DP_SetApp( picked->app );
 }
 
 // a key bound to the command, or "none"
@@ -1183,6 +1228,13 @@ void CL_Datapad_KeyEvent( int key, qboolean down ) {
 		dp.click = qtrue;
 		dp.clickX = dp.cursorX;
 		dp.clickY = dp.cursorY;
+		return;
+	}
+	// the icon grids scroll, a half row at a time (kept in range as they're drawn)
+	if ( ( key == A_MWHEELUP || key == A_MWHEELDOWN ) && ( dp.app == DP_HOME || dp.app == DP_GAMES ) ) {
+		int *scroll = dp.app == DP_HOME ? &dp.homeScroll : &dp.gamesScroll;
+
+		*scroll = Q_max( 0, *scroll + ( key == A_MWHEELUP ? -30 : 30 ) );
 		return;
 	}
 	if ( ( dp.app == DP_PAZAAK && CL_Pazaak_Key( key ) ) || ( dp.app == DP_HOLONET && CL_HoloNet_Key( key ) )

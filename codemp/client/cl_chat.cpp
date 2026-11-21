@@ -833,14 +833,29 @@ static const char *CH_Stamp( const chMessage_t &m ) {
 	return line;
 }
 
+#define CH_INPUT_LINES	5		// the box typed in grows up to this many lines, then scrolls
+
+static float chInputX, chInputY, chInputW, chInputH;	// where it was drawn, for the wheel
+
 static void CH_DrawTalk( float x, float y, float w, float bottom ) {
-	wgStyle_t style;
-	const float inputY = bottom - DP_CTRL_H, top = y;
-	float my;
+	wgStyle_t style, bubble;
+	const float top = y, fieldW = w - DP_Wide( 50 );
+	float inputY, inputH, my;
 	float cx, cy;
 	qboolean *click;
 
 	CH_Style( &style );
+	// what's typed, as tall as its lines (up to CH_INPUT_LINES), growing up from the bottom
+	{
+		const int lines = Com_Clampi( 1, CH_INPUT_LINES, WG_TextLines( &style, ch.text, fieldW - WG_SCROLL_W - 2 - style.padX * 2.0f ) );
+
+		inputH = Q_max( DP_CTRL_H, lines * style.lineH + style.padY * 2.0f );
+		inputY = bottom - inputH;
+	}
+	// the messages' text, wrapped as it's measured
+	bubble = style;
+	bubble.scale = 0.56f;
+	bubble.lineH = 10.0f;
 	// the messages, the latest at the bottom: theirs at the left, yours at the right
 	if ( ch.loading && ch.messages.empty() ) {
 		DP_Text( x, y + 30, w, "Asking C1B3R...", dpDim, DP_Font(), 0.62f, qtrue );
@@ -861,8 +876,8 @@ static void CH_DrawTalk( float x, float y, float w, float bottom ) {
 					DP_Text( x, my, w, m.text.c_str(), dpDim, DP_Font(), 0.5f, qtrue );
 				continue;
 			}
-			const int lines = Q_max( 1, (int)( m.text.size() / 52 ) + 1 );
-			const float bh = 13.0f + lines * 10.0f;
+			const int lines = Q_max( 1, WG_TextLines( &bubble, m.text.c_str(), bw - 8 ) );
+			const float bh = 13.0f + lines * bubble.lineH;
 
 			my -= bh + 3;
 			if ( my + bh < top || my > inputY )
@@ -872,39 +887,30 @@ static void CH_DrawTalk( float x, float y, float w, float bottom ) {
 				DP_Frame( bx, my, bw, bh, m.mine ? dpWhite : dpGlow );
 				DP_Text( bx + 4, my + 1, bw - 8, CH_Stamp( m ), m.mine && ( m.state == 2 || ( m.of > 0 && m.seenBy >= m.of ) ) ? dpGlow : dpDim,
 					DP_Font(), 0.48f, qfalse );
-				// the text, wrapped on spaces at about the box's width
-				{
-					std::string rest = m.text;
-					float ly = my + 11;
-
-					while ( !rest.empty() && ly < my + bh ) {
-						size_t cut = rest.size() <= 52 ? rest.size() : rest.rfind( ' ', 52 );
-
-						if ( cut == std::string::npos || cut == 0 )
-							cut = Q_min( (size_t)52, rest.size() );
-						DP_Text( bx + 4, ly, bw - 8, rest.substr( 0, cut ).c_str(), dpText, DP_Font(), 0.56f, qfalse );
-						rest.erase( 0, cut );
-						while ( !rest.empty() && rest[0] == ' ' )
-							rest.erase( 0, 1 );
-						ly += 10;
-					}
-				}
+				// the text, wrapped to the box's width
+				WG_DrawText( &bubble, bx + 4, my + 11, bw - 8, m.text.c_str(), 0, lines, dpText );
 			}
 		}
 	}
 	if ( ch.theyTypeUntil > cls.realtime )
 		DP_Text( x + 2, inputY - 14, w, va( "%s is typing...", ch.typer.c_str() ), dpDim, DP_Font(), 0.5f, qfalse );
-	// what you type, Enter sends it
-	DP_Fill( x, inputY, w - DP_Wide( 50 ), DP_CTRL_H, dpScreen );
-	DP_Frame( x, inputY, w - DP_Wide( 50 ), DP_CTRL_H, ch.typing ? dpWhite : dpGlow );
-	WG_Field( &style, x, inputY, w - DP_Wide( 50 ), DP_CTRL_H, ch.text, ch.typing, va( "A message to %s", ch.withName.c_str() ), DP_CursorX(), DP_CursorY() );
+	// what you type, Enter sends it: the box grows up as it wraps, and scrolls past CH_INPUT_LINES
+	DP_Fill( x, inputY, fieldW, inputH, dpScreen );
+	DP_Frame( x, inputY, fieldW, inputH, ch.typing ? dpWhite : dpGlow );
 	click = DP_Click( &cx, &cy );
-	if ( *click && cx >= x && cx < x + w - DP_Wide( 50 ) && cy >= inputY && cy < inputY + DP_CTRL_H ) {
+	// its scroll bar dragged or clicked (it takes the click), the wheel over it (CL_Chat_Key)
+	WG_TextArea( &style, x, inputY, fieldW, inputH, ch.text, ch.typing, va( "A message to %s", ch.withName.c_str() ), DP_CursorX(), DP_CursorY(),
+		click, cx, cy );
+	chInputX = x;
+	chInputY = inputY;
+	chInputW = fieldW;
+	chInputH = inputH;
+	if ( *click && cx >= x && cx < x + fieldW && cy >= inputY && cy < inputY + inputH ) {
 		*click = qfalse;
 		ch.typing = qtrue;
 		WG_FieldClick( ch.text, cx, cy );
 	}
-	if ( DP_Button( x + w - DP_Wide( 46 ), inputY, DP_Wide( 46 ), chSendHttp.state == HTTP_BUSY ? "..." : "Send", qfalse ) )
+	if ( DP_Button( x + w - DP_Wide( 46 ), bottom - DP_CTRL_H, DP_Wide( 46 ), chSendHttp.state == HTTP_BUSY ? "..." : "Send", qfalse ) )
 		CH_Send();
 }
 
@@ -1219,7 +1225,10 @@ qboolean CL_Chat_Key( int key ) {
 	if ( key == A_MWHEELUP || key == A_MWHEELDOWN ) {
 		const int dir = key == A_MWHEELUP ? -1 : 1;
 
-		if ( ch.view == CH_TALK )
+		// over the box typed in, while typing: its lines
+		if ( ch.view == CH_TALK && ch.typing && DP_InRect( chInputX, chInputY, chInputW, chInputH ) )
+			WG_TextAreaScroll( dir );
+		else if ( ch.view == CH_TALK )
 			ch.talkScroll = Q_max( 0.0f, ch.talkScroll - dir * 30.0f );
 		else if ( ch.view == CH_LIST )
 			ch.listScroll = Q_max( 0, ch.listScroll + dir );
