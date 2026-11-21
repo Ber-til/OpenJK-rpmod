@@ -31,6 +31,8 @@ OpenJK-rpmod is built on [OpenJK](https://github.com/JACoders/OpenJK); for the c
 
 - [Fixed] `Vulkan: the game closing during saber fights`. Sparring with dual sabers (against a saber or a staff), the game could close without a word: when a saber left a hand, the Vulkan renderer still took its empty place for a model until the next frame, and a saber's hit traced through it. It's left out at once now, as with OpenGL. *Needs the release's rd-vulkan_x86.dll.*
 
+- [Added] `Datapad Arcade`. Four games for one in the datapad's Games folder: **Sarlacc** (grow by eating, don't bite your tail), **Droid Dash** (a Jedi jumping droids and ducking probes), **Skyhopper** (a little ship through the pylons' gaps) and **Bot Blaster** (waves of droids shot down). Each has a high-score board for everyone with the client, through C1B3R: beat your best and you go on it under your main character's name (linked games). `/datapad arcade`. An idea from a player's report.
+
 ## 0.10.2 - Nov 14th 2026
 
 - [Added] `Vulkan: SMAA`. `r_smaa 1` (or **SMAA** on Setup's RENDERER page, its new third page) smooths edges over the finished picture: sharper than FXAA, without its blur, and far cheaper than anti-aliasing at high resolutions.

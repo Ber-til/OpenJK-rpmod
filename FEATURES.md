@@ -649,7 +649,7 @@ A datapad on your screen, used like a phone. `/datapad`, or **TOOLS** in the in-
   - **Colour:** what it's lit in: cyan, blue, green, amber, red, violet or white
   - **Keys:** click **Open it** or **Close it**, then press the key for it (Esc leaves it as it was). They work while you play and while it's open
   - **Your character holds a datapad while it's open:** your character plays RPMod's `/emlift` as you open it, and it ends (a moment's crouch, as C does) as you fold or close it
-- **Games:** a folder on the home screen with Pazaak, WANGA and The Path. Each is played against others on the same server, through C1B3R, which deals and checks every move. **< Games** goes back to the folder
+- **Games:** a folder on the home screen with Pazaak, WANGA, The Path and the Arcade. The first three are played against others on the same server, through C1B3R, which deals and checks every move. **< Games** goes back to the folder
 - **Pazaak:** KOTOR's card game, against another player on the same server, through C1B3R. The datapad grows to the right side of the screen for it
   - **Play:** the server's tables, to **Join** one waiting for a player or **Watch** a match; or start one (a name, all cards or ± cards only, your deck) and wait for someone to sit down
   - **The table:** each player's 3x3 table, total, sets won and turn; your hand of 4 (the other one face down). Click a card, then **Play it** (+ or − for ± cards, 1 or 2 for the 1±2), then **End turn** or **Stand**. A turn lasts 90 s. Leaving or **Forfeit** gives the match to the other player
@@ -666,6 +666,14 @@ A datapad on your screen, used like a phone. `/datapad`, or **TOOLS** in the in-
   - Five of the sixteen Techniques (Jung, Jung Ma, Shun, Sai, Flowing Water, Dulon, Shii-Cho, Makashi, Soresu, Ataru, Shien, Djem So, Niman, Sokan, Jar'Kai, Trakata) are dealt: two each and one shared. The board is always drawn from your side
   - **A turn:** click one of your pawns, then a lit square (a solid one is your first Technique's, an outlined one your second's): it moves there and takes a pawn of the other's on it; the Technique used is swapped with the shared one. With no move at all, **Only swap** one
   - **Winning:** take the other's Master (Mastery of Body), or bring your Master onto their Nexus (Mastery of Spirit). A turn lasts 90 s, then a move is made for you
+- **Arcade:** four games for one, in the Games folder, with a high-score board for each that everyone with the client is on (an idea from a player's report)
+  - **Sarlacc:** grow by eating, without biting your own tail or the walls; faster every 5 fruit (arrows or WASD)
+  - **Droid Dash:** a Jedi runs; jump the droids rolling at you (Space or Up, held for higher) and duck the probes (Down); faster the longer you run, a metre a point
+  - **Skyhopper:** lift a little ship (Space, Up or a click) through the pylons' gaps, which close as you go
+  - **Bot Blaster:** waves of droids coming down; move left and right, fire with Space (the blaster heats: let it cool), three lives
+  - **The board:** a game's page shows its top 10, and your place. A run that beats your best goes on it through C1B3R, under your main character's name; it needs your game linked (`/c1b3r link`), and your bests are kept on your machine either way. C1B3R turns down a score the game couldn't give in the run's time
+  - **P** pauses, and so does putting the datapad away or opening another app; a key goes on. Enter after a run plays again
+  - Pictures of your own replace a game's shapes: `gfx/arcade/<sarlacc|dash|sky|blaster>/<thing>` (png, tga or jpg)
 - **HoloNet:** JEDI's news from jediholo.net, read by your game straight from the site: the latest articles listed (title, date, author, category), one opened whole with its pictures, scrolled with the wheel, and **Open on the web**. Read again every 10 minutes, or with **Refresh**
 - **Comport:** JEDI's forum, as datapad pages: the forums by category, a forum's topics (pinned ones first, with their replies and views, page by page), a topic's posts with their quotes and pictures, and **On the web**
   - **Log in** with your Comport name and password to read what needs an account, and to **Reply** to a topic (Enter starts a new paragraph; BBCode as on the site). The forum's own messages show if something's refused (posting too soon, too short...)

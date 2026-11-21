@@ -80,6 +80,13 @@ void		CL_HoloNet_Open( int n );
 
 void		CL_Datapad_ToGames( void );			// back to the Games folder, from a game
 
+// cl_arcade.cpp: the Arcade, four games for one and their boards
+void		CL_Arcade_Draw( const dpRect_t *screen );
+void		CL_Arcade_Shown( qboolean shown );
+qboolean	CL_Arcade_Key( int key );
+void		CL_Arcade_Open( const char *game, qboolean play );
+void		CL_Arcade_Init( void );
+
 // cl_pazaak.cpp: the Pazaak app
 void		CL_Pazaak_Draw( const dpRect_t *screen );
 void		CL_Pazaak_Shown( qboolean shown );		// on the datapad's screen, or not any more

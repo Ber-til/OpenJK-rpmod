@@ -79,14 +79,15 @@ typedef enum {
 	DP_COMPORT,
 	DP_NOTES,
 	DP_CHAT,
-	DP_GAMES,		// a folder: Pazaak, WANGA and The Path
+	DP_GAMES,		// a folder: Pazaak, WANGA, The Path and the Arcade
 	DP_WANGA,
 	DP_PATH,
+	DP_ARCADE,		// cl_arcade.cpp: four games for one, a board for each
 	DP_NUM_APPS
 } dpApp_t;
 
 // an app that needs the room has the datapad bigger while it's on its screen
-static const qboolean dpAppFull[DP_NUM_APPS] = { qfalse, qfalse, qtrue, qtrue, qtrue, qtrue, qtrue, qfalse, qtrue, qtrue };
+static const qboolean dpAppFull[DP_NUM_APPS] = { qfalse, qfalse, qtrue, qtrue, qtrue, qtrue, qtrue, qfalse, qtrue, qtrue, qtrue };
 
 // the apps in files of their own: what each is told and given
 static void DP_AppShown( dpApp_t app, qboolean shown ) {
@@ -104,6 +105,8 @@ static void DP_AppShown( dpApp_t app, qboolean shown ) {
 		CL_Games_Shown( GM_WANGA, shown );
 	else if ( app == DP_PATH )
 		CL_Games_Shown( GM_PATH, shown );
+	else if ( app == DP_ARCADE )
+		CL_Arcade_Shown( shown );
 }
 
 typedef enum {
@@ -875,6 +878,17 @@ static void DP_PathPicture( float x, float y, float w, float h ) {
 	DP_Fill( x + w * 0.53f, y + h * 0.21f, w * 0.1f, h * 0.1f, dpWhite );
 }
 
+// the Arcade's picture: a screen, a droid on it and a bolt going up
+static void DP_ArcadePicture( float x, float y, float w, float h ) {
+	static const float grey[4] = { 0.62f, 0.64f, 0.68f, 1.0f }, green[4] = { 0.35f, 0.95f, 0.4f, 1.0f };
+
+	DP_Frame( x + w * 0.14f, y + h * 0.16f, w * 0.72f, h * 0.62f, dpText );
+	DP_Fill( x + w * 0.38f, y + h * 0.26f, w * 0.24f, h * 0.14f, grey );
+	DP_Fill( x + w * 0.49f, y + h * 0.46f, w * 0.03f, h * 0.12f, green );
+	DP_Fill( x + w * 0.42f, y + h * 0.64f, w * 0.16f, h * 0.07f, dpWhite );
+	DP_Fill( x + w * 0.4f, y + h * 0.8f, w * 0.2f, h * 0.06f, dpText );
+}
+
 // the Games folder: its games, three to a row, as the home screen has its apps
 static void DP_DrawGames( const dpRect_t *s ) {
 	const float size = 34.0f;
@@ -887,6 +901,7 @@ static void DP_DrawGames( const dpRect_t *s ) {
 		{ DP_PAZAAK,	"Pazaak",	DP_PazaakPicture },
 		{ DP_WANGA,		"WANGA",	DP_WangaPicture },
 		{ DP_PATH,		"The Path",	DP_PathPicture },
+		{ DP_ARCADE,	"Arcade",	DP_ArcadePicture },
 	};
 
 	if ( DP_Button( s->x + DP_Wide( 6 ), s->y + DP_STATUS_H + 4, DP_Wide( 50 ), "< Home", qfalse ) ) {
@@ -1029,6 +1044,8 @@ static void DP_DrawApps( const dpRect_t *s ) {
 			CL_Games_Draw( GM_WANGA, s );
 		else if ( dp.app == DP_PATH )
 			CL_Games_Draw( GM_PATH, s );
+		else if ( dp.app == DP_ARCADE )
+			CL_Arcade_Draw( s );
 		return;
 	}
 	if ( t >= 1.0f || dp.app == dp.appFrom ) {
@@ -1150,7 +1167,8 @@ void CL_Datapad_KeyEvent( int key, qboolean down ) {
 	if ( ( dp.app == DP_PAZAAK && CL_Pazaak_Key( key ) ) || ( dp.app == DP_HOLONET && CL_HoloNet_Key( key ) )
 		|| ( dp.app == DP_COMPORT && CL_Comport_Key( key ) ) || ( dp.app == DP_NOTES && CL_Notes_Key( key ) )
 		|| ( dp.app == DP_CHAT && CL_Chat_Key( key ) ) || ( dp.app == DP_WANGA && CL_Games_Key( GM_WANGA, key ) )
-		|| ( dp.app == DP_PATH && CL_Games_Key( GM_PATH, key ) ) )
+		|| ( dp.app == DP_PATH && CL_Games_Key( GM_PATH, key ) )
+		|| ( dp.app == DP_ARCADE && CL_Arcade_Key( key ) ) )
 		return;
 	// its keys work while it's open, as they do in the game
 	binding = Key_GetBinding( key );
@@ -1224,14 +1242,14 @@ static void DP_Datapad_f( void ) {
 		DP_Set( DP_OPEN );
 	} else if ( !Q_stricmp( arg, "settings" ) || !Q_stricmp( arg, "pazaak" ) || !Q_stricmp( arg, "holonet" ) || !Q_stricmp( arg, "comport" )
 		|| !Q_stricmp( arg, "notes" ) || !Q_stricmp( arg, "chat" ) || !Q_stricmp( arg, "games" ) || !Q_stricmp( arg, "wanga" )
-		|| !Q_stricmp( arg, "path" ) ) {
+		|| !Q_stricmp( arg, "path" ) || !Q_stricmp( arg, "arcade" ) ) {
 		// yours, not a datapad item's
 		if ( dp.state == DP_OPEN && dp.itemMode )
 			DP_Set( DP_CLOSED );
 		DP_Set( DP_OPEN );
 		if ( dp.state == DP_OPEN )
 			DP_SetApp( !Q_stricmp( arg, "pazaak" ) ? DP_PAZAAK : !Q_stricmp( arg, "games" ) ? DP_GAMES : !Q_stricmp( arg, "wanga" ) ? DP_WANGA
-				: !Q_stricmp( arg, "path" ) ? DP_PATH : !Q_stricmp( arg, "holonet" ) ? DP_HOLONET
+				: !Q_stricmp( arg, "path" ) ? DP_PATH : !Q_stricmp( arg, "arcade" ) ? DP_ARCADE : !Q_stricmp( arg, "holonet" ) ? DP_HOLONET
 				: !Q_stricmp( arg, "comport" ) ? DP_COMPORT : !Q_stricmp( arg, "notes" ) ? DP_NOTES : !Q_stricmp( arg, "chat" ) ? DP_CHAT : DP_SETTINGS );
 		// straight to an article, or a forum
 		if ( dp.state == DP_OPEN && Cmd_Argc() > 2 ) {
@@ -1239,6 +1257,8 @@ static void DP_Datapad_f( void ) {
 				CL_HoloNet_Open( atoi( Cmd_Argv( 2 ) ) );
 			else if ( !Q_stricmp( arg, "comport" ) )
 				CL_Comport_Open( Cmd_Argv( 2 ) );
+			else if ( !Q_stricmp( arg, "arcade" ) )
+				CL_Arcade_Open( Cmd_Argv( 2 ), (qboolean)!Q_stricmp( Cmd_Argv( 3 ), "play" ) );
 			else if ( !Q_stricmp( arg, "chat" ) && !Q_stricmp( Cmd_Argv( 2 ), "group" ) )
 				CL_Chat_OpenGroup( atoi( Cmd_Argv( 3 ) ) );
 			else if ( !Q_stricmp( arg, "chat" ) )
@@ -1263,7 +1283,8 @@ static void DP_Datapad_f( void ) {
 		Com_Printf( "usage: " DP_CMD "                opens the datapad, or puts it away\n" );
 		Com_Printf( "       " DP_CMD " open|close\n" );
 		Com_Printf( "       " DP_CMD " settings       open on its Settings\n" );
-		Com_Printf( "       " DP_CMD " games|pazaak|wanga|path|holonet|comport|notes|chat   open on that app\n" );
+		Com_Printf( "       " DP_CMD " games|pazaak|wanga|path|arcade|holonet|comport|notes|chat   open on that app\n" );
+		Com_Printf( "       " DP_CMD " arcade <sarlacc|dash|sky|blaster> [play]   that game's page in the Arcade, or a run started\n" );
 		Com_Printf( "       " DP_CMD " chat <account>   the conversation with that account's main character\n" );
 		Com_Printf( "       " DP_CMD " chat group <id>   that group chat\n" );
 		Com_Printf( "       (things in the world, datapads too: /world)\n" );
@@ -1282,6 +1303,7 @@ void CL_Datapad_Init( void ) {
 	Cmd_AddCommand( DP_CMD, DP_Datapad_f, "The datapad: open like a phone, folded in the corner, or put away" );
 	CL_Pazaak_Init();
 	CL_Games_Init();
+	CL_Arcade_Init();
 	CL_Comport_Init();
 	CL_Chat_Init();
 }
