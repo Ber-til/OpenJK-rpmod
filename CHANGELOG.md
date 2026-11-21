@@ -6,6 +6,8 @@ OpenJK-rpmod is built on [OpenJK](https://github.com/JACoders/OpenJK); for the c
 
 ## 0.10.3 - in progress
 
+- [Fixed] `Presets: the game closing as a preset is deleted`. Deleting one let go of every card's character while the page was still being drawn, and the renderer then drew the cards already on it from what was gone. They're let go of before the next frame now. From a player's report (#70).
+
 - [Fixed] `Datapad: apps past the screen's bottom`. With more apps than three rows hold (Dice made seven), the last ones were cut off at the bottom of the home screen. The home screen and the Games folder scroll with the wheel when they don't all fit, a bar at the right saying where.
 - [Fixed] `Datapad Chat: a long message`. What you typed went on down past the bottom of the screen, and a long message's bubble could lose its last lines. The box grows up as you type, up to five lines, then scrolls; the bubbles wrap their text to their width and are as tall as it.
 

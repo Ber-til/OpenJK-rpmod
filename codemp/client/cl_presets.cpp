@@ -355,9 +355,13 @@ static void PR_Apply( int i ) {
 	Com_Printf( "Presets: you're %s" S_COLOR_WHITE " now (%s)\n", ps->values[PR_K_NAME], ps->values[PR_K_MODEL] );
 }
 
+static qboolean prViewsDue;		// the cards' models to be freed before the next frame draws (CL_Presets_Frame)
+
 static void PR_Delete( int i ) {
 	pr.labelEdit = -1;		// the cards move: no name half typed lands on another
-	PR_FreeViews();
+	// not now: Delete is clicked while the page is drawn, and the cards before it this frame are
+	// drawn by the renderer at the frame's end, from their models (freed now, a crash: #70)
+	prViewsDue = qtrue;
 	memmove( &prPresets[i], &prPresets[i + 1], ( prNumPresets - i - 1 ) * sizeof( prPresets[0] ) );
 	prNumPresets--;
 	PR_Save();
@@ -925,10 +929,15 @@ void CL_Presets_FreeCharacter( void ) {
 void CL_Presets_Frame( void ) {
 	while ( prNumDoomed > 0 )
 		re->G2API_CleanGhoul2Models( &prDoomed[--prNumDoomed] );
+	if ( prViewsDue ) {
+		prViewsDue = qfalse;
+		PR_FreeViews();
+	}
 }
 
 // the renderer's models are gone with it: dropped, not freed
 void CL_Presets_RendererRestarted( void ) {
+	prViewsDue = qfalse;
 	memset( &prPortrait, 0, sizeof( prPortrait ) );
 	memset( &prOther, 0, sizeof( prOther ) );
 	prNumDoomed = 0;
