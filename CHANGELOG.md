@@ -27,6 +27,8 @@ OpenJK-rpmod is built on [OpenJK](https://github.com/JACoders/OpenJK); for the c
 
 - [Fixed] `Vulkan: blocky reflections` on shiny floors (`r_ssr`), wet ground and water. What they mirrored was read a whole pixel at a time and found by long, jittered steps, so outlines (a seat's) were jagged, and a reflection that passed behind something (a chair's legs) smeared it down the floor in streaks. Rays now take short steps, the colour is blended, such a reflection fades instead, and a floor's reflections are softened at their outlines across neighbours at the same depth. *Needs the release's rd-vulkan_x86.dll.*
 
+- [Fixed] `Lag when a body burns`. Burning a killed NPC's body could throw nearly two thousand debris pieces at once, each drawn again for every light of the fire: the game stuttered, and the Vulkan renderer printed "frame geometry grew to 32/64/128 MB". At most 96 pieces are drawn at a time now (`r_maxChunks`, 0 draws them all), with either renderer. *Needs the release's renderer DLLs.*
+
 ## 0.10.2 - Nov 14th 2026
 
 - [Added] `Vulkan: SMAA`. `r_smaa 1` (or **SMAA** on Setup's RENDERER page, its new third page) smooths edges over the finished picture: sharper than FXAA, without its blur, and far cheaper than anti-aliasing at high resolutions.

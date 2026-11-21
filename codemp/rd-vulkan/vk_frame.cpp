@@ -23,6 +23,9 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 
 #include "tr_local.h"
 
+void vk_geo_reset( void );		// OpenJK-rpmod: a frame's geometry by shader (vk_shade_geometry.cpp)
+void vk_geo_report( void );
+
 void vk_create_sync_primitives( void )
 {
     uint32_t i;
@@ -490,6 +493,7 @@ _retry:
 	// dynamic vertex buffer layout
     vk.cmd->vertex_buffer_offset = 0;
     vk.geometry_overflow = qfalse; // OpenJK-rpmod
+    vk_geo_reset(); // OpenJK-rpmod: what this frame's geometry goes to, told if it needs the buffer to grow
     vk.cmd->indirect_buffer_offset = 0;
     Com_Memset( vk.cmd->buf_offset, 0, sizeof( vk.cmd->buf_offset ) );
     Com_Memset( vk.cmd->vbo_offset, 0, sizeof( vk.cmd->vbo_offset ) );
@@ -567,6 +571,7 @@ static void vk_resize_geometry_buffer( void )
     } else if ( vk.geometry_buffer_size >= 32 * 1024 * 1024 ) {
         // rare: said, to learn what makes a frame this heavy
         ri.Printf( PRINT_ALL, "Vulkan: frame geometry grew to %i MB\n", (int)( vk.geometry_buffer_size >> 20 ) );
+        vk_geo_report();
     }
 
     for (i = 0; i < NUM_COMMAND_BUFFERS; i++)
