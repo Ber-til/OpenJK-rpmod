@@ -153,7 +153,7 @@ static struct {
 static inCached_t inCache[IN_CACHE];
 static short inPcm[IN_MAX_SAMPLES];
 static float inWork[IN_MAX_SAMPLES];
-static cvar_t *s_volumeInstruments, *cl_instrumentDebug, *cl_instrumentEmote, *cl_instrumentEmoteRepeat;
+static cvar_t *s_volumeInstruments, *cl_instrumentDebug, *cl_instrumentEmote, *cl_instrumentEmoteRepeat, *cl_instrumentNote;
 
 static void IN_Message( const char *text ) {
 	Q_strncpyz( in.message, text, sizeof( in.message ) );
@@ -1017,6 +1017,8 @@ static void IN_DrawQuaver( float x, float y, float size, const float *color ) {
 	}
 }
 
+static float inNoteMaxY = SCREEN_HEIGHT;		// your own while the keyboard's open: kept above it
+
 static void IN_DrawNoteAt( const vec3_t head, int client ) {
 	static const float shadow[4] = { 0.0f, 0.0f, 0.0f, 0.65f };
 	static const float note[4] = { 1.0f, 0.82f, 0.35f, 1.0f };
@@ -1029,27 +1031,37 @@ static void IN_DrawNoteAt( const vec3_t head, int client ) {
 	CM_BoxTrace( &tr, in.viewOrg, head, vec3_origin, vec3_origin, 0, CONTENTS_SOLID | CONTENTS_TERRAIN, qfalse );
 	if ( tr.fraction < 0.98f )
 		return;
-	size = Com_Clamp( 7.0f, 22.0f, 6000.0f / depth );
+	size = Com_Clamp( 5.0f, 13.0f, 3600.0f / depth );	// about 13 over you close up, smaller farther
 	bob = sinf( cls.realtime * 0.004f + client ) * size * 0.12f;
 	x -= size * 0.35f;
-	y -= bob;
+	y = Q_min( y - bob, inNoteMaxY );
 	IN_DrawQuaver( x + 1.0f, y + 1.0f, size, shadow );
 	IN_DrawQuaver( x, y, size, note );
 }
 
 // over everyone playing now: you too in third person
+// yours, in third person: over the keyboard's top while it's open (the keyboard covers your head)
+static void IN_DrawOwnNote( float maxY ) {
+	const int me = cl.snap.ps.clientNum;
+	vec3_t head;
+
+	if ( !in.viewKnown || cls.state != CA_ACTIVE || !cl.snap.valid || cl_instrumentNote->integer != 1
+		|| CL_Instruments_Playing( me ) < 0 || !Cvar_VariableIntegerValue( "cg_thirdPerson" ) )
+		return;
+	VectorCopy( cl.snap.ps.origin, head );
+	head[2] += IN_NOTE_HEIGHT;
+	inNoteMaxY = maxY;
+	IN_DrawNoteAt( head, me );
+	inNoteMaxY = SCREEN_HEIGHT;
+}
+
 void CL_Instruments_DrawNotes( void ) {
 	const int me = cl.snap.ps.clientNum;
 
-	if ( !in.viewKnown || cls.state != CA_ACTIVE || !cl.snap.valid )
+	if ( !in.viewKnown || cls.state != CA_ACTIVE || !cl.snap.valid || !cl_instrumentNote->integer )
 		return;
-	if ( CL_Instruments_Playing( me ) >= 0 && Cvar_VariableIntegerValue( "cg_thirdPerson" ) ) {
-		vec3_t head;
-
-		VectorCopy( cl.snap.ps.origin, head );
-		head[2] += IN_NOTE_HEIGHT;
-		IN_DrawNoteAt( head, me );
-	}
+	if ( !in.open )
+		IN_DrawOwnNote( SCREEN_HEIGHT );
 	for ( int i = 0; i < cl.snap.numEntities; i++ ) {
 		const entityState_t *es = &cl.parseEntities[( cl.snap.parseEntitiesNum + i ) & ( MAX_PARSE_ENTITIES - 1 )];
 		vec3_t head;
@@ -1325,6 +1337,7 @@ void CL_Instruments_Draw( void ) {
 		in.message[0] && cls.realtime - in.messageTime < 5000 ? inOrange : inDim, in.font, 0.48f, qfalse );
 	IN_DrawKeyboard();
 	in.click = qfalse;
+	IN_DrawOwnNote( IN_Y - 4.0f );
 	// the cursor
 	IN_Fill( in.cursorX - 1, in.cursorY - 6, 2, 13, inOrange );
 	IN_Fill( in.cursorX - 6, in.cursorY - 1, 13, 2, inOrange );
@@ -1440,6 +1453,8 @@ void CL_Instruments_Init( void ) {
 		"Instruments: a command done as you start playing, an emote (emsit, or one of your custom emotes); \"\" none" );
 	cl_instrumentEmoteRepeat = Cvar_Get( "cl_instrumentEmoteRepeat", "0", CVAR_ARCHIVE_ND,
 		"Instruments: cl_instrumentEmote done again every this many seconds while you play (2 at least), for an emote that ends by itself; 0 once" );
+	cl_instrumentNote = Cvar_Get( "cl_instrumentNote", "1", CVAR_ARCHIVE_ND,
+		"Instruments: the music note over the head of whoever plays: 1 everyone's, 2 others' only, 0 none (on your screen only)" );
 	cl_instrumentDebug = Cvar_Get( "cl_instrumentDebug", "0", CVAR_TEMP, "Instruments: a console line for each batch of others' notes" );
 	Cmd_AddCommand( "instrument", IN_Instrument_f, "Play an instrument: on the keyboard, or a MIDI file, heard by those near you with the client" );
 }

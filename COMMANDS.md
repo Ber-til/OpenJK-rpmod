@@ -246,6 +246,7 @@ The console commands, keys and settings this client adds. What each feature does
 - `/instrument` opens or closes the instrument's keyboard; `/instrument <harp|lute|keys|flute|chimes|marimba|horn|drums>` opens it on that one
 - `/instrument note <0-127> [velocity]` plays a note (60 is middle C), for binds; `/instrument midi <file>` plays a MIDI file from `midi/`, `/instrument stop` ends it, `/instrument list` lists them
 - `s_volumeInstruments` how loud instruments play (0.8); `cl_instrumentHandPos "<tag> <x y z> <pitch yaw roll> <scale>"` where an instrument model is held; `cl_instrumentDebug 1` says each batch of others' notes in the console
+- `cl_instrumentNote` the music note over the head of whoever plays: *1* everyone's, *2* others' only, *0* none
 - `cl_instrumentEmote "<command>"` done as you start playing, an emote such as `emsit` ("" none); `cl_instrumentEmoteRepeat <seconds>` does it again that often while you play (0 once, 2 at least)
 
 ## Special Moves
