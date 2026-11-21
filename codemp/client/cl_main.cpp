@@ -863,6 +863,7 @@ void CL_Disconnect( qboolean showMainMenu ) {
 	CL_RpAdmin_Disconnect();
 	CL_ChatLog_Disconnect();
 	CL_Datapad_Disconnect();
+	CL_Instruments_Disconnect();
 	CL_SkyComposer_Disconnect();
 	CL_PhotoMode_Close();
 	CL_Inventory_Disconnect();
@@ -2425,6 +2426,7 @@ void CL_Frame ( int msec ) {
 	CL_Pazaak_Frame();
 	CL_Games_Frame();
 	CL_Arcade_Frame();
+	CL_Instruments_Frame();
 	CL_Dice_Frame();
 	CL_Notes_Frame();
 	CL_Chat_Frame();
@@ -2986,6 +2988,7 @@ void CL_Init( void ) {
 	CL_AnimManager_Init ();
 	CL_Presets_Init ();
 	CL_SpecialMoves_Init ();
+	CL_Instruments_Init();
 	CL_BurstFire_Init ();
 	CL_EffectSwap_Init ();
 	CL_ChatLog_Init ();

@@ -1685,6 +1685,10 @@ void CL_KeyDownEvent( int key, unsigned time )
 			CL_SkyComposer_Escape();
 			return;
 		}
+		if ( ( Key_GetCatcher() & KEYCATCH_INSTRUMENT ) && !( Key_GetCatcher() & KEYCATCH_UI ) ) {
+			CL_Instruments_Escape();
+			return;
+		}
 		if ( ( Key_GetCatcher() & KEYCATCH_PHOTOMODE ) && !( Key_GetCatcher() & KEYCATCH_UI ) ) {
 			CL_PhotoMode_Escape();
 			return;
@@ -1843,6 +1847,9 @@ void CL_KeyDownEvent( int key, unsigned time )
 		CL_SkyComposer_KeyEvent( key, qtrue );
 	}
 	// photo mode
+	else if ( Key_GetCatcher() & KEYCATCH_INSTRUMENT ) {
+		CL_Instruments_KeyEvent( key, qtrue );
+	}
 	else if ( Key_GetCatcher() & KEYCATCH_PHOTOMODE ) {
 		CL_PhotoMode_KeyEvent( key, qtrue );
 	}

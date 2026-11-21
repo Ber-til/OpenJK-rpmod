@@ -703,7 +703,8 @@ void CL_ModelManager_Draw( void );
 #define KEYCATCH_WORLD			0x8000000	// engine only, the world's reader or editor owns keyboard and mouse
 #define KEYCATCH_SKYCOMPOSER	0x20000000	// engine only, the sky composer owns keyboard and mouse
 #define KEYCATCH_PHOTOMODE		0x10000000	// engine only, photo mode owns keyboard and mouse
-#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELMANAGER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER | KEYCATCH_MAPEDITOR | KEYCATCH_STORYTELLER | KEYCATCH_CINEDITOR | KEYCATCH_SOUNDMANAGER | KEYCATCH_RADIALMENU | KEYCATCH_LANGUAGES | KEYCATCH_CONSETTINGS | KEYCATCH_ANIMMANAGER | KEYCATCH_PRESETS | KEYCATCH_FEEDBACK | KEYCATCH_ASSETMANAGER | KEYCATCH_SPECIALMOVES | KEYCATCH_CHATLOG | KEYCATCH_DATAPAD | KEYCATCH_ESCMENU | KEYCATCH_INVENTORY | KEYCATCH_INSPECT | KEYCATCH_HOLSTER | KEYCATCH_CHARACTERS | KEYCATCH_WORLD | KEYCATCH_SKYCOMPOSER | KEYCATCH_PHOTOMODE )	// mods never see or clear these
+#define KEYCATCH_INSTRUMENT		0x40000000	// engine only, an instrument's keyboard owns keyboard and mouse
+#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELMANAGER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER | KEYCATCH_MAPEDITOR | KEYCATCH_STORYTELLER | KEYCATCH_CINEDITOR | KEYCATCH_SOUNDMANAGER | KEYCATCH_RADIALMENU | KEYCATCH_LANGUAGES | KEYCATCH_CONSETTINGS | KEYCATCH_ANIMMANAGER | KEYCATCH_PRESETS | KEYCATCH_FEEDBACK | KEYCATCH_ASSETMANAGER | KEYCATCH_SPECIALMOVES | KEYCATCH_CHATLOG | KEYCATCH_DATAPAD | KEYCATCH_ESCMENU | KEYCATCH_INVENTORY | KEYCATCH_INSPECT | KEYCATCH_HOLSTER | KEYCATCH_CHARACTERS | KEYCATCH_WORLD | KEYCATCH_SKYCOMPOSER | KEYCATCH_PHOTOMODE | KEYCATCH_INSTRUMENT )	// mods never see or clear these
 
 void CL_NpcManager_Init( void );
 void CL_NpcManager_Shutdown( void );
@@ -1135,6 +1136,19 @@ void CL_Pazaak_Frame( void );		// cl_pazaak.cpp
 void CL_Games_Frame( void );		// cl_games.cpp: WANGA, The Path
 void CL_Arcade_Frame( void );		// cl_arcade.cpp: the datapad Arcade's boards
 void CL_Dice_Frame( void );			// cl_dice.cpp: the Dice Master, through C1B3R
+// cl_instruments.cpp: instruments played from the keyboard or a MIDI file, heard by those near
+void CL_Instruments_Init( void );
+void CL_Instruments_Frame( void );
+void CL_Instruments_Draw( void );
+void CL_Instruments_Close( void );
+void CL_Instruments_Disconnect( void );
+void CL_Instruments_KeyEvent( int key, qboolean down );
+void CL_Instruments_MouseEvent( int dx, int dy );
+void CL_Instruments_Escape( void );
+void CL_Instruments_Hook( char **argv, int argc, const char *message );	// cmd:music/...
+int CL_Instruments_Playing( int client );	// the instrument that player plays now, -1 none
+const char *CL_Instruments_Model( int instrument );	// the model held playing it, "" none
+void CL_AnimManager_Loop( int num, const char *anim );	// an animation looped on a player, on this screen; "" stops it
 const char *CL_Whisper_InfoNotice( const char *text, int ms );	// RPMod's top-left info notice and its sound, as a cgame command
 void CL_Dice_Hook( char **argv, int argc, const char *message );	// cmd:dice/roll|ask/...
 // the Storyteller asking a player for a roll: a token, 0 if it can't now; its state C1B3R's number for

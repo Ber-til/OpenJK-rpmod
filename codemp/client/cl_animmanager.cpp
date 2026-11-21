@@ -203,6 +203,7 @@ typedef struct {
 	qboolean	active;
 	qboolean	stopping;			// over: its bones let go the next time it's drawn
 	qboolean	own;				// ours, played here: moving ends it, and the end is sent
+	qboolean	loopOnly;			// another feature's animation looped on them (an instrument played): CL_AnimManager_Loop
 	qboolean	shared;
 	qboolean	wantShare;			// ours, to be shared once the admin rank's known (asked as it started)
 	int			num;
@@ -1343,6 +1344,28 @@ void CL_AnimManager_Hook( char **argv, int argc, const char *message ) {
 	amRecv[num].got = part;
 	if ( part == parts && AM_Decode( amRecv[num].text, &def ) )
 		AM_StartOn( num, &def );
+}
+
+// an animation looped on a player by another of this client's features (an instrument played,
+// cl_instruments.cpp), on this screen only; "" stops it. A custom emote they play is left as it is
+void CL_AnimManager_Loop( int num, const char *anim ) {
+	amPlay_t *p = AM_PlayingOn( num );
+	amCustom_t def;
+
+	if ( !anim || !anim[0] ) {
+		if ( p && p->loopOnly )
+			AM_StopOn( num );
+		return;
+	}
+	if ( p && ( !p->loopOnly || !Q_stricmp( p->def.anim, anim ) ) )
+		return;
+	memset( &def, 0, sizeof( def ) );
+	Q_strncpyz( def.anim, anim, sizeof( def.anim ) );
+	Q_strncpyz( def.speed, "1", sizeof( def.speed ) );
+	def.loop = qtrue;
+	p = AM_StartOn( num, &def );
+	if ( p )
+		p->loopOnly = qtrue;
 }
 
 /*

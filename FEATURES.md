@@ -17,6 +17,7 @@ Some features reach other players through workarounds only this client understan
 - [Radial Menus](#radial-menus)
 - [Saber Styles](#saber-styles)
 - [Special Moves](#special-moves)
+- [Instruments](#instruments)
 - [Emote Preview](#emote-preview)
 - [Animation Manager](#animation-manager-custom-emotes-are-experimental)
 - [Presets](#presets)
@@ -511,6 +512,19 @@ Every special move the saber has, what it does and how it's done, and a key to p
 - A roll backwards needs Force Speed or Rage on: running backwards is a quarter slower, too slow to roll
 - **.sab only**: the moves a saber's `.sab` can put in place of the kata, the lunge or a jump attack (`kataMove`, `lungeAtkMove`, `jumpAtk...Move`), and those the game has but never starts in multiplayer. They're listed, not played: the server's copy of the `.sab` decides them
 - The moves are base Jedi Academy's, which RPMod keeps
+
+## Instruments
+
+Play music in game, on an instrument's keyboard or from a MIDI file, heard by those near you (an idea from a player's report, #66).
+
+- `/instrument` opens a keyboard at the bottom of the screen: pick the **Harp**, **Lute**, **Keys**, **Flute**, **Chimes**, **Marimba**, **Horn** or **Drums**, and play
+- **Keys:** `Z S X D C V G B H N J M` play an octave and `Q 2 W 3 E R 5 T 6 Y 7 U I` the one above it, as a piano's white and black keys; hold **Shift** for an octave up, **Ctrl** for one down, or set the **Octave**; the arrows change the instrument and the octave. Keys can be clicked with the mouse too. You stay put while it's open; **Esc** closes it
+- **Drums:** a kit on the keys from C4: kick, rim, snare, clap, closed hat, low tom, open hat, mid tom, shaker, high tom, cowbell and crash, named on the keyboard
+- **MIDI files:** put `.mid` files in a `midi` folder in your `rpmod` folder, pick one on the panel and **Play**. **The file's instruments** plays each part on the nearest instrument here (piano on Keys, guitar on Lute, strings on Harp, brass on Horn, the drum channel on Drums); **All on this instrument** plays every part on the one picked. Notes beyond the instruments' three octaves are moved by octaves into them. Twelve notes sound at once at most
+- **Heard by others:** where you stand, fading with distance as any sound does, by everyone with the client near you. It goes through C1B3R, so it needs your game linked (`/c1b3r link`); without it only you hear it, and the panel says so. Others hear it a quarter of a second after you, so the rhythm holds whatever the network does
+- **The look:** while someone plays, others with the client see them play: hands held out for strings, keys and bars, a hand at the mouth for the flute and the horn, striking for the drums. A model of the instrument is held too when one's in the game (`models/instruments/<harp|lute|keys|flute|chimes|marimba|horn|drums>.glm` or `.md3`, placed with `cl_instrumentHandPos`); none come with it yet
+- The instruments are made by the game itself, no sound files: each note is worked out the first time it's played and kept
+- `s_volumeInstruments` (0.8) is how loud instruments play, yours and others'; **Volume** on the panel
 
 ## Animation Manager *(custom emotes are experimental)*
 

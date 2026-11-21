@@ -241,6 +241,12 @@ The console commands, keys and settings this client adds. What each feature does
 - `/saberstyles all` goes back to the server's own cycle; `/saberstyles` alone shows the list
 - `/saberstyle <style>` switches straight to that style
 
+## Instruments
+
+- `/instrument` opens or closes the instrument's keyboard; `/instrument <harp|lute|keys|flute|chimes|marimba|horn|drums>` opens it on that one
+- `/instrument note <0-127> [velocity]` plays a note (60 is middle C), for binds; `/instrument midi <file>` plays a MIDI file from `midi/`, `/instrument stop` ends it, `/instrument list` lists them
+- `s_volumeInstruments` how loud instruments play (0.8); `cl_instrumentHandPos "<tag> <x y z> <pitch yaw roll> <scale>"` where an instrument model is held; `cl_instrumentDebug 1` says each batch of others' notes in the console
+
 ## Special Moves
 
 - `/specialmoves` opens or closes the special moves menu; `/specialmoves list` lists them in the console with how they're done

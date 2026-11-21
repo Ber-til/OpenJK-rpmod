@@ -507,6 +507,7 @@ void SCR_DrawScreenField( stereoFrame_t stereoFrame ) {
 			CL_AnimManager_Draw();
 			CL_Presets_Draw();
 			CL_SpecialMoves_Draw();
+			CL_Instruments_Draw();
 			CL_SkyComposer_Draw();
 			CL_BurstFire_Draw();
 			CL_ChatLog_Draw();
