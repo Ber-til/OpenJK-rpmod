@@ -405,8 +405,13 @@ A message come: the conversation, or a notice and its ringtone
 */
 
 // the notice and ringtone of a message come while its conversation isn't open
+// the datapad's Do not disturb (cl_datapadSilent): messages come, counted, without a notice or a sound
+static qboolean CH_Silent( void ) {
+	return (qboolean)( Cvar_VariableIntegerValue( "cl_datapadSilent" ) != 0 );
+}
+
 static void CH_Notice( const char *what ) {
-	if ( !cl_chatNotify->integer || cls.state != CA_ACTIVE )
+	if ( !cl_chatNotify->integer || cls.state != CA_ACTIVE || CH_Silent() )
 		return;
 	CL_QueueCgameCommand( va( "info 5000 2 0 8 \":: %s ::\"", what ) );
 	Com_Printf( ":: %s ::\n", what );
@@ -432,7 +437,8 @@ void CL_Chat_Hook( char **argv, int argc, const char *message ) {
 	if ( ch.shown && ch.view == CH_TALK && !Q_stricmp( ch.with.c_str(), account ) ) {
 		ch.theyTypeUntil = 0;
 		CH_AskHistory();
-		CH_Play( cl_chatSound->string );
+		if ( !CH_Silent() )
+			CH_Play( cl_chatSound->string );
 		return;
 	}
 	ch.totalUnread++;
@@ -521,7 +527,7 @@ void CL_Chat_GroupHook( char **argv, int argc, const char *message ) {
 	if ( ch.shown && ch.view == CH_TALK && ch.group == group ) {
 		ch.theyTypeUntil = 0;
 		CH_AskHistory();
-		if ( strcmp( account, "-" ) )
+		if ( strcmp( account, "-" ) && !CH_Silent() )
 			CH_Play( cl_chatSound->string );
 		return;
 	}

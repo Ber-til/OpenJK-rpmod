@@ -662,6 +662,7 @@ A datapad on your screen, used like a phone. `/datapad`, or **TOOLS** in the in-
 - Its top bar shows JEDI's time: `474.08 ABY - 1345/49 GST` (the year up one each month, 474 in November 2026; the day of the month; then the hour and minute, and the seconds, in New York's time), and the server's name. Names on it show RPMod's colours, as the console does
 - **Apps:** the home screen has the apps; one opens over it, and **< Back** or **Home** returns. The first is **Settings**:
   - **Colour:** what it's lit in: cyan, blue, green, amber, red, violet or white
+  - **Do not disturb:** Chat's messages still come, counted as unread, but without a notice, a ringtone or a sound; DND shows in its top bar while it's on. `/datapad silent` turns it on or off, for a bind
   - **Keys:** click **Open it** or **Close it**, then press the key for it (Esc leaves it as it was). They work while you play and while it's open
   - **Your character holds a datapad while it's open:** your character plays RPMod's `/emlift` as you open it, and it ends (a moment's crouch, as C does) as you fold or close it
 - **Games:** a folder on the home screen with Pazaak, WANGA, The Path and the Arcade. The first three are played against others on the same server, through C1B3R, which deals and checks every move. **< Games** goes back to the folder

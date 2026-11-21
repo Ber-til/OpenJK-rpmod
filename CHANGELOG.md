@@ -6,6 +6,8 @@ OpenJK-rpmod is built on [OpenJK](https://github.com/JACoders/OpenJK); for the c
 
 ## 0.10.3 - in progress
 
+- [Added] `Datapad: Do not disturb`. On in the datapad's Settings, or with `/datapad silent` (on, off, or turned over, for a bind): Chat's messages still come and are counted as unread, without a notice, a ringtone or a sound. DND shows in its top bar while it's on. From a player's idea (#68).
+
 - [Fixed] `Presets: the game closing as a preset is deleted`. Deleting one let go of every card's character while the page was still being drawn, and the renderer then drew the cards already on it from what was gone. They're let go of before the next frame now. From a player's report (#70).
 
 - [Fixed] `Datapad: apps past the screen's bottom`. With more apps than three rows hold (Dice made seven), the last ones were cut off at the bottom of the home screen. The home screen and the Games folder scroll with the wheel when they don't all fit, a bar at the right saying where.

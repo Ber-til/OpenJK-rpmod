@@ -170,7 +170,7 @@ static struct {
 	int			messageTime;
 } dp;
 
-static cvar_t *cl_datapadX, *cl_datapadY, *cl_datapadColor, *cl_datapadEmote, *cl_datapadHand;
+static cvar_t *cl_datapadX, *cl_datapadY, *cl_datapadColor, *cl_datapadEmote, *cl_datapadHand, *cl_datapadSilent;
 
 /*
 ===============================================================================
@@ -792,8 +792,16 @@ static void DP_StatusBar( const dpRect_t *s, float scale ) {
 
 	DP_Text( s->x + 4, s->y + 2, s->w - 8, when, dpText, dp.font, scale, qfalse );
 	server = Info_ValueForKey( cl.gameState.stringData + cl.gameState.stringOffsets[CS_SERVERINFO], "sv_hostname" );
-	if ( server[0] && s->w - tw > DP_Wide( 60 ) )
+	// Do not disturb: said at the right, the server's name short of it
+	if ( cl_datapadSilent->integer ) {
+		const float dw = re->Font_StrLenPixels( "DND", dp.font, scale ) + DP_Wide( 6 );
+
+		DP_Text( s->x + s->w - dw, s->y + 2, dw, "DND", dpWhite, dp.font, scale, qfalse );
+		if ( server[0] && s->w - tw - dw > DP_Wide( 60 ) )
+			DP_Text( s->x + 4 + tw, s->y + 2, s->w - tw - dw - 8, server, dpDim, dp.font, scale, qfalse );
+	} else if ( server[0] && s->w - tw > DP_Wide( 60 ) ) {
 		DP_Text( s->x + 4 + tw, s->y + 2, s->w - tw - 8, server, dpDim, dp.font, scale, qfalse );
+	}
 	DP_Fill( s->x + 2, s->y + DP_STATUS_H - 1, s->w - 4, 1, dpGlow );
 }
 
@@ -1032,7 +1040,13 @@ static void DP_DrawSettings( const dpRect_t *s ) {
 		return;
 	}
 	DP_Text( x + w * 0.4f, y + 1, w * 0.6f, "Settings", dpText, dp.titleFont, 0.5f, qfalse );
-	y += DP_CTRL_H + 8;
+	y += DP_CTRL_H + 5;
+
+	// Do not disturb: messages come without a notice or a sound
+	DP_Text( x, y + 3, label, "Do not disturb", dpText, dp.font, small, qfalse );
+	if ( DP_Button( x + label, y, w - label, cl_datapadSilent->integer ? "On: silent" : "Off", (qboolean)( cl_datapadSilent->integer != 0 ) ) )
+		Cvar_Set( "cl_datapadSilent", cl_datapadSilent->integer ? "0" : "1" );
+	y += DP_CTRL_H + 5;
 
 	// the colour it's lit in
 	DP_Text( x, y, w, va( "Colour: %s", dpColors[Com_Clampi( 0, DP_NUM_COLORS - 1, cl_datapadColor->integer )].name ), dpDim, dp.font, small, qfalse );
@@ -1053,7 +1067,7 @@ static void DP_DrawSettings( const dpRect_t *s ) {
 				Cvar_SetValue( "cl_datapadColor", i );
 		}
 	}
-	y += 22;
+	y += 18;
 
 	// the keys that open and close it: click, then press one
 	DP_Text( x, y, w, "Keys (Esc always puts it away)", dpDim, dp.font, small, qfalse );
@@ -1065,7 +1079,7 @@ static void DP_DrawSettings( const dpRect_t *s ) {
 	DP_Text( x, y + 3, label, "Close it", dpText, dp.font, small, qfalse );
 	if ( DP_Button( x + label, y, w - label, dp.binding == DP_BIND_CLOSE ? "Press a key" : DP_KeyFor( DP_CLOSE_CMD ), (qboolean)( dp.binding == DP_BIND_CLOSE ) ) )
 		dp.binding = DP_BIND_CLOSE;
-	y += DP_CTRL_H + 9;
+	y += DP_CTRL_H + 5;
 
 	// the character holding one while it's open
 	DP_Text( x, y, w, "Your character", dpDim, dp.font, small, qfalse );
@@ -1080,8 +1094,6 @@ static void DP_DrawSettings( const dpRect_t *s ) {
 	DP_Text( x, y + 3, label, "One in hand", dpText, dp.font, small, qfalse );
 	if ( DP_Button( x + label, y, w - label, cl_datapadHand->integer ? "On" : "Off", (qboolean)( cl_datapadHand->integer != 0 ) ) )
 		Cvar_Set( "cl_datapadHand", cl_datapadHand->integer ? "0" : "1" );
-	y += DP_CTRL_H + 2;
-	DP_Text( x, y, w, "/" DP_EMOTE "; the one in hand seen by all with the client", dpDim, dp.font, 0.55f, qfalse );
 }
 
 // the screen's apps: the home screen, and one sliding in over it from the right
@@ -1343,6 +1355,12 @@ static void DP_Datapad_f( void ) {
 		}
 	} else if ( !Q_stricmp( arg, "place" ) || !Q_stricmp( arg, "remove" ) || !Q_stricmp( arg, "drop" ) ) {
 		CL_WorldItems_Command( arg, Cmd_Argc() > 2 ? Cmd_ArgsFrom( 2 ) : "" );
+	} else if ( !Q_stricmp( arg, "silent" ) ) {
+		// Do not disturb: on, off, or turned over
+		const char *to = Cmd_Argv( 2 );
+
+		Cvar_Set( "cl_datapadSilent", !Q_stricmp( to, "on" ) ? "1" : !Q_stricmp( to, "off" ) ? "0" : cl_datapadSilent->integer ? "0" : "1" );
+		Com_Printf( "Datapad: do not disturb %s\n", cl_datapadSilent->integer ? "on: messages come without a notice or a sound" : "off" );
 	} else if ( !Q_stricmp( arg, "fold" ) ) {
 		DP_Set( DP_FOLDED );
 	} else if ( !Q_stricmp( arg, "close" ) ) {
@@ -1360,6 +1378,7 @@ static void DP_Datapad_f( void ) {
 		Com_Printf( "usage: " DP_CMD "                opens the datapad, or puts it away\n" );
 		Com_Printf( "       " DP_CMD " open|close\n" );
 		Com_Printf( "       " DP_CMD " settings       open on its Settings\n" );
+		Com_Printf( "       " DP_CMD " silent [on|off]   do not disturb: messages without a notice or a sound\n" );
 		Com_Printf( "       " DP_CMD " games|pazaak|wanga|path|arcade|dice|holonet|comport|notes|chat   open on that app\n" );
 		Com_Printf( "       " DP_CMD " dice <system>   that Dice Master system, by its number or name\n" );
 		Com_Printf( "       " DP_CMD " arcade <sarlacc|dash|sky|blaster> [play]   that game's page in the Arcade, or a run started\n" );
@@ -1377,6 +1396,7 @@ void CL_Datapad_Init( void ) {
 	cl_datapadY = Cvar_Get( "cl_datapadY", "-1", CVAR_ARCHIVE_ND, "Where the folded datapad goes, from the top of the 640x480 screen; -1: the bottom right corner, above the HUD" );
 	cl_datapadColor = Cvar_Get( "cl_datapadColor", "0", CVAR_ARCHIVE_ND, "The datapad's colour: 0 cyan, 1 blue, 2 green, 3 amber, 4 red, 5 violet, 6 white" );
 	cl_datapadEmote = Cvar_Get( "cl_datapadEmote", "0", CVAR_ARCHIVE_ND, "Your character holds a datapad (RPMod's /emlift) while yours is open" );
+	cl_datapadSilent = Cvar_Get( "cl_datapadSilent", "0", CVAR_ARCHIVE_ND, "The datapad's Do not disturb: chat messages come without a notice, a ringtone or a sound (/datapad silent)" );
 	cl_datapadHand = Cvar_Get( "cl_datapadHand", "1", CVAR_ARCHIVE_ND, "A datapad model shows in your character's hand during the datapad emote (/emlift), seen by everyone with the client" );
 	Cmd_AddCommand( DP_CMD, DP_Datapad_f, "The datapad: open like a phone, folded in the corner, or put away" );
 	CL_Pazaak_Init();
