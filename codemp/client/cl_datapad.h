@@ -79,6 +79,7 @@ void		CL_Comport_Open( const char *what );
 void		CL_HoloNet_Open( int n );
 
 void		CL_Datapad_ToGames( void );			// back to the Games folder, from a game
+void		CL_Datapad_Home( void );			// back to the home screen, from an app
 
 // cl_arcade.cpp: the Arcade, four games for one and their boards
 void		CL_Arcade_Draw( const dpRect_t *screen );
@@ -86,6 +87,14 @@ void		CL_Arcade_Shown( qboolean shown );
 qboolean	CL_Arcade_Key( int key );
 void		CL_Arcade_Open( const char *game, qboolean play );
 void		CL_Arcade_Init( void );
+
+// cl_dice.cpp: the Dice Master's systems, your sheet and rolls
+void		CL_Dice_Draw( const dpRect_t *screen );
+void		CL_Dice_Shown( qboolean shown );
+qboolean	CL_Dice_Key( int key );
+void		CL_Dice_Char( int ch );
+void		CL_Dice_Open( const char *system );
+void		CL_Dice_Init( void );
 
 // cl_pazaak.cpp: the Pazaak app
 void		CL_Pazaak_Draw( const dpRect_t *screen );

@@ -54,6 +54,7 @@ static cvar_t	*r_heatHaze, *r_heatHazeStrength;
 static cvar_t	*r_skySharpen, *r_clouds, *r_cloudShadows, *r_aerialHaze, *r_aerialHazeStart, *r_skyScene[4];
 static cvar_t	*r_sharpen;
 static cvar_t	*r_relief, *r_reliefStrength, *r_reliefSpecular;
+static cvar_t	*r_spriteLights;
 static cvar_t	*r_volumetric, *r_volumetricIntensity, *r_volumetricFog;
 static cvar_t	*r_ssr, *r_ssrStrength;
 static cvar_t	*r_shadowMaps, *r_shadowDistance, *r_shadowStrength, *r_shadowSoftness, *r_shadowSun;
@@ -275,6 +276,8 @@ void vk_rpmod_register_cvars( void ) {
 		r_skyScene[i] = ri.Cvar_Get( i ? va( "r_skyScene%i", i + 1 ) : "r_skyScene", "", CVAR_ROM | CVAR_TEMP, "The sky composer's scene (set by /skycomposer)" );
 	r_relief = ri.Cvar_Get( "r_relief", "0", CVAR_ARCHIVE_ND | CVAR_LATCH, "Surface relief: dynamic lights and lit sabers pick out the relief of stone, metal and cloth, worked out from each texture (needs \\r_dlightMode 2; \\vid_restart to change)" );
 	ri.Cvar_CheckRange( r_relief, 0, 1, qtrue );
+	r_spriteLights = ri.Cvar_Get( "r_spriteLights", "0.7", CVAR_ARCHIVE_ND, "The map's grass and bushes (surface sprites) lit by dynamic lights, a saber's or a fire's, as the ground under them is: how much, 0 not at all" );
+	ri.Cvar_CheckRange( r_spriteLights, 0, 4, qfalse );
 	r_reliefStrength = ri.Cvar_Get( "r_reliefStrength", "8", CVAR_ARCHIVE_ND, "Surface relief: how deep it is, in world units" );
 	ri.Cvar_CheckRange( r_reliefStrength, 0, 64, qfalse );
 	r_reliefSpecular = ri.Cvar_Get( "r_reliefSpecular", "0.35", CVAR_ARCHIVE_ND, "Surface relief: how much the lit surfaces shine, 0 none" );
@@ -397,6 +400,95 @@ void vk_rpmod_light_modules( void ) {
 	RP_MODULE( vk.shaders.frag.light[1][0], rpmod_light_relief_line_frag_spv, "rpmod relief linear light" );
 	RP_MODULE( vk.shaders.frag.light[1][1], rpmod_light_relief_line_fog_frag_spv, "rpmod relief linear light fog" );
 	ri.Printf( PRINT_ALL, "Surface relief on (r_relief)%s\n", r_dlightMode->integer == 2 ? "" : ": it needs r_dlightMode 2" );
+}
+
+#ifdef USE_VBO_SS
+// the surface sprites' vertex shaders swapped for the same lit by the view's dynamic lights
+// (surface_sprite_vert.tmpl built with USE_DLIGHTS); without them, r_spriteLights 0 lights none
+void vk_rpmod_sprite_modules( void ) {
+	for ( int i = 0; i < 2; i++ ) {
+		if ( vk.shaders.surface_sprite_vs[i] != VK_NULL_HANDLE )
+			qvkDestroyShaderModule( vk.device, vk.shaders.surface_sprite_vs[i], NULL );
+	}
+	RP_MODULE( vk.shaders.surface_sprite_vs[0], rpmod_ss_dlight_vert_spv, "rpmod surface sprite vertex" );
+	RP_MODULE( vk.shaders.surface_sprite_vs[1], rpmod_ss_dlight_fog_vert_spv, "rpmod surface sprite fog vertex" );
+}
+#endif
+
+// how bright a dynamic light is drawn, as the light passes have it
+static void RP_DlightColor( const dlight_t *dl, vec3_t out ) {
+	if ( !glConfig.deviceSupportsGamma && !vk.fboActive )
+		VectorScale( dl->color, 2 * powf( r_intensity->value, r_gamma->value ), out );
+	else
+		VectorCopy( dl->color, out );
+}
+
+// the view's dynamic lights nearest the eye, for the surface sprites (the camera's uniform)
+void vk_rpmod_camera_dlights( vkUniformCamera_t *u, const trRefdef_t *refdef ) {
+	int order[VK_CAMERA_DLIGHTS], count = 0;
+	float howFar[VK_CAMERA_DLIGHTS];
+	const float strength = r_spriteLights ? r_spriteLights->value : 0.0f;
+
+	u->dlightCount[0] = 0.0f;
+	if ( strength <= 0.0f || !refdef->dlights )
+		return;
+	for ( int i = 0; i < refdef->num_dlights; i++ ) {
+		const dlight_t *dl = &refdef->dlights[i];
+		const float d = Distance( dl->origin, refdef->vieworg ) - dl->radius;
+		int at = count;
+
+		if ( dl->radius <= 0.0f )
+			continue;
+		// kept nearest first: a farther one in a full list is left out
+		while ( at > 0 && howFar[at - 1] > d )
+			at--;
+		if ( at >= VK_CAMERA_DLIGHTS )
+			continue;
+		for ( int j = Q_min( count, VK_CAMERA_DLIGHTS - 1 ); j > at; j-- ) {
+			howFar[j] = howFar[j - 1];
+			order[j] = order[j - 1];
+		}
+		howFar[at] = d;
+		order[at] = i;
+		count = Q_min( count + 1, VK_CAMERA_DLIGHTS );
+	}
+	for ( int i = 0; i < count; i++ ) {
+		const dlight_t *dl = &refdef->dlights[order[i]];
+
+		VectorCopy( dl->origin, u->dlightPos[i] );
+		u->dlightPos[i][3] = 1.0f / Square( dl->radius );
+		RP_DlightColor( dl, u->dlightColor[i] );
+		VectorScale( u->dlightColor[i], strength, u->dlightColor[i] );
+		u->dlightColor[i][3] = 0.0f;
+	}
+	u->dlightCount[0] = (float)count;
+}
+
+// a surface sprite drawn without the GPU's sprites (tr_surfacesprites.cpp): the same light added to
+// its colour, where it stands
+void RB_SurfaceSpriteDlights( byte *color, const vec3_t loc ) {
+	const float strength = r_spriteLights ? r_spriteLights->value : 0.0f;
+
+	if ( strength <= 0.0f )
+		return;
+	for ( int i = 0; i < backEnd.refdef.num_dlights; i++ ) {
+		const dlight_t *dl = &backEnd.refdef.dlights[i];
+		vec3_t L, c;
+		float f;
+
+		if ( dl->radius <= 0.0f )
+			continue;
+		VectorSubtract( dl->origin, loc, L );
+		f = 1.0f - DotProduct( L, L ) / Square( dl->radius );
+		if ( f <= 0.0f )
+			continue;
+		RP_DlightColor( dl, c );
+		for ( int k = 0; k < 3; k++ ) {
+			const float v = color[k] + c[k] * f * strength * 255.0f;
+
+			color[k] = (byte)( v > 255.0f ? 255 : v );
+		}
+	}
 }
 
 // what the relief shader reads in the light's otherwise unused w: its depth, and the shine

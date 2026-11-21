@@ -265,6 +265,7 @@ The console commands, keys and settings this client adds. What each feature does
 - `/datapad games` opens the Games folder; `/datapad wanga` and `/datapad path` open WANGA and The Path: `/wanga` and `/thepath` `create [name]`, `join <table>`, `watch <table>`, `start`, `again`, `leave`, and their moves (`/wanga play <card> [R|B|G|Y]`, `draw`, `keep`, `call`, `catch`; `/thepath move <technique 0|1> <x> <y> <x> <y>`, `swap <technique 0|1>`), for binds
 - `/datapad pazaak` opens Pazaak on it; `/pazaak create [name]`, `/pazaak join <table>`, `/pazaak watch <table>`, `/pazaak end`, `/pazaak stand`, `/pazaak play <card 0-3> [1|-1] [1|2]` and `/pazaak leave` do what its buttons do, for binds; `cl_pazaakDeck` is the side deck you play with
 - `/datapad arcade [sarlacc|dash|sky|blaster] [play]` opens the Arcade (a game's page, or a run of it started); `cl_arcadeBest` keeps your bests
+- `/dicemaster` or `/datapad dice [system]` opens the Dice Master on the datapad (a system by its number or name); `/dicemaster roll` rolls what a master asked you for, `/dicemaster roll <action> [dc]` an action of your system, against its DC or that one; `/dicemaster system <number>` picks the system you roll in (`cl_diceSystem`); `/dicemaster edit` and `/dicemaster players` open a system you run on its rules or its players
 - `/burstfire [on|off]` or `cl_burstFire 1` (the default): the E-11's alt fire in bursts (0.4 s charge with a glow at the muzzle and the Bryar's charge sound, 4 shots, 1 s cool down)
 - `/datapad notes` opens Notes
 - `/skycomposer` opens the sky composer (RPMod admins; Vulkan with `r_fbo 1`); its words, for binds: `sky classic|composed`, `time <0-24|off>`, `direction <0-360|auto>` (the side the hour's sun and its glow are on), `clouds <0-1>`, `lightning on|off`, `add <planet|gas|ringed|moon|sun|station|nebula|fleet> [size [yaw pitch]]` (where you look, or there), `here <n> [yaw pitch]`, `size <n> <degrees>`, `color <n> <r g b>`, `rings <n> on|off` (a fleet: how many more ships), `tilt <n> <degrees>`, `seed <n> <number>`, `add model <path> [size [yaw pitch]]`, `model <n> <path>`, `heading <n> <degrees>`, `turn <n> <degrees a second>`, `remove <n>`, `clear`, `list`, `share`, `unshare`, `help`
@@ -301,6 +302,7 @@ The console commands, keys and settings this client adds. What each feature does
 
 - `+headlook` (held, e.g. `/bind alt +headlook`) turns only your head with the mouse or arrow keys, seen by others with the client; `cl_headLookView 0|1|2` whether your view turns with it (never, first person, always)
 - `cl_lookLean <0-4>` how far players lean back and forward with their look (2; 1 as the game does it)
+- `r_spriteLights <0-4>` how much a saber's or a fire's light reaches the map's grass and bushes (surface sprites), with the Vulkan renderer (0.7; 0 none)
 - `r_maxChunks <n>` how many debris pieces (a burnt body's, a broken crate's) are drawn at once (96; 0 draws all), in both renderers
 
 - `rpc_removeExtraColorsInConsole 0` shows RPMod's extra colors in the console

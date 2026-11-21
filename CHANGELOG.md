@@ -6,6 +6,8 @@ OpenJK-rpmod is built on [OpenJK](https://github.com/JACoders/OpenJK); for the c
 
 ## 0.10.3 - in progress
 
+- [Added] `Dice Master`. RPMod admins make rule systems of their own on the datapad's new **Dice** app: a die (d20, d100, 2d6...), how far past the DC is critical, traits, classes (their XP to start with, more by rank in the Order, more granted by a master; their free points and the traits they raise) and actions such as [Telekinesis] (traits weighted into the roll, a bonus by class, a DC). A character joins a system with a class and spends its XP on traits; a roll is a critical success, a success, a failure or a critical failure. C1B3R rolls the dice, so nobody fakes one, and the roll pops up in the top left, as a whisper's notice does, for those within chat range, and for the system's masters wherever they are. Masters grant XP, lock sheets and ask a player for a roll. In the Storyteller: **When someone rolls**, **If the roll was**, and **Ask for a roll**, which waits for it, so a story goes on by how it went. From a player's idea (#25).
+
 - [Changed] `Map editor: weather boxes fall outdoors only`. A new rain, snow or sand box starts as **Map's outdoors only**, so it no longer comes through roofs; **The whole box** is still a click away. A box already saved in a layout keeps its own setting.
 - [Fixed] `Chat: the size of what you type`. With `con_scale 2` (or display scaling that doubles the console), what you typed after Say: was drawn in the console's small letters; it's as big as Say: again.
 - [Fixed] `Presets: a model without a head top tag`. Its cards drew it small, in the top of the card; it's measured from its neck now, and fills its card like any other.
@@ -26,6 +28,8 @@ OpenJK-rpmod is built on [OpenJK](https://github.com/JACoders/OpenJK); for the c
 - [Added] `Shader Manager: placing an overlay without typing`. Drag the overlay's preview to move it and its corner to size it, or step each number with - and + (8 at a time, Shift 1) or the mouse wheel; `/shadermanager overlays` opens on the tab.
 
 - [Fixed] `Vulkan: blocky reflections` on shiny floors (`r_ssr`), wet ground and water. What they mirrored was read a whole pixel at a time and found by long, jittered steps, so outlines (a seat's) were jagged, and a reflection that passed behind something (a chair's legs) smeared it down the floor in streaks. Rays now take short steps, the colour is blended, such a reflection fades instead, and a floor's reflections are softened at their outlines across neighbours at the same depth. *Needs the release's rd-vulkan_x86.dll.*
+
+- [Fixed] `Vulkan: grass and bushes unlit by a saber`. A map's surface sprites (its grass, bushes and flowers, as on Duneeden Outpost) took no dynamic light: a lit saber or a fire lit the ground under them and left them in the map's light alone, drawn dark over the lit ground. They're lit by the view's nearest dynamic lights now, as the ground is (`r_spriteLights`, 0.7; 0 as before). *Needs the release's rd-vulkan_x86.dll.*
 
 - [Fixed] `Lag when a body burns`. Burning a killed NPC's body could throw nearly two thousand debris pieces at once, each drawn again for every light of the fire: the game stuttered, and the Vulkan renderer printed "frame geometry grew to 32/64/128 MB". At most 96 pieces are drawn at a time now (`r_maxChunks`, 0 draws them all), with either renderer. *Needs the release's renderer DLLs.*
 

@@ -67,6 +67,10 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 //     sent by C1B3R itself when a player's character changed (inventory, profile, holster):
 //     theirs is asked again. See cl_inventory.cpp.
 //
+//   cmd:dice/roll/<client number>/<roll>: ... and cmd:dice/ask/<client number>/<ask>: ...
+//     sent by C1B3R itself (a game's own are refused): a Dice Master roll it made, and a master
+//     asking that player for one. See cl_dice.cpp.
+//
 //   cmd:fxscale/<x y z>/<size>[/once]: <effect>
 //     the effect playing there drawn that much bigger or smaller, 1 as made; see
 //     cl_effectmanager.cpp.
@@ -560,6 +564,10 @@ static rhResult_t RH_Run( const char *text ) {
 	}
 	if ( !Q_stricmp( argv[0], "world" ) ) {
 		CL_WorldItems_Hook( argv + 1, argc - 1 );
+		return RH_DROP;
+	}
+	if ( !Q_stricmp( argv[0], "dice" ) ) {
+		CL_Dice_Hook( argv + 1, argc - 1, message );
 		return RH_DROP;
 	}
 	if ( !Q_stricmp( argv[0], "charoffer" ) ) {

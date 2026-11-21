@@ -60,6 +60,8 @@ call :frag rpmod_light_relief_frag_spv glsl\light_frag.tmpl -DUSE_RELIEF || exit
 call :frag rpmod_light_relief_fog_frag_spv glsl\light_frag.tmpl -DUSE_RELIEF -DUSE_FOG || exit /b 1
 call :frag rpmod_light_relief_line_frag_spv glsl\light_frag.tmpl -DUSE_RELIEF -DUSE_LINE || exit /b 1
 call :frag rpmod_light_relief_line_fog_frag_spv glsl\light_frag.tmpl -DUSE_RELIEF -DUSE_LINE -DUSE_FOG || exit /b 1
+call :vert rpmod_ss_dlight_vert_spv glsl\surface_sprite_vert.tmpl -DUSE_DLIGHTS || exit /b 1
+call :vert rpmod_ss_dlight_fog_vert_spv glsl\surface_sprite_vert.tmpl -DUSE_DLIGHTS -DUSE_FOG || exit /b 1
 
 del /Q %tmpf%
 echo done: %outf%
@@ -67,5 +69,10 @@ exit /b 0
 
 :frag
 %cl% -S frag -V -o %tmpf% %2 %3 %4 %5 || exit /b 1
+%bh% %tmpf% +%outf% %1 || exit /b 1
+exit /b 0
+
+:vert
+%cl% -S vert -V -o %tmpf% %2 %3 %4 %5 || exit /b 1
 %bh% %tmpf% +%outf% %1 || exit /b 1
 exit /b 0

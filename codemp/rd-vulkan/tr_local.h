@@ -2755,4 +2755,7 @@ extern void VBO_Flush( void );
 IBO_t *R_CreateIBO( const char *name, const byte *vbo_data, int vbo_size );
 VBO_t *R_CreateVBO( const char *name, const byte *vbo_data, int vbo_size );
 #endif
+// OpenJK-rpmod: the view's nearest dynamic lights in the camera's uniform, for the surface sprites (vk_rpmod_post.cpp)
+void vk_rpmod_camera_dlights( vkUniformCamera_t *u, const trRefdef_t *refdef );
+
 #endif

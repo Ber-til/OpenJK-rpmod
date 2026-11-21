@@ -508,6 +508,7 @@ if(BuildMPEngine)
 		"${MPDir}/client/cl_pazaak.cpp"
 		"${MPDir}/client/cl_games.cpp"
 		"${MPDir}/client/cl_arcade.cpp"
+		"${MPDir}/client/cl_dice.cpp"
 		"${MPDir}/client/cl_games.h"
 		"${MPDir}/client/cl_wanga.cpp"
 		"${MPDir}/client/cl_thepath.cpp"

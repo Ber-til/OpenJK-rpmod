@@ -1134,6 +1134,15 @@ void CL_Datapad_CharEvent( int ch );
 void CL_Pazaak_Frame( void );		// cl_pazaak.cpp
 void CL_Games_Frame( void );		// cl_games.cpp: WANGA, The Path
 void CL_Arcade_Frame( void );		// cl_arcade.cpp: the datapad Arcade's boards
+void CL_Dice_Frame( void );			// cl_dice.cpp: the Dice Master, through C1B3R
+const char *CL_Whisper_InfoNotice( const char *text, int ms );	// RPMod's top-left info notice and its sound, as a cgame command
+void CL_Dice_Hook( char **argv, int argc, const char *message );	// cmd:dice/roll|ask/...
+// the Storyteller asking a player for a roll: a token, 0 if it can't now; its state C1B3R's number for
+// the ask (0 still waiting, -1 refused, error why)
+int CL_Dice_Ask( const char *system, int client, const char *action, const char *dc, const char *label );
+int CL_Dice_AskState( int token, const char **error );
+// a roll C1B3R made, told to the Storyteller (degree 0 critical failure .. 3 critical success; ask its number, 0 none)
+void CL_Storyteller_Roll( int client, const char *name, const char *action, int total, int dc, int degree, int ask );
 void CL_Datapad_OpenItem( int item, const char *name, int world );	// a datapad item's (or a placed one's) Notes
 void CL_Notes_Frame( void );		// cl_notes.cpp
 void CL_RealShadows_Frame( void );	// cl_rendermenu.cpp: Vulkan's real shadows in place of the blob
