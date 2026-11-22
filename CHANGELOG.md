@@ -6,6 +6,8 @@ OpenJK-rpmod is built on [OpenJK](https://github.com/JACoders/OpenJK); for the c
 
 ## 0.10.3 - in progress
 
+- [Fixed] `Custom emotes on an animation from a pack`. One made on an animation a pack added or changed was sent by the animation's name, and those without the pack had nothing to play: they saw you as you stood. It's sent as the animation itself now, its frames as up to ten poses of turned bones that everyone's game plays (turns only: a pose's moves sank the body into the floor); `/animationmanager baketest <emote>` plays on you what the others will see; your own screen shows it as before. A body the game draws anew each frame (a lit saber in a stance) is found by where its player stands, too; `/animationmanager debug` says what each emote playing finds. Everyone needs this version to see such an emote.
+
 - [Added] `HoloCall`. Call another player, on any server, from a conversation in the datapad's Chat (**HoloCall**) or with `/holocall <account>`: they're rung (Answer or Decline on their datapad, or `/holocall answer`), and once answered each of you appears to the other as a hologram, a step in front of them, moving as you move and playing your emotes. What you say in chat reaches them too, read around your hologram as chat from it, by the chat range, by everyone there with the client. `/holocall here` moves the hologram where you aim (onto a holo pedestal), `/holocall end` hangs up. Through C1B3R, your games linked. From a player's idea (#51).
 
 - [Added] `Datapad: Do not disturb`. On in the datapad's Settings, or with `/datapad silent` (on, off, or turned over, for a bind): Chat's messages still come and are counted as unread, without a notice, a ringtone or a sound. DND shows in its top bar while it's on. From a player's idea (#68).

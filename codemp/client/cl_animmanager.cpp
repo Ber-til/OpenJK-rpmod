@@ -86,7 +86,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define AM_STEP_DEFAULT_MS	2000	// a step whose animation isn't known, or loops
 #define AM_NEAR				64.0f	// a model drawn this near an entity is its
 #define AM_SEND_PART		400		// of an emote, in one hook
-#define AM_RECV_LEN			4096
+#define AM_RECV_LEN			12288	// a pack's animation baked into keys takes room (AM_Bake)
 #define AM_SEND_LEN			( AM_RECV_LEN / AM_SEND_PART * AM_SEND_PART )	// the most one takes
 #define AM_MOVE_SPEED		40.0f	// moving this fast ends your own emote
 #define AM_MOVE_GRACE_MS	500		// not in its first moments
@@ -209,6 +209,10 @@ typedef struct {
 	int			start, stopTime;
 	amCustom_t	def;
 	void		*body;				// their body's ghoul2, as the cgame draws it (last frame's pick)
+	int			posed;				// debug: times posed since last said
+	int			endAt;				// another's that has a length: its stop held till then (cls.realtime), 0 none
+	int			drawnFrame;			// the frame it was last drawn in, and how (debug: 1 the body, 2 by its place)
+	int			drawnHow;
 	CGhoul2Info_v	*copy;			// drawn in its place, playing the emote
 	int			copyFrame;			// the frame it was made for
 } amPlay_t;
@@ -221,6 +225,7 @@ static struct {
 } amBodies[AM_MAX_BODIES];
 static int			amNumBodies;
 static int			amFrameNum;
+static qboolean		amDebug;		// /animationmanager debug: what each emote playing finds, once a second
 
 static amSkel_t		amSkels[AM_MAX_SKELS];
 static int			amNumSkels;
@@ -1095,6 +1100,7 @@ static CGhoul2Info_v *AM_CopyFor( amPlay_t *pick, CGhoul2Info_v &g2, int skel ) 
 			return NULL;
 		}
 		pick->copyFrame = amFrameNum;
+		pick->posed++;
 		AM_ApplyCustom( *pick->copy, skel, &pick->def, (float)( cls.realtime - pick->start ) );
 	}
 	return pick->copy;
@@ -1131,11 +1137,29 @@ const refEntity_t *CL_AnimManager_Entity( const refEntity_t *ent, refEntity_t *c
 	for ( int i = 0; i < AM_MAX_PLAYING && !pick; i++ ) {
 		amPlay_t *p = &amPlaying[i];
 
-		if ( p->active && !p->stopping && p->body == ent->ghoul2 )
+		if ( p->active && !p->stopping && p->body == ent->ghoul2 ) {
 			pick = p;
+			pick->drawnHow = 1;
+		}
+	}
+	// not the body last frame's was: one the cgame draws anew each frame (a player whose saber's out,
+	// on some cgames) is taken by where it is, right where its player stands, once a frame
+	if ( !pick ) {
+		for ( int i = 0; i < AM_MAX_PLAYING && !pick; i++ ) {
+			amPlay_t *p = &amPlaying[i];
+			vec3_t org;
+
+			if ( p->active && !p->stopping && p->drawnFrame != amFrameNum && AM_EntityOrigin( p->num, org )
+				&& Distance( org, ent->origin ) < AM_NEAR * 0.5f ) {
+				pick = p;
+				pick->body = ent->ghoul2;
+				pick->drawnHow = 2;
+			}
+		}
 	}
 	if ( !pick || !AM_CopyFor( pick, g2, skel ) )
 		return NULL;
+	pick->drawnFrame = amFrameNum;
 	*copy = *ent;
 	copy->ghoul2 = pick->copy;
 	return copy;
@@ -1283,6 +1307,13 @@ static qboolean AM_CanShare( void ) {
 	return (qboolean)( CL_RpHooks_Experimental() && CL_RpAdmin_IsAdmin() && !com_sv_running->integer );
 }
 
+static int AM_ShareAny( const amCustom_t *c );
+static qboolean AM_Bake( const amCustom_t *c, amCustom_t *out, const char **why );
+static void AM_BakeInfo( const amCustom_t *c );
+static int AM_Encode( const amCustom_t *c, char *out, int size );
+static qboolean AM_Decode( const char *text, amCustom_t *c );
+static void AM_PlayOwn( const amCustom_t *c, qboolean share );
+
 // the number of keys too many to send is returned
 static int AM_Share( const amCustom_t *c ) {
 	char text[AM_RECV_LEN];
@@ -1323,6 +1354,18 @@ void CL_AnimManager_Hook( char **argv, int argc, const char *message ) {
 	if ( num < 0 || num >= MAX_CLIENTS || num == clc.clientNum )
 		return;
 	if ( !Q_stricmp( argv[1], "stop" ) ) {
+		amPlay_t *p = AM_PlayingOn( num );
+		const float ms = p ? AM_CustomMs( &p->def ) : 0.0f;
+
+		// one that plays once, through: its stop comes as it ends on its player's screen, which is
+		// soon after it started here (its parts come one after the other), so it plays its length
+		// here first. One that loops or holds till they move stops now
+		if ( p && ms > 0.0f && cls.realtime - p->start < (int)ms ) {
+			p->endAt = p->start + (int)ms;
+			if ( amDebug )
+				Com_Printf( "emote from %i: stop held %i ms, to play its length here\n", num, p->endAt - cls.realtime );
+			return;
+		}
 		AM_StopOn( num );
 		return;
 	}
@@ -1337,12 +1380,21 @@ void CL_AnimManager_Hook( char **argv, int argc, const char *message ) {
 		amRecv[num].parts = parts;
 		amRecv[num].got = 0;
 	} else if ( amRecv[num].parts != parts || amRecv[num].got != part - 1 ) {
+		if ( amDebug )
+			Com_Printf( "emote from %i: part %i of %i came after %i of %i: the emote's dropped\n", num, part, parts, amRecv[num].got, amRecv[num].parts );
 		return;
 	}
+	if ( amDebug )
+		Com_Printf( "emote from %i: part %i of %i\n", num, part, parts );
 	Q_strcat( amRecv[num].text, sizeof( amRecv[num].text ), message ? message : "" );
 	amRecv[num].got = part;
-	if ( part == parts && AM_Decode( amRecv[num].text, &def ) )
+	if ( part == parts && AM_Decode( amRecv[num].text, &def ) ) {
+		if ( amDebug )
+			Com_Printf( "emote from %i: whole, %s, %i keys of %i bones: playing\n", num, def.anim, def.numKeys, def.numBones );
 		AM_StartOn( num, &def );
+	} else if ( part == parts && amDebug ) {
+		Com_Printf( "emote from %i: whole, but not readable\n", num );
+	}
 }
 
 /*
@@ -1389,7 +1441,7 @@ static void AM_PlayOwn( const amCustom_t *c, qboolean share ) {
 		return;
 	p->own = qtrue;
 	if ( share && AM_CanShare() ) {
-		const int left = AM_Share( c );
+		const int left = AM_ShareAny( c );
 
 		if ( left )
 			Com_Printf( S_COLOR_YELLOW "%s: its last %i key%s too much to send, the others see it without\n", c->name[0] ? c->name : "Custom emote",
@@ -1421,7 +1473,7 @@ static void AM_OwnFrame( void ) {
 	if ( p->wantShare && CL_RpAdmin_RankKnown() ) {
 		p->wantShare = qfalse;
 		if ( AM_CanShare() ) {
-			AM_Share( &p->def );
+			AM_ShareAny( &p->def );
 			p->shared = qtrue;
 		} else {
 			AM_NotShared( &p->def );
@@ -1929,6 +1981,71 @@ void CL_AnimManager_f( void ) {
 				}
 			}
 		}
+	} else if ( !Q_stricmp( arg, "baketest" ) && Cmd_Argc() >= 3 ) {
+		// a custom emote (or an animation, with loop 0|1) baked as it's sent for a pack's animation,
+		// played on you, on your screen only: to see what the others will
+		static amCustom_t c, baked;
+		const int ci = AM_FindCustom( Cmd_Argv( 2 ) );
+		const char *why;
+
+		if ( ci >= 0 ) {
+			c = amCustoms[ci];
+		} else {
+			memset( &c, 0, sizeof( c ) );
+			Q_strncpyz( c.anim, Cmd_Argv( 2 ), sizeof( c.anim ) );
+			Q_strncpyz( c.speed, "100", sizeof( c.speed ) );
+			c.loop = (qboolean)( atoi( Cmd_Argv( 3 ) ) != 0 );
+			c.untilMove = (qboolean)!c.loop;
+		}
+		if ( !Q_stricmp( Cmd_Argv( Cmd_Argc() - 1 ), "raw" ) ) {
+			// as it is, unbaked: to set beside the baked
+			AM_PlayOwn( &c, qfalse );
+			Com_Printf( "baketest: %s played as it is\n", c.anim );
+			return;
+		}
+		if ( !AM_Bake( &c, &baked, &why ) ) {
+			Com_Printf( "baketest: %s\n", why ? why : "?" );
+			return;
+		}
+		Com_Printf( "baketest: %s as %i keys of %i bones (anim %s %s-%s, loop %i, until moved %i)\n", c.anim, baked.numKeys, baked.numBones,
+			baked.anim, baked.from, baked.to, baked.loop, baked.untilMove );
+		AM_BakeInfo( &c );
+		for ( int k = 0; k < baked.numKeys; k++ )
+			Com_Printf( "  key %i at %ss: %s %g %g %g\n", k, k ? baked.keys[k].secs : "0", baked.bones[0].bone, baked.keys[k].v[0][0],
+				baked.keys[k].v[0][1], baked.keys[k].v[0][2] );
+		for ( int i = 0; i < baked.numBones; i++ ) {
+			const float *v0 = baked.keys[0].v[i], *v1 = baked.keys[Q_max( 0, baked.numKeys - 1 )].v[i];
+
+			Com_Printf( "  %s: first %g %g %g / %g %g %g, last %g %g %g / %g %g %g\n", baked.bones[i].bone, v0[0], v0[1], v0[2], v0[3], v0[4], v0[5],
+				v1[0], v1[1], v1[2], v1[3], v1[4], v1[5] );
+		}
+		// as the others get it: written as it's sent, and read back
+		{
+			static char text[AM_RECV_LEN];
+			static amCustom_t got;
+			const int left = AM_Encode( &baked, text, AM_SEND_LEN - 30 );
+
+			if ( !AM_Decode( text, &got ) ) {
+				Com_Printf( "baketest: what's sent (%i letters) doesn't read back\n", (int)strlen( text ) );
+				return;
+			}
+			Com_Printf( "baketest: sent as %i letters in %i parts%s; read back as %i keys of %i bones\n", (int)strlen( text ),
+				( (int)strlen( text ) + AM_SEND_PART - 1 ) / AM_SEND_PART, left ? va( ", %i keys too many", left ) : "", got.numKeys, got.numBones );
+			{
+				const char *on = Cmd_Argc() >= 5 && !Q_stricmp( Cmd_Argv( Cmd_Argc() - 2 ), "on" ) ? Cmd_Argv( Cmd_Argc() - 1 ) : NULL;
+
+				if ( on ) {
+					// on someone else, as their emote is drawn here when it comes from them
+					if ( AM_StartOn( atoi( on ), &got ) )
+						Com_Printf( "baketest: playing on %i, on your screen only\n", atoi( on ) );
+				} else {
+					AM_PlayOwn( &got, qfalse );
+				}
+			}
+		}
+	} else if ( !Q_stricmp( arg, "debug" ) ) {
+		amDebug = (qboolean)!amDebug;
+		Com_Printf( "Animation manager: what each custom emote playing finds %s\n", amDebug ? "said once a second" : "no longer said" );
 	} else if ( !Q_stricmp( arg, "reload" ) ) {
 		AM_FreeSkels();
 		AM_ListSkels();
@@ -1987,7 +2104,51 @@ void CL_AnimManager_Shutdown( void ) {
 	AM_FreeSkels();
 }
 
+// once a second: each emote playing, whose, and whether its body was found and drawn last frame
+static void AM_DebugFrame( void ) {
+	static int next;
+
+	if ( !amDebug || cls.realtime < next )
+		return;
+	next = cls.realtime + 1000;
+	for ( int i = 0; i < AM_MAX_PLAYING; i++ ) {
+		amPlay_t *p = &amPlaying[i];
+		vec3_t org;
+
+		if ( !p->active || p->stopping )
+			continue;
+		Com_Printf( "emote %s on %i (%s): %s, %s%s\n", p->def.name[0] ? p->def.name : p->def.anim, p->num, CL_PlayerSlotName( p->num ),
+			AM_EntityOrigin( p->num, org ) ? "in sight" : "out of sight", p->drawnFrame >= amFrameNum - 1 ? "drawn" : "NOT drawn",
+			p->drawnFrame < amFrameNum - 1 ? "" : p->drawnHow == 2 ? " (its body found by its place: drawn anew each frame)" : " (its body)" );
+		// where in it it is, and what its most turned bone is set to now
+		if ( p->def.numKeys && p->def.numBones ) {
+			const float ms = (float)( cls.realtime - p->start );
+			vec3_t twist, offset;
+
+			AM_KeyValues( &p->def, 0, AM_KeyClock( &p->def, ms ), twist, offset );
+			Com_Printf( "  %.2fs in, keys' clock %.2fs of %.2fs; %s turned %.0f %.0f %.0f; posed %i times this second\n", ms / 1000.0f,
+				AM_KeyClock( &p->def, ms ), AM_KeyEnd( &p->def ), p->def.bones[0].bone, twist[0], twist[1], twist[2], p->posed );
+		}
+		p->posed = 0;
+	}
+	Com_Printf( "  %i bodies drawn last frame\n", amNumBodies );
+}
+
+// others' whose stop was held: over once they've played their length
+static void AM_EndFrame( void ) {
+	for ( int i = 0; i < AM_MAX_PLAYING; i++ ) {
+		amPlay_t *p = &amPlaying[i];
+
+		if ( p->active && !p->stopping && p->endAt && cls.realtime >= p->endAt ) {
+			p->stopping = qtrue;
+			p->stopTime = cls.realtime;
+		}
+	}
+}
+
 void CL_AnimManager_Frame( void ) {
+	AM_DebugFrame();
+	AM_EndFrame();
 	AM_BodiesFrame();
 	AM_ChainFrame();
 	AM_OwnFrame();
@@ -3048,6 +3209,11 @@ static float AM_PoseBone( const amGla_t *g, int bone, const mdxaBone_t *local, c
 // c's bones set so that the humanoid, on the first frame of c's animation (BOTH_STAND1 when it
 // has none), takes the pose of that frame of anim, on skel; it's then held on that frame. How many
 // bones it took, or -1 with *why
+// AM_Bake's: the bones a pose is to turn, all of them and no others (the others made up for below
+// them, as left out ones are); none, the most turned are picked
+static const char ( *amPoseOnly )[MAX_QPATH];
+static int amPoseOnlyNum;
+
 static int AM_CopyPose( amCustom_t *c, int skel, const amAnim_t *anim, int frame, const char **why ) {
 	static mdxaBone_t srcPose[AM_MAX_SKEL_BONES], local[AM_MAX_SKEL_BONES], to[AM_MAX_SKEL_BONES], got[AM_MAX_SKEL_BONES];
 	int map[AM_MAX_SKEL_BONES], matched = 0, numPicked = 0, srcFrame, humFrame;
@@ -3140,7 +3306,17 @@ static int AM_CopyPose( amCustom_t *c, int skel, const amAnim_t *anim, int frame
 		else
 			score[b] += VectorLength( offset ) + 0.001f;
 	}
-	while ( numPicked < AM_MAX_CBONES ) {
+	if ( amPoseOnlyNum > 0 ) {
+		for ( int b = 0; b < hum->numBones; b++ ) {
+			for ( int i = 0; i < amPoseOnlyNum && !picked[b]; i++ ) {
+				if ( map[b] >= 0 && !Q_stricmp( hum->name[b], amPoseOnly[i] ) ) {
+					picked[b] = qtrue;
+					numPicked++;
+				}
+			}
+		}
+	}
+	while ( amPoseOnlyNum <= 0 && numPicked < AM_MAX_CBONES ) {
 		int best = -1;
 
 		for ( int b = 0; b < hum->numBones; b++ ) {
@@ -3181,6 +3357,161 @@ static int AM_CopyPose( amCustom_t *c, int skel, const amAnim_t *anim, int frame
 	// held on the frame it was worked out on
 	Com_sprintf( c->to, sizeof( c->to ), "%i", AM_CustomFrom( c ) );
 	return c->numBones;
+}
+
+/*
+An emote on an animation others may not have (a pack's, added to the humanoid or changed in it)
+baked for them: the animation's frames, AM_MAX_KEYS of them evenly, each copied as a pose of turned
+and moved bones (AM_CopyPose), the keys of an emote held on BOTH_STAND1's first frame. It goes
+through them in the animation's time, looping or held as the emote does; the bones turned most
+across them, AM_MAX_CBONES at most; turned only (moved, the body sank). Its own bones' turns and keys
+aren't in it. qfalse when it can't
+be, with *why
+*/
+#define AM_BAKE_BONES		24		// the bones a baked emote turns: fewer than an emote can, to send in fewer parts
+
+static qboolean AM_Bake( const amCustom_t *c, amCustom_t *out, const char **why ) {
+	static amCustom_t pose[AM_MAX_KEYS];
+	const int humSkel = AM_Skel( AM_HUMANOID );
+	const amAnim_t *a = AM_FindAnim( humSkel, c->anim );
+	int from, to, n;
+	float turned[AM_MAX_SKEL_BONES];
+	char names[AM_MAX_SKEL_BONES][MAX_QPATH];
+	int numNames = 0;
+	float ms;
+
+	*why = NULL;
+	if ( !a ) {
+		*why = "its animation isn't the humanoid's";
+		return qfalse;
+	}
+	from = Com_Clampi( 0, Q_max( 0, a->num - 1 ), AM_CustomFrom( c ) );
+	to = AM_CustomTo( c ) < 0 ? a->num - 1 : Com_Clampi( from, a->num - 1, AM_CustomTo( c ) );
+	n = Com_Clampi( 1, AM_MAX_KEYS, to - from + 1 );
+	ms = AM_LengthMs( a, from, to, AM_CustomSpeed( c ) );
+	// each frame's pose, on BOTH_STAND1: first to see which bones turn most over all of them
+	for ( int k = 0; k < n; k++ ) {
+		const int frame = n > 1 ? from + ( to - from ) * k / ( n - 1 ) : from;
+
+		memset( &pose[k], 0, sizeof( pose[k] ) );
+		Q_strncpyz( pose[k].anim, "BOTH_STAND1", sizeof( pose[k].anim ) );
+		amPoseOnlyNum = 0;
+		if ( AM_CopyPose( &pose[k], humSkel, a, frame, why ) < 0 )
+			return qfalse;
+		for ( int i = 0; i < pose[k].numBones; i++ ) {
+			const amCBone_t *pb = &pose[k].bones[i];
+			const float turn = fabsf( AM_Num( pb->twist[0], 0 ) ) + fabsf( AM_Num( pb->twist[1], 0 ) ) + fabsf( AM_Num( pb->twist[2], 0 ) );
+			int at = -1;
+
+			for ( int j = 0; j < numNames && at < 0; j++ ) {
+				if ( !Q_stricmp( names[j], pb->bone ) )
+					at = j;
+			}
+			if ( at < 0 && numNames < AM_MAX_SKEL_BONES ) {
+				at = numNames++;
+				Q_strncpyz( names[at], pb->bone, sizeof( names[at] ) );
+				turned[at] = 0.0f;
+			}
+			if ( at >= 0 )
+				turned[at] += turn;
+		}
+	}
+	memset( out, 0, sizeof( *out ) );
+	Q_strncpyz( out->name, c->name, sizeof( out->name ) );
+	Q_strncpyz( out->anim, "BOTH_STAND1", sizeof( out->anim ) );
+	Q_strncpyz( out->from, "0", sizeof( out->from ) );
+	Q_strncpyz( out->to, "0", sizeof( out->to ) );
+	Q_strncpyz( out->speed, "100", sizeof( out->speed ) );
+	Q_strncpyz( out->under, c->under, sizeof( out->under ) );
+	out->loop = c->loop;
+	out->untilMove = c->untilMove;
+	// the bones turned most over all its frames, AM_BAKE_BONES at most
+	while ( out->numBones < AM_BAKE_BONES ) {
+		int best = -1;
+
+		for ( int j = 0; j < numNames; j++ ) {
+			if ( turned[j] > 0.0f && ( best < 0 || turned[j] > turned[best] ) )
+				best = j;
+		}
+		if ( best < 0 )
+			break;
+		Q_strncpyz( out->bones[out->numBones++].bone, names[best], sizeof( out->bones[0].bone ) );
+		turned[best] = 0.0f;
+	}
+	// then each pose again, turning those and no others: one left out followed by the ones under it
+	{
+		static char only[AM_MAX_CBONES][MAX_QPATH];
+
+		for ( int i = 0; i < out->numBones; i++ )
+			Q_strncpyz( only[i], out->bones[i].bone, sizeof( only[i] ) );
+		amPoseOnly = only;
+		amPoseOnlyNum = out->numBones;
+		for ( int k = 0; k < n; k++ ) {
+			const int frame = n > 1 ? from + ( to - from ) * k / ( n - 1 ) : from;
+
+			memset( &pose[k], 0, sizeof( pose[k] ) );
+			Q_strncpyz( pose[k].anim, "BOTH_STAND1", sizeof( pose[k].anim ) );
+			if ( AM_CopyPose( &pose[k], humSkel, a, frame, why ) < 0 ) {
+				amPoseOnlyNum = 0;
+				return qfalse;
+			}
+		}
+		amPoseOnlyNum = 0;
+	}
+	// a key a pose, in the animation's time
+	out->numKeys = n > 1 ? n : 0;
+	for ( int k = 0; k < n; k++ ) {
+		for ( int i = 0; i < out->numBones; i++ ) {
+			amCBone_t *ob = &out->bones[i];
+
+			memset( ob->twist, 0, sizeof( ob->twist ) );
+			memset( ob->offset, 0, sizeof( ob->offset ) );
+			// the turns only: a pose's moves (the pelvis's, sat down) sank the body into the floor
+			// to the whole degree: shorter to send, the same to see
+			for ( int j = 0; j < pose[k].numBones; j++ ) {
+				if ( !Q_stricmp( pose[k].bones[j].bone, ob->bone ) ) {
+					for ( int t = 0; t < 3; t++ )
+						AM_NumText( ob->twist[t], floorf( AM_Num( pose[k].bones[j].twist[t], 0 ) + 0.5f ) );
+				}
+			}
+		}
+		if ( out->numKeys ) {
+			AM_KeyStore( out, k );
+			Com_sprintf( out->keys[k].secs, sizeof( out->keys[k].secs ), "%g", AM_Round( ms / 1000.0f * k / ( n - 1 ), 100.0f ) );
+		}
+	}
+	if ( out->numKeys )
+		AM_KeyLoad( out, 0 );
+	return qtrue;
+}
+
+// baketest's: where the animation's frames are, and in what
+static void AM_BakeInfo( const amCustom_t *c ) {
+	const int hs = AM_Skel( AM_HUMANOID );
+	const amAnim_t *an = AM_FindAnim( hs, c->anim );
+	const amGla_t *g = hs >= 0 ? AM_Gla( amSkels[hs].gla ) : NULL;
+
+	Com_Printf( "  %s: frames %i to %i at %g fps (custom from %s to %s), in %s.gla of %i frames\n", c->anim, an ? an->first : -1,
+		an ? an->first + an->num - 1 : -1, an ? an->fps : 0.0f, c->from, c->to, hs >= 0 ? amSkels[hs].gla : "?", g ? g->numFrames : -1 );
+}
+
+// ours to everyone: as it is, or baked when its animation is a pack's (others without the pack
+// would have nothing to play: the emote isn't drawn on them)
+static int AM_ShareAny( const amCustom_t *c ) {
+	static amCustom_t baked;
+	const amAnim_t *a = AM_FindAnim( AM_Skel( AM_HUMANOID ), c->anim );
+	const char *why;
+
+	if ( !a || a->origin == AM_O_BASE )
+		return AM_Share( c );
+	if ( !AM_Bake( c, &baked, &why ) ) {
+		Com_Printf( S_COLOR_YELLOW "%s: %s is a pack's animation, and couldn't be sent as bones (%s): those without the pack won't see it\n",
+			c->name[0] ? c->name : "Custom emote", c->anim, why ? why : "?" );
+		return AM_Share( c );
+	}
+	Com_Printf( "%s: %s is a pack's animation: sent as %i poses of %i bones, so everyone sees it%s\n", c->name[0] ? c->name : "Custom emote",
+		c->anim, Q_max( 1, baked.numKeys ), baked.numBones, c->numBones || c->numKeys ? " (its own turned bones aren't in it)" : "" );
+	return AM_Share( &baked );
 }
 
 // a skeleton with a model of its own to show it on
