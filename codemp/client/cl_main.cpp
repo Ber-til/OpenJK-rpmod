@@ -188,6 +188,9 @@ void CL_AddReliableCommand( const char *cmd, qboolean isDisconnectCmd ) {
 	// (see cl_presence.cpp): sent from there later, through here again
 	if ( !isDisconnectCmd && CL_Presence_Outgoing( cmd ) )
 		return;
+	// what you say, to a HoloCall too
+	if ( !isDisconnectCmd )
+		CL_HoloCall_Outgoing( cmd );
 	// your chat in the language your character speaks, then said by the NPC chosen with
 	// npcmanager select
 	if ( !isDisconnectCmd ) {
@@ -863,6 +866,8 @@ void CL_Disconnect( qboolean showMainMenu ) {
 	CL_RpAdmin_Disconnect();
 	CL_ChatLog_Disconnect();
 	CL_Datapad_Disconnect();
+	CL_Instruments_Disconnect();
+	CL_HoloCall_Disconnect();
 	CL_SkyComposer_Disconnect();
 	CL_PhotoMode_Close();
 	CL_Inventory_Disconnect();
@@ -872,6 +877,7 @@ void CL_Disconnect( qboolean showMainMenu ) {
 	CL_Feedback_Disconnect();
 	CL_NpcNames_Disconnect();
 	CL_Aim_Disconnect();
+	CL_HeadLook_Disconnect();
 	CL_AdminFlags_Reset();
 	CL_RpCinematic_Reset();
 	CL_NpcWalk_Reset();
@@ -2423,6 +2429,10 @@ void CL_Frame ( int msec ) {
 	CL_EffectSwap_Frame();
 	CL_Pazaak_Frame();
 	CL_Games_Frame();
+	CL_Arcade_Frame();
+	CL_Instruments_Frame();
+	CL_HoloCall_Frame();
+	CL_Dice_Frame();
 	CL_Notes_Frame();
 	CL_Chat_Frame();
 	CL_RealShadows_Frame();
@@ -2431,6 +2441,7 @@ void CL_Frame ( int msec ) {
 	CL_Holster_PollFrame();
 	CL_Presets_Frame();			// previews let go of last frame freed, before this one draws
 	CL_Characters_Frame();
+	CL_HeadLook_Frame();
 	CL_DatapadWeb_Frame();
 	CL_AssetManager_Frame();
 	// the RENDERER page's effects, shown with Post Effects on
@@ -2982,6 +2993,8 @@ void CL_Init( void ) {
 	CL_AnimManager_Init ();
 	CL_Presets_Init ();
 	CL_SpecialMoves_Init ();
+	CL_Instruments_Init();
+	CL_HoloCall_Init();
 	CL_BurstFire_Init ();
 	CL_EffectSwap_Init ();
 	CL_ChatLog_Init ();
@@ -2991,6 +3004,7 @@ void CL_Init( void ) {
 	CL_Dismember_Init();
 	CL_WorldItems_Init();
 	CL_Characters_Init();
+	CL_HeadLook_Init();
 	CL_Datapad_Init ();
 	CL_EscMenu_Init ();
 	CL_AssetManager_Init ();

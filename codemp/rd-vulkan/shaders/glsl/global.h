@@ -98,8 +98,15 @@ STRUCT(
 , vkUniformBones_t)
 
 // camera
+// OpenJK-rpmod: the view's nearest dynamic lights, for what isn't lit by the light passes (the
+// surface sprites: grass, bushes): xyz the world origin, w 1/radius^2; rgb the colour. Their count
+// in dlightCount.x. Shaders built before only read viewOrigin
+#define VK_CAMERA_DLIGHTS 8
 STRUCT(
     VEC4( viewOrigin )
+    VEC4( dlightCount )
+    VEC4( dlightPos[VK_CAMERA_DLIGHTS] )
+    VEC4( dlightColor[VK_CAMERA_DLIGHTS] )
 , vkUniformCamera_t)
 
 // fog

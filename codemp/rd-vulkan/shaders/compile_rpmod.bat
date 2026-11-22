@@ -44,6 +44,7 @@ call :frag rpmod_fxaa_frag_spv glsl\rpmod\fxaa.frag || exit /b 1
 call :frag rpmod_cas_frag_spv glsl\rpmod\cas.frag || exit /b 1
 call :frag rpmod_volum_frag_spv glsl\rpmod\volum.frag || exit /b 1
 call :frag rpmod_ssr_frag_spv glsl\rpmod\ssr.frag || exit /b 1
+call :frag rpmod_ssrblur_frag_spv glsl\rpmod\ssrblur.frag || exit /b 1
 call :frag rpmod_shadow_frag_spv glsl\rpmod\shadow.frag || exit /b 1
 call :frag rpmod_smaa_edges_frag_spv glsl\rpmod\smaa.frag -DSMAA_EDGES || exit /b 1
 call :frag rpmod_smaa_weights_frag_spv glsl\rpmod\smaa.frag -DSMAA_WEIGHTS || exit /b 1
@@ -59,6 +60,8 @@ call :frag rpmod_light_relief_frag_spv glsl\light_frag.tmpl -DUSE_RELIEF || exit
 call :frag rpmod_light_relief_fog_frag_spv glsl\light_frag.tmpl -DUSE_RELIEF -DUSE_FOG || exit /b 1
 call :frag rpmod_light_relief_line_frag_spv glsl\light_frag.tmpl -DUSE_RELIEF -DUSE_LINE || exit /b 1
 call :frag rpmod_light_relief_line_fog_frag_spv glsl\light_frag.tmpl -DUSE_RELIEF -DUSE_LINE -DUSE_FOG || exit /b 1
+call :vert rpmod_ss_dlight_vert_spv glsl\surface_sprite_vert.tmpl -DUSE_DLIGHTS || exit /b 1
+call :vert rpmod_ss_dlight_fog_vert_spv glsl\surface_sprite_vert.tmpl -DUSE_DLIGHTS -DUSE_FOG || exit /b 1
 
 del /Q %tmpf%
 echo done: %outf%
@@ -66,5 +69,10 @@ exit /b 0
 
 :frag
 %cl% -S frag -V -o %tmpf% %2 %3 %4 %5 || exit /b 1
+%bh% %tmpf% +%outf% %1 || exit /b 1
+exit /b 0
+
+:vert
+%cl% -S vert -V -o %tmpf% %2 %3 %4 %5 || exit /b 1
 %bh% %tmpf% +%outf% %1 || exit /b 1
 exit /b 0

@@ -1120,6 +1120,8 @@ void CL_MouseEvent( int dx, int dy, int time ) {
 		CL_SpecialMoves_MouseEvent( dx, dy );
 	} else if ( Key_GetCatcher( ) & KEYCATCH_SKYCOMPOSER ) {
 		CL_SkyComposer_MouseEvent( dx, dy );
+	} else if ( Key_GetCatcher( ) & KEYCATCH_INSTRUMENT ) {
+		CL_Instruments_MouseEvent( dx, dy );
 	} else if ( Key_GetCatcher( ) & KEYCATCH_PHOTOMODE ) {
 		CL_PhotoMode_MouseEvent( dx, dy );
 	} else if ( Key_GetCatcher( ) & KEYCATCH_CHATLOG ) {
@@ -1363,6 +1365,10 @@ void CL_MouseMove( usercmd_t *cmd ) {
 	mx *= cl.cgameSensitivity;
 	my *= cl.cgameSensitivity;
 
+	// +headlook held: the turn below goes to the head, the body's way kept
+	vec3_t bodyAngles;
+	VectorCopy( cl.viewangles, bodyAngles );
+
 	// add mouse X/Y movement to cmd
 	if ( in_strafe.active )
 		cmd->rightmove = ClampChar( cmd->rightmove + m_side->value * mx );
@@ -1388,6 +1394,11 @@ void CL_MouseMove( usercmd_t *cmd ) {
 	}
 	else
 		cmd->forwardmove = ClampChar( cmd->forwardmove - m_forward->value * my );
+
+	if ( CL_HeadLook_Held() ) {
+		CL_HeadLook_Turn( cl.viewangles[YAW] - bodyAngles[YAW], cl.viewangles[PITCH] - bodyAngles[PITCH] );
+		VectorCopy( bodyAngles, cl.viewangles );
+	}
 }
 
 qboolean CL_NoUseableForce(void)
@@ -1432,8 +1443,16 @@ void CL_CmdButtons( usercmd_t *cmd ) {
 	// typing: the talk balloon, but not while hanging on a wall with cl_wallstick, as the game
 	// takes every move from a player who talks, the jump holding them there too
 	// (nor in photo mode alone: the balloon would be in the picture)
-	if ( Key_GetCatcher( ) && Key_GetCatcher( ) != KEYCATCH_PHOTOMODE && !clWallStick.holding ) {
-		cmd->buttons |= BUTTON_TALK;
+	// (nor playing an instrument: they're playing, not typing)
+	// (nor with the console open and nothing typed in it: only once there's text)
+	{
+		int talking = Key_GetCatcher( ) & ~( KEYCATCH_PHOTOMODE | KEYCATCH_INSTRUMENT );
+
+		if ( ( talking & KEYCATCH_CONSOLE ) && !g_consoleField.buffer[0] )
+			talking &= ~KEYCATCH_CONSOLE;
+		if ( talking && !clWallStick.holding ) {
+			cmd->buttons |= BUTTON_TALK;
+		}
 	}
 
 	// allow the game to know if any key at all is
@@ -1547,8 +1566,12 @@ usercmd_t CL_CreateCmd( void ) {
 
 	VectorCopy( cl.viewangles, oldAngles );
 
-	// keyboard angle adjustment
+	// keyboard angle adjustment (with +headlook held, the head's)
 	CL_AdjustAngles ();
+	if ( CL_HeadLook_Held() ) {
+		CL_HeadLook_Turn( cl.viewangles[YAW] - oldAngles[YAW], cl.viewangles[PITCH] - oldAngles[PITCH] );
+		VectorCopy( oldAngles, cl.viewangles );
+	}
 
 	Com_Memset( &cmd, 0, sizeof( cmd ) );
 

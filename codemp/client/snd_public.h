@@ -34,6 +34,15 @@ void S_StartAmbientSound( const vec3_t origin, int entityNum, unsigned char volu
 void S_MuteSound(int entityNum, int entchannel);
 void S_StartSound( const vec3_t origin, int entnum, int entchannel, sfxHandle_t sfx );
 void S_StartLocalSound( sfxHandle_t sfx, int channelNum );
+// OpenJK-rpmod: sounds made in code (cl_instruments.cpp's notes): one registered from 16-bit mono PCM
+// under a name no file has ("*inst/..."), whether it's still there (a level change can free it),
+// freed; a sound started at a volume (0-1); and the channels playing names that start so
+sfxHandle_t	S_RegisterSoundFromPCM( const char *name, const short *pcm, int samples, int rate );
+qboolean	S_SoundReady( sfxHandle_t sfx, const char *name );
+void		S_FreeSound( sfxHandle_t sfx );
+void		S_StartSoundVol( const vec3_t origin, int entnum, int entchannel, sfxHandle_t sfx, float volume );
+int			S_CountPlaying( const char *prefix );
+void		S_StopOldestPlaying( const char *prefix );
 void S_StartLocalLoopingSound( sfxHandle_t sfx);
 
 void S_UnCacheDynamicMusic( void );

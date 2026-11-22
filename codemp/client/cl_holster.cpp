@@ -86,6 +86,7 @@ typedef struct {
 	int			retryAt;
 	char		slotName[MAX_INFO_VALUE];	// whom it's for (all of it: a coloured name is long), another in the slot asked again
 	qboolean	linked;				// as C1B3R's list said when it was asked: linked since, asked again
+	qboolean	again;				// changed while it was being asked: the answer may be older, asked again
 	hsItem_t	items[HS_MAX];
 	int			num;
 	qboolean	hand;				// a datapad in hand during the datapad emote (their datapad setting)
@@ -395,11 +396,12 @@ static void HS_FetchFrame( void ) {
 		if ( hsViewHttp.status == 200 ) {
 			c->num = HS_ReadItems( hsViewHttp.answer, c->items, HS_MAX );
 			c->hand = (qboolean)( strstr( va( "\n%s\n", hsViewHttp.answer ), "\ndatapadhand\t1\n" ) != NULL );
-			c->state = 2;
+			c->state = c->again ? 0 : 2;
 		} else {
 			c->state = 0;
 			c->retryAt = cls.realtime + HS_RETRY_MS;
 		}
+		c->again = qfalse;
 		hsViewFor = -1;
 	}
 	if ( hsViewHttp.state == HTTP_BUSY || !CL_Presence_Session() )
@@ -431,8 +433,12 @@ void CL_Holster_CharHook( char **argv, int argc ) {
 	const int client = argc >= 1 && argv[0][0] ? atoi( argv[0] ) : -1;
 
 	if ( client >= 0 && client < MAX_CLIENTS ) {
-		hsClients[client].state = 0;
+		hsClients[client].again = (qboolean)( hsClients[client].state == 1 );
+		hsClients[client].state = hsClients[client].state == 1 ? 1 : 0;
 		hsClients[client].retryAt = 0;
+		// their game is on C1B3R: if ours didn't know it yet (they came in after our hello), it asks now
+		if ( !CL_Presence_Linked( client ) )
+			CL_Presence_Relist();
 	}
 }
 
@@ -523,6 +529,28 @@ static qboolean HS_HandItem( hsItem_t *it ) {
 	return qtrue;
 }
 
+// an instrument in the hand of a player playing it (cl_instruments.cpp), where cl_instrumentHandPos says
+static qboolean HS_InstrumentItem( int client, hsItem_t *it ) {
+	static cvar_t *pos;
+	const char *model = CL_Instruments_Model( CL_Instruments_Playing( client ) );
+	char tag[32];
+
+	if ( !model[0] )
+		return qfalse;
+	if ( !pos )
+		pos = Cvar_Get( "cl_instrumentHandPos", "*r_hand 0 0 0 0 0 0 1", CVAR_ARCHIVE_ND,
+			"Where an instrument played is held: <tag> <x y z> <pitch yaw roll> <scale>, from the tag" );
+	memset( it, 0, sizeof( *it ) );
+	it->scale = 1.0f;
+	tag[0] = '\0';
+	sscanf( pos->string, "%31s %f %f %f %f %f %f %f", tag, &it->off[0], &it->off[1], &it->off[2],
+		&it->ang[0], &it->ang[1], &it->ang[2], &it->scale );
+	Q_strncpyz( it->bolt, tag[0] == '*' ? tag : "*r_hand", sizeof( it->bolt ) );
+	Q_strncpyz( it->model, model, sizeof( it->model ) );
+	it->scale = Com_Clamp( HS_SCALE_MIN, HS_SCALE_MAX, it->scale );
+	return qtrue;
+}
+
 // each frame, before it's drawn: every player wearing something paired with one of last frame's
 // bodies, the nearest pairs first
 void CL_Holster_Frame( void ) {
@@ -547,7 +575,7 @@ void CL_Holster_Frame( void ) {
 		hsPaired[c] = NULL;
 		known[c] = (qboolean)( cls.state == CA_ACTIVE
 			&& ( ( cl_holster->integer && ( ( hsClients[c].num && hsClients[c].state == 2 ) || ( c == clc.clientNum && HE_Live() ) ) )
-				|| HS_Hand( c ) )
+				|| HS_Hand( c ) || CL_Instruments_Model( CL_Instruments_Playing( c ) )[0] )
 			&& HS_PlayerState( c, org[c], &saber ) );
 		if ( hsDebug && CL_PlayerSlotName( c )[0] && ( c == clc.clientNum || hsClients[c].state ) )
 			Com_Printf( "  %2i %s" S_COLOR_WHITE ": state %i, %i worn, linked %i, %s\n", c, CL_PlayerSlotName( c ),
@@ -628,6 +656,16 @@ void CL_Holster_Entity( const refEntity_t *ent, void *bodyGhoul2 ) {
 				HS_AddItems( worn, HS_OwnWorn( hsClients[c].items, hsClients[c].num, worn ), ent->ghoul2, ent, saber, HS_Emote( c ) );
 			} else {
 				HS_AddItems( hsClients[c].items, hsClients[c].num, ent->ghoul2, ent, saber, HS_Emote( c ) );
+			}
+		}
+		{
+			const int keep = hsKeep.item;
+			hsItem_t held;
+
+			if ( HS_InstrumentItem( c, &held ) ) {
+				hsKeep.item = -1;
+				HS_AddItems( &held, 1, ent->ghoul2, ent, saber, HS_EMOTE_ALL );
+				hsKeep.item = keep;
 			}
 		}
 		if ( HS_Hand( c ) && HS_Emote( c ) == HS_EMOTE_DATAPAD ) {

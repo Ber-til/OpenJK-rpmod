@@ -2869,6 +2869,7 @@ static void ME_AddItem( int kind ) {
 	if ( kind == ME_ITEM_WEATHER ) {
 		VectorSet( it->size, 512, 512, 256 );
 		ME_WeatherDefaults( it, 1 );
+		it->wOutside = qtrue;		// the map's outdoors only: no rain under its roofs (a saved box keeps its own)
 	}
 	if ( kind == ME_ITEM_BRUSH ) {
 		static const float sizes[ME_SHAPE_CUSTOM][3] = { { 64, 64, 64 }, { 128, 64, 64 }, { 64, 64, 128 }, { 128, 64, 64 } };

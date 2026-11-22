@@ -355,9 +355,13 @@ static void PR_Apply( int i ) {
 	Com_Printf( "Presets: you're %s" S_COLOR_WHITE " now (%s)\n", ps->values[PR_K_NAME], ps->values[PR_K_MODEL] );
 }
 
+static qboolean prViewsDue;		// the cards' models to be freed before the next frame draws (CL_Presets_Frame)
+
 static void PR_Delete( int i ) {
 	pr.labelEdit = -1;		// the cards move: no name half typed lands on another
-	PR_FreeViews();
+	// not now: Delete is clicked while the page is drawn, and the cards before it this frame are
+	// drawn by the renderer at the frame's end, from their models (freed now, a crash: #70)
+	prViewsDue = qtrue;
 	memmove( &prPresets[i], &prPresets[i + 1], ( prNumPresets - i - 1 ) * sizeof( prPresets[0] ) );
 	prNumPresets--;
 	PR_Save();
@@ -680,17 +684,18 @@ static void PR_BuildView( prView_t *v, const char *model, const char *saber1, co
 	PR_Pose( *v->g2, "BOTH_STAND1" );		// standing, the saber or not
 }
 
-// how tall it stands: its head's top to its feet, as posed; the model's bounds when it hasn't the tags
+// how tall it stands: its head's top to its feet, as posed; without a head top tag, its neck's and a head
+// above it (a model made at another size than its bounds say, as Amani); the model's bounds without either
 static void PR_Measure( prView_t *v ) {
-	static const char *tags[] = { "*head_top", "*r_leg_foot", "*l_leg_foot" };
+	static const char *tags[] = { "*head_top", "*r_leg_foot", "*l_leg_foot", "*torso_cap_head", "*head_cap_torso" };
 	vec3_t zero = { 0, 0, 0 };
-	float z[3];
+	float z[5];
 	int found = 0;
 
 	v->measured = qtrue;
 	v->bottom = v->mins[2];
 	v->top = v->maxs[2];
-	for ( int t = 0; t < 3; t++ ) {
+	for ( int t = 0; t < 5; t++ ) {
 		const int bolt = re->G2API_AddBolt( *v->g2, 0, tags[t] );
 		mdxaBone_t m;
 
@@ -704,6 +709,14 @@ static void PR_Measure( prView_t *v ) {
 
 		v->bottom = feet - 3.0f;
 		v->top = z[0] + 3.0f;
+	} else if ( ( found & 24 ) && ( found & 6 ) ) {
+		const float feet = ( found & 2 ) && ( found & 4 ) ? Q_min( z[1], z[2] ) : ( found & 2 ) ? z[1] : z[2];
+		const float neck = ( found & 8 ) ? z[3] : z[4];
+
+		if ( neck > feet ) {
+			v->bottom = feet - 3.0f;
+			v->top = neck + ( neck - feet ) * 0.2f + 3.0f;		// a head is about a fifth of the rest
+		}
 	}
 }
 
@@ -916,10 +929,15 @@ void CL_Presets_FreeCharacter( void ) {
 void CL_Presets_Frame( void ) {
 	while ( prNumDoomed > 0 )
 		re->G2API_CleanGhoul2Models( &prDoomed[--prNumDoomed] );
+	if ( prViewsDue ) {
+		prViewsDue = qfalse;
+		PR_FreeViews();
+	}
 }
 
 // the renderer's models are gone with it: dropped, not freed
 void CL_Presets_RendererRestarted( void ) {
+	prViewsDue = qfalse;
 	memset( &prPortrait, 0, sizeof( prPortrait ) );
 	memset( &prOther, 0, sizeof( prOther ) );
 	prNumDoomed = 0;

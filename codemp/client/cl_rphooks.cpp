@@ -67,6 +67,18 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 //     sent by C1B3R itself when a player's character changed (inventory, profile, holster):
 //     theirs is asked again. See cl_inventory.cpp.
 //
+//   cmd:holo/ring|start|end|state|spot|say/...
+//     sent by C1B3R itself (a game's own are refused): a HoloCall ringing, started or over, and the
+//     callers' looks, holograms' spots and words; see cl_holocall.cpp.
+//
+//   cmd:music/<client number>/<seq>: <a-h><note>.<velocity>.<ms>;...  and cmd:music/<client number>/stop
+//     notes a player plays on an instrument, a batch at a time, heard where they stand; see
+//     cl_instruments.cpp.
+//
+//   cmd:dice/roll/<client number>/<roll>: ... and cmd:dice/ask/<client number>/<ask>: ...
+//     sent by C1B3R itself (a game's own are refused): a Dice Master roll it made, and a master
+//     asking that player for one. See cl_dice.cpp.
+//
 //   cmd:fxscale/<x y z>/<size>[/once]: <effect>
 //     the effect playing there drawn that much bigger or smaller, 1 as made; see
 //     cl_effectmanager.cpp.
@@ -495,6 +507,14 @@ static rhResult_t RH_Run( const char *text ) {
 		CL_Chat_Hook( argv + 1, argc - 1, message );
 		return RH_DROP;
 	}
+	if ( !Q_stricmp( argv[0], "head" ) ) {
+		CL_HeadLook_Hook( argv + 1, argc - 1 );
+		return RH_DROP;
+	}
+	if ( !Q_stricmp( argv[0], "camshake" ) ) {
+		CL_CamShake_Hook( argv + 1, argc - 1 );
+		return RH_DROP;
+	}
 	if ( !Q_stricmp( argv[0], "skyc" ) ) {
 		CL_SkyComposer_Hook( argv + 1, argc - 1, message );
 		return RH_DROP;
@@ -552,6 +572,18 @@ static rhResult_t RH_Run( const char *text ) {
 	}
 	if ( !Q_stricmp( argv[0], "world" ) ) {
 		CL_WorldItems_Hook( argv + 1, argc - 1 );
+		return RH_DROP;
+	}
+	if ( !Q_stricmp( argv[0], "holo" ) ) {
+		CL_HoloCall_Hook( argv + 1, argc - 1, message );
+		return RH_DROP;
+	}
+	if ( !Q_stricmp( argv[0], "music" ) ) {
+		CL_Instruments_Hook( argv + 1, argc - 1, message );
+		return RH_DROP;
+	}
+	if ( !Q_stricmp( argv[0], "dice" ) ) {
+		CL_Dice_Hook( argv + 1, argc - 1, message );
 		return RH_DROP;
 	}
 	if ( !Q_stricmp( argv[0], "charoffer" ) ) {

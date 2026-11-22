@@ -17,6 +17,7 @@ Some features reach other players through workarounds only this client understan
 - [Radial Menus](#radial-menus)
 - [Saber Styles](#saber-styles)
 - [Special Moves](#special-moves)
+- [Instruments](#instruments)
 - [Emote Preview](#emote-preview)
 - [Animation Manager](#animation-manager-custom-emotes-are-experimental)
 - [Presets](#presets)
@@ -179,6 +180,7 @@ Click any surface, see what it's made of, and swap its texture for everyone on t
 
 - Search a shader and draw it over everyone's screen with `rpshader overlay add`: where it goes and how big on a 640x480 screen (empty for the whole screen), and its fade
 - Preview it where it would go, on your screen only, before you add it
+- Place it without typing: drag the preview to move it and its bottom right corner to size it, or step each number with its **-** and **+** (8 at a time, Shift 1; the fade 1, Shift 0.1) or the mouse wheel over it
 - List the server's overlays, and remove one or all of them
 
 ### Sky
@@ -262,6 +264,7 @@ Browse every effect, watch it play live, put it exactly where you want (or on so
 - Make the checked ones (or the one picked) bigger or smaller with Size *(experimental)*, or back to x1
 - Remove every effect, or everything bolted to you, a player or an NPC
 - One-click presets: alarm, fade out / fade back in, and camera shake with intensity and duration
+- **Sway** (ours, `/camshake`): the camera swayed at the speed you set, for everyone with the client or one player by name or number: 0.5 a slow drunken sway, 1 held by hand, 5 and up a quake. Strength 1 to 10, up to 600 seconds, fading in and out; Stop ends it. An RPMod admin's, sent through C1B3R
 - Several commands in a row are spaced out automatically, so the server's flood protection doesn't drop them
 
 ### Your own effects as others (Effect Replacer, Mine tab)
@@ -309,6 +312,7 @@ Assemble a mission out of steps, then play it: NPCs, models, effects, sounds, mu
 - **Diagram** shows the story as a flowchart: the "whens", each If splitting into a yes and a no side that join again at its End if, and the stories it plays; click a step to pick it, or a Play story's *open* to open that story's diagram. The wheel or the arrows scroll, Esc goes back
   - It's edited there too: drag a block to move it (an If with all of it, to its End if; several picked, all of them), Ctrl+click and Shift+click pick several, and Ctrl+C, Ctrl+X, Ctrl+V, Ctrl+A and Del work as in the list
   - **Panel** brings up the actions on the left, to drag into the diagram where it shows the step would go (on an If's empty no side an Else goes in with it), and the picked step's settings on the right
+- **Dice Master rolls** ([Dice](#datapad)): **When someone rolls** waits for a roll of an action (by its name, or any), by who you say, of a result if it matters (a success or better, a critical failure...). **Ask for a roll** *(experimental)* asks a player (who set it off, or by name) to roll an action of a system you run, against its DC or yours, and waits for it (giving up after the seconds you set). **If the roll was** at least, at most or exactly Success (or a critical one, a failure) branches on it, and **Go back** lets them try again: "When someone says *push*", "Ask for a roll: Telekinesis, DC 15", "If the roll was at least Success", centre message "it moves", "Else", "it doesn't", "End if"
 - **Center message** can start lower down: at the **bottom** of the screen, or a number of **lines down**. **Typewriter** shows it a letter at a time, with a sound before each (picked in the sound manager, *sound/interface/sub_select* to start with), this many ms apart; like every step, its commands are paced by the server's flood protection
 - Map triggers and doors are picked where you stand or aim, in a free camera, or from a list
 - The **Notification** step shows a line in the top left corner with `rpnotify`, for everyone or one player; give it a countdown and it shows the seconds left, live (`<timer>`)
@@ -509,6 +513,20 @@ Every special move the saber has, what it does and how it's done, and a key to p
 - **.sab only**: the moves a saber's `.sab` can put in place of the kata, the lunge or a jump attack (`kataMove`, `lungeAtkMove`, `jumpAtk...Move`), and those the game has but never starts in multiplayer. They're listed, not played: the server's copy of the `.sab` decides them
 - The moves are base Jedi Academy's, which RPMod keeps
 
+## Instruments
+
+Play music in game, on an instrument's keyboard or from a MIDI file, heard by those near you (an idea from a player's report, #66).
+
+- `/instrument` opens a keyboard at the bottom of the screen: pick the **Harp**, **Lute**, **Keys**, **Flute**, **Chimes**, **Marimba**, **Horn** or **Drums**, and play
+- **Carried, to play:** you play an instrument only with one in your inventory: an item of the **instrument** kind, granted by RPMod's admins (the inventory's staff tools, or the web). Its **Instrument** field, shown when the kind is instrument, says which it plays, whatever it's called ("Grandfather's pride" can be a Horn); left at *(by its name)*, its name says ("Lute", "Old Kloo Horn"). **Play** on it in your inventory opens the keyboard on it The keyboard opens on one you carry; the others are dimmed, and a MIDI file's parts for them play on yours. Without one, `/instrument` says so
+- **Keys:** `Z S X D C V G B H N J M` play an octave and `Q 2 W 3 E R 5 T 6 Y 7 U I` the one above it, as a piano's white and black keys; hold **Shift** for an octave up, **Ctrl** for one down, or set the **Octave**; the arrows change the instrument and the octave. Keys can be clicked with the mouse too. You stay put while it's open; **Esc** closes it
+- **Drums:** a kit on the keys from C4: kick, rim, snare, clap, closed hat, low tom, open hat, mid tom, shaker, high tom, cowbell and crash, named on the keyboard
+- **MIDI files:** put `.mid` files in a `midi` folder in your `rpmod` folder, pick one on the panel and **Play**. **The file's instruments** plays each part on the nearest instrument here (piano on Keys, guitar on Lute, strings on Harp, brass on Horn, the drum channel on Drums); **All on this instrument** plays every part on the one picked. Notes beyond the instruments' three octaves are moved by octaves into them. Twelve notes sound at once at most
+- **Heard by others:** where you stand, fading with distance as any sound does, by everyone with the client near you. It goes through C1B3R, so it needs your game linked (`/c1b3r link`); without it only you hear it, and the panel says so. Others hear it a quarter of a second after you, so the rhythm holds whatever the network does
+- **The look:** while someone plays, a music note bobs over their head for those with the client (in third person, over yours too), where the chat balloon would be; it isn't drawn through walls. `cl_instrumentNote` is whose you see: *1* everyone's (the default), *2* others' only, *0* none. `cl_instrumentEmote` is a command done as you start playing, an RPMod emote (`emsit`) or one of your custom emotes, seen as that emote is (none by default); `cl_instrumentEmoteRepeat` does it again every so many seconds while you play, for an emote that ends by itself (0, once). A model of the instrument is held too when one's in the game (`models/instruments/<harp|lute|keys|flute|chimes|marimba|horn|drums>.glm` or `.md3`, placed with `cl_instrumentHandPos`); none come with it yet
+- The instruments are made by the game itself, no sound files: each note is worked out the first time it's played and kept
+- `s_volumeInstruments` (0.8) is how loud instruments play, yours and others'; **Volume** on the panel
+
 ## Animation Manager *(custom emotes are experimental)*
 
 Every animation in the game, emotes made of emotes, and emotes of your own. `/animationmanager` opens it (bind it to a key).
@@ -584,7 +602,7 @@ A free camera to take pictures: `/photomode`, or **Photo Mode** under the Esc me
 
 - The view leaves you: hold the right mouse button to look around, **WASD** to fly (**Space** up, **C** down, **Shift** fast, **Ctrl** slow), **Q** and **E** to roll, the wheel to zoom. The HUD, chat and crosshair are hidden and your own character is in the picture; the game goes on round you. The camera stays within reach of you (the server only sends what's near)
 - **Camera** page: zoom (field of view), roll, **Back to my view**; **Depth of field**: click the scene to focus on what's there (a person, before the wall behind them), with how much stays sharp and how blurred the rest is; a **Frame** to shoot in (Screen, 16:9, 21:9, 4:3, 1:1, 9:16), the rest darkened, with the rule of thirds' lines if wanted
-- **Look** page: the cinematic camera's filters (Noir, Sepia, Old film, Night vision...) and their strength; colour: saturation, contrast, brightness, warmth; lens: grain, vignette, colour fringes, scanlines; **Reset**
+- **Look** page: the cinematic camera's filters (Noir, Sepia, Old film, Night vision...) and their strength (the filter's alone); colour: saturation, contrast, brightness, warmth; lens: grain, vignette, colour fringes, scanlines; **Reset**
 - **Snap** (or **Enter**) saves a PNG at your window's full size, cut to the frame, without the panel, in `screenshots/photo_<date>_<time>.png`. **H** hides the panel; **Esc** closes
 - Depth of field and the Look need the Vulkan renderer; the camera, frame and Snap work with either
 - An idea from a player's report
@@ -645,9 +663,10 @@ A datapad on your screen, used like a phone. `/datapad`, or **TOOLS** in the in-
 - Its top bar shows JEDI's time: `474.08 ABY - 1345/49 GST` (the year up one each month, 474 in November 2026; the day of the month; then the hour and minute, and the seconds, in New York's time), and the server's name. Names on it show RPMod's colours, as the console does
 - **Apps:** the home screen has the apps; one opens over it, and **< Back** or **Home** returns. The first is **Settings**:
   - **Colour:** what it's lit in: cyan, blue, green, amber, red, violet or white
+  - **Do not disturb:** Chat's messages still come, counted as unread, but without a notice, a ringtone or a sound; DND shows in its top bar while it's on. `/datapad silent` turns it on or off, for a bind
   - **Keys:** click **Open it** or **Close it**, then press the key for it (Esc leaves it as it was). They work while you play and while it's open
   - **Your character holds a datapad while it's open:** your character plays RPMod's `/emlift` as you open it, and it ends (a moment's crouch, as C does) as you fold or close it
-- **Games:** a folder on the home screen with Pazaak, WANGA and The Path. Each is played against others on the same server, through C1B3R, which deals and checks every move. **< Games** goes back to the folder
+- **Games:** a folder on the home screen with Pazaak, WANGA, The Path and the Arcade. The first three are played against others on the same server, through C1B3R, which deals and checks every move. **< Games** goes back to the folder
 - **Pazaak:** KOTOR's card game, against another player on the same server, through C1B3R. The datapad grows to the right side of the screen for it
   - **Play:** the server's tables, to **Join** one waiting for a player or **Watch** a match; or start one (a name, all cards or ± cards only, your deck) and wait for someone to sit down
   - **The table:** each player's 3x3 table, total, sets won and turn; your hand of 4 (the other one face down). Click a card, then **Play it** (+ or − for ± cards, 1 or 2 for the 1±2), then **End turn** or **Stand**. A turn lasts 90 s. Leaving or **Forfeit** gives the match to the other player
@@ -664,6 +683,33 @@ A datapad on your screen, used like a phone. `/datapad`, or **TOOLS** in the in-
   - Five of the sixteen Techniques (Jung, Jung Ma, Shun, Sai, Flowing Water, Dulon, Shii-Cho, Makashi, Soresu, Ataru, Shien, Djem So, Niman, Sokan, Jar'Kai, Trakata) are dealt: two each and one shared. The board is always drawn from your side
   - **A turn:** click one of your pawns, then a lit square (a solid one is your first Technique's, an outlined one your second's): it moves there and takes a pawn of the other's on it; the Technique used is swapped with the shared one. With no move at all, **Only swap** one
   - **Winning:** take the other's Master (Mastery of Body), or bring your Master onto their Nexus (Mastery of Spirit). A turn lasts 90 s, then a move is made for you
+- **Arcade:** four games for one, in the Games folder, with a high-score board for each that everyone with the client is on (an idea from a player's report)
+  - **Sarlacc:** grow by eating, without biting your own tail or the walls; faster every 5 fruit (arrows or WASD)
+  - **Droid Dash:** a Jedi runs; jump the droids rolling at you (Space or Up, held for higher) and duck the probes (Down); faster the longer you run, a metre a point
+  - **Skyhopper:** lift a little ship (Space, Up or a click) through the pylons' gaps, which close as you go
+  - **Bot Blaster:** waves of droids coming down; move left and right, fire with Space (the blaster heats: let it cool), three lives
+  - **The board:** a game's page shows its top 10, and your place. A run that beats your best goes on it through C1B3R, under your main character's name; it needs your game linked (`/c1b3r link`), and your bests are kept on your machine either way. C1B3R turns down a score the game couldn't give in the run's time
+  - **P** pauses, and so does putting the datapad away or opening another app; a key goes on. Enter after a run plays again
+  - Pictures of your own replace a game's shapes: `gfx/arcade/<sarlacc|dash|sky|blaster>/<thing>` (png, tga or jpg)
+- **Dice:** the Dice Master, on the home screen: rule systems for roleplay, your character's sheet in them, and rolls, through C1B3R (an idea from a player's report)
+  - **Systems:** RPMod admins make them (**New system**): a die (1d20, 1d100, 2d6...), how far past the DC a roll goes to be critical (10 as in Pathfinder), whether rolling the most or a 1 moves it a degree, the XP a trait point costs (dearer each level, or not) and the most points in a trait. Then its **Traits** (Force Control, Agility...), **Classes** and **Actions**, each with a name and what it is
+  - **A class:** its XP to start with, more by rank in the Order (Initiate, Padawan, Knight, Master, or any rank RPMod names), the points in traits it starts with, free, and the traits it raises (all, or the ticked ones)
+  - **An action** ([Telekinesis]): the traits added to the roll, each times a number (Force Control x1, Lore x0.5), a bonus or a malus by class, and the DC unless one's given
+  - **Your sheet:** open a system and **Join** it with a class; spend your XP with - and + on your traits and **Save points**. Your rank in the Order is RPMod's word for it, and XP a master grants adds to it. Each character has its own sheets, and you can change class (your points start again) until a master locks your sheet
+  - **Rolling:** **Roll** by an action, against its DC or the one you set; or `/dicemaster roll <action> [dc]`. C1B3R rolls the dice, never your game: the dice, plus your traits' points times their numbers (rounded down), plus your class's bonus, against the DC. It's a **critical success** past the DC by the system's margin, a **success**, a **failure**, or a **critical failure** short of it by the margin
+  - **Seen by:** a notice in the top left, as a whisper's, `:: Kenta rolls Telekinesis: 14 + 5 = 19 vs 15, Success ::`, for everyone with the client within RPMod's chat range of the roller (as your chat range settings have it), and in the console; the system's masters see every roll in it wherever they are. Your page lists the last rolls you saw
+  - **Masters:** the system's owner and the RPMod accounts it names run it: **Edit** it, and on **Players** see the characters in it (here or not), **grant XP**, **Lock** a sheet, and **Ask a roll** of an action from a player here. Asked, a player gets a notice and a banner on the Dice app (**Roll** or **Not now**), or rolls it with `/dicemaster roll`. The owner alone names the masters and deletes it
+  - It needs your game linked (`/c1b3r link`) and a character (`/characters`)
+- **Pictures in Chat:** send a picture in a conversation, one-to-one or a group
+  - **Taking it:** **Cam** beside Send, or `/datapad chat camera`. A camera at your eyes: the mouse turns it, WASD, Space and C move it within reach of your head (never through a wall), so turned round it takes you. A click or Enter takes the square in its frame; Esc goes back without one
+  - **Sending it:** Chat shows it to **Send**, **Retake** or **Cancel** (`/datapad chat camera send` sends it). It goes as a JPEG of 512x512 at most, through C1B3R, and shows in its bubble; a click shows it large
+  - **Having it:** the others' games download it as they see it, into `rpmod/chatpictures/<id>.jpg`; yours is kept there too. C1B3R keeps it only until everyone it went to has had it, and 30 days at most: then its bubble says it expired
+- **HoloCall:** call another player, on any server, and see and talk to each other as holograms (an idea from a player's report, #51)
+  - **Calling:** **HoloCall** at the top of a conversation in Chat, or `/holocall <account>`. They're rung (a notice and the ringtone, none with Do not disturb): **Answer** or **Decline** on their datapad's Chat, or `/holocall answer`
+  - **The hologram:** once answered, each of you appears to the other a step in front of them, in blue, turning as you turn and playing your emotes and moves. Everyone near it with the client sees it. **Move it here** (or `/holocall here`) puts it where you aim, on a holo pedestal say
+  - **Talking:** what you say in chat during the call reaches them too, and shows around your hologram as chat from it (`[Holo] Name: ...`), read by those near as chat is, by RPMod's chat range. `/holocall say <text>` says it to the call only
+  - **End** on the datapad, or `/holocall end`; a ring not answered in 30 seconds is missed. A line under the top right says who you're with while it lasts
+  - It goes through C1B3R: both games linked (`/c1b3r link`), and a character set up
 - **HoloNet:** JEDI's news from jediholo.net, read by your game straight from the site: the latest articles listed (title, date, author, category), one opened whole with its pictures, scrolled with the wheel, and **Open on the web**. Read again every 10 minutes, or with **Refresh**
 - **Comport:** JEDI's forum, as datapad pages: the forums by category, a forum's topics (pinned ones first, with their replies and views, page by page), a topic's posts with their quotes and pictures, and **On the web**
   - **Log in** with your Comport name and password to read what needs an account, and to **Reply** to a topic (Enter starts a new paragraph; BBCode as on the site). The forum's own messages show if something's refused (posting too soon, too short...)
@@ -785,6 +831,14 @@ Your game now tracks when the takeoff is about to end and stops sending jump unt
 
 - `/cl_fighterTakeoffGuard 0` turns the guard off and brings back the old behaviour (*1* by default)
 
+## Looking Around
+
+Players look with their whole body, and you can look with your head alone.
+
+- **Leaning with the look**: looking up, a player leans back; looking down, forward over the waist, not only with the head (as MBII's do). `cl_lookLean` sets how much: 2 by default, 1 as the game does it, 0 to 4. Everyone you see leans so, on your screen
+- **Head only** (`+headlook`, e.g. `/bind alt +headlook`): held, the mouse (or the arrow keys) turns your head, up to 75° to either side and 50° up or down, and your body stays as it faces; let go and it turns back. Your view turns with it in first person; in third person the camera stays and you watch your character look round (`cl_headLookView`: 0 never, 1 in first person, 2 always)
+- Others with the client see your head turn, sent through C1B3R a few times a second while it's turned
+
 ## Toggle Crouch
 
 Stay crouched without holding the key.
@@ -881,6 +935,7 @@ The tools share what they do with everyone with this client ("hooks": NPC walks 
 - Anti-aliasing (`r_ext_multisample 2`, 4 or 8), bloom (`r_bloom 1`), HDR (`r_hdr`), dithering (`r_dither 1`) and a render resolution of its own (`r_renderScale`, `r_renderWidth`, `r_renderHeight`); most of them need `r_fbo 1`
 - `r_vbo 1` and `r_vbo_models 1` keep the map's and the models' surfaces on the graphics card, for more frames per second
 - `r_device` picks the graphics card when there's more than one
+- **Grass and bushes in dynamic light**: a map's surface sprites (its grass, bushes and flowers) are lit by a saber, a fire or a shot near them as the ground under them is, by the view's 8 nearest dynamic lights; `r_spriteLights` how much (0.7; 0 not at all)
 - **Surface relief** (`r_relief 1`, then `vid_restart`; doesn't need `r_fbo`): dynamic lights and lit sabers (`cg_saberlight`) pick out the relief of stone, metal and cloth, worked out from each texture's own shading, with a little shine. `r_reliefStrength` is how deep it looks (8), `r_reliefSpecular` how much lit surfaces shine (0.35). It shows where per-pixel dynamic lights reach (`r_dlightMode 2`, the default): the map, doors and lifts, and simple models, not player and NPC models. On the RENDERER page as **Surface Relief**
 - **Supersampling** (`r_ext_supersample 1`, needs `r_fbo 1`): the picture drawn at twice the width and height and scaled down to the window, smoothing every edge, for about four times the drawing. Screenshots come out at the larger size
 - Effects of its own, each off until turned on, all needing `r_fbo 1`; all but colour grading are on the RENDERER page too:

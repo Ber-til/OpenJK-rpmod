@@ -129,6 +129,72 @@ static void vk_bind_index_attr( int index )
 	}
 }
 
+/*
+OpenJK-rpmod: what a frame's geometry went to, by shader: its vertices and indexes, the draws' uniforms,
+and how many draws. Told when the buffer has to grow past 32 MB (vk_resize_geometry_buffer), to learn
+what makes a frame that heavy (a burning body's effects)
+*/
+static int geoBytes[MAX_SHADERS], geoUniform[MAX_SHADERS], geoDraws[MAX_SHADERS];
+static int geoTouched[MAX_SHADERS], geoNumTouched, geoOther;
+
+static void vk_geo_note( int bytes, qboolean uniform, qboolean draw ) {
+	const int i = tess.shader ? tess.shader->index : -1;
+
+	if ( i < 0 || i >= MAX_SHADERS ) {
+		geoOther += bytes;
+		return;
+	}
+	if ( !geoBytes[i] && !geoUniform[i] && !geoDraws[i] && geoNumTouched < MAX_SHADERS )
+		geoTouched[geoNumTouched++] = i;
+	if ( uniform )
+		geoUniform[i] += bytes;
+	else
+		geoBytes[i] += bytes;
+	if ( draw )
+		geoDraws[i]++;
+}
+
+void vk_geo_reset( void ) {
+	for ( int k = 0; k < geoNumTouched; k++ ) {
+		const int i = geoTouched[k];
+
+		geoBytes[i] = geoUniform[i] = geoDraws[i] = 0;
+	}
+	geoNumTouched = 0;
+	geoOther = 0;
+}
+
+void vk_geo_report( void ) {
+	int top[8], numTop = 0, draws = 0;
+	double geo = 0.0, uni = 0.0;
+
+	for ( int k = 0; k < geoNumTouched; k++ ) {
+		const int i = geoTouched[k], total = geoBytes[i] + geoUniform[i];
+		int at;
+
+		draws += geoDraws[i];
+		geo += geoBytes[i];
+		uni += geoUniform[i];
+		for ( at = numTop; at > 0 && geoBytes[top[at - 1]] + geoUniform[top[at - 1]] < total; at-- ) {
+			if ( at < 8 )
+				top[at] = top[at - 1];
+		}
+		if ( at < 8 ) {
+			top[at] = i;
+			if ( numTop < 8 )
+				numTop++;
+		}
+	}
+	ri.Printf( PRINT_ALL, "  that frame: %i draws of %i shaders, %i entities; %.1f MB vertices and indexes, %.1f MB draw uniforms, %.1f MB other\n",
+		draws, geoNumTouched, backEnd.refdef.num_entities, geo / 1048576.0, uni / 1048576.0, geoOther / 1048576.0 );
+	for ( int k = 0; k < numTop; k++ ) {
+		const int i = top[k];
+
+		ri.Printf( PRINT_ALL, "  %6.2f MB  %6i draws  %s\n", ( geoBytes[i] + geoUniform[i] ) / 1048576.0, geoDraws[i],
+			tr.shaders[i] ? tr.shaders[i]->name : "?" );
+	}
+}
+
 static void vk_bind_attr( int index, unsigned int item_size, const void *src ) {
 	const uint32_t offset = PAD(vk.cmd->vertex_buffer_offset, 32);
 	const uint32_t size = tess.numVertexes * item_size;
@@ -142,6 +208,7 @@ static void vk_bind_attr( int index, unsigned int item_size, const void *src ) {
 		Com_Memcpy(vk.cmd->vertex_buffer_ptr + offset, src, size);
 		vk.cmd->vertex_buffer_offset = (VkDeviceSize)offset + size;
 	}
+	vk_geo_note( (int)size, qfalse, qfalse );
 
 	vk_bind_index_attr(index);
 }
@@ -150,6 +217,7 @@ uint32_t vk_tess_index( uint32_t numIndexes, const void *src ) {
 	const uint32_t offset = vk.cmd->vertex_buffer_offset;
 	const uint32_t size = numIndexes * sizeof(tess.indexes[0]);
 
+	vk_geo_note( (int)size, qfalse, qtrue );
 	if (offset + size > vk.geometry_buffer_size) {
 		// schedule geometry buffer resize
 		vk_schedule_geometry_resize( (VkDeviceSize)offset + size );
@@ -1263,6 +1331,7 @@ avoidGen:
 
 void *vk_reserve_uniform( size_t size, uint32_t *offset ) {
 	*offset = PAD(vk.cmd->vertex_buffer_offset, (VkDeviceSize)vk.uniform_alignment);
+	vk_geo_note( (int)( *offset + size - vk.cmd->vertex_buffer_offset ), qtrue, qfalse );
 
 	// OpenJK-rpmod: the shaders read a whole vkUniformBones_t from here (72 bones), however few the model has:
 	// it all has to be in the buffer, or a frame at its end reads past it and the device is lost
@@ -1279,6 +1348,7 @@ void *vk_reserve_uniform( size_t size, uint32_t *offset ) {
 uint32_t vk_append_uniform( const void *uniform, size_t size, uint32_t min_offset ) {
 	const uint32_t offset = PAD(vk.cmd->vertex_buffer_offset, (VkDeviceSize)vk.uniform_alignment);
 
+	vk_geo_note( (int)( offset + min_offset - vk.cmd->vertex_buffer_offset ), qtrue, qfalse );
 	if ( offset + min_offset > vk.geometry_buffer_size ) {
 		vk_schedule_geometry_resize( (VkDeviceSize)offset + min_offset ); // OpenJK-rpmod
 		return ~0U;

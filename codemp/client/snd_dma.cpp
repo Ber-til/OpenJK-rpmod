@@ -1539,6 +1539,8 @@ if pos is NULL, the sound will be dynamically sourced from the entity
 entchannel 0 will never override a playing sound
 ====================
 */
+static float s_startVolume = 1.0f;	// OpenJK-rpmod: S_StartSoundVol's, for the sound it starts
+
 void S_StartSound(const vec3_t origin, int entityNum, int entchannel, sfxHandle_t sfxHandle )
 {
 	channel_t	*ch;
@@ -1620,7 +1622,7 @@ void S_StartSound(const vec3_t origin, int entityNum, int entchannel, sfxHandle_
 		ch->fixed_origin = qfalse;
 	}
 
-	ch->master_vol = SOUND_MAXVOL;	//FIXME: Um.. control?
+	ch->master_vol = (int)( SOUND_MAXVOL * s_startVolume );	//FIXME: Um.. control?
 	ch->entnum = entityNum;
 	ch->entchannel = entchannel;
 	ch->thesfx = sfx;
@@ -1630,7 +1632,7 @@ void S_StartSound(const vec3_t origin, int entityNum, int entchannel, sfxHandle_
 	ch->rightvol = ch->master_vol;		// unless the game isn't running
 
 	if (entchannel < CHAN_AMBIENT && entityNum == listener_number) {	//only do it for body sounds not local sounds
-		ch->master_vol = SOUND_MAXVOL * SOUND_FMAXVOL;	//this won't be attenuated so let it scale down
+		ch->master_vol = (int)( SOUND_MAXVOL * SOUND_FMAXVOL * s_startVolume );	//this won't be attenuated so let it scale down
 	}
 	if ( entchannel == CHAN_VOICE || entchannel == CHAN_VOICE_ATTEN || entchannel == CHAN_VOICE_GLOBAL )
 	{
@@ -5236,6 +5238,112 @@ int SND_FreeOldestSound(sfx_t *pButNotThisOne /* = NULL */)
 
 	return iBytesFreed;
 }
+/*
+===============================================================================
+
+OpenJK-rpmod: sounds made in code (the instruments' notes, cl_instruments.cpp)
+
+===============================================================================
+*/
+
+void ResampleSfx( sfx_t *sfx, int iInRate, int iInWidth, byte *pData );	// snd_mem.cpp
+
+// one made from 16-bit mono PCM at that rate, kept as a loaded file's would be (at the mixer's rate)
+// under a name no file has: "*..." is never looked for on disk. Not with OpenAL (0 then)
+sfxHandle_t S_RegisterSoundFromPCM( const char *name, const short *pcm, int samples, int rate )
+{
+	sfx_t *sfx;
+
+	if ( !s_soundStarted || !pcm || samples <= 0 || rate <= 0 || strlen( name ) >= MAX_QPATH )
+		return 0;
+#ifdef USE_OPENAL
+	if ( s_UseOpenAL )
+		return 0;
+#endif
+	sfx = S_FindName( name );
+	if ( sfx->pSoundData && sfx->bInMemory && !sfx->bDefaultSound ) {
+		SND_TouchSFX( sfx );
+		return sfx - s_knownSfx;
+	}
+	if ( sfx->pSoundData )
+		SND_FreeSFXMem( sfx );
+	sfx->bDefaultSound = qfalse;
+	sfx->eSoundCompressionMethod = ct_16;
+	sfx->iSoundLengthInSamples = samples;
+	ResampleSfx( sfx, rate, 2, (byte *)pcm );
+	sfx->bInMemory = qtrue;
+	SND_TouchSFX( sfx );
+	return sfx - s_knownSfx;
+}
+
+// still there to play, as that name: a level's end or the sound pool may have freed it, a sound
+// restart given its number to another
+qboolean S_SoundReady( sfxHandle_t sfxHandle, const char *name )
+{
+	const sfx_t *sfx;
+
+	if ( !s_soundStarted || sfxHandle <= 0 || sfxHandle >= s_numSfx )
+		return qfalse;
+	sfx = &s_knownSfx[sfxHandle];
+	return (qboolean)( sfx->bInMemory && sfx->pSoundData && !sfx->bDefaultSound && !Q_stricmp( sfx->sSoundName, name ) );
+}
+
+// its memory given back, unless a channel plays it now
+void S_FreeSound( sfxHandle_t sfxHandle )
+{
+	sfx_t *sfx;
+
+	if ( !s_soundStarted || sfxHandle <= 0 || sfxHandle >= s_numSfx )
+		return;
+	sfx = &s_knownSfx[sfxHandle];
+	for ( int i = 0; i < MAX_CHANNELS; i++ ) {
+		if ( s_channels[i].thesfx == sfx )
+			return;
+	}
+	SND_FreeSFXMem( sfx );
+}
+
+// S_StartSound at a volume, 0 to 1
+void S_StartSoundVol( const vec3_t origin, int entnum, int entchannel, sfxHandle_t sfx, float volume )
+{
+	s_startVolume = volume < 0.0f ? 0.0f : volume > 1.0f ? 1.0f : volume;
+	S_StartSound( origin, entnum, entchannel, sfx );
+	s_startVolume = 1.0f;
+}
+
+// the channels playing a sound whose name starts so
+int S_CountPlaying( const char *prefix )
+{
+	const size_t len = strlen( prefix );
+	int count = 0;
+
+	if ( !s_soundStarted )
+		return 0;
+	for ( int i = 0; i < MAX_CHANNELS; i++ ) {
+		if ( s_channels[i].thesfx && !strncmp( s_channels[i].thesfx->sSoundName, prefix, len ) )
+			count++;
+	}
+	return count;
+}
+
+// the one of them started first, stopped
+void S_StopOldestPlaying( const char *prefix )
+{
+	const size_t len = strlen( prefix );
+	channel_t *oldest = NULL;
+
+	if ( !s_soundStarted )
+		return;
+	for ( int i = 0; i < MAX_CHANNELS; i++ ) {
+		channel_t *ch = &s_channels[i];
+
+		if ( ch->thesfx && !strncmp( ch->thesfx->sSoundName, prefix, len ) && ( !oldest || ch->startSample < oldest->startSample ) )
+			oldest = ch;
+	}
+	if ( oldest )
+		oldest->thesfx = NULL;
+}
+
 int SND_FreeOldestSound(void)
 {
 	return SND_FreeOldestSound(NULL);	// I had to add a void-arg version of this because of link issues, sigh

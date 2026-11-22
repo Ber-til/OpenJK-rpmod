@@ -593,6 +593,11 @@ void G2_TransformModel(CGhoul2Info_v &ghoul2, const int frameNum, vec3_t scale, 
 		{
 			continue;
 		}
+		// OpenJK-rpmod: no bones built for it (never put in the skeleton): left out rather than crash
+		if ( !g.mBoneCache )
+		{
+			continue;
+		}
 		assert(g.mBoneCache);
 //		assert(G2_MODEL_OK(&g));
 #ifndef VK_G2_POINTER_FRAMECACHE
@@ -1590,6 +1595,11 @@ void G2_TraceModels(CGhoul2Info_v &ghoul2, vec3_t rayStart, vec3_t rayEnd, Colli
 
 		// don't bother with models that we don't care about.
 		if (!ghoul2[i].mValid)
+		{
+			continue;
+		}
+		// OpenJK-rpmod: not transformed (no bones), so nothing of it to trace
+		if ( !ghoul2[i].mBoneCache )
 		{
 			continue;
 		}

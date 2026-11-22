@@ -42,6 +42,8 @@ static void SS_StyleTintBegin( void ) {
 		ssStyleTint[c] = s[c] / base;
 }
 
+void RB_SurfaceSpriteDlights( byte *color, const vec3_t loc );	// vk_rpmod_post.cpp: lit by dynamic lights
+
 static void SS_StyleTint( color4ub_t color ) {
 	if ( !ssStyleTinted )
 		return;
@@ -429,6 +431,7 @@ static void RB_VerticalSurfaceSprite(vec3_t loc, float width, float height, byte
 	color[2] = light;
 	color[3] = alpha;
 	SS_StyleTint( color );
+	RB_SurfaceSpriteDlights( color, loc );
 
 	// Bottom right
 //	VectorAdd(loc, right, point);
@@ -526,6 +529,7 @@ static void RB_VerticalSurfaceSpriteWindPoint(vec3_t loc, float width, float hei
 	color[2] = light;
 	color[3] = alpha;
 	SS_StyleTint( color );
+	RB_SurfaceSpriteDlights( color, loc );
 
 	// Bottom right
 //	VectorAdd(loc, right, point);
@@ -872,6 +876,7 @@ static void RB_OrientedSurfaceSprite(vec3_t loc, float width, float height, byte
 	color[2] = light;
 	color[3] = alpha;
 	SS_StyleTint( color );
+	RB_SurfaceSpriteDlights( color, loc );
 
 	if (faceup)
 	{
@@ -1148,6 +1153,7 @@ static void RB_EffectSurfaceSprite(vec3_t loc, float width, float height, byte l
 	color[2] = light;	//light;
 	color[3] = alpha;	//alpha;
 	SS_StyleTint( color );
+	RB_SurfaceSpriteDlights( color, loc );
 
 	if (faceup)
 	{

@@ -47,6 +47,9 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define PM_SCALE		0.7f
 #define PM_MESSAGE_MS	5000
 #define PM_SNAP_FRAMES	4			// drawn without the panel before the shot's taken, on the last
+#define PM_CHAT_REACH	64.0f		// Chat's camera: from your eyes, at most
+#define PM_CHAT_SHOT	"zzchatshot"	// its shot, screenshots/<this>.png, read by Chat then deleted
+#define PM_FRAME_SQUARE	4			// pmFrames' 1:1
 
 // the frames to shoot in: width over height, 0 the screen's own
 static const struct { const char *name; float aspect; } pmFrames[] = {
@@ -97,6 +100,9 @@ static struct {
 	char		message[MAX_STRING_CHARS];
 	int			messageTime;
 	char		thirdPerson[16];		// the player's cg_thirdPerson, put back on closing
+	qboolean	chat;					// Chat's camera: within reach, square, a click takes it for a message
+	qboolean	chatShot;				// its shot taken: Chat told, not cancelled, on closing
+	int			chatFrame;				// the frame the panel had, put back
 } ph;
 
 static const float pmPanel[4]		= { 0.0f, 0.0f, 0.08f, 0.85f };
@@ -212,6 +218,12 @@ static void PM_Close( void ) {
 	if ( !ph.open )
 		return;
 	ph.open = qfalse;
+	if ( ph.chat ) {
+		ph.chat = qfalse;
+		ph.frame = ph.chatFrame;
+		if ( !ph.chatShot )
+			CL_Chat_CameraDone( NULL );
+	}
 	ph.drag = NULL;
 	ph.looking = ph.mouseHeld = qfalse;
 	memset( ph.held, 0, sizeof( ph.held ) );
@@ -223,6 +235,28 @@ static void PM_Close( void ) {
 
 void CL_PhotoMode_Close( void ) {
 	PM_Close();
+}
+
+// Chat's camera: from your eyes, within reach of them, square; a click takes the picture, handed to
+// Chat (CL_Chat_CameraDone), Esc goes back without one
+qboolean CL_PhotoMode_OpenForChat( void ) {
+	if ( ph.open )
+		PM_Close();
+	PM_Open();
+	if ( !ph.open )
+		return qfalse;
+	ph.chat = qtrue;
+	ph.chatShot = qfalse;
+	ph.chatFrame = ph.frame;
+	ph.frame = PM_FRAME_SQUARE;
+	VectorCopy( cl.snap.ps.origin, ph.org );
+	ph.org[2] += cl.snap.ps.viewheight;
+	VectorCopy( cl.viewangles, ph.ang );
+	ph.ang[ROLL] = 0.0f;
+	ph.roll = 0.0f;
+	ph.fov = 80.0f;
+	PM_Message( "Mouse: look; WASD, Space, C: move, within reach; click: take it; Esc: back" );
+	return qtrue;
 }
 
 // flown: the keys held, within reach of the player
@@ -261,6 +295,20 @@ void CL_PhotoMode_Frame( void ) {
 
 	// within reach of the player: further, the server doesn't send who's there
 	VectorCopy( cl.snap.ps.origin, player );
+	if ( ph.chat ) {
+		// Chat's: within an arm's reach of your eyes, and never through a wall
+		static const vec3_t mins = { -4, -4, -4 }, maxs = { 4, 4, 4 };
+		trace_t tr;
+
+		player[2] += cl.snap.ps.viewheight;
+		VectorSubtract( ph.org, player, d );
+		len = VectorLength( d );
+		if ( len > PM_CHAT_REACH )
+			VectorMA( player, PM_CHAT_REACH / len, d, ph.org );
+		CM_BoxTrace( &tr, player, ph.org, mins, maxs, 0, CONTENTS_SOLID | CONTENTS_PLAYERCLIP, qfalse );
+		VectorCopy( tr.endpos, ph.org );
+		return;
+	}
 	VectorSubtract( ph.org, player, d );
 	len = VectorLength( d );
 	if ( len > PM_MAX_DIST )
@@ -310,14 +358,14 @@ qboolean CL_PhotoMode_RenderScene( const refdef_t *fd ) {
 		view.viewContents = CM_PointContents( ph.org, 0 );
 		// the snapshot's area mask is the player's, the camera can be elsewhere
 		memset( view.areamask, 0, sizeof( view.areamask ) );
-		if ( ph.dof && re->ext.SetDepthOfField ) {
+		if ( ph.dof && !ph.chat && re->ext.SetDepthOfField ) {
 			re->ext.SetDepthOfField( ph.focus, ph.range, ph.blur );
 			dof = qtrue;
 		}
-		if ( PM_LookChanged() && re->ext.SetScreenFilter ) {
+		if ( PM_LookChanged() && !ph.chat && re->ext.SetScreenFilter ) {
 			screenFilter_t f;
 
-			RC_PhotoFilter( &f, ph.filter, ph.saturation, ph.contrast, ph.brightness, ph.warmth );
+			RC_PhotoFilter( &f, ph.filter, ph.filter != RC_FI_NONE ? ph.strength / 100.0f : 1.0f, ph.saturation, ph.contrast, ph.brightness, ph.warmth );
 			f.grain = Q_max( f.grain, ph.grain );
 			f.vignette = Q_max( f.vignette, ph.vignette );
 			f.aberration = Q_max( f.aberration, ph.aberration );
@@ -326,7 +374,6 @@ qboolean CL_PhotoMode_RenderScene( const refdef_t *fd ) {
 				if ( f.scanlineCount <= 0.0f )
 					f.scanlineCount = 240.0f;
 			}
-			f.strength = ph.filter != RC_FI_NONE ? ph.strength / 100.0f : 1.0f;
 			re->ext.SetScreenFilter( &f );
 			look = qtrue;
 		}
@@ -582,6 +629,12 @@ static void PM_DrawFrame( void ) {
 static void PM_Snap( void ) {
 	qtime_t t;
 
+	if ( ph.chat ) {
+		Q_strncpyz( ph.snapName, PM_CHAT_SHOT, sizeof( ph.snapName ) );
+		FS_HomeRemove( "screenshots/" PM_CHAT_SHOT ".png" );
+		ph.snap = 1;
+		return;
+	}
 	Com_RealTime( &t );
 	Com_sprintf( ph.snapName, sizeof( ph.snapName ), "photo_%04i%02i%02i_%02i%02i%02i", t.tm_year + 1900, t.tm_mon + 1, t.tm_mday,
 		t.tm_hour, t.tm_min, t.tm_sec );
@@ -721,11 +774,32 @@ void CL_PhotoMode_Draw( void ) {
 	}
 	if ( ph.snap > PM_SNAP_FRAMES ) {
 		ph.snap = 0;
+		// Chat's: handed to it (the file may be written at this frame's end), the camera closed
+		if ( ph.chat ) {
+			ph.chatShot = qtrue;
+			CL_Chat_CameraDone( "screenshots/" PM_CHAT_SHOT ".png" );
+			PM_Close();
+			return;
+		}
 		PM_Message( va( "Saved screenshots/%s.png", ph.snapName ) );
 		Com_Printf( "Photo mode: saved screenshots/%s.png\n", ph.snapName );
 	}
 	PM_DrawFrame();
+	// Chat's camera: the frame, and what to do, no panel nor cursor
+	if ( ph.chat ) {
+		float x0, y0, x1, y1;
 
+		PM_FrameRect( &x0, &y0, &x1, &y1 );
+		PM_Fill( x0 * SCREEN_WIDTH, y0 * SCREEN_HEIGHT, ( x1 - x0 ) * SCREEN_WIDTH, 1, pmLine );
+		PM_Fill( x0 * SCREEN_WIDTH, y1 * SCREEN_HEIGHT - 1, ( x1 - x0 ) * SCREEN_WIDTH, 1, pmLine );
+		PM_Fill( x0 * SCREEN_WIDTH, y0 * SCREEN_HEIGHT, 1, ( y1 - y0 ) * SCREEN_HEIGHT, pmLine );
+		PM_Fill( x1 * SCREEN_WIDTH - 1, y0 * SCREEN_HEIGHT, 1, ( y1 - y0 ) * SCREEN_HEIGHT, pmLine );
+		PM_Text( x0 * SCREEN_WIDTH, y1 * SCREEN_HEIGHT - 18, ( x1 - x0 ) * SCREEN_WIDTH,
+			"Click: take the picture   Mouse: look   WASD: move   Esc: back", pmWhite, qtrue );
+		ph.click = qfalse;
+		ph.wheel = 0;
+		return;
+	}
 	if ( !ph.hidden ) {
 		PM_Box( PM_X, PM_Y, PM_W, PM_H, pmPanel );
 		re->Font_DrawString( (int)PM_IN, (int)( PM_Y + 6 ), "PHOTO MODE", pmOrange, ph.titleFont | STYLE_DROPSHADOW, -1, PM_SCALE + 0.15f );
@@ -772,6 +846,12 @@ void CL_PhotoMode_KeyEvent( int key, qboolean down ) {
 		ph.held[key] = down;
 	if ( !ph.open )
 		return;
+	// Chat's camera: a click or Enter takes it
+	if ( ph.chat ) {
+		if ( down && ( key == A_MOUSE1 || key == A_ENTER || key == A_KP_ENTER ) && ph.snap == 0 )
+			PM_Snap();
+		return;
+	}
 	if ( key == A_MOUSE1 ) {
 		ph.mouseHeld = down;
 		if ( down ) {
@@ -815,7 +895,7 @@ void CL_PhotoMode_KeyEvent( int key, qboolean down ) {
 
 // the cursor, or with the right button held the camera, turned as the mouse would
 void CL_PhotoMode_MouseEvent( int dx, int dy ) {
-	if ( ph.looking ) {
+	if ( ph.looking || ph.chat ) {
 		const float sens = Cvar_VariableValue( "sensitivity" ) * ( ph.fov / 90.0f );
 
 		ph.ang[YAW] -= Cvar_VariableValue( "m_yaw" ) * dx * sens;

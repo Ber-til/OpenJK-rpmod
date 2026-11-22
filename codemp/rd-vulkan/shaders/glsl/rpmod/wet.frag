@@ -25,8 +25,8 @@ layout(push_constant) uniform Params {
 
 layout(location = 0) out vec4 out_color;
 
-const int STEPS = 20;
-const int REFINE = 4;
+const int STEPS = 48;		// short steps growing slowly: thin edges (a chair's rim) found where they are
+const int REFINE = 7;
 
 float Dist( vec2 p )
 {
@@ -41,6 +41,25 @@ vec3 Point( vec2 p )
 vec3 Source( vec2 p )
 {
 	return texelFetch( sourceTexture, ivec2( ClampToView( p, pc.rect ) ), 0 ).rgb;
+}
+
+// a reflection's colour where the ray landed: blended across a small footprint round the exact point,
+// not the one whole pixel it falls in, so what's mirrored isn't blocky
+vec3 SourceSoft( vec2 p )
+{
+	const vec2 size = vec2( textureSize( sourceTexture, 0 ) );
+	const vec2 c = ClampToView( p, pc.rect );
+	return 0.25 * ( texture( sourceTexture, ( c + vec2( -0.6, -0.6 ) ) / size ).rgb + texture( sourceTexture, ( c + vec2( 0.6, -0.6 ) ) / size ).rgb
+		+ texture( sourceTexture, ( c + vec2( -0.6, 0.6 ) ) / size ).rgb + texture( sourceTexture, ( c + vec2( 0.6, 0.6 ) ) / size ).rgb );
+}
+
+// a hit is only as good as how near what's drawn there the ray ended: one that went far behind it (past a
+// chair's leg) has nothing true to show, and faded out rather than smeared downward from it
+float HitThickness( vec3 Q, vec2 q )
+{
+	const float behind = Q.z - Dist( q );
+	const float thick = max( 6.0, Q.z * 0.015 );
+	return 1.0 - smoothstep( thick, thick * 3.0, behind );
 }
 
 vec2 Pixel( vec3 P )
@@ -142,14 +161,14 @@ void main()
 	const vec3 R = reflect( V, Nr );
 	const float cosT = clamp( dot( -V, Nr ), 0.0, 1.0 );
 	const float fresnel = 0.04 + 0.96 * pow( 1.0 - cosT, 5.0 );
-	float stepLen = max( 4.0, z * 0.02 ) * ( 0.75 + 0.5 * PixelNoise( gl_FragCoord.xy ) );
+	float stepLen = max( 2.0, z * 0.008 ) * ( 0.95 + 0.1 * PixelNoise( gl_FragCoord.xy ) );	// barely turned: a jitter between neighbours made a reflection\'s outline ragged
 	vec3 Q = P + N * 1.0, prev = Q;
 	bool hit = false;
 
 	for ( int i = 0; i < STEPS; i++ ) {
 		prev = Q;
 		Q += R * stepLen;
-		stepLen *= 1.2;
+		stepLen *= 1.08;
 		if ( Q.z <= 1.0 )
 			break;
 		const vec2 s = Pixel( Q );
@@ -177,8 +196,8 @@ void main()
 			const float farW = 1.0 - smoothstep( 600.0, 1200.0, length( Q - P ) );
 			// a puddle mirrors, wet ground only shines a little
 			const float shine = mix( 0.25 * wet, 0.9, puddle );
-			const float w = clamp( pc.maxs.w * shine * fresnel * edgeW * farW * groundW, 0.0, 0.85 );
-			c = mix( c, Source( s ), w );
+			const float w = clamp( pc.maxs.w * shine * fresnel * edgeW * farW * groundW * HitThickness( Q, s ), 0.0, 0.85 );
+			c = mix( c, SourceSoft( s ), w );
 		}
 	}
 	out_color = vec4( c, 1.0 );

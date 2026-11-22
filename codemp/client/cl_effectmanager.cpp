@@ -42,6 +42,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #include "FxScheduler.h"
 #include "cl_gizmo.h"
 #include "cl_widgets.h"
+#include "cl_presence.h"
 
 #define EM_ROOT				"effects"
 #define EM_EXT				".efx"
@@ -186,6 +187,10 @@ typedef enum {
 	EM_F_ACTIVE_SEARCH,
 	EM_F_INTENSITY,
 	EM_F_DURATION,
+	EM_F_SWAY_STRENGTH,	// our camera sway (camshake): strength, speed, seconds, and who ("" everyone)
+	EM_F_SWAY_SPEED,
+	EM_F_SWAY_SECONDS,
+	EM_F_SWAY_WHO,
 	EM_F_PICKER_SEARCH,
 	EM_F_NAME,			// what the effects sent are named, "" = nothing
 	EM_F_STATE_NAME,
@@ -3577,6 +3582,132 @@ void CL_EffectManager_Close( void ) {
 		EM_Close();
 }
 
+/*
+===============================================================================
+
+Camera sway (camshake): ours, with a speed
+
+RPMod's rpeffect camerashake shakes at its own pace, in its game code; this one sways the view of
+those with the client at the pace asked, slow as the drunk or fast as a quake. An admin's, through
+C1B3R as cmd:camshake/<strength>/<speed>/<seconds> (strength 0: stopped), to everyone or one player
+
+===============================================================================
+*/
+
+#define CS_FADE_IN_MS		400
+
+static struct {
+	int		start, len;		// cls.realtime; 0 none
+	float	strength, speed;
+} cs;
+
+// a smooth wobble between -1 and 1: waves that never line up (as the cinematic camera's handheld)
+static float CS_Wobble( float t, float f, float phase ) {
+	return ( sinf( t * f + phase ) + 0.6f * sinf( t * f * 2.31f + phase * 1.7f ) + 0.3f * sinf( t * f * 4.73f + phase * 2.9f ) ) / 1.9f;
+}
+
+// the view swayed while it lasts, into out: qfalse with none
+qboolean CL_CamShake_View( const refdef_t *fd, refdef_t *out ) {
+	const int in = cls.realtime - cs.start;
+	float t, env, amp, f;
+	vec3_t delta, d[3], axis[3];
+
+	if ( !cs.len || ( fd->rdflags & RDF_NOWORLDMODEL ) )
+		return qfalse;
+	if ( in >= cs.len || in < 0 ) {
+		cs.len = 0;
+		return qfalse;
+	}
+	t = in / 1000.0f;
+	// in gently, out over its last quarter
+	env = Q_min( 1.0f, in / (float)CS_FADE_IN_MS ) * Q_min( 1.0f, ( cs.len - in ) / ( cs.len * 0.25f ) );
+	amp = cs.strength * 0.9f * env;		// degrees: 1 a tremble, 10 reeling
+	f = 1.2f * cs.speed;
+	VectorSet( delta, amp * CS_Wobble( t, f, 0.0f ), amp * CS_Wobble( t, f * 0.85f, 1.3f ), amp * 1.2f * CS_Wobble( t, f * 0.7f, 2.1f ) );
+	*out = *fd;
+	// turned in the view's own frame
+	AnglesToAxis( delta, d );
+	VectorCopy( fd->viewaxis[0], axis[0] );
+	VectorCopy( fd->viewaxis[1], axis[1] );
+	VectorCopy( fd->viewaxis[2], axis[2] );
+	for ( int i = 0; i < 3; i++ ) {
+		for ( int k = 0; k < 3; k++ )
+			out->viewaxis[i][k] = d[i][0] * axis[0][k] + d[i][1] * axis[1][k] + d[i][2] * axis[2][k];
+	}
+	out->vieworg[2] += amp * 0.4f * CS_Wobble( t, f * 1.1f, 0.4f );
+	return qtrue;
+}
+
+static void CS_Start( float strength, float speed, float seconds ) {
+	if ( strength <= 0.0f || seconds <= 0.0f ) {
+		cs.len = 0;
+		return;
+	}
+	cs.strength = Com_Clamp( 0.1f, 10.0f, strength );
+	cs.speed = Com_Clamp( 0.1f, 10.0f, speed );
+	cs.len = (int)( Com_Clamp( 0.1f, 600.0f, seconds ) * 1000.0f );
+	cs.start = cls.realtime;
+}
+
+// cmd:camshake/<strength>/<speed>/<seconds>
+void CL_CamShake_Hook( char **argv, int argc ) {
+	CS_Start( argc >= 1 ? (float)atof( argv[0] ) : 0.0f, argc >= 2 ? (float)atof( argv[1] ) : 1.0f, argc >= 3 ? (float)atof( argv[2] ) : 0.0f );
+}
+
+void CL_CamShake_Disconnect( void ) {
+	cs.len = 0;
+}
+
+// a player by number or by name (colours left out, case not minded, part of it will do); -1 none, -2 several
+static int CS_Player( const char *who ) {
+	char want[MAX_QPATH], name[MAX_QPATH];
+	int found = -1;
+
+	if ( Q_isanumber( who ) )
+		return atoi( who ) >= 0 && atoi( who ) < MAX_CLIENTS && CL_PlayerSlotName( atoi( who ) )[0] ? atoi( who ) : -1;
+	Q_strncpyz( want, who, sizeof( want ) );
+	Q_StripColor( want );
+	Q_strlwr( want );
+	for ( int i = 0; i < MAX_CLIENTS; i++ ) {
+		Q_strncpyz( name, CL_PlayerSlotName( i ), sizeof( name ) );
+		if ( !name[0] )
+			continue;
+		Q_StripColor( name );
+		Q_strlwr( name );
+		if ( !strcmp( name, want ) )
+			return i;
+		if ( strstr( name, want ) )
+			found = found == -1 ? i : -2;
+	}
+	return found;
+}
+
+// camshake <strength 1-10> <speed 0.1-10> <seconds> [player] | camshake stop [player]
+static void CL_CamShake_f( void ) {
+	const qboolean stop = (qboolean)( Cmd_Argc() >= 2 && !Q_stricmp( Cmd_Argv( 1 ), "stop" ) );
+	const int whoArg = stop ? 2 : 4;
+	int to = -1;
+
+	if ( !stop && Cmd_Argc() < 4 ) {
+		Com_Printf( "usage: camshake <strength 1-10> <speed 0.1-10> <seconds> [player]   the view sways for everyone here with the client\n"
+			"       (speed 0.5 a slow drunken sway, 1 held by hand, 5 and up a quake), or only the player named\n"
+			"       camshake stop [player]\n" );
+		return;
+	}
+	if ( Cmd_Argc() > whoArg ) {
+		to = CS_Player( Cmd_ArgsFrom( whoArg ) );
+		if ( to < 0 ) {
+			Com_Printf( to == -2 ? "camshake: more than one player has that in their name\n" : "camshake: no such player here\n" );
+			return;
+		}
+	}
+	if ( stop )
+		CL_Presence_Hook( to, "cmd:camshake/0/1/0" );
+	else
+		CL_Presence_Hook( to, va( "cmd:camshake/%g/%g/%g", Com_Clamp( 0.1f, 10.0f, (float)atof( Cmd_Argv( 1 ) ) ),
+			Com_Clamp( 0.1f, 10.0f, (float)atof( Cmd_Argv( 2 ) ) ), Com_Clamp( 0.1f, 600.0f, (float)atof( Cmd_Argv( 3 ) ) ) ) );
+}
+
 void CL_EffectManager_Init( void ) {
 	memset( &em, 0, sizeof( em ) );
 	em.effect = -1;
@@ -3588,11 +3719,16 @@ void CL_EffectManager_Init( void ) {
 	Q_strncpyz( em.fields[EM_F_BOLT], "*r_hand", EM_FIELD_LEN );
 	Q_strncpyz( em.fields[EM_F_INTENSITY], "5", EM_FIELD_LEN );
 	Q_strncpyz( em.fields[EM_F_DURATION], "2", EM_FIELD_LEN );
+	Q_strncpyz( em.fields[EM_F_SWAY_STRENGTH], "4", EM_FIELD_LEN );
+	Q_strncpyz( em.fields[EM_F_SWAY_SPEED], "0.5", EM_FIELD_LEN );
+	Q_strncpyz( em.fields[EM_F_SWAY_SECONDS], "30", EM_FIELD_LEN );
+	Cmd_AddCommand( "camshake", CL_CamShake_f, "The view swayed for everyone here with the client, or one player: strength, speed, seconds (a drunken sway, a quake)" );
 }
 
 // cgame is going away: map change, disconnect or vid_restart
 void CL_EffectManager_Shutdown( void ) {
 	CL_EffectManager_Close();
+	CL_CamShake_Disconnect();		// a sway doesn't follow you to the next map
 	// effects bolted to our copies die with the cgame's effects system
 	EM_FreeModels();
 	for ( int i = 0; i < em.numEffects; i++ ) {
@@ -3837,9 +3973,12 @@ static qboolean EM_FieldAllows( emField_t f, int ch ) {
 		return EM_NameChar( ch );
 	if ( f == EM_F_PITCH || f == EM_F_YAW || f == EM_F_ROLL )
 		return (qboolean)( ( ch >= '0' && ch <= '9' ) || ch == '-' || ch == '.' );
-	if ( f == EM_F_INTENSITY || f == EM_F_DURATION )
+	if ( f == EM_F_INTENSITY || f == EM_F_DURATION || f == EM_F_SWAY_STRENGTH || f == EM_F_SWAY_SPEED || f == EM_F_SWAY_SECONDS )
 		return (qboolean)( ( ch >= '0' && ch <= '9' ) || ch == '.' );
 	// goes on the command line as a single argument
+	// a player's name or number, on the command line: no second command slipped in
+	if ( f == EM_F_SWAY_WHO )
+		return (qboolean)( ch >= ' ' && ch < 127 && ch != '"' && ch != ';' );
 	if ( f == EM_F_BOLT )
 		return (qboolean)( ch > ' ' && ch < 127 && ch != '"' && ch != ';' );
 	return (qboolean)( ch >= ' ' && ch < 127 );
@@ -5819,6 +5958,21 @@ static void EM_DrawPresets( void ) {
 	if ( EM_Button( cx + 128, y, 76, "Shake", qfalse, (qboolean)( em.fields[EM_F_INTENSITY][0] && em.fields[EM_F_DURATION][0] ) ) )
 		EM_Queue( va( "rpeffect camerashake %s %s", em.fields[EM_F_INTENSITY], em.fields[EM_F_DURATION] ), qtrue );
 	EM_Text( cx + 214, y + 2, S_COLOR_GREY "intensity, then how long in seconds", emWhite );
+
+	// ours, with a speed: seen by those with the client
+	y += 22;
+	EM_Label( x, y, "Sway" );
+	EM_Field( EM_F_SWAY_STRENGTH, cx, y, 46, "1-10" );
+	EM_Field( EM_F_SWAY_SPEED, cx + 50, y, 46, "speed" );
+	EM_Field( EM_F_SWAY_SECONDS, cx + 100, y, 46, "seconds" );
+	EM_Field( EM_F_SWAY_WHO, cx + 150, y, 110, "everyone" );
+	if ( EM_Button( cx + 264, y, 60, "Sway", qfalse, (qboolean)( em.fields[EM_F_SWAY_STRENGTH][0] && em.fields[EM_F_SWAY_SPEED][0] && em.fields[EM_F_SWAY_SECONDS][0] ) ) )
+		Cbuf_AddText( va( "camshake %s %s %s %s\n", em.fields[EM_F_SWAY_STRENGTH], em.fields[EM_F_SWAY_SPEED], em.fields[EM_F_SWAY_SECONDS], em.fields[EM_F_SWAY_WHO] ) );
+	if ( EM_Button( cx + 328, y, 50, "Stop", qfalse, qtrue ) )
+		Cbuf_AddText( va( "camshake stop %s\n", em.fields[EM_F_SWAY_WHO] ) );
+	EM_Text( cx + 386, y + 2, S_COLOR_GREY "speed: 0.5 drunk, 5 a quake", emWhite );
+	y += 18;
+	EM_Text( cx, y, S_COLOR_GREY "Sway is ours: only those with the client see it; a name or number for one player", emWhite );
 
 	if ( em.lastCmd[0] ) {
 		EM_TextClipped( x, y + 34, SCREEN_WIDTH - 32,

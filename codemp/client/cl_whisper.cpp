@@ -84,6 +84,25 @@ static const char *WH_Notice( const char *name ) {
 	return va( WH_NOTICE, slot, name );
 }
 
+// RPMod's info notice in the top left, with its sound, for another of this client's own (a dice roll)
+const char *CL_Whisper_InfoNotice( const char *text, int ms ) {
+	char clean[MAX_STRING_CHARS];
+	const int slot = WH_InfoSoundSlot();
+
+	Q_strncpyz( clean, text, sizeof( clean ) );
+	for ( char *c = clean; *c; c++ ) {
+		if ( *c == '"' )
+			*c = '\'';
+	}
+	if ( !slot ) {
+		const sfxHandle_t sfx = S_RegisterSound( WH_SOUND ".wav" );
+
+		if ( sfx )
+			S_StartLocalSound( sfx, CHAN_LOCAL_SOUND );
+	}
+	return va( "info %i 2 %i 8 \":: %s" S_COLOR_WHITE " ::\"", ms, slot, clean );
+}
+
 void CL_Whisper_Init( void ) {
 	cl_whisper = Cvar_Get( "cl_whisper", "0", CVAR_ARCHIVE_ND,
 		"Whispers (chat in ^k): 1 shows them only to those close by, a notice to those a little farther" );

@@ -863,6 +863,7 @@ static void vk_update_camera_constants( const trRefdef_t *refdef, const viewParm
 
 	Com_Memcpy( uniform.viewOrigin, refdef->vieworg, sizeof( vec3_t) );
 	uniform.viewOrigin[3] = refdef->floatTime;
+	vk_rpmod_camera_dlights( &uniform, refdef );	// OpenJK-rpmod: for the surface sprites
 
 	/*
 	const float* p = viewParms->projectionMatrix;

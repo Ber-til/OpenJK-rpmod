@@ -354,6 +354,9 @@ static void CL_R_AddRefEntityToScene( const refEntity_t *ent ) {
 	re->AddRefEntityToScene( ent );
 	// what they wear (/holster), on the body as it's drawn
 	CL_Holster_Entity( ent, bodyGhoul2 );
+	// whose body it is, for their head's turn (+headlook)
+	if ( bodyGhoul2 )
+		CL_HeadLook_Entity( ent, bodyGhoul2 );
 }
 
 // cgame's lights wait for the scene, so the saber light can leave out the one it gives a blade
@@ -401,6 +404,16 @@ static void CL_FX_PlayEntityEffectID( int id, vec3_t org, matrix3_t axis, const 
 }
 
 static void CL_R_RenderScene( const refdef_t *fd ) {
+	refdef_t swayed;
+
+	refdef_t headTurned;
+
+	// the camera sway (camshake) on every view of the world, its sky's too
+	if ( CL_CamShake_View( fd, &swayed ) )
+		fd = &swayed;
+	// and your head turned (+headlook)
+	if ( CL_HeadLook_View( fd, &headTurned ) )
+		fd = &headTurned;
 	// the lights held back, and the blades' own
 	CL_SaberLight_RenderScene();
 	// the sky's look the shader manager set, spinning
@@ -423,6 +436,9 @@ static void CL_R_RenderScene( const refdef_t *fd ) {
 	CL_SkyComposer_AddToScene( fd );
 	// where the crosshair looks, for an NPC's name under it
 	CL_NpcNames_View( fd );
+	// a HoloCall's holograms
+	CL_HoloCall_AddToScene( fd );
+	CL_Instruments_View( fd );
 	CL_Aim_View( fd );
 	// the holster's live editing first: it closes the managers as it opens
 	// photo mode's camera before any tool's: the view the picture is taken from
@@ -733,8 +749,24 @@ static void CL_G2API_CleanGhoul2Models( void **ghoul2Ptr ) {
 	re->G2API_CleanGhoul2Models( (CGhoul2Info_v **)ghoul2Ptr );
 }
 
+static cvar_t *cl_lookLean;
+
 static qboolean CL_G2API_SetBoneAngles( void *ghoul2, int modelIndex, const char *boneName, const vec3_t angles, const int flags, const int up, const int right, const int forward, qhandle_t *modelList, int blendTime , int currentTime ) {
+	vec3_t leaned, turned;
+
 	if ( !ghoul2 ) return qfalse;
+	// looking up or down: the waist takes more of it, so a player leans back and forward with their look
+	// (as MBII's do), not only their head; cl_lookLean times the game's own share, 1 as it was
+	if ( !cl_lookLean )
+		cl_lookLean = Cvar_Get( "cl_lookLean", "2", CVAR_ARCHIVE_ND, "Players lean back and forward as they look up and down: how much the waist bends, times the game's (1 as it was, 0 to 4)" );
+	if ( cl_lookLean->value != 1.0f && boneName && ( !Q_stricmp( boneName, "lower_lumbar" ) || !Q_stricmp( boneName, "upper_lumbar" ) ) ) {
+		VectorCopy( angles, leaned );
+		leaned[PITCH] *= Com_Clamp( 0.0f, 4.0f, cl_lookLean->value );
+		angles = leaned;
+	}
+	// a head turned without the body (+headlook): its neck and head
+	if ( CL_HeadLook_Bone( ghoul2, boneName, angles, turned ) )
+		angles = turned;
 	return re->G2API_SetBoneAngles( *((CGhoul2Info_v *)ghoul2), modelIndex, boneName, angles, flags, (const Eorientations)up, (const Eorientations)right, (const Eorientations)forward, modelList, blendTime , currentTime );
 }
 

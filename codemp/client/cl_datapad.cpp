@@ -79,14 +79,16 @@ typedef enum {
 	DP_COMPORT,
 	DP_NOTES,
 	DP_CHAT,
-	DP_GAMES,		// a folder: Pazaak, WANGA and The Path
+	DP_GAMES,		// a folder: Pazaak, WANGA, The Path and the Arcade
 	DP_WANGA,
 	DP_PATH,
+	DP_ARCADE,		// cl_arcade.cpp: four games for one, a board for each
+	DP_DICE,		// cl_dice.cpp: the Dice Master's systems, your sheet and rolls
 	DP_NUM_APPS
 } dpApp_t;
 
 // an app that needs the room has the datapad bigger while it's on its screen
-static const qboolean dpAppFull[DP_NUM_APPS] = { qfalse, qfalse, qtrue, qtrue, qtrue, qtrue, qtrue, qfalse, qtrue, qtrue };
+static const qboolean dpAppFull[DP_NUM_APPS] = { qfalse, qfalse, qtrue, qtrue, qtrue, qtrue, qtrue, qfalse, qtrue, qtrue, qtrue, qtrue };
 
 // the apps in files of their own: what each is told and given
 static void DP_AppShown( dpApp_t app, qboolean shown ) {
@@ -104,6 +106,10 @@ static void DP_AppShown( dpApp_t app, qboolean shown ) {
 		CL_Games_Shown( GM_WANGA, shown );
 	else if ( app == DP_PATH )
 		CL_Games_Shown( GM_PATH, shown );
+	else if ( app == DP_ARCADE )
+		CL_Arcade_Shown( shown );
+	else if ( app == DP_DICE )
+		CL_Dice_Shown( shown );
 }
 
 typedef enum {
@@ -148,6 +154,7 @@ static struct {
 
 	dpApp_t		app;				// the screen's: the home screen or an app over it
 	dpApp_t		appFrom;
+	int			homeScroll, gamesScroll;	// the icon grids scrolled down this far (pixels), when they don't all fit
 	int			appTime;
 	dpBind_t	binding;			// a key being picked in Settings
 	qboolean	emoting;			// the emote's on: ended as it folds or closes
@@ -163,7 +170,7 @@ static struct {
 	int			messageTime;
 } dp;
 
-static cvar_t *cl_datapadX, *cl_datapadY, *cl_datapadColor, *cl_datapadEmote, *cl_datapadHand;
+static cvar_t *cl_datapadX, *cl_datapadY, *cl_datapadColor, *cl_datapadEmote, *cl_datapadHand, *cl_datapadSilent;
 
 /*
 ===============================================================================
@@ -363,6 +370,8 @@ static void DP_Set( dpState_t state ) {
 		dp.cursorY = r.y + ( SCREEN_HEIGHT - r.y ) * 0.4f;
 		Key_SetCatcher( Key_GetCatcher() | KEYCATCH_DATAPAD );
 		DP_Emote( qtrue );
+		// unfolded: the app on its screen told it's shown again (folding told it it wasn't)
+		DP_AppShown( dp.app, qtrue );
 	} else {
 		Key_SetCatcher( Key_GetCatcher() & ~KEYCATCH_DATAPAD );
 		DP_Emote( qfalse );
@@ -447,7 +456,19 @@ static void DP_Colors( void ) {
 	dpTile[3] = 0.9f;
 }
 
+// what's drawn kept between these heights (a grid scrolled: a row partly out of the screen cut at its
+// edge); none set, everything's drawn
+static float dpClipTop = -1.0e9f, dpClipBottom = 1.0e9f;
+
 void DP_Fill( float x, float y, float w, float h, const float *color ) {
+	if ( y < dpClipTop ) {
+		h -= dpClipTop - y;
+		y = dpClipTop;
+	}
+	if ( y + h > dpClipBottom )
+		h = dpClipBottom - y;
+	if ( h <= 0.0f || w <= 0.0f )
+		return;
 	re->SetColor( color );
 	re->DrawStretchPic( x, y, w, h, 0, 0, 0, 0, cls.whiteShader );
 	re->SetColor( NULL );
@@ -525,6 +546,10 @@ static void DP_ColoredText( float x, float y, float w, const char *text, const f
 void DP_Text( float x, float y, float w, const char *text, const float *color, int font, float scale, qboolean centred ) {
 	char buf[MAX_STRING_CHARS];
 	int len;
+
+	// text isn't cut: a line not all inside the clip isn't drawn
+	if ( y < dpClipTop || y + 22.0f * scale > dpClipBottom )
+		return;
 
 	// colour codes in it: drawn as colours, RPMod's too, never as text
 	for ( const char *p = text; *p; p++ ) {
@@ -769,21 +794,31 @@ static void DP_StatusBar( const dpRect_t *s, float scale ) {
 
 	DP_Text( s->x + 4, s->y + 2, s->w - 8, when, dpText, dp.font, scale, qfalse );
 	server = Info_ValueForKey( cl.gameState.stringData + cl.gameState.stringOffsets[CS_SERVERINFO], "sv_hostname" );
-	if ( server[0] && s->w - tw > DP_Wide( 60 ) )
+	// Do not disturb: said at the right, the server's name short of it
+	if ( cl_datapadSilent->integer ) {
+		const float dw = re->Font_StrLenPixels( "DND", dp.font, scale ) + DP_Wide( 6 );
+
+		DP_Text( s->x + s->w - dw, s->y + 2, dw, "DND", dpWhite, dp.font, scale, qfalse );
+		if ( server[0] && s->w - tw - dw > DP_Wide( 60 ) )
+			DP_Text( s->x + 4 + tw, s->y + 2, s->w - tw - dw - 8, server, dpDim, dp.font, scale, qfalse );
+	} else if ( server[0] && s->w - tw > DP_Wide( 60 ) ) {
 		DP_Text( s->x + 4 + tw, s->y + 2, s->w - tw - 8, server, dpDim, dp.font, scale, qfalse );
+	}
 	DP_Fill( s->x + 2, s->y + DP_STATUS_H - 1, s->w - 4, 1, dpGlow );
 }
 
 // an app's icon: a lit tile (square on the screen, wide or not), its picture, its name under it; clicked
 static qboolean DP_AppIcon( float x, float y, float size, const char *name, void ( *picture )( float, float, float, float ) ) {
 	const float w = DP_Wide( size );
-	const qboolean hover = DP_InRect( x, y, w, size + 13 );
+	// hovered and clicked where it shows: a part cut off by a scrolled grid's edge isn't there
+	const float top = Q_max( y, dpClipTop ), bottom = Q_min( y + size + 13, dpClipBottom );
+	const qboolean hover = (qboolean)( bottom > top && DP_InRect( x, top, w, bottom - top ) );
 
 	DP_Fill( x, y, w, size, hover ? dpButtonHover : dpTile );
 	DP_Frame( x, y, w, size, dpGlow );
 	picture( x, y, w, size );
 	DP_Text( x - w * 0.3f, y + size + 2, w * 1.6f, name, hover ? dpWhite : dpText, dp.font, 0.6f, qtrue );
-	return DP_Clicked( x, y, w, size + 13 );
+	return (qboolean)( bottom > top && DP_Clicked( x, top, w, bottom - top ) );
 }
 
 // Settings' picture: three sliders
@@ -836,6 +871,16 @@ static void DP_NotesPicture( float x, float y, float w, float h ) {
 }
 
 // Chat's picture: a bubble with its three dots
+// the Dice's picture: two dice, a face of each up
+static void DP_DicePicture( float x, float y, float w, float h ) {
+	DP_Frame( x + w * 0.14f, y + h * 0.3f, w * 0.36f, h * 0.36f, dpText );
+	DP_Fill( x + w * 0.29f, y + h * 0.45f, w * 0.06f, h * 0.06f, dpWhite );
+	DP_Frame( x + w * 0.52f, y + h * 0.18f, w * 0.34f, h * 0.34f, dpWhite );
+	DP_Fill( x + w * 0.57f, y + h * 0.23f, w * 0.06f, h * 0.06f, dpText );
+	DP_Fill( x + w * 0.75f, y + h * 0.41f, w * 0.06f, h * 0.06f, dpText );
+	DP_Fill( x + w * 0.2f, y + h * 0.76f, w * 0.6f, h * 0.05f, dpText );
+}
+
 static void DP_ChatPicture( float x, float y, float w, float h ) {
 	DP_Fill( x + w * 0.16f, y + h * 0.22f, w * 0.68f, h * 0.44f, dpWhite );
 	DP_Fill( x + w * 0.24f, y + h * 0.66f, w * 0.12f, h * 0.12f, dpWhite );
@@ -875,18 +920,64 @@ static void DP_PathPicture( float x, float y, float w, float h ) {
 	DP_Fill( x + w * 0.53f, y + h * 0.21f, w * 0.1f, h * 0.1f, dpWhite );
 }
 
+// the Arcade's picture: a screen, a droid on it and a bolt going up
+static void DP_ArcadePicture( float x, float y, float w, float h ) {
+	static const float grey[4] = { 0.62f, 0.64f, 0.68f, 1.0f }, green[4] = { 0.35f, 0.95f, 0.4f, 1.0f };
+
+	DP_Frame( x + w * 0.14f, y + h * 0.16f, w * 0.72f, h * 0.62f, dpText );
+	DP_Fill( x + w * 0.38f, y + h * 0.26f, w * 0.24f, h * 0.14f, grey );
+	DP_Fill( x + w * 0.49f, y + h * 0.46f, w * 0.03f, h * 0.12f, green );
+	DP_Fill( x + w * 0.42f, y + h * 0.64f, w * 0.16f, h * 0.07f, dpWhite );
+	DP_Fill( x + w * 0.4f, y + h * 0.8f, w * 0.2f, h * 0.06f, dpText );
+}
+
+// an app's icon on a grid
+typedef struct {
+	dpApp_t		app;
+	const char	*name;
+	void		( *picture )( float, float, float, float );
+} dpIcon_t;
+
+#define DP_ICON_SIZE	34.0f
+#define DP_ICON_ROW		( DP_ICON_SIZE + 26.0f )	// an icon, its name and the gap under it
+
+// icons three to a row, from y down to bottom; when they don't all fit they're scrolled through with
+// the wheel (*scroll, in pixels), the row at the edge cut off there, a bar at the right saying where.
+// The one clicked, or NULL
+static const dpIcon_t *DP_IconGrid( const dpRect_t *s, float y, float bottom, const dpIcon_t *icons, int count, int *scroll ) {
+	const float x = s->x + DP_Wide( 10 );
+	const int rows = ( count + 2 ) / 3;
+	const float view = bottom - y;
+	const float content = ( rows - 1 ) * DP_ICON_ROW + DP_ICON_SIZE + 16.0f;	// the last row's name under it, and a little room
+	const dpIcon_t *picked = NULL;
+
+	*scroll = (int)Com_Clamp( 0.0f, Q_max( 0.0f, content - view ), (float)*scroll );
+	dpClipTop = y;
+	dpClipBottom = bottom;
+	for ( int i = 0; i < count && !picked; i++ ) {
+		const float iy = y + DP_ICON_ROW * ( i / 3 ) - *scroll;
+
+		if ( iy + DP_ICON_ROW < y || iy > bottom )
+			continue;
+		if ( DP_AppIcon( x + DP_Wide( DP_ICON_SIZE + 16 ) * ( i % 3 ), iy, DP_ICON_SIZE, icons[i].name, icons[i].picture ) )
+			picked = &icons[i];
+	}
+	dpClipTop = -1.0e9f;
+	dpClipBottom = 1.0e9f;
+	if ( content > view )
+		DP_ScrollBar( s->x + s->w - DP_Wide( 7 ), y, view, (float)*scroll, content );
+	return picked;
+}
+
 // the Games folder: its games, three to a row, as the home screen has its apps
 static void DP_DrawGames( const dpRect_t *s ) {
-	const float size = 34.0f;
-	const float x = s->x + DP_Wide( 10 ), y = s->y + DP_STATUS_H + 26;
-	static const struct {
-		dpApp_t		app;
-		const char	*name;
-		void		( *picture )( float, float, float, float );
-	} games[] = {
+	const float y = s->y + DP_STATUS_H + 26;
+	const dpIcon_t *picked;
+	static const dpIcon_t games[] = {
 		{ DP_PAZAAK,	"Pazaak",	DP_PazaakPicture },
 		{ DP_WANGA,		"WANGA",	DP_WangaPicture },
 		{ DP_PATH,		"The Path",	DP_PathPicture },
+		{ DP_ARCADE,	"Arcade",	DP_ArcadePicture },
 	};
 
 	if ( DP_Button( s->x + DP_Wide( 6 ), s->y + DP_STATUS_H + 4, DP_Wide( 50 ), "< Home", qfalse ) ) {
@@ -894,10 +985,8 @@ static void DP_DrawGames( const dpRect_t *s ) {
 		return;
 	}
 	DP_Text( s->x + DP_Wide( 62 ), s->y + DP_STATUS_H + 4, s->w, "Games", dpText, dp.titleFont, 0.5f, qfalse );
-	for ( int i = 0; i < (int)ARRAY_LEN( games ); i++ ) {
-		if ( DP_AppIcon( x + DP_Wide( size + 16 ) * ( i % 3 ), y + ( size + 26 ) * ( i / 3 ), size, games[i].name, games[i].picture ) )
-			DP_SetApp( games[i].app );
-	}
+	if ( ( picked = DP_IconGrid( s, y, s->y + s->h - 4, games, (int)ARRAY_LEN( games ), &dp.gamesScroll ) ) != NULL )
+		DP_SetApp( picked->app );
 }
 
 // back to the Games folder: a game's own Back
@@ -905,28 +994,28 @@ void CL_Datapad_ToGames( void ) {
 	DP_SetApp( DP_GAMES );
 }
 
+// back to the home screen: an app's own Back
+void CL_Datapad_Home( void ) {
+	DP_SetApp( DP_HOME );
+}
+
 static void DP_DrawHome( const dpRect_t *s ) {
-	const float size = 34.0f;
-	const float x = s->x + DP_Wide( 10 ), y = s->y + DP_STATUS_H + 10;
+	const float y = s->y + DP_STATUS_H + 10;
+	const dpIcon_t *picked;
 
 	// the apps in their order, three to a row
-	static const struct {
-		dpApp_t		app;
-		const char	*name;
-		void		( *picture )( float, float, float, float );
-	} apps[] = {
+	static const dpIcon_t apps[] = {
 		{ DP_HOLONET,	"HoloNet",	DP_HoloNetPicture },
 		{ DP_COMPORT,	"Comport",	DP_ComportPicture },
 		{ DP_GAMES,		"Games",	DP_GamesPicture },
 		{ DP_NOTES,		"Notes",	DP_NotesPicture },
 		{ DP_CHAT,		"Chat",		DP_ChatPicture },
 		{ DP_SETTINGS,	"Settings",	DP_SettingsPicture },
+		{ DP_DICE,		"Dice",		DP_DicePicture },
 	};
 
-	for ( int i = 0; i < (int)ARRAY_LEN( apps ); i++ ) {
-		if ( DP_AppIcon( x + DP_Wide( size + 16 ) * ( i % 3 ), y + ( size + 26 ) * ( i / 3 ), size, apps[i].name, apps[i].picture ) )
-			DP_SetApp( apps[i].app );
-	}
+	if ( ( picked = DP_IconGrid( s, y, s->y + s->h - 4, apps, (int)ARRAY_LEN( apps ), &dp.homeScroll ) ) != NULL )
+		DP_SetApp( picked->app );
 }
 
 // a key bound to the command, or "none"
@@ -953,7 +1042,13 @@ static void DP_DrawSettings( const dpRect_t *s ) {
 		return;
 	}
 	DP_Text( x + w * 0.4f, y + 1, w * 0.6f, "Settings", dpText, dp.titleFont, 0.5f, qfalse );
-	y += DP_CTRL_H + 8;
+	y += DP_CTRL_H + 5;
+
+	// Do not disturb: messages come without a notice or a sound
+	DP_Text( x, y + 3, label, "Do not disturb", dpText, dp.font, small, qfalse );
+	if ( DP_Button( x + label, y, w - label, cl_datapadSilent->integer ? "On: silent" : "Off", (qboolean)( cl_datapadSilent->integer != 0 ) ) )
+		Cvar_Set( "cl_datapadSilent", cl_datapadSilent->integer ? "0" : "1" );
+	y += DP_CTRL_H + 5;
 
 	// the colour it's lit in
 	DP_Text( x, y, w, va( "Colour: %s", dpColors[Com_Clampi( 0, DP_NUM_COLORS - 1, cl_datapadColor->integer )].name ), dpDim, dp.font, small, qfalse );
@@ -974,7 +1069,7 @@ static void DP_DrawSettings( const dpRect_t *s ) {
 				Cvar_SetValue( "cl_datapadColor", i );
 		}
 	}
-	y += 22;
+	y += 18;
 
 	// the keys that open and close it: click, then press one
 	DP_Text( x, y, w, "Keys (Esc always puts it away)", dpDim, dp.font, small, qfalse );
@@ -986,7 +1081,7 @@ static void DP_DrawSettings( const dpRect_t *s ) {
 	DP_Text( x, y + 3, label, "Close it", dpText, dp.font, small, qfalse );
 	if ( DP_Button( x + label, y, w - label, dp.binding == DP_BIND_CLOSE ? "Press a key" : DP_KeyFor( DP_CLOSE_CMD ), (qboolean)( dp.binding == DP_BIND_CLOSE ) ) )
 		dp.binding = DP_BIND_CLOSE;
-	y += DP_CTRL_H + 9;
+	y += DP_CTRL_H + 5;
 
 	// the character holding one while it's open
 	DP_Text( x, y, w, "Your character", dpDim, dp.font, small, qfalse );
@@ -1001,8 +1096,6 @@ static void DP_DrawSettings( const dpRect_t *s ) {
 	DP_Text( x, y + 3, label, "One in hand", dpText, dp.font, small, qfalse );
 	if ( DP_Button( x + label, y, w - label, cl_datapadHand->integer ? "On" : "Off", (qboolean)( cl_datapadHand->integer != 0 ) ) )
 		Cvar_Set( "cl_datapadHand", cl_datapadHand->integer ? "0" : "1" );
-	y += DP_CTRL_H + 2;
-	DP_Text( x, y, w, "/" DP_EMOTE "; the one in hand seen by all with the client", dpDim, dp.font, 0.55f, qfalse );
 }
 
 // the screen's apps: the home screen, and one sliding in over it from the right
@@ -1029,6 +1122,10 @@ static void DP_DrawApps( const dpRect_t *s ) {
 			CL_Games_Draw( GM_WANGA, s );
 		else if ( dp.app == DP_PATH )
 			CL_Games_Draw( GM_PATH, s );
+		else if ( dp.app == DP_ARCADE )
+			CL_Arcade_Draw( s );
+		else if ( dp.app == DP_DICE )
+			CL_Dice_Draw( s );
 		return;
 	}
 	if ( t >= 1.0f || dp.app == dp.appFrom ) {
@@ -1147,10 +1244,18 @@ void CL_Datapad_KeyEvent( int key, qboolean down ) {
 		dp.clickY = dp.cursorY;
 		return;
 	}
+	// the icon grids scroll, a half row at a time (kept in range as they're drawn)
+	if ( ( key == A_MWHEELUP || key == A_MWHEELDOWN ) && ( dp.app == DP_HOME || dp.app == DP_GAMES ) ) {
+		int *scroll = dp.app == DP_HOME ? &dp.homeScroll : &dp.gamesScroll;
+
+		*scroll = Q_max( 0, *scroll + ( key == A_MWHEELUP ? -30 : 30 ) );
+		return;
+	}
 	if ( ( dp.app == DP_PAZAAK && CL_Pazaak_Key( key ) ) || ( dp.app == DP_HOLONET && CL_HoloNet_Key( key ) )
 		|| ( dp.app == DP_COMPORT && CL_Comport_Key( key ) ) || ( dp.app == DP_NOTES && CL_Notes_Key( key ) )
 		|| ( dp.app == DP_CHAT && CL_Chat_Key( key ) ) || ( dp.app == DP_WANGA && CL_Games_Key( GM_WANGA, key ) )
-		|| ( dp.app == DP_PATH && CL_Games_Key( GM_PATH, key ) ) )
+		|| ( dp.app == DP_PATH && CL_Games_Key( GM_PATH, key ) )
+		|| ( dp.app == DP_ARCADE && CL_Arcade_Key( key ) ) || ( dp.app == DP_DICE && CL_Dice_Key( key ) ) )
 		return;
 	// its keys work while it's open, as they do in the game
 	binding = Key_GetBinding( key );
@@ -1171,6 +1276,8 @@ void CL_Datapad_CharEvent( int ch ) {
 		CL_Games_Char( GM_WANGA, ch );
 	else if ( dp.state == DP_OPEN && dp.app == DP_PATH )
 		CL_Games_Char( GM_PATH, ch );
+	else if ( dp.state == DP_OPEN && dp.app == DP_DICE )
+		CL_Dice_Char( ch );
 }
 
 void CL_Datapad_MouseEvent( int dx, int dy ) {
@@ -1224,14 +1331,14 @@ static void DP_Datapad_f( void ) {
 		DP_Set( DP_OPEN );
 	} else if ( !Q_stricmp( arg, "settings" ) || !Q_stricmp( arg, "pazaak" ) || !Q_stricmp( arg, "holonet" ) || !Q_stricmp( arg, "comport" )
 		|| !Q_stricmp( arg, "notes" ) || !Q_stricmp( arg, "chat" ) || !Q_stricmp( arg, "games" ) || !Q_stricmp( arg, "wanga" )
-		|| !Q_stricmp( arg, "path" ) ) {
+		|| !Q_stricmp( arg, "path" ) || !Q_stricmp( arg, "arcade" ) || !Q_stricmp( arg, "dice" ) ) {
 		// yours, not a datapad item's
 		if ( dp.state == DP_OPEN && dp.itemMode )
 			DP_Set( DP_CLOSED );
 		DP_Set( DP_OPEN );
 		if ( dp.state == DP_OPEN )
 			DP_SetApp( !Q_stricmp( arg, "pazaak" ) ? DP_PAZAAK : !Q_stricmp( arg, "games" ) ? DP_GAMES : !Q_stricmp( arg, "wanga" ) ? DP_WANGA
-				: !Q_stricmp( arg, "path" ) ? DP_PATH : !Q_stricmp( arg, "holonet" ) ? DP_HOLONET
+				: !Q_stricmp( arg, "path" ) ? DP_PATH : !Q_stricmp( arg, "arcade" ) ? DP_ARCADE : !Q_stricmp( arg, "dice" ) ? DP_DICE : !Q_stricmp( arg, "holonet" ) ? DP_HOLONET
 				: !Q_stricmp( arg, "comport" ) ? DP_COMPORT : !Q_stricmp( arg, "notes" ) ? DP_NOTES : !Q_stricmp( arg, "chat" ) ? DP_CHAT : DP_SETTINGS );
 		// straight to an article, or a forum
 		if ( dp.state == DP_OPEN && Cmd_Argc() > 2 ) {
@@ -1239,6 +1346,14 @@ static void DP_Datapad_f( void ) {
 				CL_HoloNet_Open( atoi( Cmd_Argv( 2 ) ) );
 			else if ( !Q_stricmp( arg, "comport" ) )
 				CL_Comport_Open( Cmd_Argv( 2 ) );
+			else if ( !Q_stricmp( arg, "arcade" ) )
+				CL_Arcade_Open( Cmd_Argv( 2 ), (qboolean)!Q_stricmp( Cmd_Argv( 3 ), "play" ) );
+			else if ( !Q_stricmp( arg, "dice" ) )
+				CL_Dice_Open( Cmd_ArgsFrom( 2 ) );
+			else if ( !Q_stricmp( arg, "chat" ) && !Q_stricmp( Cmd_Argv( 2 ), "camera" ) && !Q_stricmp( Cmd_Argv( 3 ), "send" ) )
+				CL_Chat_SendShot();
+			else if ( !Q_stricmp( arg, "chat" ) && !Q_stricmp( Cmd_Argv( 2 ), "camera" ) )
+				CL_Chat_Camera();
 			else if ( !Q_stricmp( arg, "chat" ) && !Q_stricmp( Cmd_Argv( 2 ), "group" ) )
 				CL_Chat_OpenGroup( atoi( Cmd_Argv( 3 ) ) );
 			else if ( !Q_stricmp( arg, "chat" ) )
@@ -1246,6 +1361,12 @@ static void DP_Datapad_f( void ) {
 		}
 	} else if ( !Q_stricmp( arg, "place" ) || !Q_stricmp( arg, "remove" ) || !Q_stricmp( arg, "drop" ) ) {
 		CL_WorldItems_Command( arg, Cmd_Argc() > 2 ? Cmd_ArgsFrom( 2 ) : "" );
+	} else if ( !Q_stricmp( arg, "silent" ) ) {
+		// Do not disturb: on, off, or turned over
+		const char *to = Cmd_Argv( 2 );
+
+		Cvar_Set( "cl_datapadSilent", !Q_stricmp( to, "on" ) ? "1" : !Q_stricmp( to, "off" ) ? "0" : cl_datapadSilent->integer ? "0" : "1" );
+		Com_Printf( "Datapad: do not disturb %s\n", cl_datapadSilent->integer ? "on: messages come without a notice or a sound" : "off" );
 	} else if ( !Q_stricmp( arg, "fold" ) ) {
 		DP_Set( DP_FOLDED );
 	} else if ( !Q_stricmp( arg, "close" ) ) {
@@ -1263,7 +1384,10 @@ static void DP_Datapad_f( void ) {
 		Com_Printf( "usage: " DP_CMD "                opens the datapad, or puts it away\n" );
 		Com_Printf( "       " DP_CMD " open|close\n" );
 		Com_Printf( "       " DP_CMD " settings       open on its Settings\n" );
-		Com_Printf( "       " DP_CMD " games|pazaak|wanga|path|holonet|comport|notes|chat   open on that app\n" );
+		Com_Printf( "       " DP_CMD " silent [on|off]   do not disturb: messages without a notice or a sound\n" );
+		Com_Printf( "       " DP_CMD " games|pazaak|wanga|path|arcade|dice|holonet|comport|notes|chat   open on that app\n" );
+		Com_Printf( "       " DP_CMD " dice <system>   that Dice Master system, by its number or name\n" );
+		Com_Printf( "       " DP_CMD " arcade <sarlacc|dash|sky|blaster> [play]   that game's page in the Arcade, or a run started\n" );
 		Com_Printf( "       " DP_CMD " chat <account>   the conversation with that account's main character\n" );
 		Com_Printf( "       " DP_CMD " chat group <id>   that group chat\n" );
 		Com_Printf( "       (things in the world, datapads too: /world)\n" );
@@ -1278,10 +1402,13 @@ void CL_Datapad_Init( void ) {
 	cl_datapadY = Cvar_Get( "cl_datapadY", "-1", CVAR_ARCHIVE_ND, "Where the folded datapad goes, from the top of the 640x480 screen; -1: the bottom right corner, above the HUD" );
 	cl_datapadColor = Cvar_Get( "cl_datapadColor", "0", CVAR_ARCHIVE_ND, "The datapad's colour: 0 cyan, 1 blue, 2 green, 3 amber, 4 red, 5 violet, 6 white" );
 	cl_datapadEmote = Cvar_Get( "cl_datapadEmote", "0", CVAR_ARCHIVE_ND, "Your character holds a datapad (RPMod's /emlift) while yours is open" );
+	cl_datapadSilent = Cvar_Get( "cl_datapadSilent", "0", CVAR_ARCHIVE_ND, "The datapad's Do not disturb: chat messages come without a notice, a ringtone or a sound (/datapad silent)" );
 	cl_datapadHand = Cvar_Get( "cl_datapadHand", "1", CVAR_ARCHIVE_ND, "A datapad model shows in your character's hand during the datapad emote (/emlift), seen by everyone with the client" );
 	Cmd_AddCommand( DP_CMD, DP_Datapad_f, "The datapad: open like a phone, folded in the corner, or put away" );
 	CL_Pazaak_Init();
 	CL_Games_Init();
+	CL_Arcade_Init();
+	CL_Dice_Init();
 	CL_Comport_Init();
 	CL_Chat_Init();
 }

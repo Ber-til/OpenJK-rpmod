@@ -82,6 +82,7 @@ The console commands, keys and settings this client adds. What each feature does
 - `/shadermanager` opens or closes the manager (I recommend binding it to a key)
 - `/shadermanager crosshair` shows or hides the shader under your crosshair (`cl_shaderCrosshair`)
 - `/shadermanager remaps` lists the shaders remapped in this map
+- `/shadermanager overlays` opens it on the Overlays tab
 - `/shadermanager mine [reset]` lists your player shaders, or puts them all back
 - `/shadermanager mine others` lists the player shaders others shared; `/shadermanager mine share` sends yours again
 - `/shadermanager reindex` rescans for shaders
@@ -94,6 +95,7 @@ The console commands, keys and settings this client adds. What each feature does
 - `/effectmanager active | presets | mine` opens it on that tab
 - `/effectreplacer` opens the Mine tab by itself, for anyone: your own force powers', saber's and weapons' effects played as others
 - `/effectreplacer log`: for 15 seconds the console lists the effects started near you, with whose they're taken to be (yours, another player's, nobody's); lightning drawn as a shape rather than an effect is said too, as it can't be swapped
+- `/camshake <strength 1-10> <speed 0.1-10> <seconds> [player]` sways the camera for everyone here with the client, or the player named (part of a name, or a number); `/camshake stop [player]` ends it. RPMod admins, through C1B3R
 - `/effectmanager place` places the selected effect in the world
 - `/effectmanager edit` selects and moves the map's effects, and the ones waiting
 - `/effectmanager bolt <tag>` bolts the selected effect to your own tag or bone
@@ -239,6 +241,14 @@ The console commands, keys and settings this client adds. What each feature does
 - `/saberstyles all` goes back to the server's own cycle; `/saberstyles` alone shows the list
 - `/saberstyle <style>` switches straight to that style
 
+## Instruments
+
+- `/instrument` opens or closes the instrument's keyboard; `/instrument <harp|lute|keys|flute|chimes|marimba|horn|drums>` opens it on that one
+- `/instrument note <0-127> [velocity]` plays a note (60 is middle C), for binds; `/instrument midi <file>` plays a MIDI file from `midi/`, `/instrument stop` ends it, `/instrument list` lists them
+- `s_volumeInstruments` how loud instruments play (0.8); `cl_instrumentHandPos "<tag> <x y z> <pitch yaw roll> <scale>"` where an instrument model is held; `cl_instrumentDebug 1` says each batch of others' notes in the console
+- `cl_instrumentNote` the music note over the head of whoever plays: *1* everyone's, *2* others' only, *0* none
+- `cl_instrumentEmote "<command>"` done as you start playing, an emote such as `emsit` ("" none); `cl_instrumentEmoteRepeat <seconds>` does it again that often while you play (0 once, 2 at least)
+
 ## Special Moves
 
 - `/specialmoves` opens or closes the special moves menu; `/specialmoves list` lists them in the console with how they're done
@@ -255,20 +265,24 @@ The console commands, keys and settings this client adds. What each feature does
 - `/escmenu [modern|kotor|classic] [category]` opens the Esc menu in that style, on that category or tab (`/escmenu kotor options`); `cl_escMenu` picks what Esc opens: 0 the game's own (default), 1 Modern, 2 KOTOR
 - `/chatlog` opens or closes the chat log window; `/chatlog start` and `/chatlog stop` record or stop on this server; `/chatlog open` opens today's page in your browser, `/chatlog folder` the folder
 - `/inspect` shows the player you aim at, or yourself; `/inspect off|on` lets others Inspect your character or not; `/inspect me` your own (Edit there), `/inspect <client number|name>` a player by number or name; `cl_inspectHint 1` shows a small orange [i] under the crosshair when you aim at someone who can be inspected (off by default)
-- `/characters` opens your characters; `/characters list` lists them; `/characters play <name>` plays one (its look, settings, inventory, panel and holster); `/characters offers` lists copies offered to you, `/characters accept|decline <n>` takes one or turns it down
+- `/characters` opens your characters (a tool opened from it, such as the Inventory or Holster, comes back to it when closed); `/characters list` lists them; `/characters play <name>` plays one (its look, settings, inventory, panel and holster); `/characters offers` lists copies offered to you, `/characters accept|decline <n>` takes one or turns it down
 - `/holster` opens the holster editor (models worn on your character); `/holster live` opens it as a small panel, what you edit worn on you in the world (drag the arrows to move it and the rings to turn it; Tab move/turn, L tag or world axes, G step, arrows and PgUp/PgDn a step, `[ ]` size, J hides them; F a free camera: hold the right button to look, WASD, Space and C to fly); `/holster list` lists who wears something here; `/holster debug` says why someone's aren't drawn; `cl_holster 0` draws no one's
 - `/inventory` opens what your RPMod account carries, or closes it (`/inventory staff` on its staff page, for RPMod admins); `/inventory list` prints your items as last asked, `/inventory give <item> [client]` gives one to the player you aim at (or that client number), `/inventory show|hide <item>` shows it on Inspect or not
 - `/datapad` opens your datapad in the bottom right corner, or puts it away; `/datapad open`, `/datapad close` and `/datapad settings` go straight there. Its Settings set the keys that open and close it; Esc puts it away
 - `/datapad holonet [n]` opens the HoloNet on it (the n-th article); `/datapad comport [guest|<forum number>]` the Comport (its forums, or that one)
 - `/datapad games` opens the Games folder; `/datapad wanga` and `/datapad path` open WANGA and The Path: `/wanga` and `/thepath` `create [name]`, `join <table>`, `watch <table>`, `start`, `again`, `leave`, and their moves (`/wanga play <card> [R|B|G|Y]`, `draw`, `keep`, `call`, `catch`; `/thepath move <technique 0|1> <x> <y> <x> <y>`, `swap <technique 0|1>`), for binds
 - `/datapad pazaak` opens Pazaak on it; `/pazaak create [name]`, `/pazaak join <table>`, `/pazaak watch <table>`, `/pazaak end`, `/pazaak stand`, `/pazaak play <card 0-3> [1|-1] [1|2]` and `/pazaak leave` do what its buttons do, for binds; `cl_pazaakDeck` is the side deck you play with
+- `/datapad arcade [sarlacc|dash|sky|blaster] [play]` opens the Arcade (a game's page, or a run of it started); `cl_arcadeBest` keeps your bests
+- `/dicemaster` or `/datapad dice [system]` opens the Dice Master on the datapad (a system by its number or name); `/dicemaster roll` rolls what a master asked you for, `/dicemaster roll <action> [dc]` an action of your system, against its DC or that one; `/dicemaster system <number>` picks the system you roll in (`cl_diceSystem`); `/dicemaster edit` and `/dicemaster players` open a system you run on its rules or its players
 - `/burstfire [on|off]` or `cl_burstFire 1` (the default): the E-11's alt fire in bursts (0.4 s charge with a glow at the muzzle and the Bryar's charge sound, 4 shots, 1 s cool down)
 - `/datapad notes` opens Notes
 - `/skycomposer` opens the sky composer (RPMod admins; Vulkan with `r_fbo 1`); its words, for binds: `sky classic|composed`, `time <0-24|off>`, `direction <0-360|auto>` (the side the hour's sun and its glow are on), `clouds <0-1>`, `lightning on|off`, `add <planet|gas|ringed|moon|sun|station|nebula|fleet> [size [yaw pitch]]` (where you look, or there), `here <n> [yaw pitch]`, `size <n> <degrees>`, `color <n> <r g b>`, `rings <n> on|off` (a fleet: how many more ships), `tilt <n> <degrees>`, `seed <n> <number>`, `add model <path> [size [yaw pitch]]`, `model <n> <path>`, `heading <n> <degrees>`, `turn <n> <degrees a second>`, `remove <n>`, `clear`, `list`, `share`, `unshare`, `help`
-- `/datapad chat [account]` opens Chat (straight to the conversation with that RPMod account's main character); `/datapad chat group <id>` a group chat; `cl_chatSound`, `cl_chatRingtone` and `cl_chatNotify` are its sounds and notices
+- `/datapad chat [account]` opens Chat (straight to the conversation with that RPMod account's main character); `/datapad chat group <id>` a group chat; `/datapad chat camera` takes a picture for the conversation open, `/datapad chat camera send` sends the one taken; `cl_chatSound`, `cl_chatRingtone` and `cl_chatNotify` are its sounds and notices
 - `/world` opens the world editor (RPMod admins): objects, zones (used, or walked into for the storyteller), bodies, containers and items (one of yours, or made there, for anyone to pick up) on this map, each with an optional story name for the storyteller; `/world read` reads what you aim at or stand in, `/world drop` drops the item picked in the Inventory, `/world near` lists what's near you, `/world edit <id>` edits one, `/world remove <id or story name>` takes one away (admins: from a bind, or a story's Run a command step once a trigger's been used); Use on a thing reads it
 - `rpdump save <what> <name>` / `rpdump load <name>` / `rpdump delete <name>` (RPMod's own) also save, swap in or forget the map's world things on C1B3R (RPMod admins)
 - `cl_datapadColor` (0-6) is its colour; `cl_datapadEmote 1` has your character hold a datapad (`/emlift`) while it's open; `cl_datapadHand 1` shows a datapad model in the hand then, seen by everyone with the client (`cl_datapadHandPos "<tag> <x y z> <pitch yaw roll> <scale>"` where it sits)
+- `/holocall <account>` calls that player (their RPMod account, as the datapad's Chat lists them) on any server; `/holocall answer|decline` a call ringing; `/holocall here` moves their hologram where you aim; `/holocall say <text>` says it to the call only; `/holocall end` hangs up
+- `/datapad silent [on|off]` the datapad's Do not disturb: Chat's messages come without a notice, a ringtone or a sound (`cl_datapadSilent`); also in its Settings
 - `/datapad pos <x> <y>` moves where it opens on the 640x480 screen (its top left; `cl_datapadX`, `cl_datapadY`); `/datapad pos` puts it back above the HUD
 - `cl_chatLog 1` records by itself on joining a server; `cl_chatLogTells`, `cl_chatLogTeam`, `cl_chatLogWhispers`, `cl_chatLogOOC`, `cl_chatLogEmotes`, `cl_chatLogAdmin` (1 or 0) keep those kinds of chat or not
 
@@ -295,6 +309,11 @@ The console commands, keys and settings this client adds. What each feature does
 - `/loadpk3 [name]` loads pk3s added to the game's folders while it runs, without a vid_restart
 
 ## Settings
+
+- `+headlook` (held, e.g. `/bind alt +headlook`) turns only your head with the mouse or arrow keys, seen by others with the client; `cl_headLookView 0|1|2` whether your view turns with it (never, first person, always)
+- `cl_lookLean <0-4>` how far players lean back and forward with their look (2; 1 as the game does it)
+- `r_spriteLights <0-4>` how much a saber's or a fire's light reaches the map's grass and bushes (surface sprites), with the Vulkan renderer (0.7; 0 none)
+- `r_maxChunks <n>` how many debris pieces (a burnt body's, a broken crate's) are drawn at once (96; 0 draws all), in both renderers
 
 - `rpc_removeExtraColorsInConsole 0` shows RPMod's extra colors in the console
 - `rpc_chatRangeConsole_mode <0-3>`, `rpc_chatRangeConsole_min`, `rpc_chatRangeConsole_max`, `rpc_chatRangeConsole_alpha` set the chat range in the console

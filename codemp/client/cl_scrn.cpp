@@ -493,6 +493,8 @@ void SCR_DrawScreenField( stereoFrame_t stereoFrame ) {
 			}
 			CL_RpCinematic_Draw();
 			CL_NpcNames_Draw();
+			CL_Instruments_DrawNotes();
+			CL_HoloCall_Draw();
 			CL_Inspect_DrawHint();
 			CL_AdminFlags_Draw();
 			SCR_DrawDemoRecording();
@@ -507,6 +509,7 @@ void SCR_DrawScreenField( stereoFrame_t stereoFrame ) {
 			CL_AnimManager_Draw();
 			CL_Presets_Draw();
 			CL_SpecialMoves_Draw();
+			CL_Instruments_Draw();
 			CL_SkyComposer_Draw();
 			CL_BurstFire_Draw();
 			CL_ChatLog_Draw();

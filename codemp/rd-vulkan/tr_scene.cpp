@@ -38,6 +38,7 @@ static	int			r_firstSceneDlight;
 
 static	int			r_numentities;
 static	int			r_firstSceneEntity;
+static	int			r_sceneChunks;	// OpenJK-rpmod: debris pieces in this scene (r_maxChunks)
 
 static	int			r_numpolys;
 static	int			r_firstScenePoly;
@@ -66,6 +67,7 @@ void R_InitNextFrame( void ) {
 
 	r_numentities = 0;
 	r_firstSceneEntity = 0;
+	r_sceneChunks = 0;
 
 	r_numpolys = 0;
 	r_firstScenePoly = 0;
@@ -84,6 +86,7 @@ RE_ClearScene
 void RE_ClearScene( void ) {
 	r_firstSceneDlight = r_numdlights;
 	r_firstSceneEntity = r_numentities;
+	r_sceneChunks = 0;
 	r_firstScenePoly = r_numpolys;
 }
 
@@ -206,6 +209,15 @@ RE_AddRefEntityToScene
 void RE_AddRefEntityToScene( const refEntity_t *ent ) {
 	if ( !tr.registered ) {
 		return;
+	}
+
+	// OpenJK-rpmod: debris pieces (models/chunks) past r_maxChunks in a scene are left out: a burnt body
+	// can throw thousands, each drawn again for every light on it
+	if ( ent->reType == RT_MODEL && ent->hModel && !ent->ghoul2 && r_maxChunks->integer > 0 ) {
+		const model_t *mod = R_GetModelByHandle( ent->hModel );
+
+		if ( mod && !Q_stricmpn( mod->name, "models/chunks/", 14 ) && ++r_sceneChunks > r_maxChunks->integer )
+			return;
 	}
 
 	if ( r_numentities >= MAX_REFENTITIES ) {
@@ -912,6 +924,7 @@ void RE_RenderScene( const refdef_t *fd ) {
 	r_firstSceneLitSurf = tr.refdef.numLitSurfs;
 #endif
 	r_firstSceneEntity = r_numentities;
+	r_sceneChunks = 0;
 	r_firstSceneDlight = r_numdlights;
 	r_firstScenePoly = r_numpolys;
 

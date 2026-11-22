@@ -54,6 +54,7 @@ cvar_t	*r_inGameVideo;
 cvar_t	*r_fastsky;
 cvar_t	*r_drawSun;
 cvar_t	*r_dynamiclight;
+cvar_t	*r_maxChunks;
 // rjr - removed for hacking
 cvar_t	*r_dlightBacks;
 
@@ -870,6 +871,7 @@ void R_Register( void )
 	r_inGameVideo						= ri.Cvar_Get( "r_inGameVideo",						"1",						CVAR_ARCHIVE_ND, "" );
 	r_drawSun							= ri.Cvar_Get( "r_drawSun",							"0",						CVAR_ARCHIVE_ND, "" );
 	r_dynamiclight						= ri.Cvar_Get( "r_dynamiclight",					"1",						CVAR_ARCHIVE, "" );
+	r_maxChunks							= ri.Cvar_Get( "r_maxChunks",					"96",						CVAR_ARCHIVE, "Debris pieces drawn in a scene; 0 draws all" );
 	// rjr - removed for hacking
 	r_dlightBacks						= ri.Cvar_Get( "r_dlightBacks",						"1",						CVAR_ARCHIVE_ND, "dlight non-facing surfaces for continuity" );
 	r_finish							= ri.Cvar_Get( "r_finish",							"0",						CVAR_ARCHIVE_ND, "" );
@@ -1520,6 +1522,7 @@ Q_EXPORT refexport_t* QDECL GetRefAPI( int apiVersion, refimport_t *rimp ) {
 
 	re.ext.Font_StrLenPixels				= RE_Font_StrLenPixelsNew;
 	re.ext.SetSkyLook						= RE_SetSkyLook;		// OpenJK-rpmod
+	re.ext.G2API_GetSkins					= G2API_GetSkins;		// OpenJK-rpmod: the shader manager names models' shaders
 	re.ext.SetSkyZoom						= RE_SetSkyZoom;		// OpenJK-rpmod
 	re.ext.SetSkyPortal						= RE_SetSkyPortal;		// OpenJK-rpmod
 	re.ext.SetDepthOfField					= RE_SetDepthOfField;	// OpenJK-rpmod

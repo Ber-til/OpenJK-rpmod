@@ -892,6 +892,17 @@ qboolean G2API_SetSkin(CGhoul2Info_v& ghoul2, int modelIndex, qhandle_t customSk
 	return qfalse;
 }
 
+// OpenJK-rpmod: a model's skins, for the shader manager to name what a player, NPC or vehicle draws with
+void G2API_GetSkins(CGhoul2Info_v& ghoul2, int modelIndex, qhandle_t *customSkin, qhandle_t *skin)
+{
+	*customSkin = *skin = 0;
+	if (ghoul2.IsValid() && modelIndex >= 0 && modelIndex < ghoul2.size())
+	{
+		*customSkin = ghoul2[modelIndex].mCustomSkin;
+		*skin = ghoul2[modelIndex].mSkin;
+	}
+}
+
 qboolean G2API_SetShader(CGhoul2Info *ghlInfo, qhandle_t customShader)
 {
 	if (G2_SetupModelPointers(ghlInfo))
@@ -1036,6 +1047,7 @@ qboolean G2API_RemoveGhoul2Model(CGhoul2Info_v **ghlRemove, const int modelIndex
 
 	   	 // set us to be the 'not active' state
 		ghlInfo[modelIndex].mModelindex = -1;
+		ghlInfo[modelIndex].mValid = false;	// OpenJK-rpmod: nor drawn or traced until a model is put in it again
 
 		int newSize = ghlInfo.size();
 		// now look through the list from the back and see if there is a block of -1's we can resize off the end of the list
@@ -1123,6 +1135,7 @@ qboolean G2API_RemoveGhoul2Models(CGhoul2Info_v **ghlRemove)
 
 	   	 // set us to be the 'not active' state
 		ghlInfo[modelIndex].mModelindex = -1;
+		ghlInfo[modelIndex].mValid = false;	// OpenJK-rpmod: as above
 	}
 
 	newSize = ghlInfo.size();
@@ -2921,7 +2934,10 @@ qboolean G2_SetupModelPointers(CGhoul2Info *ghlInfo) // returns true if the mode
 	// within a frame - and CG_Player asks for it 8 to 25 times per character.
 	const int ptrFrameBits = (tr.frameCount << VK_G2_POINTER_FRAME_SHIFT) | (tr.g2PtrInvalidation & VK_G2_POINTER_INVALIDATE_MASK);
 	
-	if ( ghlInfo->mValid && ghlInfo->mMeshFrameNum == ptrFrameBits)
+	// OpenJK-rpmod: a slot whose model was taken away (a saber knocked out of a hand, the first of two)
+	// is never valid, though it was earlier this frame: its bones are gone, and a saber's trace
+	// through it crashed the game
+	if ( ghlInfo->mValid && ghlInfo->mMeshFrameNum == ptrFrameBits && ghlInfo->mModelindex != -1)
 	{
 		return qtrue;
 	}

@@ -45,6 +45,11 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define STBI_NO_LINEAR
 #define STBI_NO_HDR
 #include "../rd-rend2/stb_image.h"
+// stb_image_write (public domain, v1.16), for Chat's pictures: a shot made a JPEG
+#define STB_IMAGE_WRITE_STATIC
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#define STBI_WRITE_NO_STDIO
+#include "stb_image_write.h"
 
 #define HTML_CACHE_DIR		"datapad/cache"
 #define HTML_CACHE_MAX		( 64 * 1024 * 1024 )
@@ -967,3 +972,84 @@ void HTML_PictureFrame( void ) {
 		}
 	}
 }
+
+/*
+===============================================================================
+
+Chat's pictures
+
+===============================================================================
+*/
+
+static void HTML_JpegOut( void *context, void *data, int size ) {
+	std::vector<unsigned char> *out = (std::vector<unsigned char> *)context;
+
+	out->insert( out->end(), (const unsigned char *)data, (const unsigned char *)data + size );
+}
+
+// a picture (a screenshot's PNG) made a JPEG at most maxSide on a side, smoothly scaled down
+bool HTML_ToJpeg( const unsigned char *data, int len, int maxSide, int quality, std::vector<unsigned char> &jpeg ) {
+	int w, h, comp, ow, oh;
+	unsigned char *rgb = stbi_load_from_memory( data, len, &w, &h, &comp, 3 );
+	std::vector<unsigned char> out;
+
+	jpeg.clear();
+	if ( !rgb )
+		return false;
+	if ( w <= 0 || h <= 0 ) {
+		stbi_image_free( rgb );
+		return false;
+	}
+	ow = w;
+	oh = h;
+	if ( ow > maxSide || oh > maxSide ) {
+		const float k = (float)maxSide / Q_max( w, h );
+
+		ow = Q_max( 1, (int)( w * k + 0.5f ) );
+		oh = Q_max( 1, (int)( h * k + 0.5f ) );
+	}
+	out.resize( (size_t)ow * oh * 3 );
+	// each pixel the average of those it covers (a box filter: no shimmer from big steps)
+	for ( int y = 0; y < oh; y++ ) {
+		const int sy0 = y * h / oh, sy1 = Q_max( sy0 + 1, ( y + 1 ) * h / oh );
+
+		for ( int x = 0; x < ow; x++ ) {
+			const int sx0 = x * w / ow, sx1 = Q_max( sx0 + 1, ( x + 1 ) * w / ow );
+			int sum[3] = { 0, 0, 0 }, n = 0;
+
+			for ( int sy = sy0; sy < sy1; sy++ ) {
+				for ( int sx = sx0; sx < sx1; sx++ ) {
+					const unsigned char *px = rgb + ( (size_t)sy * w + sx ) * 3;
+
+					sum[0] += px[0];
+					sum[1] += px[1];
+					sum[2] += px[2];
+					n++;
+				}
+			}
+			for ( int c = 0; c < 3; c++ )
+				out[( (size_t)y * ow + x ) * 3 + c] = (unsigned char)( sum[c] / n );
+		}
+	}
+	stbi_image_free( rgb );
+	return stbi_write_jpg_to_func( HTML_JpegOut, &jpeg, ow, oh, 3, out.data(), quality ) != 0 && !jpeg.empty();
+}
+
+// a picture's bytes for the renderer, kept in the datapad's cache as <name>: from there when it's
+// been made before. 0 if it can't be read
+qhandle_t HTML_PictureFromBytes( const char *name, const unsigned char *data, int len, int *width, int *height ) {
+	htmlPicture_t p;
+
+	p.path = va( HTML_CACHE_DIR "/%s", name );
+	p.shader = 0;
+	p.width = p.height = 0;
+	if ( HTML_FromCache( p ) ) {
+		*width = p.width;
+		*height = p.height;
+		return p.shader;
+	}
+	if ( !data || len <= 0 || !HTML_ToTga( data, len, p.path, width, height ) )
+		return 0;
+	return re->RegisterShaderNoMip( p.path.c_str() );
+}
+

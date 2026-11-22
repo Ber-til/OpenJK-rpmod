@@ -703,7 +703,8 @@ void CL_ModelManager_Draw( void );
 #define KEYCATCH_WORLD			0x8000000	// engine only, the world's reader or editor owns keyboard and mouse
 #define KEYCATCH_SKYCOMPOSER	0x20000000	// engine only, the sky composer owns keyboard and mouse
 #define KEYCATCH_PHOTOMODE		0x10000000	// engine only, photo mode owns keyboard and mouse
-#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELMANAGER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER | KEYCATCH_MAPEDITOR | KEYCATCH_STORYTELLER | KEYCATCH_CINEDITOR | KEYCATCH_SOUNDMANAGER | KEYCATCH_RADIALMENU | KEYCATCH_LANGUAGES | KEYCATCH_CONSETTINGS | KEYCATCH_ANIMMANAGER | KEYCATCH_PRESETS | KEYCATCH_FEEDBACK | KEYCATCH_ASSETMANAGER | KEYCATCH_SPECIALMOVES | KEYCATCH_CHATLOG | KEYCATCH_DATAPAD | KEYCATCH_ESCMENU | KEYCATCH_INVENTORY | KEYCATCH_INSPECT | KEYCATCH_HOLSTER | KEYCATCH_CHARACTERS | KEYCATCH_WORLD | KEYCATCH_SKYCOMPOSER | KEYCATCH_PHOTOMODE )	// mods never see or clear these
+#define KEYCATCH_INSTRUMENT		0x40000000	// engine only, an instrument's keyboard owns keyboard and mouse
+#define KEYCATCH_ENGINETOOLS	( KEYCATCH_MODELMANAGER | KEYCATCH_NPCMANAGER | KEYCATCH_SHADERMANAGER | KEYCATCH_EFFECTMANAGER | KEYCATCH_MAPEDITOR | KEYCATCH_STORYTELLER | KEYCATCH_CINEDITOR | KEYCATCH_SOUNDMANAGER | KEYCATCH_RADIALMENU | KEYCATCH_LANGUAGES | KEYCATCH_CONSETTINGS | KEYCATCH_ANIMMANAGER | KEYCATCH_PRESETS | KEYCATCH_FEEDBACK | KEYCATCH_ASSETMANAGER | KEYCATCH_SPECIALMOVES | KEYCATCH_CHATLOG | KEYCATCH_DATAPAD | KEYCATCH_ESCMENU | KEYCATCH_INVENTORY | KEYCATCH_INSPECT | KEYCATCH_HOLSTER | KEYCATCH_CHARACTERS | KEYCATCH_WORLD | KEYCATCH_SKYCOMPOSER | KEYCATCH_PHOTOMODE | KEYCATCH_INSTRUMENT )	// mods never see or clear these
 
 void CL_NpcManager_Init( void );
 void CL_NpcManager_Shutdown( void );
@@ -793,6 +794,26 @@ typedef struct {
 	int			cfg;					// its animation.cfg, -1 none
 } clPosedBody_t;
 qboolean CL_Extras_PoseBody( clPosedBody_t *b, const char *model, const char *anim );
+// a body played live, legs and torso animations by name (a HoloCall's hologram)
+typedef struct {
+	void		*g2;
+	char		key[MAX_QPATH];
+	int			cfg;
+	char		legs[48], torso[48];
+	int			legsStart, torsoStart;
+} clLiveBody_t;
+qboolean CL_Extras_LiveBody( clLiveBody_t *b, const char *model, const char *legs, const char *torso );
+void CL_Extras_FreeLiveBody( clLiveBody_t *b );
+// cl_holocall.cpp: HoloCall, players calling each other on any server, seen as holograms
+void CL_HoloCall_Init( void );
+void CL_HoloCall_Frame( void );
+void CL_HoloCall_Draw( void );
+void CL_HoloCall_Disconnect( void );
+void CL_HoloCall_AddToScene( const refdef_t *fd );
+void CL_HoloCall_Hook( char **argv, int argc, const char *message );	// cmd:holo/...
+void CL_HoloCall_Outgoing( const char *cmd );	// what you say, to the call too
+void CL_HoloCall_Start( const char *who );
+float CL_HoloCall_DrawBar( float x, float y, float w );	// on the datapad's Chat
 void CL_Extras_FreeBody( clPosedBody_t *b );
 void CL_Cinematic_AddToScene( const refdef_t *fd );
 int CL_Cinematic_LightStyle( int style, int color );
@@ -901,6 +922,19 @@ void CL_EffectManager_Init( void );
 void CL_EffectManager_Shutdown( void );
 void CL_EffectManager_f( void );
 void CL_EffectReplacer_f( void );
+qboolean CL_CamShake_View( const refdef_t *fd, refdef_t *out );	// the camera sway (camshake): the view swayed, while it lasts
+void CL_CamShake_Hook( char **argv, int argc );
+void CL_CamShake_Disconnect( void );
+// cl_headlook.cpp: +headlook, the head turned without the body, seen by others with the client
+qboolean CL_HeadLook_Held( void );
+void CL_HeadLook_Turn( float yaw, float pitch );
+void CL_HeadLook_Frame( void );
+void CL_HeadLook_Hook( char **argv, int argc );
+qboolean CL_HeadLook_View( const refdef_t *fd, refdef_t *out );
+void CL_HeadLook_Entity( const refEntity_t *ent, void *bodyGhoul2 );
+qboolean CL_HeadLook_Bone( void *g2, const char *bone, const vec3_t in, vec3_t out );
+void CL_HeadLook_Disconnect( void );
+void CL_HeadLook_Init( void );
 qboolean CL_EffectManager_Active( void );
 void CL_EffectManager_Close( void );
 void CL_EffectManager_OpenForStory( void );
@@ -1120,6 +1154,30 @@ void CL_Datapad_MouseEvent( int dx, int dy );
 void CL_Datapad_CharEvent( int ch );
 void CL_Pazaak_Frame( void );		// cl_pazaak.cpp
 void CL_Games_Frame( void );		// cl_games.cpp: WANGA, The Path
+void CL_Arcade_Frame( void );		// cl_arcade.cpp: the datapad Arcade's boards
+void CL_Dice_Frame( void );			// cl_dice.cpp: the Dice Master, through C1B3R
+// cl_instruments.cpp: instruments played from the keyboard or a MIDI file, heard by those near
+void CL_Instruments_Init( void );
+void CL_Instruments_Frame( void );
+void CL_Instruments_Draw( void );
+void CL_Instruments_Close( void );
+void CL_Instruments_Disconnect( void );
+void CL_Instruments_KeyEvent( int key, qboolean down );
+void CL_Instruments_MouseEvent( int dx, int dy );
+void CL_Instruments_Escape( void );
+void CL_Instruments_Hook( char **argv, int argc, const char *message );	// cmd:music/...
+int CL_Instruments_Playing( int client );	// the instrument that player plays now, -1 none
+const char *CL_Instruments_Model( int instrument );	// the model held playing it, "" none
+void CL_Instruments_View( const refdef_t *fd );	// the view the world is drawn from, for the notes over heads
+void CL_Instruments_DrawNotes( void );			// a note over the head of whoever plays
+const char *CL_Whisper_InfoNotice( const char *text, int ms );	// RPMod's top-left info notice and its sound, as a cgame command
+void CL_Dice_Hook( char **argv, int argc, const char *message );	// cmd:dice/roll|ask/...
+// the Storyteller asking a player for a roll: a token, 0 if it can't now; its state C1B3R's number for
+// the ask (0 still waiting, -1 refused, error why)
+int CL_Dice_Ask( const char *system, int client, const char *action, const char *dc, const char *label );
+int CL_Dice_AskState( int token, const char **error );
+// a roll C1B3R made, told to the Storyteller (degree 0 critical failure .. 3 critical success; ask its number, 0 none)
+void CL_Storyteller_Roll( int client, const char *name, const char *action, int total, int dc, int degree, int ask );
 void CL_Datapad_OpenItem( int item, const char *name, int world );	// a datapad item's (or a placed one's) Notes
 void CL_Notes_Frame( void );		// cl_notes.cpp
 void CL_RealShadows_Frame( void );	// cl_rendermenu.cpp: Vulkan's real shadows in place of the blob
@@ -1139,6 +1197,7 @@ qboolean CL_PhotoMode_Hide2D( void );
 void CL_PhotoMode_KeyEvent( int key, qboolean down );
 void CL_PhotoMode_MouseEvent( int dx, int dy );
 void CL_PhotoMode_Escape( void );
+qboolean CL_PhotoMode_OpenForChat( void );	// Chat's camera: a picture for a message (CL_Chat_CameraDone)
 void CL_SkyComposer_Init( void );		// cl_skycomposer.cpp: the sky composer (Vulkan's sky)
 void CL_SkyComposer_Shutdown( void );
 void CL_SkyComposer_Disconnect( void );
@@ -1158,6 +1217,9 @@ void CL_Chat_GroupStateHook( char **argv, int argc, const char *message );	// cm
 void CL_Chat_TypingHook( char **argv, int argc, const char *message );	// cmd:chattyping/...
 qboolean CL_Chat_CaptureSound( const char *cmd );	// the sound manager's Send, while Chat picks a sound
 int CL_Chat_Unread( void );
+void CL_Chat_Camera( void );			// datapad chat camera: a picture for the conversation open
+void CL_Chat_CameraDone( const char *path );	// photo mode's: the shot (its PNG), NULL none
+void CL_Chat_SendShot( void );			// datapad chat camera send: the picture taken, sent
 void CL_SoundManager_OpenForChat( void );
 void CL_Notes_Disconnect( void );
 void CL_Notes_PickedUp( int item );	// the placed datapad shown is yours now: this item
@@ -1199,6 +1261,7 @@ void CL_Inventory_CharEvent( int ch );
 void CL_Inventory_MouseEvent( int dx, int dy );
 void CL_Inventory_Disconnect( void );
 int CL_Inventory_Picked( char *name, int size );	// the item picked in the window: its id, 0 none
+int CL_Inventory_Carries( const char *kind, const char *word );	// 1 yes, 0 no, -1 not known yet (asked)
 void CL_Inventory_RendererRestarted( void );
 void CL_Inventory_CharHook( char **argv, int argc );
 

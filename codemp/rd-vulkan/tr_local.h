@@ -1858,6 +1858,7 @@ extern cvar_t	*r_inGameVideo;				// controls whether in game video should be dra
 extern cvar_t	*r_fastsky;				// controls whether sky should be cleared or drawn
 extern cvar_t	*r_drawSun;				// controls drawing of sun quad
 extern cvar_t	*r_dynamiclight;		// dynamic lights enabled/disabled
+extern cvar_t	*r_maxChunks;		// OpenJK-rpmod: debris pieces drawn in a scene (0 = all)
 // rjr - removed for hacking
 extern cvar_t	*r_dlightBacks;			// dlight non-facing surfaces for continuity
 
@@ -2754,4 +2755,7 @@ extern void VBO_Flush( void );
 IBO_t *R_CreateIBO( const char *name, const byte *vbo_data, int vbo_size );
 VBO_t *R_CreateVBO( const char *name, const byte *vbo_data, int vbo_size );
 #endif
+// OpenJK-rpmod: the view's nearest dynamic lights in the camera's uniform, for the surface sprites (vk_rpmod_post.cpp)
+void vk_rpmod_camera_dlights( vkUniformCamera_t *u, const trRefdef_t *refdef );
+
 #endif

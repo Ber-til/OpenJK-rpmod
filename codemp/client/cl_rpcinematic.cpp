@@ -2319,8 +2319,21 @@ qboolean RC_Filter( int type, int strength ) {
 
 // photo mode's look: a filter (none for none) with a grade over it: saturation, contrast and
 // brightness (1 as it is) and warmth (-1 cold to 1 warm)
-void RC_PhotoFilter( screenFilter_t *f, int type, float saturation, float contrast, float brightness, float warmth ) {
+void RC_PhotoFilter( screenFilter_t *f, int type, float strength, float saturation, float contrast, float brightness, float warmth ) {
 	RC_BuildFilter( Com_Clampi( 0, RC_NUM_FILTERS - 1, type ), f );
+	// the filter alone at its strength, toward the picture as it is: the colour and the lens after it
+	// stay as set (the renderer's strength would weaken them all together)
+	strength = Com_Clamp( 0.0f, 1.0f, strength );
+	for ( int i = 0; i < 3; i++ ) {
+		for ( int j = 0; j < 4; j++ )
+			f->matrix[i][j] = ( i == j ? 1.0f : 0.0f ) + ( f->matrix[i][j] - ( i == j ? 1.0f : 0.0f ) ) * strength;
+	}
+	f->ramp *= strength;
+	f->grain *= strength;
+	f->vignette *= strength;
+	f->scanlines *= strength;
+	f->aberration *= strength;
+	f->strength = 1.0f;
 	if ( saturation != 1.0f )
 		RC_FilterSaturation( f, saturation );
 	if ( contrast != 1.0f )

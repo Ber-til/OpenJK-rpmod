@@ -54,6 +54,7 @@ static cvar_t	*r_heatHaze, *r_heatHazeStrength;
 static cvar_t	*r_skySharpen, *r_clouds, *r_cloudShadows, *r_aerialHaze, *r_aerialHazeStart, *r_skyScene[4];
 static cvar_t	*r_sharpen;
 static cvar_t	*r_relief, *r_reliefStrength, *r_reliefSpecular;
+static cvar_t	*r_spriteLights;
 static cvar_t	*r_volumetric, *r_volumetricIntensity, *r_volumetricFog;
 static cvar_t	*r_ssr, *r_ssrStrength;
 static cvar_t	*r_shadowMaps, *r_shadowDistance, *r_shadowStrength, *r_shadowSoftness, *r_shadowSun;
@@ -83,7 +84,7 @@ static struct {
 	qboolean			ready;			// everything is there for this window
 
 	VkShaderModule		depthFs, depthMsFs, dofFs, filterFs, copyFs;
-	VkShaderModule		ssaoFs, aoBlurFs, aoApplyFs, shaftsFs[3], mblurFs, gradeFs, fxaaFs, casFs, volumFs, ssrFs, shadowFs;
+	VkShaderModule		ssaoFs, aoBlurFs, aoApplyFs, shaftsFs[3], mblurFs, gradeFs, fxaaFs, casFs, volumFs, ssrFs, ssrBlurFs, shadowFs;
 	VkShaderModule		smaaFs[3];		// edges, weights, blending
 	VkShaderModule		fsrFs[2];		// upscaling, sharpening
 	VkShaderModule		waterFs, wetFs, hazeFs, skyFs, aerialFs;
@@ -195,7 +196,7 @@ static struct {
 	VkFramebuffer		postFb[2], distFb, aoFb[2], smaaFb[2];
 
 	VkPipeline			depthPipe, dofPipe, filterPipe, copyPipe;
-	VkPipeline			ssaoPipe, aoBlurPipe, aoApplyPipe, shaftsPipe[3], mblurPipe, gradePipe, fxaaPipe, casPipe, volumPipe, ssrPipe, shadowPipe;
+	VkPipeline			ssaoPipe, aoBlurPipe, aoApplyPipe, shaftsPipe[3], mblurPipe, gradePipe, fxaaPipe, casPipe, volumPipe, ssrPipe, ssrBlurPipe, shadowPipe;
 	VkPipeline			smaaPipe[3];
 
 	qboolean			haveDistance;	// this view's distances are in distImage
@@ -275,6 +276,8 @@ void vk_rpmod_register_cvars( void ) {
 		r_skyScene[i] = ri.Cvar_Get( i ? va( "r_skyScene%i", i + 1 ) : "r_skyScene", "", CVAR_ROM | CVAR_TEMP, "The sky composer's scene (set by /skycomposer)" );
 	r_relief = ri.Cvar_Get( "r_relief", "0", CVAR_ARCHIVE_ND | CVAR_LATCH, "Surface relief: dynamic lights and lit sabers pick out the relief of stone, metal and cloth, worked out from each texture (needs \\r_dlightMode 2; \\vid_restart to change)" );
 	ri.Cvar_CheckRange( r_relief, 0, 1, qtrue );
+	r_spriteLights = ri.Cvar_Get( "r_spriteLights", "0.7", CVAR_ARCHIVE_ND, "The map's grass and bushes (surface sprites) lit by dynamic lights, a saber's or a fire's, as the ground under them is: how much, 0 not at all" );
+	ri.Cvar_CheckRange( r_spriteLights, 0, 4, qfalse );
 	r_reliefStrength = ri.Cvar_Get( "r_reliefStrength", "8", CVAR_ARCHIVE_ND, "Surface relief: how deep it is, in world units" );
 	ri.Cvar_CheckRange( r_reliefStrength, 0, 64, qfalse );
 	r_reliefSpecular = ri.Cvar_Get( "r_reliefSpecular", "0.35", CVAR_ARCHIVE_ND, "Surface relief: how much the lit surfaces shine, 0 none" );
@@ -399,6 +402,95 @@ void vk_rpmod_light_modules( void ) {
 	ri.Printf( PRINT_ALL, "Surface relief on (r_relief)%s\n", r_dlightMode->integer == 2 ? "" : ": it needs r_dlightMode 2" );
 }
 
+#ifdef USE_VBO_SS
+// the surface sprites' vertex shaders swapped for the same lit by the view's dynamic lights
+// (surface_sprite_vert.tmpl built with USE_DLIGHTS); without them, r_spriteLights 0 lights none
+void vk_rpmod_sprite_modules( void ) {
+	for ( int i = 0; i < 2; i++ ) {
+		if ( vk.shaders.surface_sprite_vs[i] != VK_NULL_HANDLE )
+			qvkDestroyShaderModule( vk.device, vk.shaders.surface_sprite_vs[i], NULL );
+	}
+	RP_MODULE( vk.shaders.surface_sprite_vs[0], rpmod_ss_dlight_vert_spv, "rpmod surface sprite vertex" );
+	RP_MODULE( vk.shaders.surface_sprite_vs[1], rpmod_ss_dlight_fog_vert_spv, "rpmod surface sprite fog vertex" );
+}
+#endif
+
+// how bright a dynamic light is drawn, as the light passes have it
+static void RP_DlightColor( const dlight_t *dl, vec3_t out ) {
+	if ( !glConfig.deviceSupportsGamma && !vk.fboActive )
+		VectorScale( dl->color, 2 * powf( r_intensity->value, r_gamma->value ), out );
+	else
+		VectorCopy( dl->color, out );
+}
+
+// the view's dynamic lights nearest the eye, for the surface sprites (the camera's uniform)
+void vk_rpmod_camera_dlights( vkUniformCamera_t *u, const trRefdef_t *refdef ) {
+	int order[VK_CAMERA_DLIGHTS], count = 0;
+	float howFar[VK_CAMERA_DLIGHTS];
+	const float strength = r_spriteLights ? r_spriteLights->value : 0.0f;
+
+	u->dlightCount[0] = 0.0f;
+	if ( strength <= 0.0f || !refdef->dlights )
+		return;
+	for ( int i = 0; i < refdef->num_dlights; i++ ) {
+		const dlight_t *dl = &refdef->dlights[i];
+		const float d = Distance( dl->origin, refdef->vieworg ) - dl->radius;
+		int at = count;
+
+		if ( dl->radius <= 0.0f )
+			continue;
+		// kept nearest first: a farther one in a full list is left out
+		while ( at > 0 && howFar[at - 1] > d )
+			at--;
+		if ( at >= VK_CAMERA_DLIGHTS )
+			continue;
+		for ( int j = Q_min( count, VK_CAMERA_DLIGHTS - 1 ); j > at; j-- ) {
+			howFar[j] = howFar[j - 1];
+			order[j] = order[j - 1];
+		}
+		howFar[at] = d;
+		order[at] = i;
+		count = Q_min( count + 1, VK_CAMERA_DLIGHTS );
+	}
+	for ( int i = 0; i < count; i++ ) {
+		const dlight_t *dl = &refdef->dlights[order[i]];
+
+		VectorCopy( dl->origin, u->dlightPos[i] );
+		u->dlightPos[i][3] = 1.0f / Square( dl->radius );
+		RP_DlightColor( dl, u->dlightColor[i] );
+		VectorScale( u->dlightColor[i], strength, u->dlightColor[i] );
+		u->dlightColor[i][3] = 0.0f;
+	}
+	u->dlightCount[0] = (float)count;
+}
+
+// a surface sprite drawn without the GPU's sprites (tr_surfacesprites.cpp): the same light added to
+// its colour, where it stands
+void RB_SurfaceSpriteDlights( byte *color, const vec3_t loc ) {
+	const float strength = r_spriteLights ? r_spriteLights->value : 0.0f;
+
+	if ( strength <= 0.0f )
+		return;
+	for ( int i = 0; i < backEnd.refdef.num_dlights; i++ ) {
+		const dlight_t *dl = &backEnd.refdef.dlights[i];
+		vec3_t L, c;
+		float f;
+
+		if ( dl->radius <= 0.0f )
+			continue;
+		VectorSubtract( dl->origin, loc, L );
+		f = 1.0f - DotProduct( L, L ) / Square( dl->radius );
+		if ( f <= 0.0f )
+			continue;
+		RP_DlightColor( dl, c );
+		for ( int k = 0; k < 3; k++ ) {
+			const float v = color[k] + c[k] * f * strength * 255.0f;
+
+			color[k] = (byte)( v > 255.0f ? 255 : v );
+		}
+	}
+}
+
 // what the relief shader reads in the light's otherwise unused w: its depth, and the shine
 void vk_rpmod_light_params( float *depth, float *shine ) {
 	// a latched cvar keeps the value it started with until vid_restart, as the shaders do
@@ -451,6 +543,7 @@ void vk_rpmod_init( void ) {
 	RP_MODULE( rp.casFs, rpmod_cas_frag_spv, "rpmod sharpen" );
 	RP_MODULE( rp.volumFs, rpmod_volum_frag_spv, "rpmod volumetric light" );
 	RP_MODULE( rp.ssrFs, rpmod_ssr_frag_spv, "rpmod reflections" );
+	RP_MODULE( rp.ssrBlurFs, rpmod_ssrblur_frag_spv, "rpmod reflections softened" );
 	RP_MODULE( rp.shadowFs, rpmod_shadow_frag_spv, "rpmod real shadows" );
 	RP_MODULE( rp.smaaFs[0], rpmod_smaa_edges_frag_spv, "rpmod smaa edges" );
 	RP_MODULE( rp.smaaFs[1], rpmod_smaa_weights_frag_spv, "rpmod smaa weights" );
@@ -481,7 +574,7 @@ void vk_rpmod_init( void ) {
 void vk_rpmod_shutdown( void ) {
 	VkShaderModule *modules[] = { &rp.depthFs, &rp.depthMsFs, &rp.dofFs, &rp.filterFs, &rp.copyFs,
 		&rp.ssaoFs, &rp.aoBlurFs, &rp.aoApplyFs, &rp.softFs[0], &rp.softFs[1], &rp.softFs[2], &rp.softFs[3], &rp.softFs[4], &rp.softFs[5],
-		&rp.shaftsFs[0], &rp.shaftsFs[1], &rp.shaftsFs[2], &rp.mblurFs, &rp.gradeFs, &rp.fxaaFs, &rp.casFs, &rp.volumFs, &rp.ssrFs, &rp.shadowFs,
+		&rp.shaftsFs[0], &rp.shaftsFs[1], &rp.shaftsFs[2], &rp.mblurFs, &rp.gradeFs, &rp.fxaaFs, &rp.casFs, &rp.volumFs, &rp.ssrFs, &rp.ssrBlurFs, &rp.shadowFs,
 		&rp.smaaFs[0], &rp.smaaFs[1], &rp.smaaFs[2], &rp.fsrFs[0], &rp.fsrFs[1], &rp.waterFs, &rp.wetFs, &rp.hazeFs, &rp.skyFs, &rp.aerialFs };
 
 	for ( size_t i = 0; i < ARRAY_LEN( modules ); i++ ) {
@@ -1352,7 +1445,7 @@ static VkPipeline RP_CreatePipeline( VkShaderModule fs, VkRenderPass pass, VkSam
 void vk_rpmod_destroy_pipelines( void ) {
 	VkPipeline *pipes[] = { &rp.depthPipe, &rp.dofPipe, &rp.filterPipe, &rp.copyPipe, &rp.ssaoPipe, &rp.aoBlurPipe,
 		&rp.aoApplyPipe, &rp.shaftsPipe[0], &rp.shaftsPipe[1], &rp.shaftsPipe[2], &rp.mblurPipe, &rp.gradePipe,
-		&rp.fxaaPipe, &rp.casPipe, &rp.volumPipe, &rp.ssrPipe, &rp.shadowPipe, &rp.smaaPipe[0], &rp.smaaPipe[1], &rp.smaaPipe[2], &rp.fsrPipe[0], &rp.fsrPipe[1], &rp.waterPipe, &rp.wetPipe, &rp.hazePipe, &rp.skyPipe, &rp.aerialPipe };
+		&rp.fxaaPipe, &rp.casPipe, &rp.volumPipe, &rp.ssrPipe, &rp.ssrBlurPipe, &rp.shadowPipe, &rp.smaaPipe[0], &rp.smaaPipe[1], &rp.smaaPipe[2], &rp.fsrPipe[0], &rp.fsrPipe[1], &rp.waterPipe, &rp.wetPipe, &rp.hazePipe, &rp.skyPipe, &rp.aerialPipe };
 
 	rp.ready = qfalse;
 	for ( size_t i = 0; i < ARRAY_LEN( pipes ); i++ ) {
@@ -1387,7 +1480,9 @@ void vk_rpmod_create_pipelines( void ) {
 	rp.gradePipe = RP_CreatePipeline( rp.gradeFs, rp.postPass, one, qfalse, "rpmod colour grading" );
 	rp.fxaaPipe = RP_CreatePipeline( rp.fxaaFs, rp.postPass, one, qfalse, "rpmod fxaa" );
 	rp.casPipe = RP_CreatePipeline( rp.casFs, rp.postPass, one, qfalse, "rpmod sharpen" );
-	rp.ssrPipe = RP_CreatePipeline( rp.ssrFs, rp.postPass, one, qfalse, "rpmod reflections" );
+	// the reflections alone into the SMAA edges' image (free till SMAA, later), then softened onto the view
+	rp.ssrPipe = RP_CreatePipeline( rp.ssrFs, rp.smaaPass, one, qfalse, "rpmod reflections" );
+	rp.ssrBlurPipe = RP_CreatePipeline( rp.ssrBlurFs, rp.postPass, one, qfalse, "rpmod reflections softened" );
 	rp.smaaPipe[0] = RP_CreatePipeline( rp.smaaFs[0], rp.smaaPass, one, qfalse, "rpmod smaa edges" );
 	rp.smaaPipe[1] = RP_CreatePipeline( rp.smaaFs[1], rp.smaaPass, one, qfalse, "rpmod smaa weights" );
 	rp.smaaPipe[2] = RP_CreatePipeline( rp.smaaFs[2], rp.postPass, one, qfalse, "rpmod smaa blending" );
@@ -2939,7 +3034,8 @@ void vk_rpmod_post( void ) {
 	const qboolean smaa = (qboolean)( r_smaa->integer != 0 && rp.smaaPipe[2] != VK_NULL_HANDLE && rp.smaaTableView[0] != VK_NULL_HANDLE );
 	const qboolean fxaa = (qboolean)( r_fxaa->integer != 0 && !smaa );
 	const qboolean sharpen = (qboolean)( r_sharpen->value > 0.0f );
-	const qboolean ssr = (qboolean)( dist && rp.haveMask && r_ssr->integer && r_ssrStrength->value > 0.0f && rp.ssrPipe != VK_NULL_HANDLE );
+	const qboolean ssr = (qboolean)( dist && rp.haveMask && r_ssr->integer && r_ssrStrength->value > 0.0f && rp.ssrPipe != VK_NULL_HANDLE
+		&& rp.ssrBlurPipe != VK_NULL_HANDLE && rp.smaaFb[0] != VK_NULL_HANDLE );
 	const qboolean water = (qboolean)( dist && rp.haveWater && r_water->integer && rp.waterPipe != VK_NULL_HANDLE );
 	const qboolean haze = (qboolean)( dist && rp.numHaze > 0 && r_heatHaze->integer && rp.hazePipe != VK_NULL_HANDLE );
 	vec3_t wetMins[RP_MAX_WET], wetMaxs[RP_MAX_WET];
@@ -3012,8 +3108,13 @@ void vk_rpmod_post( void ) {
 		p.up[1] = -axis2[2];
 		p.up[2] = axis0[2];
 		p.up[3] = backEnd.viewParms.zNear;
-		vk_begin_render_pass( rp.postPass, rp.postFb[next], qfalse, glConfig.vidWidth, glConfig.vidHeight );
+		// the reflections alone (colour, and how strongly) into the SMAA edges' image
+		vk_begin_render_pass( rp.smaaPass, rp.smaaFb[0], qfalse, glConfig.vidWidth, glConfig.vidHeight );
 		RP_Quad3( rp.ssrPipe, src, rp.distSet, rp.maskSet, &p, sizeof( p ), &r );
+		vk_end_render_pass();
+		// then softened at their outlines and laid on the view
+		vk_begin_render_pass( rp.postPass, rp.postFb[next], qfalse, glConfig.vidWidth, glConfig.vidHeight );
+		RP_Quad3( rp.ssrBlurPipe, src, rp.smaaSet[0], rp.distSet, p.rect, sizeof( p.rect ), &r );
 		vk_end_render_pass();
 		src = rp.postSet[next];
 		next ^= 1;

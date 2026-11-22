@@ -148,6 +148,7 @@ typedef enum {
 	ST_A_CIN_BARS,
 	ST_A_CIN_END,
 	ST_A_PLAYSTORY,		// another saved story, played alongside
+	ST_A_ASKROLL,		// a player asked for a Dice Master roll (cl_dice.cpp), waited for
 	ST_NUM_ACTIONS
 } stAction_t;
 
@@ -171,8 +172,8 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ "Seconds", ST_K_NUMBER, "2", NULL } } },
 	{ "pause", "Wait for me", "Flow", "Stops until you press Continue, or run /storyteller continue (bind it to a key). The note shows while it waits.", -1, -1, 1, {
 		{ "Note", ST_K_TEXT, "", NULL } } },
-	{ "trigger", "When someone comes", "Flow", "Waits until someone comes into a map trigger, a door moves, someone says one of the words (| between them), someone uses a world trigger (a world thing by its story name, from the world editor), or comes into a walk-in world zone. Who can be a team's players only, red or blue. With For, they have to stay in that many seconds. A story starting with it can be armed. Players out of sight are found too: those with this client say where they are (with experimental on), the others are asked for with rporigin.", 5, -1, 11, {
-		{ "Where", ST_K_CHOICE, "map trigger", "map trigger|world zone|door|someone says|someone uses" },
+	{ "trigger", "When someone comes", "Flow", "Waits until someone comes into a map trigger, a door moves, someone says one of the words (| between them), someone uses a world trigger (a world thing by its story name, from the world editor), comes into a walk-in world zone, or rolls an action of the Dice Master. Who can be a team's players only, red or blue. With For, they have to stay in that many seconds. A story starting with it can be armed. Players out of sight are found too: those with this client say where they are (with experimental on), the others are asked for with rporigin.", 5, -1, 12, {
+		{ "Where", ST_K_CHOICE, "map trigger", "map trigger|world zone|door|someone says|someone uses|someone rolls" },
 		{ "Which", ST_K_TEXT, "", NULL },
 		{ "Who", ST_K_CHOICE, "any player", "any player|any NPC|anyone|me|named|red team|blue team" },
 		{ "Name", ST_K_TEXT, "", NULL },
@@ -182,9 +183,10 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ "Z", ST_K_NUMBER, "", NULL },
 		{ "For (s)", ST_K_NUMBER, "0", NULL },
 		{ "Too early", ST_K_CHOICE, "as ever", "as ever|hidden|a message" },
-		{ "Message", ST_K_TEXT, "Maybe you should do something else first.", NULL } } },
-	{ "if", "If", "Flow", "Goes under a When step, and looks once, when the story gets to it: how many are in a map trigger or a walk-in world zone, or whether someone has said one of the words (| between them), or used the world thing by that story name, since the story began, or whether who set off the When above it has that name. True, the steps after it play; false, the ones after its Else, or after its End if.", 5, -1, 10, {
-		{ "Where", ST_K_CHOICE, "map trigger", "map trigger|world zone|someone says|someone uses|who set it off" },
+		{ "Message", ST_K_TEXT, "Maybe you should do something else first.", NULL },
+		{ "Result", ST_K_CHOICE, "any", "any|a success or better|a critical success|a failure or worse|a critical failure" } } },
+	{ "if", "If", "Flow", "Goes under a When step, and looks once, when the story gets to it: how many are in a map trigger or a walk-in world zone, or whether someone has said one of the words (| between them), or used the world thing by that story name, since the story began, or whether who set off the When above it has that name, or how the roll went (the roll its When or Ask for a roll waited for, else the last one by who set it off). True, the steps after it play; false, the ones after its Else, or after its End if.", 5, -1, 11, {
+		{ "Where", ST_K_CHOICE, "map trigger", "map trigger|world zone|someone says|someone uses|who set it off|the roll was" },
 		{ "Which", ST_K_TEXT, "", NULL },
 		{ "Who", ST_K_CHOICE, "any player", "any player|any NPC|anyone|me|named|red team|blue team" },
 		{ "Name", ST_K_TEXT, "", NULL },
@@ -193,7 +195,8 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ "Y", ST_K_NUMBER, "", NULL },
 		{ "Z", ST_K_NUMBER, "", NULL },
 		{ "How many", ST_K_CHOICE, "at least", "at least|at most|exactly" },
-		{ "Count", ST_K_NUMBER, "1", NULL } } },
+		{ "Count", ST_K_NUMBER, "1", NULL },
+		{ "Result", ST_K_CHOICE, "Success", "Critical failure|Failure|Success|Critical success" } } },
 	{ "else", "Else", "Flow", "The steps after it play when the If before it was false, up to its End if.", -1, -1, 0, { } },
 	{ "endif", "End if", "Flow", "Where an If's steps end: the story goes on from here either way.", -1, -1, 0, { } },
 	{ "goback", "Go back", "Flow", "Plays again from an earlier step: the When before it, which waits again, the start of the story, or a Mark by its name. Under an Else it sends a wrong answer back to wait: When someone uses the console, If who set it off is Rex, open the door, Else, Go back. Words said and triggers used count again from when it went back.", -1, -1, 2, {
@@ -341,6 +344,14 @@ static const stActionDef_t stActions[ST_NUM_ACTIONS] = {
 		{ NULL, ST_K_TEXT, NULL, NULL } } },
 	{ "playstory", "Play story", "Flow", "Plays another saved story, alongside this one, which goes on: from its start, and when it starts with a When, once that's set off. It shows in Armed until it's over. After a When someone uses a trigger, using the trigger plays it.", -1, -1, 1, {
 		{ "Story", ST_K_TEXT, "", NULL } } },
+	{ "askroll", "Ask for a roll", "Flow", "Asks a player for a roll of the Dice Master (the datapad's Dice): an action of a system, against its DC or this one. They're told, and roll on their datapad or with /dicemaster roll; C1B3R rolls the dice. The story waits for it, then an If the roll was ... goes on by how it went (Give up after: the If is then false). You have to run the system, and they need the client with a linked game and a character in it.", -1, -1, 7, {
+		{ "System", ST_K_TEXT, "", NULL },
+		{ "Action", ST_K_TEXT, "", NULL },
+		{ "DC", ST_K_NUMBER, "", NULL },
+		{ "Who", ST_K_CHOICE, "who set it off", "who set it off|named" },
+		{ "Name", ST_K_TEXT, "", NULL },
+		{ "Give up after (s)", ST_K_NUMBER, "120", NULL },
+		{ "Label", ST_K_TEXT, "", NULL } } },
 };
 
 typedef struct {
@@ -394,6 +405,8 @@ typedef struct {
 	int			since[ST_MAX_PEOPLE];	// when each one inside came in, to stay a while
 	int			chatFrom;				// the chat heard since then counts
 	int			started;				// cls.realtime the story began, for an If's chat
+	int			rollDegree;				// how the roll waited for went (0 critical failure .. 3), -1 none
+	int			askToken;				// Ask for a roll: cl_dice.cpp's token, 0 not asked yet
 
 	// a typewriter centre message: the letters shown, whether the next one's sound is out, and
 	// when the next one goes
@@ -449,6 +462,7 @@ static const struct {
 	{ "door", "When a door moves", "Waits until one of the map's doors opens or closes: aim at it, or pick it from the list. Your game only sees a door while it's near you." ST_WHEN_ARMED, qfalse, qfalse },
 	{ "someone says", "When someone says", "Waits until someone says one of the words in chat, | between them." ST_WHEN_ARMED, qfalse, qfalse },
 	{ "someone uses", "When someone uses a world trigger", "Waits until someone uses a world thing (an object, a zone or a body built with /world) by its story name: one with a search time only once it's been held that long. Too early: while the story is at an earlier step (or waits armed for its first), the thing is hidden from the players with this client, or shows them the message instead of being used; as ever, it's left as it is." ST_WHEN_ARMED, qtrue, qfalse },
+	{ "someone rolls", "When someone rolls", "Waits until someone rolls an action of the Dice Master (the datapad's Dice), of any system: the action by its name, or any; and how it went, if it matters. An If the roll was ... under it looks at that roll. The players need the client, with experimental on." ST_WHEN_ARMED, qfalse, qfalse },
 };
 
 static int ST_WhenKind( const char *where ) {
@@ -721,6 +735,11 @@ static qboolean ST_TriggerUse( const stStep_t *s ) {
 	return (qboolean)!Q_stricmp( s->values[0], "someone uses" );
 }
 
+// a Dice Master roll (cl_dice.cpp): a When's, or an If's "the roll was"
+static qboolean ST_TriggerRoll( const stStep_t *s ) {
+	return (qboolean)( !Q_stricmp( s->values[0], "someone rolls" ) || !Q_stricmp( s->values[0], "the roll was" ) );
+}
+
 // a walk-in world zone, by its story name: an area like a map trigger
 static qboolean ST_TriggerZone( const stStep_t *s ) {
 	return (qboolean)!Q_stricmp( s->values[0], "world zone" );
@@ -733,7 +752,7 @@ static qboolean ST_IfWho( const stStep_t *s ) {
 
 // an area people are in, not words, a use, a door or who it was
 static qboolean ST_TriggerArea( const stStep_t *s ) {
-	return (qboolean)( !ST_TriggerChat( s ) && !ST_TriggerUse( s ) && !ST_TriggerDoor( s ) && !ST_IfWho( s ) );
+	return (qboolean)( !ST_TriggerChat( s ) && !ST_TriggerUse( s ) && !ST_TriggerDoor( s ) && !ST_IfWho( s ) && !ST_TriggerRoll( s ) );
 }
 
 // a "when someone comes" or an If: an area, or what's said
@@ -751,10 +770,16 @@ static const char *ST_FieldLabel( const stStep_t *s, int field, const char *labe
 		return "Zone";
 	if ( field == 3 && ST_IfWho( s ) )
 		return "It was";
+	if ( field == 1 && ST_Watches( s ) && ST_TriggerRoll( s ) )
+		return "Action";
+	if ( field == 8 && ST_TriggerRoll( s ) )
+		return "It was";
 	return label;
 }
 
 static qboolean ST_ChatSaid( const stStep_t *s, int since, char *by, int bySize );
+static qboolean ST_RolledSince( const stStep_t *s, int since, const char *who, int ask, char *by, int bySize, int *degree );
+static const char *ST_RollResult( const stStep_t *s );
 static qboolean ST_UsedSince( const stStep_t *s, int since, char *by, int bySize );
 static void ST_AddFar( struct stPerson_s *out, int *n, int max, const qboolean *seen );
 
@@ -805,10 +830,20 @@ static qboolean ST_FieldShown( const stStep_t *s, int field ) {
 		return (qboolean)( field == 0 || ( field == 1 && Q_stricmp( s->values[0], "unlock all" ) ) || !Q_stricmp( s->values[0], "lock" ) );
 	if ( s->action == ST_A_NOTIFY )
 		return qtrue;
+	if ( s->action == ST_A_ASKROLL )
+		return (qboolean)( field != 4 || !Q_stricmp( s->values[3], "named" ) );
 	if ( !ST_Watches( s ) )
 		return qtrue;
 	if ( ST_IfWho( s ) )
 		return (qboolean)( field == 0 || field == 3 );
+	if ( ST_TriggerRoll( s ) && s->action == ST_A_IF )
+		return (qboolean)( field == 0 || field == 8 || field == 10 );
+	if ( ST_TriggerRoll( s ) )
+		return (qboolean)( field == 1 || field == 2 || ( field == 3 && !Q_stricmp( s->values[2], "named" ) ) || field == 11 );
+	if ( s->action == ST_A_TRIGGER && field == 11 )
+		return qfalse;
+	if ( s->action == ST_A_IF && field == 10 )
+		return qfalse;
 	if ( s->action == ST_A_TRIGGER && field == 0 )
 		return qfalse;
 	// a use trigger's Too early, and its message
@@ -990,6 +1025,7 @@ static qboolean ST_Experimental( stAction_t action ) {
 	case ST_A_CAM_FOV:
 	case ST_A_CIN_BARS:
 	case ST_A_CIN_END:
+	case ST_A_ASKROLL:
 		return qtrue;
 	default:
 		return qfalse;
@@ -1201,8 +1237,20 @@ static const char *ST_StepCommand( const stStep_t *s, qboolean *local, const cha
 			*error = "Type the name of the story to play";
 		return NULL;
 
+	case ST_A_ASKROLL:
+		if ( !v[0][0] || !v[1][0] )
+			*error = "Type the Dice Master system (its name or number) and the action to roll";
+		else if ( !Q_stricmp( v[3], "named" ) && !v[4][0] )
+			*error = "Type the player's name";
+		return NULL;
+
 	case ST_A_IF:
 	case ST_A_TRIGGER:
+		if ( ST_TriggerRoll( s ) ) {
+			if ( s->action == ST_A_TRIGGER && !Q_stricmp( v[2], "named" ) && !v[3][0] )
+				*error = "Type the player's name";
+			return NULL;
+		}
 		if ( ST_IfWho( s ) ) {
 			if ( !v[3][0] )
 				*error = "Type who it was: their name, or part of it";
@@ -1813,6 +1861,8 @@ static const char *ST_AreaText( const stStep_t *s ) {
 }
 
 static const char *ST_IfSummary( const stStep_t *s ) {
+	if ( ST_TriggerRoll( s ) )
+		return va( "If the roll was %s %s", s->values[8], s->values[10][0] ? s->values[10] : "Success" );
 	if ( ST_IfWho( s ) )
 		return va( "If it was %s who set it off", s->values[3][0] ? s->values[3] : "?" );
 	if ( ST_TriggerChat( s ) )
@@ -1827,6 +1877,9 @@ static const char *ST_TriggerSummary( const stStep_t *s ) {
 
 	if ( ST_TriggerDoor( s ) )
 		return va( "When %s moves", ST_EntLabel( s->values[1] ) );
+	if ( ST_TriggerRoll( s ) )
+		return va( "When %s rolls %s%s%s", ST_WhoText( s ), s->values[1][0] ? s->values[1] : "anything",
+			Q_stricmp( s->values[11], "any" ) && s->values[11][0] ? ", " : "", Q_stricmp( s->values[11], "any" ) ? s->values[11] : "" );
 	if ( ST_TriggerChat( s ) )
 		return va( "When %s says \"%s\"", ST_WhoText( s ), s->values[1] );
 	if ( ST_TriggerUse( s ) )
@@ -2056,6 +2109,15 @@ static qboolean ST_TriggerFired( stRun_t *r, const stStep_t *s ) {
 		}
 		return ST_ChatSaid( s, r->chatFrom, r->by, sizeof( r->by ) );
 	}
+	// a roll, from when it began listening
+	if ( ST_TriggerRoll( s ) ) {
+		if ( !r->watching ) {
+			r->watching = qtrue;
+			r->chatFrom = cls.realtime;
+			return qfalse;
+		}
+		return ST_RolledSince( s, r->chatFrom, NULL, 0, r->by, sizeof( r->by ), &r->rollDegree );
+	}
 	// a use, from when it began listening
 	if ( ST_TriggerUse( s ) ) {
 		if ( !r->watching ) {
@@ -2143,6 +2205,23 @@ static qboolean ST_IfTrue( const stRun_t *r, const stStep_t *s ) {
 	// who set off the When above it
 	if ( ST_IfWho( s ) )
 		return ST_NameIs( r->by, s->values[3] );
+	// how the roll went: the one waited for, else the last by who set it off since the story began
+	if ( ST_TriggerRoll( s ) ) {
+		static const char *degrees[] = { "Critical failure", "Failure", "Success", "Critical success" };
+		int degree = r->rollDegree, wanted = 2;
+
+		if ( degree < 0 && ( !r->by[0] || !ST_RolledSince( s, r->started, r->by, 0, NULL, 0, &degree ) ) )
+			return qfalse;
+		for ( int i = 0; i < 4; i++ ) {
+			if ( !Q_stricmp( s->values[10], degrees[i] ) )
+				wanted = i;
+		}
+		if ( !Q_stricmp( s->values[8], "at most" ) )
+			return (qboolean)( degree <= wanted );
+		if ( !Q_stricmp( s->values[8], "exactly" ) )
+			return (qboolean)( degree == wanted );
+		return (qboolean)( degree >= wanted );
+	}
 
 	if ( ST_TriggerChat( s ) )
 		return ST_ChatSaid( s, r->started, NULL, 0 );
@@ -2241,6 +2320,10 @@ static const char *ST_StepSummary( const stStep_t *s ) {
 		break;
 	case ST_A_PLAYSTORY:
 		Com_sprintf( buf, sizeof( buf ), "Play story %s", s->values[0][0] ? s->values[0] : "?" );
+		break;
+	case ST_A_ASKROLL:
+		Com_sprintf( buf, sizeof( buf ), "Ask %s to roll %s%s", !Q_stricmp( s->values[3], "named" ) ? ( s->values[4][0] ? s->values[4] : "?" ) : "who set it off",
+			s->values[1][0] ? s->values[1] : "?", s->values[2][0] ? va( " against DC %s", s->values[2] ) : "" );
 		break;
 	case ST_A_ENDIF:
 		Q_strncpyz( buf, "End if", sizeof( buf ) );
@@ -2374,7 +2457,7 @@ static qboolean ST_IsCondition( stAction_t action ) {
 
 static qboolean ST_UnderWhen( const stStep_t *steps, int row ) {
 	for ( int i = 0; i < row; i++ ) {
-		if ( steps[i].action == ST_A_TRIGGER )
+		if ( steps[i].action == ST_A_TRIGGER || steps[i].action == ST_A_ASKROLL )
 			return qtrue;
 	}
 	return qfalse;
@@ -2620,6 +2703,7 @@ static void ST_StartRun( stRun_t *r, int from ) {
 	r->running = qtrue;
 	r->pc = from;
 	r->started = cls.realtime;
+	r->rollDegree = -1;
 }
 
 static void ST_Run( int from ) {
@@ -2778,6 +2862,58 @@ static qboolean ST_Play( stRun_t *r, stStep_t *steps, int numSteps, const char *
 			r->pc++;
 			continue;
 
+		case ST_A_ASKROLL: {
+			const char *why = NULL;
+			int id;
+
+			ST_StepCommand( s, &local, &error );
+			if ( error ) {
+				Com_Printf( S_COLOR_YELLOW "%sstep %i skipped: %s\n", prefix, r->pc + 1, error );
+				r->rollDegree = -1;
+				r->pc++;
+				continue;
+			}
+			// asked once: whoever set it off, or the player named
+			if ( !r->askToken ) {
+				const int client = ST_PlayerNamed( !Q_stricmp( s->values[3], "named" ) ? s->values[4] : r->by );
+
+				if ( client < 0 ) {
+					Com_Printf( S_COLOR_YELLOW "%sstep %i skipped: %s isn't a player on the server\n", prefix, r->pc + 1,
+						!Q_stricmp( s->values[3], "named" ) ? s->values[4] : r->by[0] ? r->by : "nobody set it off, so who" );
+					r->rollDegree = -1;
+					r->pc++;
+					continue;
+				}
+				r->askToken = CL_Dice_Ask( s->values[0], client, s->values[1], s->values[2], s->values[6] );
+				if ( !r->askToken ) {
+					Com_Printf( S_COLOR_YELLOW "%sstep %i skipped: not connected to C1B3R\n", prefix, r->pc + 1 );
+					r->rollDegree = -1;
+					r->pc++;
+					continue;
+				}
+				r->rollDegree = -1;
+				r->stepStart = cls.realtime;
+				r->chatFrom = cls.realtime;
+				Q_strncpyz( r->by, ST_PlayerName( client ), sizeof( r->by ) );
+				Com_Printf( S_COLOR_GREEN "%s" S_COLOR_WHITE "step %i: asked %s" S_COLOR_WHITE " to roll %s\n", prefix, r->pc + 1, r->by, s->values[1] );
+				return qfalse;
+			}
+			id = CL_Dice_AskState( r->askToken, &why );
+			if ( id < 0 ) {
+				Com_Printf( S_COLOR_YELLOW "%sstep %i: the roll couldn't be asked for: %s\n", prefix, r->pc + 1, why );
+			} else if ( id > 0 && ST_RolledSince( s, r->chatFrom, NULL, id, r->by, sizeof( r->by ), &r->rollDegree ) ) {
+				Com_Printf( S_COLOR_GREEN "%s" S_COLOR_WHITE "step %i: %s" S_COLOR_WHITE " rolled, %s\n", prefix, r->pc + 1, r->by, ST_RollResult( s ) );
+			} else if ( ST_Number( s, 5 ) > 0 && cls.realtime - r->stepStart > (int)( ST_Number( s, 5 ) * 1000.0f ) ) {
+				Com_Printf( S_COLOR_YELLOW "%sstep %i: no roll came; it goes on\n", prefix, r->pc + 1 );
+			} else {
+				return qfalse;
+			}
+			r->askToken = 0;
+			r->stepStart = 0;
+			r->pc++;
+			continue;
+		}
+
 		case ST_A_ELSE:
 			// the If's steps played: the Else's don't
 			r->pc = ST_SkipBranch( steps, numSteps, r->pc, qfalse );
@@ -2808,6 +2944,8 @@ static qboolean ST_Play( stRun_t *r, stStep_t *steps, int numSteps, const char *
 			r->stepStart = 0;
 			r->by[0] = '\0';
 			r->started = cls.realtime;
+			r->rollDegree = -1;
+			r->askToken = 0;
 			continue;
 		}
 
@@ -3593,6 +3731,106 @@ static qboolean ST_ChatSaid( const stStep_t *s, int since, char *by, int bySize 
 			continue;
 		if ( by )
 			Q_strncpyz( by, stChat[i].name, bySize );
+		return qtrue;
+	}
+	return qfalse;
+}
+
+/*
+===============================================================================
+
+Rolls heard, for "someone rolls" and Ask for a roll (cl_dice.cpp)
+
+===============================================================================
+*/
+
+#define ST_MAX_ROLLS	32
+
+static struct {
+	int		time;
+	int		client;
+	char	name[MAX_QPATH];		// the character's, without colours
+	char	player[MAX_QPATH];		// the player's, without colours
+	char	action[64];
+	int		total, dc, degree, ask;
+} stRolls[ST_MAX_ROLLS];
+static int stRollNext;
+
+void CL_Storyteller_Roll( int client, const char *name, const char *action, int total, int dc, int degree, int ask ) {
+	const int i = stRollNext;
+	const int ofs = client >= 0 && client < MAX_CLIENTS ? cl.gameState.stringOffsets[CS_PLAYERS + client] : 0;
+
+	stRolls[i].time = cls.realtime;
+	stRolls[i].client = client;
+	Q_strncpyz( stRolls[i].name, name, sizeof( stRolls[i].name ) );
+	Q_StripColor( stRolls[i].name );
+	Q_strncpyz( stRolls[i].player, ofs ? Info_ValueForKey( cl.gameState.stringData + ofs, "n" ) : "", sizeof( stRolls[i].player ) );
+	Q_StripColor( stRolls[i].player );
+	Q_strncpyz( stRolls[i].action, action, sizeof( stRolls[i].action ) );
+	stRolls[i].total = total;
+	stRolls[i].dc = dc;
+	stRolls[i].degree = degree;
+	stRolls[i].ask = ask;
+	stRollNext = ( stRollNext + 1 ) % ST_MAX_ROLLS;
+}
+
+// a roll's result as the step's Result asks for it
+static qboolean ST_ResultIs( const char *want, int degree ) {
+	if ( !Q_stricmp( want, "a success or better" ) )
+		return (qboolean)( degree >= 2 );
+	if ( !Q_stricmp( want, "a critical success" ) )
+		return (qboolean)( degree == 3 );
+	if ( !Q_stricmp( want, "a failure or worse" ) )
+		return (qboolean)( degree <= 1 );
+	if ( !Q_stricmp( want, "a critical failure" ) )
+		return (qboolean)( degree == 0 );
+	return qtrue;
+}
+
+static const char *ST_RollResult( const stStep_t *s ) {
+	static const char *degrees[] = { "a critical failure", "a failure", "a success", "a critical success" };
+	const int i = ( stRollNext + ST_MAX_ROLLS - 1 ) % ST_MAX_ROLLS;
+
+	(void)s;
+	return va( "%i against %i, %s", stRolls[i].total, stRolls[i].dc, degrees[Com_Clampi( 0, 3, stRolls[i].degree )] );
+}
+
+// a roll since then that the step counts, the latest: by who (a player's name; NULL as the step's
+// Who says), of its action (a When's or an Ask's), its result (a When's); an Ask's, the answer to
+// its ask. Who rolled in by, how it
+// went in degree
+static qboolean ST_RolledSince( const stStep_t *s, int since, const char *who, int ask, char *by, int bySize, int *degree ) {
+	const char *action = s->action == ST_A_ASKROLL ? s->values[1] : s->action == ST_A_TRIGGER ? s->values[1] : "";
+
+	for ( int n = 0; n < ST_MAX_ROLLS; n++ ) {
+		const int i = ( stRollNext + ST_MAX_ROLLS - 1 - n ) % ST_MAX_ROLLS;
+
+		if ( !stRolls[i].time || stRolls[i].time < since )
+			continue;
+		if ( action[0] && Q_stricmp( stRolls[i].action, action ) )
+			continue;
+		if ( who ) {
+			if ( !ST_NameIs( stRolls[i].player, who ) && !ST_NameIs( stRolls[i].name, who ) )
+				continue;
+		} else if ( s->action == ST_A_TRIGGER ) {
+			const char *w = s->values[2];
+
+			if ( !Q_stricmp( w, "any NPC" ) )
+				continue;
+			if ( !Q_stricmp( w, "me" ) && stRolls[i].client != clc.clientNum )
+				continue;
+			if ( ST_WhoTeam( w ) >= 0 && ST_NameTeam( stRolls[i].player ) != ST_WhoTeam( w ) )
+				continue;
+			if ( !Q_stricmp( w, "named" ) && !ST_NameIs( stRolls[i].player, s->values[3] ) && !ST_NameIs( stRolls[i].name, s->values[3] ) )
+				continue;
+			if ( !ST_ResultIs( s->values[11], stRolls[i].degree ) )
+				continue;
+		} else if ( s->action == ST_A_ASKROLL && stRolls[i].ask != ask ) {
+			continue;		// what it asked for, not one rolled on its own
+		}
+		if ( by )
+			Q_strncpyz( by, stRolls[i].player, bySize );
+		*degree = stRolls[i].degree;
 		return qtrue;
 	}
 	return qfalse;
@@ -6628,6 +6866,7 @@ static const float *ST_DgColor( const stStep_t *s ) {
 	case ST_A_TRIGGER:		return stDgWhen;
 	case ST_A_IF:			return stDgIf;
 	case ST_A_PLAYSTORY:	return stDgPlay;
+	case ST_A_ASKROLL:		return stDgWhen;
 	case ST_A_WAIT:
 	case ST_A_PAUSE:		return stDgWait;
 	default:				return stDgStep;

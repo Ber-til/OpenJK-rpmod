@@ -58,6 +58,9 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #define PS_ACCOUNT_WAIT_MS	6000				// in game this long before the account is asked: the welcome prints first
 #define PS_ACCOUNT_RETRY_MS	30000				// the server didn't answer rpinfo: asked again
 #define PS_LINK_WAIT_MS		3000				// a link's code asked about this often, till it's used in Discord
+#define PS_RELIST_MS		60000				// who has the client asked again this often, in case
+#define PS_RELIST_JOIN_MS	10000				// and this long after someone came in (their game says hello by then)
+#define PS_RELIST_LATE_MS	30000				// and again this long after: a slow hello, a link made since
 
 typedef struct {
 	int			num;
@@ -84,6 +87,9 @@ static struct {
 	int			askNext;			// not before this, after a failure
 	qboolean	print;				// /clientusers is waiting for it
 	int			noteTime;
+	int			listTime;			// when it was last asked
+	int			relist[2];			// asked again then (0 none): someone came in or changed name
+	unsigned	slots;				// the players here as last seen, to tell when someone came in
 } ps;
 
 // the session
@@ -115,8 +121,8 @@ static struct {
 
 static std::deque<psHook_t>		psRelayOut;	// hooks going to C1B3R, one at a time
 static qboolean			psReplaying;		// a hook of the server's state, replayed to us, being run
-static httpRequest_t			psListHttp, psHelloHttp, psPollHttp, psHookHttp, psLinkHttp, psWaitHttp, psByeHttp, psStateHttp, psWebHttp;
-static cvar_t					*cl_presenceUrl, *cl_presenceLocal, *cl_c1b3rToken;
+static httpRequest_t			psListHttp, psHelloHttp, psPollHttp, psHookHttp, psLinkHttp, psWaitHttp, psByeHttp, psStateHttp, psWebHttp, psBurnerHttp;
+static cvar_t					*cl_presenceUrl, *cl_presenceLocal, *cl_c1b3rToken, *cl_c1b3rBurner;
 
 /*
 ===============================================================================
@@ -249,8 +255,47 @@ static void PS_AskList( void ) {
 		return;
 	PS_Json( body, psv.id );
 	body += "}";
+	ps.listTime = cls.realtime;
 	if ( !PS_Send( &psListHttp, "/v2/list", body ) )
 		ps.askNext = cls.realtime + PS_RETRY_MS;
+}
+
+// who has the client asked again as the server's players change: their games say hello to C1B3R after
+// they come in, so a list asked only at our own hello never knows them (their holsters, their
+// characters unseen till our next session); once a minute too, and at once when asked to
+static void PS_RelistFrame( void ) {
+	unsigned sum = 0;
+
+	for ( int i = 0; i < MAX_CLIENTS; i++ ) {
+		const char *name = CL_PlayerSlotName( i );
+
+		if ( !name[0] )
+			continue;
+		sum = sum * 31 + (unsigned)i + 1;
+		for ( const char *c = name; *c; c++ )
+			sum = sum * 31 + (unsigned char)*c;
+	}
+	if ( sum != ps.slots ) {
+		ps.slots = sum;
+		ps.relist[0] = cls.realtime + PS_RELIST_JOIN_MS;
+		ps.relist[1] = cls.realtime + PS_RELIST_LATE_MS;
+	}
+	if ( !psv.on || psListHttp.state == HTTP_BUSY || cls.realtime < ps.askNext )
+		return;
+	for ( int i = 0; i < 2; i++ ) {
+		if ( ps.relist[i] && cls.realtime >= ps.relist[i] ) {
+			ps.relist[i] = 0;
+			PS_AskList();
+			return;
+		}
+	}
+	if ( cls.realtime - ps.listTime >= PS_RELIST_MS )
+		PS_AskList();
+}
+
+// someone's game is on C1B3R now (a hook of theirs came): who has the client asked again soon
+void CL_Presence_Relist( void ) {
+	ps.relist[0] = cls.realtime;
 }
 
 static const char *PS_Rank( void );
@@ -653,7 +698,7 @@ static const char *PS_HookCommand( const char *cmd, int *to ) {
 // the tools' hooks, which change what everyone sees: RPMod admins' only (C1B3R's relay.py ADMIN_HOOKS)
 static qboolean PS_AdminHook( const char *text ) {
 	static const char *tools[] = { "map", "combat", "story", "cine", "cin", "cinematic", "anim", "startcinematic", "endcinematic",
-		"objective", "objectives", "npc", "npcnames", "sky", "skyc", "dismember" };
+		"objective", "objectives", "npc", "npcnames", "sky", "skyc", "dismember", "camshake" };
 	char kind[32];
 	int n = 0;
 
@@ -716,8 +761,14 @@ qboolean CL_Presence_Outgoing( const char *cmd ) {
 
 // a hook (cmd:...) to everyone with this client here (to -1) or one player, through C1B3R; shown here
 // too. The tools' only from an RPMod admin: not even here otherwise, as it goes nowhere else
-qboolean CL_Presence_Hook( int to, const char *text ) {
-	if ( !text || Q_stricmpn( text, "cmd:", 4 ) )
+qboolean CL_Presence_Hook( int to, const char *in ) {
+	// a copy: the hook is often a va() string, and running it here first (the sky redrawn, a limb
+	// put back) calls va() enough to write over it before it's queued, so C1B3R got something else
+	// (refused as no hook, unsaid): a shared sky never reached anyone, its Unshare did
+	const std::string copy = in ? in : "";
+	const char *text = copy.c_str();
+
+	if ( !in || Q_stricmpn( text, "cmd:", 4 ) )
 		return qfalse;
 	// (with no C1B3R for this server, a local one, it runs here as ever: it can't reach anyone else)
 	if ( PS_AdminHook( text ) && to != clc.clientNum && PS_Active() && !( psv.on && psv.sends && psv.admin ) ) {
@@ -752,6 +803,19 @@ qboolean CL_Presence_Hook( int to, const char *text ) {
 	return qtrue;
 }
 
+// testing only: this session speaks for a staging burner account (cl_c1b3rBurner), asked after each hello
+static void PS_Burner( void ) {
+	std::string body = "{\"session\":";
+
+	if ( !cl_c1b3rBurner || !cl_c1b3rBurner->string[0] || !psv.on || psBurnerHttp.state == HTTP_BUSY )
+		return;
+	PS_Json( body, psv.id );
+	body += ",\"account\":";
+	PS_Json( body, cl_c1b3rBurner->string );
+	body += "}";
+	PS_Send( &psBurnerHttp, "/v2/test/burner", body );
+}
+
 /*
 ===============================================================================
 
@@ -762,6 +826,22 @@ Each frame
 
 // C1B3R's answers
 static void PS_PollRequests( void ) {
+	if ( HTTP_Poll( &psBurnerHttp ) ) {
+		char *field[6];
+		const int n = PS_Fields( psBurnerHttp.answer, field, 6 );
+
+		if ( psBurnerHttp.status == 200 && n >= 4 && !strcmp( field[0], "ok" ) ) {
+			PS_SetState( field[1], field[2], field[3], n >= 5 ? field[4] : NULL );
+			Com_Printf( S_COLOR_GREEN "C1B3R: " S_COLOR_WHITE "speaking for the burner account %s (testing only)\n", cl_c1b3rBurner->string );
+		} else if ( psBurnerHttp.status == 404 && !Q_stricmpn( psBurnerHttp.answer, "No such session", 15 ) ) {
+			// not connected to it yet: asked again after the next hello
+			Com_Printf( "C1B3R: the burner account %s is used once this game's connected to C1B3R\n", cl_c1b3rBurner->string );
+		} else if ( psBurnerHttp.status == 404 || psBurnerHttp.status == 405 ) {
+			Com_Printf( S_COLOR_YELLOW "C1B3R: " S_COLOR_WHITE "this C1B3R has no burner accounts (staging only)\n" );
+		} else {
+			Com_Printf( S_COLOR_YELLOW "C1B3R: " S_COLOR_WHITE "burner: %s", psBurnerHttp.answer[0] ? psBurnerHttp.answer : "no answer\n" );
+		}
+	}
 	if ( HTTP_Poll( &psHelloHttp ) ) {
 		char *field[7];
 		const int n = PS_Fields( psHelloHttp.answer, field, 7 );
@@ -784,6 +864,7 @@ static void PS_PollRequests( void ) {
 			psv.pollNext = 0;
 			ps.askNext = 0;
 			PS_AskList();
+			PS_Burner();
 		} else {
 			psv.helloNext = cls.realtime + PS_HELLO_RETRY_MS;
 		}
@@ -885,6 +966,8 @@ static void PS_Reset( void ) {
 	ps.known = qfalse;
 	ps.numPlayers = 0;
 	ps.askNext = 0;
+	ps.listTime = ps.relist[0] = ps.relist[1] = 0;
+	ps.slots = 0;
 	psa.known = qfalse;
 	psa.account[0] = '\0';
 }
@@ -956,6 +1039,7 @@ void CL_Presence_Frame( void ) {
 	if ( psa.known || psv.on || cls.realtime - ps.joinTime >= PS_ACCOUNT_WAIT_MS * 3 )
 		PS_Hello();
 	PS_Poll();
+	PS_RelistFrame();
 	PS_LinkFrame();
 	PS_RelayFrame();
 }
@@ -1020,6 +1104,26 @@ static void PS_C1b3r_f( void ) {
 		PS_Unlink();
 		return;
 	}
+	// testing only, on a C1B3R with burner accounts (staging): this game speaks for one, kept for later sessions
+	if ( !Q_stricmp( arg, "burner" ) ) {
+		if ( Cmd_Argc() < 3 ) {
+			Com_Printf( "usage: c1b3r burner <account> | off   (a staging C1B3R's burner account, for testing with a second game)\n"
+				"Now: %s\n", cl_c1b3rBurner->string[0] ? cl_c1b3rBurner->string : "off" );
+			return;
+		}
+		if ( !Q_stricmp( Cmd_Argv( 2 ), "off" ) ) {
+			Cvar_Set( "cl_c1b3rBurner", "" );
+			Com_Printf( "C1B3R: no burner account; your own from the next session (reconnect)\n" );
+			return;
+		}
+		Cvar_Set( "cl_c1b3rBurner", Cmd_Argv( 2 ) );
+		if ( !PS_Active() || !psv.on ) {
+			Com_Printf( "C1B3R: the burner account %s is used once you're on a server, connected to C1B3R\n", Cmd_Argv( 2 ) );
+			return;
+		}
+		PS_Burner();
+		return;
+	}
 	// for RPMod admins: what C1B3R keeps of this server for who joins later, or all of it taken back
 	if ( !Q_stricmp( arg, "state" ) ) {
 		std::string body = "{\"session\":";
@@ -1076,6 +1180,7 @@ static void PS_C1b3r_f( void ) {
 		"c1b3r web : open C1B3R's web pages in your browser, signed in (a linked game)\n"
 		"c1b3r discord : add C1B3R to your Discord account, for /link in any DM\n"
 		"c1b3r unlink : end the link\n"
+		"c1b3r burner <account>|off : (testing, staging C1B3R only) speak for a burner account\n"
 		"c1b3r state [clear] : (RPMod admins) what's shared on this server for who joins later, and who did it; clear takes it back\n" );
 }
 
@@ -1110,6 +1215,8 @@ void CL_Presence_Init( void ) {
 	cl_presenceLocal = Cvar_Get( "cl_presenceLocal", "0", CVAR_TEMP | CVAR_INTERNAL, "Talk to C1B3R on a server of your own too, logged in as a test admin, to try it" );
 	cl_c1b3rToken = Cvar_Get( "cl_c1b3rToken", "", CVAR_ARCHIVE_ND | CVAR_PROTECTED | CVAR_NORESTART,
 		"This game's link to C1B3R, made with /c1b3r link: keep it to yourself" );
+	cl_c1b3rBurner = Cvar_Get( "cl_c1b3rBurner", "", CVAR_ARCHIVE_ND | CVAR_NORESTART,
+		"Testing only: a staging C1B3R's burner account this game speaks for (/c1b3r burner)" );
 	Cmd_AddCommand( "clientusers", PS_ClientUsers_f, "Your link to C1B3R, and who on this server has this client" );
 	Cmd_AddCommand( "c1b3rhook", PS_HookCmd_f, "c1b3rhook <all|client> cmd:<...>: a hook to everyone with this client (or one player), through C1B3R" );
 	Cmd_AddCommand( "c1b3r", PS_C1b3r_f, "Your link to C1B3R; c1b3r link links this game in Discord, for admins to send; c1b3r web opens C1B3R's web pages signed in; c1b3r discord adds C1B3R to your Discord account; c1b3r unlink ends it" );
