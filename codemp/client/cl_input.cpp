@@ -1444,8 +1444,15 @@ void CL_CmdButtons( usercmd_t *cmd ) {
 	// takes every move from a player who talks, the jump holding them there too
 	// (nor in photo mode alone: the balloon would be in the picture)
 	// (nor playing an instrument: they're playing, not typing)
-	if ( Key_GetCatcher( ) && ( Key_GetCatcher( ) & ~( KEYCATCH_PHOTOMODE | KEYCATCH_INSTRUMENT ) ) && !clWallStick.holding ) {
-		cmd->buttons |= BUTTON_TALK;
+	// (nor with the console open and nothing typed in it: only once there's text)
+	{
+		int talking = Key_GetCatcher( ) & ~( KEYCATCH_PHOTOMODE | KEYCATCH_INSTRUMENT );
+
+		if ( ( talking & KEYCATCH_CONSOLE ) && !g_consoleField.buffer[0] )
+			talking &= ~KEYCATCH_CONSOLE;
+		if ( talking && !clWallStick.holding ) {
+			cmd->buttons |= BUTTON_TALK;
+		}
 	}
 
 	// allow the game to know if any key at all is
