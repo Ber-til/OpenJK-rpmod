@@ -39,7 +39,7 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #include <string>
 
 #define HC_MAX_HOLOS		4
-#define HC_SHADER			"powerups/ysaliblueshell"	// the cinematic manager's hologram look
+#define HC_SHADER			"gfx/misc/blue_dmgshield"	// RPMod's hologram look (npc hologram normal); restyled by the JEDI hologram pack
 #define HC_KEEPALIVE_MS		1000
 #define HC_STATE_GAP_MS		200
 #define HC_SPOT_AGAIN_MS	15000	// the spot told again, for those who came since
