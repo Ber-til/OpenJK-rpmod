@@ -148,7 +148,38 @@ static struct {
 
 	char		message[160];
 	int			messageTime;
+
+	int			openWanted;					// /instrument while your inventory's asked for: opened once it's in
+	int			namedWanted;				// and the instrument it named, -1 none
 } in;
+
+// an instrument you may play: an item of kind instrument carried, named after it (a Lute, an old Kloo
+// Horn); 1 yes, 0 no, -1 not known yet
+static int IN_Carried( int instrument ) {
+	if ( instrument < 0 || instrument >= IN_NUM )
+		return 0;
+	return CL_Inventory_Carries( "instrument", inDefs[instrument].title );
+}
+
+// the first you carry: -1 none, -2 not known yet
+static int IN_FirstCarried( void ) {
+	qboolean unknown = qfalse;
+
+	for ( int i = 0; i < IN_NUM; i++ ) {
+		const int c = IN_Carried( i );
+
+		if ( c == 1 )
+			return i;
+		if ( c < 0 )
+			unknown = qtrue;
+	}
+	return unknown ? -2 : -1;
+}
+
+static void IN_NeedOne( const char *which ) {
+	Com_Printf( "Instruments: you need %s in your inventory: an item of the instrument kind, named after it (granted by RPMod's admins)\n",
+		which ? va( "a %s", which ) : "an instrument" );
+}
 
 static inCached_t inCache[IN_CACHE];
 static short inPcm[IN_MAX_SAMPLES];
@@ -463,6 +494,12 @@ static void IN_StopSending( void ) {
 // a note we play: heard now, and gathered for the others. at: when it's played, on the clock the
 // batch keeps (cls.realtime, or the song's)
 static void IN_Play( int instrument, int note, int velocity, int at ) {
+	// only what you carry: a song's part for another instrument on yours
+	if ( IN_Carried( instrument ) != 1 ) {
+		if ( IN_Carried( in.instrument ) != 1 )
+			return;
+		instrument = in.instrument;
+	}
 	IN_Sound( cl.snap.ps.clientNum, instrument, note, velocity );
 	if ( note >= 0 && note < 128 )
 		in.lit[note] = cls.realtime + IN_LIT_MS;
@@ -870,7 +907,25 @@ The frame
 ===============================================================================
 */
 
+static void IN_Open( void );
+
 void CL_Instruments_Frame( void ) {
+	// /instrument while the inventory was asked for: opened once it's in (10 s at most)
+	if ( in.openWanted && !in.open ) {
+		if ( cls.realtime - in.openWanted > 10000 ) {
+			in.openWanted = 0;
+			Com_Printf( "Instruments: C1B3R didn't say what you carry\n" );
+		} else if ( IN_FirstCarried() != -2 ) {
+			// the one named, not carried: said, not opened on another
+			if ( in.namedWanted >= 0 && IN_Carried( in.namedWanted ) != 1 ) {
+				in.openWanted = 0;
+				IN_NeedOne( inDefs[in.namedWanted].title );
+			} else {
+				IN_Open();
+			}
+			in.namedWanted = -1;
+		}
+	}
 	// the song's notes due by now, at their own times in the batch
 	if ( in.songPlaying ) {
 		const int now = cls.realtime - in.songStart;
@@ -1254,6 +1309,23 @@ static void IN_Open( void ) {
 	}
 	if ( in.open )
 		return;
+	// an instrument carried: on it, or the first you carry; asked for first when it isn't known
+	if ( IN_Carried( in.instrument ) != 1 ) {
+		const int first = IN_FirstCarried();
+
+		if ( first == -2 ) {
+			if ( !in.openWanted )
+				Com_Printf( "Instruments: checking your inventory...\n" );
+			in.openWanted = cls.realtime;
+			return;
+		}
+		if ( first < 0 ) {
+			IN_NeedOne( NULL );
+			return;
+		}
+		in.instrument = first;
+	}
+	in.openWanted = 0;
 	CL_SpecialMoves_Close();
 	in.font = re->RegisterFont( "arialnb" );
 	if ( !in.font )
@@ -1285,7 +1357,9 @@ void CL_Instruments_Draw( void ) {
 	}
 	// the instruments
 	for ( int i = 0; i < IN_NUM; i++ ) {
-		if ( IN_Button( x + 100 + i * 51, y - 2, 49, inDefs[i].title, (qboolean)( in.instrument == i ) ) )
+		if ( IN_Carried( i ) != 1 )
+			IN_Text( x + 100 + i * 51, y + 1, 49, inDefs[i].title, inDim, in.font, 0.5f, qtrue );
+		else if ( IN_Button( x + 100 + i * 51, y - 2, 49, inDefs[i].title, (qboolean)( in.instrument == i ) ) )
 			in.instrument = i;
 	}
 	y += 24;
@@ -1364,10 +1438,17 @@ void CL_Instruments_KeyEvent( int key, qboolean down ) {
 			return;
 		}
 	}
-	if ( key == A_CURSOR_LEFT )
-		in.instrument = ( in.instrument + IN_NUM - 1 ) % IN_NUM;
-	else if ( key == A_CURSOR_RIGHT )
-		in.instrument = ( in.instrument + 1 ) % IN_NUM;
+	if ( key == A_CURSOR_LEFT || key == A_CURSOR_RIGHT ) {
+		// the next one carried, that way round
+		for ( int i = 1; i < IN_NUM; i++ ) {
+			const int next = ( in.instrument + ( key == A_CURSOR_LEFT ? IN_NUM - i : i ) ) % IN_NUM;
+
+			if ( IN_Carried( next ) == 1 ) {
+				in.instrument = next;
+				break;
+			}
+		}
+	}
 	else if ( key == A_CURSOR_UP )
 		in.octave = Q_min( 1, in.octave + 1 );
 	else if ( key == A_CURSOR_DOWN )
@@ -1411,11 +1492,28 @@ static void IN_Instrument_f( void ) {
 		return;
 	}
 	if ( ( named = IN_Named( arg ) ) >= 0 ) {
+		if ( IN_Carried( named ) == 0 ) {
+			IN_NeedOne( inDefs[named].title );
+			return;
+		}
 		in.instrument = named;
+		in.namedWanted = named;
 		IN_Open();
+		if ( !in.openWanted )
+			in.namedWanted = -1;
 		return;
 	}
 	if ( !Q_stricmp( arg, "midi" ) && Cmd_Argc() >= 3 ) {
+		const int first = IN_Carried( in.instrument ) == 1 ? in.instrument : IN_FirstCarried();
+
+		if ( first < 0 ) {
+			if ( first == -2 )
+				Com_Printf( "Instruments: checking your inventory... try again in a moment\n" );
+			else
+				IN_NeedOne( NULL );
+			return;
+		}
+		in.instrument = first;
 		IN_PlaySong( Cmd_ArgsFrom( 2 ) );
 		return;
 	}
@@ -1447,6 +1545,7 @@ static void IN_Instrument_f( void ) {
 void CL_Instruments_Init( void ) {
 	memset( inCache, 0, sizeof( inCache ) );
 	in.instrument = IN_HARP;
+	in.namedWanted = -1;
 	in.followPrograms = qtrue;
 	s_volumeInstruments = Cvar_Get( "s_volumeInstruments", "0.8", CVAR_ARCHIVE_ND, "How loud instruments are played, yours and others' (0-1)" );
 	cl_instrumentEmote = Cvar_Get( "cl_instrumentEmote", "", CVAR_ARCHIVE_ND,

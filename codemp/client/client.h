@@ -1261,6 +1261,7 @@ void CL_Inventory_CharEvent( int ch );
 void CL_Inventory_MouseEvent( int dx, int dy );
 void CL_Inventory_Disconnect( void );
 int CL_Inventory_Picked( char *name, int size );	// the item picked in the window: its id, 0 none
+int CL_Inventory_Carries( const char *kind, const char *word );	// 1 yes, 0 no, -1 not known yet (asked)
 void CL_Inventory_RendererRestarted( void );
 void CL_Inventory_CharHook( char **argv, int argc );
 

@@ -75,7 +75,11 @@ typedef enum {
 	INV_STAFF
 } invPage_t;
 
-static const char *invKinds[] = { "misc", "datapad", "commlink", "hilt" };	// ships come with 0.11.0
+static const char *invKinds[] = { "misc", "datapad", "commlink", "hilt", "instrument" };	// ships come with 0.11.0
+#define INV_KIND_INSTRUMENT	4
+// an instrument item's instrument, as C1B3R keeps it (lower case); the first: none, its name says
+static const char *invInstruments[] = { "(by its name)", "Harp", "Lute", "Keys", "Flute", "Chimes", "Marimba", "Horn", "Drums" };
+#define INV_NUM_INSTRUMENTS	( (int)ARRAY_LEN( invInstruments ) )
 #define INV_NUM_KINDS	( (int)ARRAY_LEN( invKinds ) )
 
 typedef struct {
@@ -86,6 +90,7 @@ typedef struct {
 	char		desc[320];
 	char		model[MAX_QPATH];
 	char		saber[MAX_QPATH];	// a hilt's saber
+	char		instrument[16];	// an instrument's: which it plays ("" its name says)
 	qboolean	starter;		// one every character's given
 } invItem_t;
 
@@ -115,6 +120,7 @@ static struct {
 	int			target;			// a client number, -1 the account typed
 	char		account[64];
 	int			kind;
+	int			instrument;		// an instrument's: 0 by its name, else invInstruments' one
 	char		name[64], desc[300], model[MAX_QPATH];
 	int			focus;			// 0 none, 1 account, 2 name, 3 description, 4 model
 	invItem_t	theirs[INV_MAX];
@@ -267,6 +273,7 @@ static int INV_ReadItems( const char *answer, invItem_t *items, int max ) {
 			const std::string data = CL_Presence_Unfield( f[7] );
 
 			INV_JsonString( data.c_str(), "saber", it->saber, sizeof( it->saber ) );
+			INV_JsonString( data.c_str(), "instrument", it->instrument, sizeof( it->instrument ) );
 			it->starter = (qboolean)( strstr( data.c_str(), "\"starter\": 1" ) || strstr( data.c_str(), "\"starter\":1" )
 				|| strstr( data.c_str(), "\"starter\": true" ) || strstr( data.c_str(), "\"starter\":true" ) );
 		}
@@ -326,6 +333,31 @@ void CL_Inventory_Frame( void ) {
 	}
 	if ( inv.open && !inv.known && CL_Presence_Session() )
 		INV_AskList();
+}
+
+// whether you carry an item of that kind whose name has the word in it (any case, NULL: any name):
+// 1 yes, 0 no (or C1B3R won't say), -1 not known yet (asked now)
+int CL_Inventory_Carries( const char *kind, const char *word ) {
+	if ( !CL_Presence_Session() )
+		return 0;
+	if ( !inv.known ) {
+		INV_AskList();
+		return inv.known ? -1 : 0;
+	}
+	if ( invListHttp.state == HTTP_BUSY )
+		return -1;
+	if ( inv.refused )
+		return 0;
+	for ( int i = 0; i < inv.num; i++ ) {
+		const invItem_t *it = &inv.items[i];
+
+		if ( Q_stricmp( it->kind, kind ) )
+			continue;
+		// an instrument's own, or (none said) its name
+		if ( !word || ( it->instrument[0] ? !Q_stricmp( it->instrument, word ) : Q_stristr( it->name, word ) != NULL ) )
+			return 1;
+	}
+	return 0;
 }
 
 // cmd:char/<client>/<version>: a character changed on this server; ours asked again
@@ -645,7 +677,7 @@ static void INV_Close( void );
 
 // what using it does: the datapad opens; qfalse when it's not for using
 static qboolean INV_Usable( const invItem_t *it ) {
-	return (qboolean)!Q_stricmp( it->kind, "datapad" );
+	return (qboolean)( !Q_stricmp( it->kind, "datapad" ) || !Q_stricmp( it->kind, "instrument" ) );
 }
 
 // your own datapad opens as it is; another opens on its own notes
@@ -656,6 +688,16 @@ static void INV_Use( const invItem_t *it ) {
 			Cbuf_AddText( "datapad open\n" );
 		else
 			CL_Datapad_OpenItem( it->id, it->name, 0 );
+	} else if ( !Q_stricmp( it->kind, "instrument" ) ) {
+		// played: /instrument on the one it is (its own, or the one its name says)
+		const char *which = it->instrument[0] ? it->instrument : "";
+
+		for ( int i = 1; !which[0] && i < INV_NUM_INSTRUMENTS; i++ ) {
+			if ( Q_stristr( it->name, invInstruments[i] ) )
+				which = invInstruments[i];
+		}
+		INV_Close();
+		Cbuf_AddText( va( "instrument %s\n", which ) );
 	}
 }
 
@@ -735,7 +777,8 @@ static void INV_DrawDetail( void ) {
 			ty += 14;
 		}
 		ty = y + IV_VIEW - ( INV_Placeable( it ) ? 4 : 3 ) * ( IV_CTRL_H + 4 ) + 4;
-		if ( INV_Usable( it ) && INV_Button( tx, ty, tw, Q_stricmp( it->kind, "datapad" ) || it->starter ? "Use" : "Open its notes", qfalse, qtrue ) ) {
+		if ( INV_Usable( it ) && INV_Button( tx, ty, tw, !Q_stricmp( it->kind, "instrument" ) ? "Play"
+				: Q_stricmp( it->kind, "datapad" ) || it->starter ? "Use" : "Open its notes", qfalse, qtrue ) ) {
 			INV_Use( it );
 			return;
 		}
@@ -867,6 +910,17 @@ static void INV_DrawStaff( void ) {
 		WG_ChoiceBox( &style, &m, fx, y, fw, IV_CTRL_H, &inv.kind, invKinds, INV_NUM_KINDS );
 	}
 	y += IV_CTRL_H + 4;
+	// an instrument: which it plays
+	if ( inv.kind == INV_KIND_INSTRUMENT ) {
+		wgStyle_t style;
+		wgMouse_t m;
+
+		INV_Text( x, y + 2, label, "Instrument", ivOrange, inv.font, IV_TEXT, qfalse );
+		INV_PopStyle( &style );
+		INV_PopMouse( &m );
+		WG_ChoiceBox( &style, &m, fx, y, fw, IV_CTRL_H, &inv.instrument, invInstruments, INV_NUM_INSTRUMENTS );
+		y += IV_CTRL_H + 4;
+	}
 	INV_Text( x, y + 2, label, "Name", ivOrange, inv.font, IV_TEXT, qfalse );
 	INV_Field( fx, y, fw, IV_CTRL_H, inv.name, 2, "what it's called", qfalse );
 	y += IV_CTRL_H + 4;
@@ -885,7 +939,9 @@ static void INV_DrawStaff( void ) {
 			INV_Message( "Give it a name", qtrue );
 		else
 			INV_Act( "grant", "/v2/inv/staff", ",\"action\":\"grant\"" + INV_Whom() + INV_Str( "kind", invKinds[inv.kind] )
-				+ INV_Str( "name", inv.name ) + INV_Str( "desc", inv.desc ) + INV_Str( "model", inv.model ) );
+				+ INV_Str( "name", inv.name ) + INV_Str( "desc", inv.desc ) + INV_Str( "model", inv.model )
+				+ ( inv.kind == INV_KIND_INSTRUMENT && inv.instrument > 0 ? INV_Str( "instrument", Q_strlwr( va( "%s", invInstruments[inv.instrument] ) ) )
+					: std::string() ) );
 	}
 	y += IV_CTRL_H + 14;
 	INV_Para( x, y, w, 60, "Whom it's for: a player on this server, or any account by its name. "
