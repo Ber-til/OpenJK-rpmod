@@ -41,7 +41,9 @@ along with this program; if not, see <http://www.gnu.org/licenses/>.
 #include "cl_datapad.h"
 #include "cl_presence.h"
 #include "cl_widgets.h"
+#include "cl_html.h"
 #include <algorithm>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -82,7 +84,41 @@ typedef struct {
 	int			seenAt;
 	std::string	from, fromName;	// a group's: who sent it; from "-" a line of the group's own
 	int			seenBy, of;		// a group's: how many of the others read it
+	int			picture = 0;	// a picture's id at C1B3R, 0 none; -1 yours still being sent
 } chMessage_t;
+
+// a picture of a message: C1B3R's, downloaded when it's first shown, kept in chatpictures/<id>.jpg
+typedef enum { CP_NONE, CP_LOADING, CP_SHOWN, CP_EXPIRED, CP_FAILED } chPicState_t;
+
+typedef struct {
+	chPicState_t	state;
+	qhandle_t		shader;
+	int				w, h;
+} chPic_t;
+
+#define CH_PIC_DIR		"chatpictures"
+#define CH_PIC_SIDE		512			// a picture's side, at most, sent
+#define CH_PIC_QUALITY	80
+#define CH_PIC_MAX		( 512 * 1024 )	// a picture's download, at most
+#define CH_SHOT_WAIT_MS	3000		// the camera's shot looked for this long
+
+static std::map<int, chPic_t>	chPics;
+static std::vector<int>		chPicQueue;
+static int					chPicGetting;		// the one being downloaded
+
+static struct {
+	qboolean		waiting;		// the camera's shot to read (its file may come a frame late)
+	char			path[MAX_QPATH];
+	int				since;
+	qboolean		preview;		// taken: Send, Retake or Cancel
+	std::vector<unsigned char>	jpeg;
+	qhandle_t		shader;
+	int				w, h;
+	int				group;			// the conversation it's for
+	std::string		with;
+	std::vector<unsigned char>	sending;	// sent, kept till C1B3R says its id (then saved as ours)
+	int				big;			// a picture shown large: its id, -1 the preview's, 0 none
+} chCam;
 
 static struct {
 	qboolean		shown;
@@ -124,7 +160,7 @@ static struct {
 	int				messageTime;
 } ch;
 
-static httpRequest_t chContactsHttp, chHistoryHttp, chSendHttp, chTypingHttp, chGroupHttp;
+static httpRequest_t chContactsHttp, chHistoryHttp, chSendHttp, chTypingHttp, chGroupHttp, chPicHttp, chPicSendHttp;
 static cvar_t *cl_chatNotify, *cl_chatRingtone, *cl_chatSound;
 
 static void CH_Message( const char *text ) {
@@ -285,6 +321,232 @@ static void CH_Send( void ) {
 	CH_Play( cl_chatSound->string );
 }
 
+/*
+===============================================================================
+
+Pictures: taken with the camera (photo mode's, kept near you), sent, and shown
+
+===============================================================================
+*/
+
+static std::string CH_Base64( const std::vector<unsigned char> &in ) {
+	static const char *abc = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+	std::string out;
+
+	out.reserve( ( in.size() + 2 ) / 3 * 4 );
+	for ( size_t i = 0; i < in.size(); i += 3 ) {
+		const unsigned int n = ( in[i] << 16 ) | ( i + 1 < in.size() ? in[i + 1] << 8 : 0 ) | ( i + 2 < in.size() ? in[i + 2] : 0 );
+
+		out += abc[( n >> 18 ) & 63];
+		out += abc[( n >> 12 ) & 63];
+		out += i + 1 < in.size() ? abc[( n >> 6 ) & 63] : '=';
+		out += i + 2 < in.size() ? abc[n & 63] : '=';
+	}
+	return out;
+}
+
+// a picture's, for the renderer: from the datapad's cache, or its JPEG in chatpictures/, else
+// downloaded from C1B3R (queued, one at a time)
+static chPic_t &CH_Pic( int id ) {
+	chPic_t &p = chPics[id];
+
+	if ( p.state != CP_NONE )
+		return p;
+	p.shader = HTML_PictureFromBytes( va( "chat-%i", id ), NULL, 0, &p.w, &p.h );
+	if ( !p.shader ) {
+		void *buf = NULL;
+		const int len = FS_ReadFile( va( CH_PIC_DIR "/%i.jpg", id ), &buf );
+
+		if ( len > 0 && buf )
+			p.shader = HTML_PictureFromBytes( va( "chat-%i", id ), (const unsigned char *)buf, len, &p.w, &p.h );
+		if ( buf )
+			FS_FreeFile( buf );
+	}
+	if ( p.shader ) {
+		p.state = CP_SHOWN;
+	} else {
+		p.state = CP_LOADING;
+		chPicQueue.push_back( id );
+	}
+	return p;
+}
+
+static void CH_PicFrame( void ) {
+	if ( HTTP_Poll( &chPicHttp ) ) {
+		chPic_t &p = chPics[chPicGetting];
+		const unsigned char *data = (const unsigned char *)HTTP_Answer( &chPicHttp );
+		const int len = chPicHttp.answerLen;
+
+		if ( chPicHttp.status == 200 && len > 4 && data[0] == 0xFF && data[1] == 0xD8 ) {
+			FS_WriteFile( va( CH_PIC_DIR "/%i.jpg", chPicGetting ), data, len );
+			p.shader = HTML_PictureFromBytes( va( "chat-%i", chPicGetting ), data, len, &p.w, &p.h );
+			p.state = p.shader ? CP_SHOWN : CP_FAILED;
+		} else {
+			p.state = chPicHttp.status == 410 ? CP_EXPIRED : CP_FAILED;
+		}
+		HTTP_Release( &chPicHttp );
+		chPicGetting = 0;
+	}
+	// the next one wanted
+	while ( !chPicQueue.empty() && chPicHttp.state != HTTP_BUSY && CL_Presence_Session() ) {
+		const int id = chPicQueue.front();
+
+		chPicQueue.erase( chPicQueue.begin() );
+		if ( chPics[id].state != CP_LOADING )
+			continue;
+		chPicHttp.maxAnswer = CH_PIC_MAX;
+		if ( CH_Post( &chPicHttp, "/v2/chat/picture/get", va( ",\"picture\":%i", id ) ) )
+			chPicGetting = id;
+		else
+			chPics[id].state = CP_FAILED;
+		break;
+	}
+	// the camera's shot: read once its file's there, made a JPEG, shown to send
+	if ( chCam.waiting ) {
+		void *buf = NULL;
+		const int len = FS_ReadFile( chCam.path, &buf );
+
+		if ( len > 0 && buf ) {
+			const bool ok = HTML_ToJpeg( (const unsigned char *)buf, len, CH_PIC_SIDE, CH_PIC_QUALITY, chCam.jpeg );
+
+			FS_FreeFile( buf );
+			FS_HomeRemove( chCam.path );
+			chCam.waiting = qfalse;
+			chCam.shader = ok ? HTML_PictureFromBytes( va( "chatshot-%i", cls.realtime ), chCam.jpeg.data(), (int)chCam.jpeg.size(),
+				&chCam.w, &chCam.h ) : 0;
+			chCam.preview = (qboolean)( ok && chCam.shader );
+			if ( !chCam.preview )
+				CH_Message( "Couldn't make the picture" );
+			// back to the conversation it's for
+			if ( chCam.group > 0 )
+				Cbuf_AddText( va( "datapad chat group %i\n", chCam.group ) );
+			else
+				Cbuf_AddText( va( "datapad chat %s\n", chCam.with.c_str() ) );
+		} else if ( cls.realtime - chCam.since > CH_SHOT_WAIT_MS ) {
+			chCam.waiting = qfalse;
+			CH_Message( "The picture wasn't taken" );
+			Cbuf_AddText( "datapad chat\n" );
+		}
+		if ( buf && len <= 0 )
+			FS_FreeFile( buf );
+	}
+	// a picture sent: C1B3R's ok <id> <time> <state> <picture>
+	if ( HTTP_Poll( &chPicSendHttp ) ) {
+		if ( chPicSendHttp.status == 200 && !strncmp( chPicSendHttp.answer, "ok\t", 3 ) ) {
+			std::vector<std::string> f;
+			std::string all( chPicSendHttp.answer ), cur;
+
+			for ( char c : all ) {
+				if ( c == '\t' || c == '\n' || c == '\r' ) {
+					f.push_back( cur );
+					cur.clear();
+					if ( c != '\t' )
+						break;
+				} else {
+					cur += c;
+				}
+			}
+			if ( f.size() >= 5 ) {
+				const int picture = atoi( f[4].c_str() );
+
+				// ours, kept as the others will have it, shown from there
+				if ( picture > 0 && !chCam.sending.empty() ) {
+					chPic_t &p = chPics[picture];
+
+					FS_WriteFile( va( CH_PIC_DIR "/%i.jpg", picture ), chCam.sending.data(), (int)chCam.sending.size() );
+					p.shader = HTML_PictureFromBytes( va( "chat-%i", picture ), chCam.sending.data(), (int)chCam.sending.size(), &p.w, &p.h );
+					p.state = p.shader ? CP_SHOWN : CP_NONE;
+				}
+				for ( size_t i = 0; i < ch.messages.size(); i++ ) {
+					chMessage_t &m = ch.messages[i];
+
+					if ( m.mine && m.picture == -1 ) {
+						m.id = atoi( f[1].c_str() );
+						m.time = atoi( f[2].c_str() );
+						m.state = ch.group <= 0 ? atoi( f[3].c_str() ) : -1;
+						m.picture = picture;
+						break;
+					}
+				}
+			}
+		} else {
+			CH_Message( chPicSendHttp.answer[0] ? chPicSendHttp.answer : "Not sent: C1B3R didn't answer" );
+			if ( ch.view == CH_TALK )
+				CH_AskHistory();
+		}
+		chCam.sending.clear();
+	}
+}
+
+// the camera, for a picture to the conversation open
+void CL_Chat_Camera( void ) {
+	if ( !CH_Talking() || !CL_Presence_Session() ) {
+		CH_Message( "Open a conversation first, connected to C1B3R" );
+		return;
+	}
+	chCam.group = ch.group;
+	chCam.with = ch.with;
+	chCam.preview = qfalse;
+	chCam.big = 0;
+	CL_Datapad_Close();
+	if ( !CL_PhotoMode_OpenForChat() )
+		Cbuf_AddText( "datapad chat\n" );
+}
+
+// photo mode's: the shot taken (path NULL: none, Esc)
+void CL_Chat_CameraDone( const char *path ) {
+	if ( !path ) {
+		Cbuf_AddText( "datapad chat\n" );
+		return;
+	}
+	Q_strncpyz( chCam.path, path, sizeof( chCam.path ) );
+	chCam.since = cls.realtime;
+	chCam.waiting = qtrue;
+}
+
+static void CH_SendPicture( void ) {
+	std::string f;
+
+	if ( chCam.jpeg.empty() || !CH_Talking() )
+		return;
+	if ( chPicSendHttp.state == HTTP_BUSY ) {
+		CH_Message( "A moment: the last picture's still going" );
+		return;
+	}
+	f = CH_Target( "to" );
+	f += ",\"data\":\"" + CH_Base64( chCam.jpeg ) + "\"";
+	if ( !CH_Post( &chPicSendHttp, "/v2/chat/picture/send", f ) ) {
+		CH_Message( "Not connected to C1B3R" );
+		return;
+	}
+	chCam.sending = chCam.jpeg;
+	chCam.preview = qfalse;
+	// shown at once, as sending
+	{
+		chMessage_t m;
+
+		m.id = 0;
+		m.mine = qtrue;
+		m.time = 0;
+		m.text = "[Picture]";
+		m.state = -1;
+		m.seenAt = 0;
+		m.seenBy = 0;
+		m.of = ch.group > 0 ? Q_max( 0, (int)ch.members.size() - 1 ) : 0;
+		m.from = ch.me;
+		m.picture = -1;
+		ch.messages.push_back( m );
+	}
+	ch.talkScroll = 0;
+	CH_Play( cl_chatSound->string );
+}
+
+// datapad chat camera send: the picture taken, sent
+void CL_Chat_SendShot( void ) {
+	if ( chCam.preview )
+		CH_SendPicture();
+}
+
 // the lines of an answer, split on tabs, each read back as it was sent
 static void CH_Lines( const char *answer, void ( *each )( const std::vector<std::string> & ) ) {
 	std::string all( answer ), line;
@@ -382,6 +644,7 @@ static void CH_ReadMessage( const std::vector<std::string> &f ) {
 		m.of = atoi( f[8].c_str() );
 		m.state = -1;
 		m.seenAt = 0;
+		m.picture = f.size() >= 10 ? atoi( f[9].c_str() ) : 0;
 		ch.messages.push_back( m );
 	} else if ( f.size() >= 5 && f[0] == "msg" ) {
 		chMessage_t m;
@@ -392,6 +655,7 @@ static void CH_ReadMessage( const std::vector<std::string> &f ) {
 		m.text = f[4];
 		m.state = f.size() >= 6 && m.mine ? atoi( f[5].c_str() ) : -1;
 		m.seenAt = f.size() >= 7 ? atoi( f[6].c_str() ) : 0;
+		m.picture = f.size() >= 8 ? atoi( f[7].c_str() ) : 0;
 		ch.messages.push_back( m );
 	}
 }
@@ -425,6 +689,9 @@ void CL_Chat_Hook( char **argv, int argc, const char *message ) {
 
 	if ( argc < 1 || atoi( argv[0] ) != clc.clientNum )
 		return;
+	// the message after the hook's colon starts with a space
+	while ( *p == ' ' )
+		p++;
 	if ( ( bar = strchr( p, '|' ) ) != NULL ) {
 		Q_strncpyz( account, p, Q_min( (int)sizeof( account ), (int)( bar - p ) + 1 ) );
 		p = bar + 1;
@@ -635,6 +902,7 @@ Each frame, and the datapad's
 */
 
 void CL_Chat_Frame( void ) {
+	CH_PicFrame();
 	if ( HTTP_Poll( &chContactsHttp ) ) {
 		if ( chContactsHttp.status == 200 && !strncmp( chContactsHttp.answer, "ok", 2 ) ) {
 			ch.contacts.clear();
@@ -843,13 +1111,61 @@ static const char *CH_Stamp( const chMessage_t &m ) {
 
 static float chInputX, chInputY, chInputW, chInputH;	// where it was drawn, for the wheel
 
+#define CH_PIC_H		110.0f		// a picture in its bubble, at most this tall
+
+// a picture fitted in a box, centred
+static void CH_DrawPicture( qhandle_t shader, int pw, int ph, float x, float y, float w, float h ) {
+	float dw = w, dh = pw > 0 ? w * ph / pw : h;
+
+	if ( dh > h ) {
+		dh = h;
+		dw = ph > 0 ? h * pw / ph : w;
+	}
+	re->SetColor( NULL );
+	re->DrawStretchPic( x + ( w - dw ) * 0.5f, y + ( h - dh ) * 0.5f, dw, dh, 0, 0, 1, 1, shader );
+}
+
+// the camera's picture, to send: Send, Retake or Cancel; or one shown large (a click closes it)
+static qboolean CH_DrawPictureOver( float x, float y, float w, float bottom ) {
+	if ( chCam.preview ) {
+		const float third = ( w - DP_Wide( 8 ) ) / 3.0f;
+
+		DP_Fill( x, y, w, bottom - y, dpScreen );
+		DP_Text( x, y + 2, w, va( "A picture to %s", ch.withName.c_str() ), dpText, DP_Font(), 0.6f, qtrue );
+		CH_DrawPicture( chCam.shader, chCam.w, chCam.h, x, y + 16, w, bottom - y - 16 - DP_CTRL_H - 6 );
+		if ( DP_Button( x, bottom - DP_CTRL_H, third, chPicSendHttp.state == HTTP_BUSY ? "..." : "Send", qfalse ) )
+			CH_SendPicture();
+		if ( DP_Button( x + third + DP_Wide( 4 ), bottom - DP_CTRL_H, third, "Retake", qfalse ) )
+			CL_Chat_Camera();
+		if ( DP_Button( x + ( third + DP_Wide( 4 ) ) * 2, bottom - DP_CTRL_H, third, "Cancel", qfalse ) ) {
+			chCam.preview = qfalse;
+			chCam.jpeg.clear();
+		}
+		return qtrue;
+	}
+	if ( chCam.big ) {
+		const chPic_t &p = chPics[chCam.big];
+
+		DP_Fill( x, y, w, bottom - y, dpScreen );
+		if ( p.shader )
+			CH_DrawPicture( p.shader, p.w, p.h, x, y, w, bottom - y - 12 );
+		DP_Text( x, bottom - 10, w, va( "Click to close  (" CH_PIC_DIR "/%i.jpg)", chCam.big ), dpDim, DP_Font(), 0.48f, qtrue );
+		if ( DP_Clicked( x, y, w, bottom - y ) )
+			chCam.big = 0;
+		return qtrue;
+	}
+	return qfalse;
+}
+
 static void CH_DrawTalk( float x, float y, float w, float bottom ) {
 	wgStyle_t style, bubble;
-	const float top = y, fieldW = w - DP_Wide( 50 );
+	const float top = y, fieldW = w - DP_Wide( 50 ) - DP_Wide( 34 );
 	float inputY, inputH, my;
 	float cx, cy;
 	qboolean *click;
 
+	if ( CH_DrawPictureOver( x, y, w, bottom ) )
+		return;
 	CH_Style( &style );
 	// what's typed, as tall as its lines (up to CH_INPUT_LINES), growing up from the bottom
 	{
@@ -883,7 +1199,12 @@ static void CH_DrawTalk( float x, float y, float w, float bottom ) {
 				continue;
 			}
 			const int lines = Q_max( 1, WG_TextLines( &bubble, m.text.c_str(), bw - 8 ) );
-			const float bh = 13.0f + lines * bubble.lineH;
+			// a picture's: its own height (fitted to the bubble), or a line saying how it is
+			const chPic_t *pic = m.picture > 0 ? &CH_Pic( m.picture ) : NULL;
+			const qhandle_t picShader = m.picture == -1 ? chCam.shader : pic && pic->state == CP_SHOWN ? pic->shader : 0;
+			const int picW = m.picture == -1 ? chCam.w : pic ? pic->w : 0, picH = m.picture == -1 ? chCam.h : pic ? pic->h : 0;
+			const float picBoxH = picShader && picW > 0 ? Q_min( CH_PIC_H, ( bw - 8 ) * picH / picW ) : 0.0f;
+			const float bh = m.picture ? 13.0f + ( picShader ? picBoxH + 3 : bubble.lineH ) : 13.0f + lines * bubble.lineH;
 
 			my -= bh + 3;
 			if ( my + bh < top || my > inputY )
@@ -893,8 +1214,22 @@ static void CH_DrawTalk( float x, float y, float w, float bottom ) {
 				DP_Frame( bx, my, bw, bh, m.mine ? dpWhite : dpGlow );
 				DP_Text( bx + 4, my + 1, bw - 8, CH_Stamp( m ), m.mine && ( m.state == 2 || ( m.of > 0 && m.seenBy >= m.of ) ) ? dpGlow : dpDim,
 					DP_Font(), 0.48f, qfalse );
-				// the text, wrapped to the box's width
-				WG_DrawText( &bubble, bx + 4, my + 11, bw - 8, m.text.c_str(), 0, lines, dpText );
+				if ( m.picture && picShader ) {
+					CH_DrawPicture( picShader, picW, picH, bx + 4, my + 11, bw - 8, picBoxH );
+					// clicked: shown large
+					if ( m.picture > 0 && DP_Clicked( bx, my, bw, bh ) )
+						chCam.big = m.picture;
+				} else if ( m.picture ) {
+					const char *how = !pic ? "[Picture] sending..." : pic->state == CP_EXPIRED ? "[Picture] expired"
+						: pic->state == CP_FAILED ? "[Picture] couldn't be had: click to try again" : "[Picture] loading...";
+
+					DP_Text( bx + 4, my + 11, bw - 8, how, dpDim, DP_Font(), 0.5f, qfalse );
+					if ( pic && pic->state == CP_FAILED && DP_Clicked( bx, my, bw, bh ) )
+						chPics[m.picture].state = CP_NONE;
+				} else {
+					// the text, wrapped to the box's width
+					WG_DrawText( &bubble, bx + 4, my + 11, bw - 8, m.text.c_str(), 0, lines, dpText );
+				}
 			}
 		}
 	}
@@ -918,6 +1253,9 @@ static void CH_DrawTalk( float x, float y, float w, float bottom ) {
 	}
 	if ( DP_Button( x + w - DP_Wide( 46 ), bottom - DP_CTRL_H, DP_Wide( 46 ), chSendHttp.state == HTTP_BUSY ? "..." : "Send", qfalse ) )
 		CH_Send();
+	// a picture: the camera
+	if ( DP_Button( x + w - DP_Wide( 46 ) - DP_Wide( 34 ), bottom - DP_CTRL_H, DP_Wide( 30 ), "Cam", qfalse ) )
+		CL_Chat_Camera();
 }
 
 static void CH_DrawSettings( float x, float y, float w ) {

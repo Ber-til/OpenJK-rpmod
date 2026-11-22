@@ -370,6 +370,8 @@ static void DP_Set( dpState_t state ) {
 		dp.cursorY = r.y + ( SCREEN_HEIGHT - r.y ) * 0.4f;
 		Key_SetCatcher( Key_GetCatcher() | KEYCATCH_DATAPAD );
 		DP_Emote( qtrue );
+		// unfolded: the app on its screen told it's shown again (folding told it it wasn't)
+		DP_AppShown( dp.app, qtrue );
 	} else {
 		Key_SetCatcher( Key_GetCatcher() & ~KEYCATCH_DATAPAD );
 		DP_Emote( qfalse );
@@ -1348,6 +1350,10 @@ static void DP_Datapad_f( void ) {
 				CL_Arcade_Open( Cmd_Argv( 2 ), (qboolean)!Q_stricmp( Cmd_Argv( 3 ), "play" ) );
 			else if ( !Q_stricmp( arg, "dice" ) )
 				CL_Dice_Open( Cmd_ArgsFrom( 2 ) );
+			else if ( !Q_stricmp( arg, "chat" ) && !Q_stricmp( Cmd_Argv( 2 ), "camera" ) && !Q_stricmp( Cmd_Argv( 3 ), "send" ) )
+				CL_Chat_SendShot();
+			else if ( !Q_stricmp( arg, "chat" ) && !Q_stricmp( Cmd_Argv( 2 ), "camera" ) )
+				CL_Chat_Camera();
 			else if ( !Q_stricmp( arg, "chat" ) && !Q_stricmp( Cmd_Argv( 2 ), "group" ) )
 				CL_Chat_OpenGroup( atoi( Cmd_Argv( 3 ) ) );
 			else if ( !Q_stricmp( arg, "chat" ) )

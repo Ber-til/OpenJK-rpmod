@@ -1197,6 +1197,7 @@ qboolean CL_PhotoMode_Hide2D( void );
 void CL_PhotoMode_KeyEvent( int key, qboolean down );
 void CL_PhotoMode_MouseEvent( int dx, int dy );
 void CL_PhotoMode_Escape( void );
+qboolean CL_PhotoMode_OpenForChat( void );	// Chat's camera: a picture for a message (CL_Chat_CameraDone)
 void CL_SkyComposer_Init( void );		// cl_skycomposer.cpp: the sky composer (Vulkan's sky)
 void CL_SkyComposer_Shutdown( void );
 void CL_SkyComposer_Disconnect( void );
@@ -1216,6 +1217,9 @@ void CL_Chat_GroupStateHook( char **argv, int argc, const char *message );	// cm
 void CL_Chat_TypingHook( char **argv, int argc, const char *message );	// cmd:chattyping/...
 qboolean CL_Chat_CaptureSound( const char *cmd );	// the sound manager's Send, while Chat picks a sound
 int CL_Chat_Unread( void );
+void CL_Chat_Camera( void );			// datapad chat camera: a picture for the conversation open
+void CL_Chat_CameraDone( const char *path );	// photo mode's: the shot (its PNG), NULL none
+void CL_Chat_SendShot( void );			// datapad chat camera send: the picture taken, sent
 void CL_SoundManager_OpenForChat( void );
 void CL_Notes_Disconnect( void );
 void CL_Notes_PickedUp( int item );	// the placed datapad shown is yours now: this item

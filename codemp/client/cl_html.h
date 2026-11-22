@@ -81,3 +81,8 @@ void		RSS_Items( const std::string &xml, std::vector<rssItem_t> &out );
 // a picture from the web for the renderer: 0 while it comes (or if it can't), its size once known
 qhandle_t	HTML_Picture( const char *url, int *width, int *height );
 void		HTML_PictureFrame( void );
+
+// Chat's pictures: a shot made a JPEG (maxSide at most on a side); a picture's bytes for the renderer,
+// kept in the datapad's cache by name (from there if it's been made before; data NULL: only from there)
+bool		HTML_ToJpeg( const unsigned char *data, int len, int maxSide, int quality, std::vector<unsigned char> &jpeg );
+qhandle_t	HTML_PictureFromBytes( const char *name, const unsigned char *data, int len, int *width, int *height );
