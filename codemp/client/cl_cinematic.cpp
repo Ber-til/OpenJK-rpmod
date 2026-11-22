@@ -181,7 +181,7 @@ typedef struct {
 
 static const cmShell_t cmShells[] = {
 	{ "as they are", NULL, qfalse },
-	{ "a hologram", "gfx/misc/blue_dmgshield", qfalse },	// RPMod's hologram look, restyled by the JEDI hologram pack
+	{ "a hologram", "gfx/misc/blue_dmgshield", qtrue },	// RPMod's hologram look, restyled by the JEDI hologram pack
 	{ "cloaked", "gfx/effects/cloakedShader", qfalse },
 	{ "force glow", "powerups/forceshell", qtrue },
 	{ "light side", "powerups/enlightenmentshell", qtrue },

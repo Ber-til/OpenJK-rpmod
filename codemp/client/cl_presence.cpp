@@ -121,8 +121,8 @@ static struct {
 
 static std::deque<psHook_t>		psRelayOut;	// hooks going to C1B3R, one at a time
 static qboolean			psReplaying;		// a hook of the server's state, replayed to us, being run
-static httpRequest_t			psListHttp, psHelloHttp, psPollHttp, psHookHttp, psLinkHttp, psWaitHttp, psByeHttp, psStateHttp, psWebHttp;
-static cvar_t					*cl_presenceUrl, *cl_presenceLocal, *cl_c1b3rToken;
+static httpRequest_t			psListHttp, psHelloHttp, psPollHttp, psHookHttp, psLinkHttp, psWaitHttp, psByeHttp, psStateHttp, psWebHttp, psBurnerHttp;
+static cvar_t					*cl_presenceUrl, *cl_presenceLocal, *cl_c1b3rToken, *cl_c1b3rBurner;
 
 /*
 ===============================================================================
@@ -803,6 +803,19 @@ qboolean CL_Presence_Hook( int to, const char *in ) {
 	return qtrue;
 }
 
+// testing only: this session speaks for a staging burner account (cl_c1b3rBurner), asked after each hello
+static void PS_Burner( void ) {
+	std::string body = "{\"session\":";
+
+	if ( !cl_c1b3rBurner || !cl_c1b3rBurner->string[0] || !psv.on || psBurnerHttp.state == HTTP_BUSY )
+		return;
+	PS_Json( body, psv.id );
+	body += ",\"account\":";
+	PS_Json( body, cl_c1b3rBurner->string );
+	body += "}";
+	PS_Send( &psBurnerHttp, "/v2/test/burner", body );
+}
+
 /*
 ===============================================================================
 
@@ -813,6 +826,22 @@ Each frame
 
 // C1B3R's answers
 static void PS_PollRequests( void ) {
+	if ( HTTP_Poll( &psBurnerHttp ) ) {
+		char *field[6];
+		const int n = PS_Fields( psBurnerHttp.answer, field, 6 );
+
+		if ( psBurnerHttp.status == 200 && n >= 4 && !strcmp( field[0], "ok" ) ) {
+			PS_SetState( field[1], field[2], field[3], n >= 5 ? field[4] : NULL );
+			Com_Printf( S_COLOR_GREEN "C1B3R: " S_COLOR_WHITE "speaking for the burner account %s (testing only)\n", cl_c1b3rBurner->string );
+		} else if ( psBurnerHttp.status == 404 && !Q_stricmpn( psBurnerHttp.answer, "No such session", 15 ) ) {
+			// not connected to it yet: asked again after the next hello
+			Com_Printf( "C1B3R: the burner account %s is used once this game's connected to C1B3R\n", cl_c1b3rBurner->string );
+		} else if ( psBurnerHttp.status == 404 || psBurnerHttp.status == 405 ) {
+			Com_Printf( S_COLOR_YELLOW "C1B3R: " S_COLOR_WHITE "this C1B3R has no burner accounts (staging only)\n" );
+		} else {
+			Com_Printf( S_COLOR_YELLOW "C1B3R: " S_COLOR_WHITE "burner: %s", psBurnerHttp.answer[0] ? psBurnerHttp.answer : "no answer\n" );
+		}
+	}
 	if ( HTTP_Poll( &psHelloHttp ) ) {
 		char *field[7];
 		const int n = PS_Fields( psHelloHttp.answer, field, 7 );
@@ -835,6 +864,7 @@ static void PS_PollRequests( void ) {
 			psv.pollNext = 0;
 			ps.askNext = 0;
 			PS_AskList();
+			PS_Burner();
 		} else {
 			psv.helloNext = cls.realtime + PS_HELLO_RETRY_MS;
 		}
@@ -1074,6 +1104,26 @@ static void PS_C1b3r_f( void ) {
 		PS_Unlink();
 		return;
 	}
+	// testing only, on a C1B3R with burner accounts (staging): this game speaks for one, kept for later sessions
+	if ( !Q_stricmp( arg, "burner" ) ) {
+		if ( Cmd_Argc() < 3 ) {
+			Com_Printf( "usage: c1b3r burner <account> | off   (a staging C1B3R's burner account, for testing with a second game)\n"
+				"Now: %s\n", cl_c1b3rBurner->string[0] ? cl_c1b3rBurner->string : "off" );
+			return;
+		}
+		if ( !Q_stricmp( Cmd_Argv( 2 ), "off" ) ) {
+			Cvar_Set( "cl_c1b3rBurner", "" );
+			Com_Printf( "C1B3R: no burner account; your own from the next session (reconnect)\n" );
+			return;
+		}
+		Cvar_Set( "cl_c1b3rBurner", Cmd_Argv( 2 ) );
+		if ( !PS_Active() || !psv.on ) {
+			Com_Printf( "C1B3R: the burner account %s is used once you're on a server, connected to C1B3R\n", Cmd_Argv( 2 ) );
+			return;
+		}
+		PS_Burner();
+		return;
+	}
 	// for RPMod admins: what C1B3R keeps of this server for who joins later, or all of it taken back
 	if ( !Q_stricmp( arg, "state" ) ) {
 		std::string body = "{\"session\":";
@@ -1130,6 +1180,7 @@ static void PS_C1b3r_f( void ) {
 		"c1b3r web : open C1B3R's web pages in your browser, signed in (a linked game)\n"
 		"c1b3r discord : add C1B3R to your Discord account, for /link in any DM\n"
 		"c1b3r unlink : end the link\n"
+		"c1b3r burner <account>|off : (testing, staging C1B3R only) speak for a burner account\n"
 		"c1b3r state [clear] : (RPMod admins) what's shared on this server for who joins later, and who did it; clear takes it back\n" );
 }
 
@@ -1164,6 +1215,8 @@ void CL_Presence_Init( void ) {
 	cl_presenceLocal = Cvar_Get( "cl_presenceLocal", "0", CVAR_TEMP | CVAR_INTERNAL, "Talk to C1B3R on a server of your own too, logged in as a test admin, to try it" );
 	cl_c1b3rToken = Cvar_Get( "cl_c1b3rToken", "", CVAR_ARCHIVE_ND | CVAR_PROTECTED | CVAR_NORESTART,
 		"This game's link to C1B3R, made with /c1b3r link: keep it to yourself" );
+	cl_c1b3rBurner = Cvar_Get( "cl_c1b3rBurner", "", CVAR_ARCHIVE_ND | CVAR_NORESTART,
+		"Testing only: a staging C1B3R's burner account this game speaks for (/c1b3r burner)" );
 	Cmd_AddCommand( "clientusers", PS_ClientUsers_f, "Your link to C1B3R, and who on this server has this client" );
 	Cmd_AddCommand( "c1b3rhook", PS_HookCmd_f, "c1b3rhook <all|client> cmd:<...>: a hook to everyone with this client (or one player), through C1B3R" );
 	Cmd_AddCommand( "c1b3r", PS_C1b3r_f, "Your link to C1B3R; c1b3r link links this game in Discord, for admins to send; c1b3r web opens C1B3R's web pages signed in; c1b3r discord adds C1B3R to your Discord account; c1b3r unlink ends it" );

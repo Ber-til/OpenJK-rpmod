@@ -198,9 +198,14 @@ void CL_HoloCall_AddToScene( const refdef_t *fd ) {
 		VectorCopy( ang, ent.angles );
 		AnglesToAxis( ang, ent.axis );
 		ent.radius = 64.0f;
-		ent.customShader = shader;
 		ent.shaderRGBA[0] = ent.shaderRGBA[1] = ent.shaderRGBA[2] = ent.shaderRGBA[3] = 255;
+		// as RPMod draws its holograms: the body as it is, the hologram's shell over it (the shell alone
+		// in its place goes all white with the JEDI hologram pack)
 		re->AddRefEntityToScene( &ent );
+		if ( shader ) {
+			ent.customShader = shader;
+			re->AddRefEntityToScene( &ent );
+		}
 	}
 }
 
@@ -566,18 +571,55 @@ On screen: a line under the top right while in a call, and the datapad Chat's ba
 ===============================================================================
 */
 
+// the call's line, right-aligned: its colour codes drawn as colours (RPMod's too), each run in its own
+#define HC_LABEL_Y			300.0f		// under RPMod's own lines at the top right (class, XP, level, rank)
+
 void CL_HoloCall_Draw( void ) {
 	static const float color[4] = { 0.45f, 0.8f, 1.0f, 0.9f };
+	char runs[16][128];
+	float colors[16][4], total = 0.0f, x;
+	int n = 0, len = 0, font;
 	const char *text;
 
 	if ( cls.state != CA_ACTIVE || !( hc.active || hc.ringing || hc.calling ) )
 		return;
 	if ( !hc.font )
 		hc.font = re->RegisterFont( "arialnb" );
-	text = hc.active ? va( "HoloCall: %s", hc.otherName ) : hc.ringing ? va( "HoloCall from %s: /holocall answer", hc.otherName )
-		: va( "Calling %s...", hc.otherName[0] ? hc.otherName : hc.otherAccount );
-	re->Font_DrawString( (int)( SCREEN_WIDTH - 8 - re->Font_StrLenPixels( text, hc.font ? hc.font : cls.menuFont, 0.5f ) ), 120, text, color,
-		hc.font ? hc.font : cls.menuFont, -1, 0.5f );
+	font = hc.font ? hc.font : cls.menuFont;
+	text = hc.active ? va( "HoloCall: %s^7", hc.otherName ) : hc.ringing ? va( "HoloCall from %s^7: /holocall answer", hc.otherName )
+		: va( "Calling %s^7...", hc.otherName[0] ? hc.otherName : hc.otherAccount );
+	memcpy( colors[0], color, sizeof( colors[0] ) );
+	for ( const char *p = text; *p; p++ ) {
+		const float *c = Con_TypedColor( p );
+
+		if ( c ) {
+			if ( len && n < 15 ) {
+				runs[n][len] = '\0';
+				n++;
+				len = 0;
+			}
+			// ^7 back to the line's own colour, the others theirs
+			if ( p[1] == '7' )
+				memcpy( colors[n], color, sizeof( colors[n] ) );
+			else {
+				memcpy( colors[n], c, sizeof( float ) * 3 );
+				colors[n][3] = color[3];
+			}
+			p++;
+			continue;
+		}
+		if ( len < (int)sizeof( runs[0] ) - 1 )
+			runs[n][len++] = *p;
+	}
+	runs[n][len] = '\0';
+	n++;
+	for ( int i = 0; i < n; i++ )
+		total += re->Font_StrLenPixels( runs[i], font, 0.5f );
+	x = SCREEN_WIDTH - 8 - total;
+	for ( int i = 0; i < n; i++ ) {
+		re->Font_DrawString( (int)x, (int)HC_LABEL_Y, runs[i], colors[i], font, -1, 0.5f );
+		x += re->Font_StrLenPixels( runs[i], font, 0.5f );
+	}
 }
 
 // on the datapad's Chat, over its page: a ring to answer, or the call going on; the height it took
